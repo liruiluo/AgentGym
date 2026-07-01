@@ -14,7 +14,7 @@ Current scope:
 - Exposes task actions: `BUY`, `ANSWER`.
 - Records `memory_state_diff`, `progress_score`, `compatibility_violations`, `memory_ops`, and hidden purchase history in `info`.
 
-This is only a skeleton/smoke environment. It does **not** claim full MemoryArena conversion or RL improvement yet. The next real step is to add converted MemoryArena/WebShop-style items and a full latest-observation rollout implementation.
+This is still a skeleton/smoke environment. It now includes a MemoryArena bundled-shopping converter entrypoint, but it does **not** claim frozen formal MemoryArena data or RL improvement yet. The next real steps are to resolve converter target-match ambiguities with a WebShop catalog / ASIN map and run a real small-model/API rollout.
 
 The current AgentGym-RL vLLM rollout now has a fail-fast guard for `task_name=agentmemory`: formal rollout is blocked unless raw-history leakage is explicitly allowed for a diagnostic smoke run.
 
@@ -119,6 +119,27 @@ tasks = load_tasks_from_jsonl(default_smoke_data_path())
 print("JSONL_LOADER_SMOKE_OK", len(tasks))
 PY
 ```
+
+## MemoryArena bundled-shopping converter
+
+Convert public MemoryArena `bundled_shopping` JSONL into the AgentMemoryGym JSONL schema without committing the dataset into this repo:
+
+```bash
+PYTHONPATH=agentenv-agentmemory \
+  python3 agentenv-agentmemory/scripts/convert_memoryarena_bundled_shopping.py \
+  --input https://huggingface.co/datasets/ZexueHe/memoryarena/resolve/main/bundled_shopping/data.jsonl \
+  --output /tmp/agentmemorygym-memoryarena/bundled_shopping.jsonl \
+  --split-dir /tmp/agentmemorygym-memoryarena/splits \
+  --report /tmp/agentmemorygym-memoryarena/target_match_report.jsonl
+```
+
+Smoke the converter on the bundled synthetic fixture:
+
+```bash
+PYTHONPATH=agentenv-agentmemory python3 agentenv-agentmemory/scripts/smoke_memoryarena_converter.py
+```
+
+The converter writes a target-match audit report because MemoryArena answers expose target ASIN/attributes while prompts expose natural-language option descriptions. Full public bundled-shopping conversion currently has a small number of tied heuristic matches; resolve those with a WebShop catalog / ASIN map before treating the converted file as a frozen formal train/eval dataset.
 
 ## Server
 
