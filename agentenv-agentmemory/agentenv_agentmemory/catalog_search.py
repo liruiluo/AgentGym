@@ -75,7 +75,6 @@ def configure_for_bulk_load(db: sqlite3.Connection) -> None:
     db.execute("PRAGMA journal_mode=OFF")
     db.execute("PRAGMA synchronous=OFF")
     db.execute("PRAGMA temp_store=MEMORY")
-    db.execute("PRAGMA locking_mode=EXCLUSIVE")
 
 
 def ensure_schema(db: sqlite3.Connection) -> None:
