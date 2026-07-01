@@ -150,6 +150,15 @@ PYTHONPATH=agentenv-agentmemory \
   --catalog-path /path/to/memoryarena-product-db/product_catalog/grocery_gourmet_food_snacks_sweets.json
 ```
 
+Current verified full mirror on the Jingyan shared disk:
+
+```text
+/home/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db/
+135 files / 13,517,161,526 bytes; extra/missing/mismatch/part = 0
+```
+
+Keep the large product DB on the shared disk rather than copying it to the devbox/local development disk.
+
 Smoke the converter on the bundled synthetic fixture:
 
 ```bash
