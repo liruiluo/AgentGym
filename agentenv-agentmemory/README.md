@@ -14,7 +14,7 @@ Current scope:
 - Exposes task actions: `BUY`, `ANSWER`, and optional product-catalog `SEARCH` when `AGENTMEMORY_CATALOG_INDEX_PATH` is configured.
 - Records `memory_state_diff`, `progress_score`, `compatibility_violations`, `memory_ops`, and hidden purchase history in `info`.
 
-This is still a skeleton/smoke environment. It now includes a MemoryArena bundled-shopping converter, catalog / ASIN resolver, strict candidate-metadata enrichment, and product-catalog `SEARCH` draft. Formal target freeze exists (`120/15/15`, `asin_catalog=900`, `ambiguous=0`), and Qwen3-4B single-GPU smoke has run, but this still does **not** claim RL improvement. The next real step is a scripted SEARCH baseline / heuristic memory manager before moving to the planned 8-card training lane.
+This is still a skeleton/smoke environment. It now includes a MemoryArena bundled-shopping converter, catalog / ASIN resolver, strict candidate-metadata enrichment, product-catalog `SEARCH`, a scripted SEARCH baseline, and a failure-audit helper. Formal target freeze exists (`120/15/15`, `asin_catalog=900`, `ambiguous=0`), Qwen3-4B single-GPU smoke has run, and scripted SEARCH diagnostics show dev no-retry `5/15`, retry5 `10/15`, and soft-fallback verifier `15/15`. These are interface/solvability diagnostics only and still do **not** claim RL improvement.
 
 The current AgentGym-RL vLLM rollout now has a fail-fast guard for `task_name=agentmemory`: formal rollout is blocked unless raw-history leakage is explicitly allowed for a diagnostic smoke run.
 
@@ -207,6 +207,40 @@ Example action:
 ```text
 SEARCH {"query":"A gluten-free carrot cake mix with easy-to-use instructions and vegan-friendly ingredients.","top_k":3}
 ```
+
+
+## Scripted SEARCH baseline and failure audit
+
+Strict baseline, retry diagnostic, and soft-fallback verifier diagnostic share
+the same runner:
+
+```bash
+PYTHONPATH=agentenv-agentmemory \
+  python3 agentenv-agentmemory/scripts/run_scripted_search_baseline.py \
+  --data /path/to/memoryarena_agentmemory.jsonl \
+  --split-dir /path/to/splits \
+  --split dev \
+  --catalog-index /home/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db/agentmemory_catalog_search.sqlite \
+  --output-dir /path/to/evidence/run \
+  --max-buy-attempts 1
+```
+
+Use `--include-target-audit` only for saved audit fields; the runner does not
+use target ids for action selection. Use `--compatibility-fallback
+ranked-all-after-compatible` only as an explicit verifier-feedback diagnostic:
+it tries strict compatibility matches first and then other visible candidates
+ranked by the same public SEARCH metadata.
+
+Analyze failed steps with:
+
+```bash
+python3 agentenv-agentmemory/scripts/analyze_scripted_search_failures.py \
+  --run-dir /path/to/evidence/run \
+  --output-dir /path/to/evidence/failure-audit
+```
+
+The analyzer prints `AGENTMEMORY_SCRIPTED_SEARCH_FAILURE_AUDIT_OK` and classifies
+residual failures such as `compatibility_filter_excluded_target`.
 
 ## Server
 

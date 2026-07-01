@@ -42,11 +42,15 @@ class CandidateView:
 @dataclass
 class StepDecision:
     subtask_index: int
+    attempt_number: int
     instruction_head: str
     preference: str
+    compatibility_fallback: str
     active_compatibility_keys: list[str]
     allowed_values: list[str]
     compatible_product_ids: list[str]
+    fallback_product_ids: list[str]
+    ranked_product_ids: list[str]
     chosen_product_id: str
     chosen_title: str
     chosen_search_title: str | None
@@ -55,6 +59,8 @@ class StepDecision:
     chosen_reviews: int | None
     target_product_id: str | None
     target_chosen: bool | None
+    target_in_compatible_pool: bool | None
+    target_rank: int | None
     buy_reward: float
     buy_accepted: bool
     progress_score: float
@@ -365,6 +371,24 @@ def rank_candidates(candidates: list[CandidateView], preference: str) -> list[Ca
     return sorted(candidates, key=lambda item: metric_key(item, preference), reverse=True)
 
 
+def build_ranked_candidate_pool(
+    *,
+    compatible_candidates: list[CandidateView],
+    fallback_candidates: list[CandidateView],
+    preference: str,
+    compatibility_fallback: str,
+) -> tuple[list[CandidateView], list[CandidateView]]:
+    ranked_compatible = rank_candidates(compatible_candidates, preference)
+    if compatibility_fallback == "none":
+        return ranked_compatible, []
+    if compatibility_fallback != "ranked-all-after-compatible":
+        raise ValueError(f"Unsupported compatibility_fallback: {compatibility_fallback}")
+    compatible_ids = {candidate.product_id for candidate in ranked_compatible}
+    fallback_pool = [candidate for candidate in fallback_candidates if candidate.product_id not in compatible_ids]
+    ranked_fallback = rank_candidates(fallback_pool, preference)
+    return ranked_compatible + ranked_fallback, ranked_fallback
+
+
 def search_candidate(env: AgentMemoryEnv, product: Product) -> tuple[SearchHit | None, str, float, bool, dict[str, Any]]:
     obs, reward, done, _, info = env.step(action("SEARCH", query=product.title, top_k=1))
     hits = parse_search_hits(obs)
@@ -377,6 +401,7 @@ def run_episode(
     data_idx: int,
     include_target_audit: bool = True,
     max_buy_attempts: int = 1,
+    compatibility_fallback: str = "none",
 ) -> tuple[EpisodeResult, list[dict[str, Any]]]:
     observation, info = env.reset(data_idx=data_idx)
     task_id = info["task_id"]
@@ -421,7 +446,15 @@ def run_episode(
             compatibility_memory_text,
             explicit_candidates,
         )
-        ranked_candidates = rank_candidates(compatible_candidates, preference)
+        ranked_candidates, fallback_candidates = build_ranked_candidate_pool(
+            compatible_candidates=compatible_candidates,
+            fallback_candidates=explicit_candidates,
+            preference=preference,
+            compatibility_fallback=compatibility_fallback,
+        )
+        compatible_product_ids = [item.product_id for item in compatible_candidates]
+        fallback_product_ids = [item.product_id for item in fallback_candidates]
+        ranked_product_ids = [item.product_id for item in ranked_candidates]
         chosen: CandidateView | None = None
         buy_accepted = False
         attempts = 0
@@ -441,11 +474,15 @@ def run_episode(
             decisions.append(
                 StepDecision(
                     subtask_index=subtask_index,
+                    attempt_number=attempts,
                     instruction_head=subtask.instruction.splitlines()[0][:160],
                     preference=preference,
+                    compatibility_fallback=compatibility_fallback,
                     active_compatibility_keys=active_keys,
                     allowed_values=allowed_values,
-                    compatible_product_ids=[item.product_id for item in compatible_candidates],
+                    compatible_product_ids=compatible_product_ids,
+                    fallback_product_ids=fallback_product_ids,
+                    ranked_product_ids=ranked_product_ids,
                     chosen_product_id=candidate.product_id,
                     chosen_title=candidate.title,
                     chosen_search_title=candidate.search_hit.title if candidate.search_hit else None,
@@ -454,6 +491,10 @@ def run_episode(
                     chosen_reviews=candidate.search_hit.total_reviews if candidate.search_hit else None,
                     target_product_id=target_product_id,
                     target_chosen=(candidate.product_id == subtask.target_product_id) if include_target_audit else None,
+                    target_in_compatible_pool=(subtask.target_product_id in compatible_product_ids) if include_target_audit else None,
+                    target_rank=(ranked_product_ids.index(subtask.target_product_id) + 1)
+                    if include_target_audit and subtask.target_product_id in ranked_product_ids
+                    else None,
                     buy_reward=buy_reward,
                     buy_accepted=buy_accepted,
                     progress_score=float(info.get("progress_score", 0.0)),
@@ -552,6 +593,7 @@ def summarize(results: list[EpisodeResult], *, args: argparse.Namespace, started
     return {
         "marker": "AGENTMEMORY_SCRIPTED_SEARCH_BASELINE_OK",
         "policy": "scripted_search_heuristic_memory_manager_v0",
+        "compatibility_fallback": args.compatibility_fallback,
         "data_path": args.data,
         "split": args.split,
         "split_dir": args.split_dir,
@@ -596,6 +638,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--max-buy-attempts", type=int, default=1, help="Try up to this many ranked candidate BUY actions before ending the episode.")
+    parser.add_argument(
+        "--compatibility-fallback",
+        choices=("none", "ranked-all-after-compatible"),
+        default="none",
+        help=(
+            "Diagnostic fallback for brittle compatibility labels. The default 'none' preserves the strict "
+            "scripted baseline. 'ranked-all-after-compatible' tries compatible candidates first, then other "
+            "visible candidates ranked by the same SEARCH metadata."
+        ),
+    )
     parser.add_argument("--include-target-audit", action="store_true", help="Include target ids in saved audit rows, never in action selection.")
     return parser.parse_args()
 
@@ -615,6 +667,7 @@ def main() -> None:
             data_idx=data_idx,
             include_target_audit=args.include_target_audit,
             max_buy_attempts=args.max_buy_attempts,
+            compatibility_fallback=args.compatibility_fallback,
         )
         results.append(result)
         action_rows.extend(actions)
