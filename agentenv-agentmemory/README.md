@@ -158,9 +158,13 @@ Current verified full mirror on the Jingyan shared disk:
 ```
 
 Keep the large product DB on the shared disk rather than copying it to the
-devbox/local development disk. For a formal freeze, prefer the helper below: it
-first scans the full product DB by target ASIN to select only relevant catalog
-shards, then calls the converter and validator and writes a manifest.
+devbox/local development disk. Shared-disk capacity is not the blocker here:
+full mirroring and full indexing are allowed and intended on the shared disk.
+Do not downscope this path to a "local minimal dependency" workaround merely
+because the Mac/devbox is a 0-card development machine or lacks a local DB copy.
+For a formal freeze, prefer the helper below: it first scans the full product
+DB by target ASIN to select only relevant catalog shards, then calls the
+converter and validator and writes a manifest.
 
 ```bash
 PYTHONPATH=agentenv-agentmemory \
