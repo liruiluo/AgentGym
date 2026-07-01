@@ -1,0 +1,21 @@
+[project]
+name = "agentenv_agentmemory"
+version = "0.0.1"
+description = "AgentMemoryGym environment package for memory-dependent agent RL tasks."
+authors = [
+    {name = "Lirui Luo"},
+]
+dependencies = [
+    "fastapi",
+    "uvicorn",
+]
+requires-python = ">=3.10"
+readme = "README.md"
+license = {text = "MIT"}
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[project.scripts]
+agentmemory = "agentenv_agentmemory:launch"

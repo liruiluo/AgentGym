@@ -1,3 +1,4 @@
+from .agentmemory import AgentMemoryEnvClient, AgentMemoryTask, AgentMemoryAdapter
 from .academia import AcademiaEnvClient, AcademiaTask
 from .alfworld import AlfWorldEnvClient, AlfWorldTask, AlfWorldAdapter
 from .babyai import BabyAIEnvClient, BabyAITask
