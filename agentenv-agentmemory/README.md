@@ -11,10 +11,10 @@ Current scope:
 - Exposes `/metadata` with `task_count`, `task_ids`, `splits`, and `source`.
 - Exposes LTM tools: `ADD`, `UPDATE`, `DELETE`.
 - Exposes STM tools: `RETRIEVE`, `SUMMARY`, `FILTER`.
-- Exposes task actions: `BUY`, `ANSWER`.
+- Exposes task actions: `BUY`, `ANSWER`, and optional product-catalog `SEARCH` when `AGENTMEMORY_CATALOG_INDEX_PATH` is configured.
 - Records `memory_state_diff`, `progress_score`, `compatibility_violations`, `memory_ops`, and hidden purchase history in `info`.
 
-This is still a skeleton/smoke environment. It now includes a MemoryArena bundled-shopping converter entrypoint and an optional catalog / ASIN resolver, but it does **not** claim frozen formal MemoryArena data or RL improvement yet. The next real steps are to freeze the formal converted item IDs, run a real small-model/API rollout, then move to the planned 8-card training lane.
+This is still a skeleton/smoke environment. It now includes a MemoryArena bundled-shopping converter, catalog / ASIN resolver, strict candidate-metadata enrichment, and product-catalog `SEARCH` draft. Formal target freeze exists (`120/15/15`, `asin_catalog=900`, `ambiguous=0`), and Qwen3-4B single-GPU smoke has run, but this still does **not** claim RL improvement. The next real step is a scripted SEARCH baseline / heuristic memory manager before moving to the planned 8-card training lane.
 
 The current AgentGym-RL vLLM rollout now has a fail-fast guard for `task_name=agentmemory`: formal rollout is blocked unless raw-history leakage is explicitly allowed for a diagnostic smoke run.
 
@@ -177,6 +177,36 @@ PYTHONPATH=agentenv-agentmemory python3 agentenv-agentmemory/scripts/smoke_memor
 ```
 
 The converter writes a target-match audit report because MemoryArena answers expose target ASIN/attributes while prompts expose natural-language option descriptions. Without a catalog, full public bundled-shopping conversion has 12/900 tied heuristic matches. With the four currently relevant product-catalog shards above on Jingyan shared disk, the same public conversion validates with 0/900 ambiguous matches (`catalog=450`, `fallback=450`); this is still data-conversion evidence, not an RL result.
+
+
+## Product-catalog SEARCH index
+
+`SEARCH` is configured through `AGENTMEMORY_CATALOG_INDEX_PATH` or the
+`AgentMemoryEnv(..., catalog_index_path=...)` constructor argument. It returns
+public product metadata only: title, average rating, price, review count, and a
+match score. It must not expose ASIN/source path/target labels in observation.
+
+Build a full SQLite/FTS index from the MemoryArena product DB on the shared disk:
+
+```bash
+PYTHONPATH=agentenv-agentmemory \
+  python3 agentenv-agentmemory/scripts/build_memoryarena_catalog_search_index.py \
+  --product-db-root /home/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db \
+  --output /home/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db/agentmemory_catalog_search.sqlite
+```
+
+Current Jingyan shared-disk index marker:
+
+```text
+AGENTMEMORY_CATALOG_SEARCH_INDEX_OK products=1031654
+index size ~= 479M
+```
+
+Example action:
+
+```text
+SEARCH {"query":"A gluten-free carrot cake mix with easy-to-use instructions and vegan-friendly ingredients.","top_k":3}
+```
 
 ## Server
 

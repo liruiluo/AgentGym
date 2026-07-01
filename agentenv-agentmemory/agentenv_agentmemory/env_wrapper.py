@@ -64,6 +64,7 @@ class AgentMemoryWrapper:
             "task_ids": [task.task_id for task in self.tasks],
             "splits": sorted({task.split for task in self.tasks}),
             "source": sorted({task.source for task in self.tasks}),
+            "catalog_search_configured": bool(self.envs[next(iter(self.envs))].catalog_index_path) if self.envs else False,
         }
 
     def require_env(self, env_id: int) -> AgentMemoryEnv:

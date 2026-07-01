@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 from agentenv_agentmemory.environment import AgentMemoryEnv, load_task_dataset
+from agentenv_agentmemory.catalog_search import build_sqlite_catalog_index
 from agentenv_agentmemory.memoryarena_converter import convert_file
 
 
@@ -36,6 +37,7 @@ def main() -> None:
         run_catalog_resolver_smoke(temp_root)
         run_candidate_metadata_smoke(temp_root)
         run_no_partial_candidate_metadata_smoke(temp_root)
+        run_catalog_search_smoke(temp_root)
     print("AGENTMEMORY_MEMORYARENA_CONVERTER_SMOKE_OK")
 
 
@@ -249,6 +251,74 @@ def run_no_partial_candidate_metadata_smoke(temp_root: Path) -> None:
     rows = [json.loads(line) for line in report.read_text(encoding="utf-8").splitlines()]
     assert rows[0]["candidate_metadata_status"] == "partial", rows[0]
     assert rows[0]["candidate_metadata_enriched_count"] == 0, rows[0]
+
+
+def run_catalog_search_smoke(temp_root: Path) -> None:
+    source = temp_root / "search_memoryarena.jsonl"
+    catalog = temp_root / "search_catalog.json"
+    output = temp_root / "search_agentmemory.jsonl"
+    split_dir = temp_root / "search_splits"
+    report = temp_root / "search_report.jsonl"
+    index_path = temp_root / "search_catalog.sqlite"
+    record = {
+        "id": "search_0",
+        "category": "unit_test",
+        "questions": [
+            "\n".join(
+                [
+                    "Product 1:",
+                    "### Select cake mix",
+                    "**Goal:** Search the catalog and buy the highest-priced one in available options.",
+                    "**Available Options:**",
+                    "- Alpha vanilla cake mix 16 oz.",
+                    "- Beta chocolate cake mix 18 oz.",
+                ]
+            )
+        ],
+        "answers": [{"target_asin": "BUNITSRCH2", "attributes": ["Beta", "chocolate", "18 oz"]}],
+    }
+    source.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+    catalog.write_text(
+        json.dumps(
+            [
+                {
+                    "asin": "BUNITSRCH1",
+                    "name": "Alpha vanilla cake mix 16 oz",
+                    "average_rating": 4.1,
+                    "pricing": "$5.50",
+                    "total_reviews": 12,
+                },
+                {
+                    "asin": "BUNITSRCH2",
+                    "name": "Beta chocolate cake mix 18 oz",
+                    "average_rating": 4.8,
+                    "pricing": "$8.99",
+                    "total_reviews": 99,
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    convert_file(
+        source,
+        output,
+        split_dir=split_dir,
+        report_path=report,
+        split_mode="cycle",
+        min_match_score=1,
+        catalog_paths=[catalog],
+    )
+    build_sqlite_catalog_index([catalog], index_path)
+    env = AgentMemoryEnv(data_path=output, catalog_index_path=index_path)
+    observation, _ = env.reset()
+    assert 'SEARCH {"query": "...", "top_k": 3}' in observation, observation
+    observation, reward, done, _, info = env.step('SEARCH {"query":"Beta chocolate cake mix 18 oz","top_k":2}')
+    assert reward < 0 and not done, info
+    assert "Product search results" in observation, observation
+    assert "Beta chocolate cake mix 18 oz" in observation, observation
+    assert "price_usd=8.99" in observation, observation
+    assert info["memory_ops"][0]["op"] == "SEARCH", info
 
 
 if __name__ == "__main__":

@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .catalog_search import search_sqlite_catalog
+
 
 @dataclass(frozen=True)
 class Product:
@@ -105,8 +107,11 @@ class AgentMemoryEnv:
         data_path: str | Path | None = None,
         split: str | None = None,
         split_dir: str | Path | None = None,
+        catalog_index_path: str | Path | None = None,
     ) -> None:
         self.tasks = tasks or load_task_dataset(data_path=data_path, split=split, split_dir=split_dir)
+        resolved_catalog_index = catalog_index_path or os.environ.get("AGENTMEMORY_CATALOG_INDEX_PATH")
+        self.catalog_index_path = Path(resolved_catalog_index) if resolved_catalog_index else None
         self.task: ShoppingTask | None = None
         self.data_idx = 0
         self.step_count = 0
@@ -172,6 +177,8 @@ class AgentMemoryEnv:
             return self.action_summary(payload)
         if op == "FILTER":
             return self.action_filter(payload)
+        if op == "SEARCH":
+            return self.action_search(payload)
         if op == "BUY":
             return self.action_buy(payload)
         if op == "ANSWER":
@@ -253,6 +260,19 @@ class AgentMemoryEnv:
         ]
         memory_op = {"op": "FILTER", "query": query, "step": self.step_count}
         return self.render_observation("Filtered active short-term context."), -0.01, False, empty_memory_diff(), [], memory_op
+
+    def action_search(self, payload: dict[str, Any]):
+        if self.catalog_index_path is None:
+            raise InvalidAction("SEARCH requires AGENTMEMORY_CATALOG_INDEX_PATH or catalog_index_path.")
+        query = require_str(payload, "query")
+        top_k = max(1, min(int(payload.get("top_k", 3)), 5))
+        results = search_sqlite_catalog(self.catalog_index_path, query, top_k=top_k)
+        if results:
+            message = "Product search results:\n" + "\n".join(result.render() for result in results)
+        else:
+            message = "Product search returned no results."
+        memory_op = {"op": "SEARCH", "query": query, "top_k": top_k, "step": self.step_count}
+        return self.render_observation(message), -0.01, False, empty_memory_diff(), [], memory_op
 
     def action_buy(self, payload: dict[str, Any]):
         product_id = require_str(payload, "product_id")
@@ -430,6 +450,7 @@ class AgentMemoryEnv:
                 'RETRIEVE {"query": "...", "top_k": 3}',
                 'SUMMARY {"text": "..."}',
                 'FILTER {"query": "..."}',
+                'SEARCH {"query": "...", "top_k": 3}',
                 'BUY {"product_id": "..."}',
                 'ANSWER {"text": "..."}',
                 "Long-term memory is hidden until RETRIEVE brings entries into active context.",
