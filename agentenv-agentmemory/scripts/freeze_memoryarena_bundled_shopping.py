@@ -37,6 +37,29 @@ def main() -> None:
     parser.add_argument("--split-mode", choices=["ratio", "cycle"], default="ratio")
     parser.add_argument("--min-match-score", type=int, default=1)
     parser.add_argument("--ambiguous-policy", choices=["first", "fail"], default="first")
+    parser.add_argument(
+        "--enrich-candidate-metadata",
+        action="store_true",
+        help=(
+            "Scan the catalog and expose comparable rating/price/review metadata for all visible candidates "
+            "when a full subtask match is available."
+        ),
+    )
+    parser.add_argument(
+        "--candidate-metadata-min-score",
+        type=int,
+        default=90,
+        help="Minimum title-match score for candidate metadata enrichment.",
+    )
+    parser.add_argument(
+        "--candidate-metadata-catalog-scope",
+        choices=["target-shards", "full"],
+        default="target-shards",
+        help=(
+            "Catalog shard scope used for candidate metadata. target-shards scans only shards selected by "
+            "target ASINs; full scans the whole product_catalog directory on the shared disk."
+        ),
+    )
     parser.add_argument("--source-url", default=DEFAULT_INPUT_URL, help="Canonical source URL to record in manifest.")
     args = parser.parse_args()
 
@@ -54,6 +77,14 @@ def main() -> None:
         if args.product_db_root is None:
             raise SystemExit("Either --catalog-path or --product-db-root is required for formal freeze.")
         catalog_paths = discover_relevant_catalog_paths(args.product_db_root, target_asins)
+    target_catalog_paths = list(catalog_paths)
+    if (
+        args.enrich_candidate_metadata
+        and args.candidate_metadata_catalog_scope == "full"
+        and args.product_db_root is not None
+        and not args.catalog_path
+    ):
+        catalog_paths = list_all_product_catalog_paths(args.product_db_root)
     if not catalog_paths:
         raise SystemExit("No catalog paths were selected for formal freeze.")
 
@@ -66,6 +97,8 @@ def main() -> None:
         min_match_score=args.min_match_score,
         ambiguous_policy=args.ambiguous_policy,
         catalog_paths=catalog_paths,
+        enrich_candidate_metadata=args.enrich_candidate_metadata,
+        candidate_metadata_min_score=args.candidate_metadata_min_score,
     )
     print(stats.marker(), flush=True)
     run_validator(output_path, split_dir)
@@ -74,9 +107,13 @@ def main() -> None:
         source_url=args.source_url,
         product_db_root=args.product_db_root,
         catalog_paths=catalog_paths,
+        target_catalog_paths=target_catalog_paths,
         output_path=output_path,
         report_path=report_path,
         split_dir=split_dir,
+        enrich_candidate_metadata=args.enrich_candidate_metadata,
+        candidate_metadata_min_score=args.candidate_metadata_min_score,
+        candidate_metadata_catalog_scope=args.candidate_metadata_catalog_scope,
     )
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(
@@ -87,6 +124,7 @@ def main() -> None:
         f"ambiguous={manifest['ambiguous_matches']}",
         "resolvers=" + json.dumps(manifest["resolver_counts"], sort_keys=True),
         f"catalog_paths={len(catalog_paths)}",
+        f"candidate_metadata_full_steps={manifest['candidate_metadata_full_steps']}/{manifest['candidate_metadata_total_steps']}",
     )
 
 
@@ -104,6 +142,17 @@ def discover_relevant_catalog_paths(product_db_root: Path, target_asins: set[str
         if not remaining:
             break
     return selected
+
+
+def list_all_product_catalog_paths(product_db_root: Path) -> list[Path]:
+    catalog_dir = product_db_root / "product_catalog" if (product_db_root / "product_catalog").is_dir() else product_db_root
+    if not catalog_dir.is_dir():
+        raise FileNotFoundError(f"Product catalog directory not found: {catalog_dir}")
+    return [
+        path
+        for path in sorted(catalog_dir.glob("*.json"))
+        if path.name not in {"items_shuffle.json"} and "search_engine" not in path.parts
+    ]
 
 
 def is_scan_candidate_asin(asin: str) -> bool:
@@ -146,9 +195,13 @@ def build_manifest(
     source_url: str,
     product_db_root: Path | None,
     catalog_paths: Iterable[Path],
+    target_catalog_paths: Iterable[Path],
     output_path: Path,
     report_path: Path,
     split_dir: Path,
+    enrich_candidate_metadata: bool,
+    candidate_metadata_min_score: int,
+    candidate_metadata_catalog_scope: str,
 ) -> dict[str, object]:
     tasks = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     rows = [json.loads(line) for line in report_path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -157,6 +210,12 @@ def build_manifest(
     for row in rows:
         resolver = str(row.get("resolver", "unknown"))
         resolver_counts[resolver] = resolver_counts.get(resolver, 0) + 1
+    candidate_metadata_status_counts: dict[str, int] = {}
+    for row in rows:
+        status = row.get("candidate_metadata_status")
+        if status is not None and status != "disabled":
+            status = str(status)
+            candidate_metadata_status_counts[status] = candidate_metadata_status_counts.get(status, 0) + 1
     product_db_status = read_product_db_status(product_db_root) if product_db_root is not None else {}
     return {
         "marker": "AGENTMEMORY_MEMORYARENA_FORMAL_FREEZE_OK",
@@ -167,6 +226,13 @@ def build_manifest(
         "product_db_root": str(product_db_root) if product_db_root is not None else None,
         "product_db_status": product_db_status,
         "catalog_paths": [str(path) for path in catalog_paths],
+        "target_catalog_paths": [str(path) for path in target_catalog_paths],
+        "enrich_candidate_metadata": enrich_candidate_metadata,
+        "candidate_metadata_min_score": candidate_metadata_min_score,
+        "candidate_metadata_catalog_scope": candidate_metadata_catalog_scope,
+        "candidate_metadata_status_counts": candidate_metadata_status_counts,
+        "candidate_metadata_full_steps": candidate_metadata_status_counts.get("full", 0),
+        "candidate_metadata_total_steps": sum(candidate_metadata_status_counts.values()),
         "task_count": len(tasks),
         "report_rows": len(rows),
         "splits": split_counts,

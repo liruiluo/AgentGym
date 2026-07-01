@@ -34,6 +34,8 @@ def main() -> None:
         report_lines = report.read_text(encoding="utf-8").splitlines()
         assert len(report_lines) == 9, len(report_lines)
         run_catalog_resolver_smoke(temp_root)
+        run_candidate_metadata_smoke(temp_root)
+        run_no_partial_candidate_metadata_smoke(temp_root)
     print("AGENTMEMORY_MEMORYARENA_CONVERTER_SMOKE_OK")
 
 
@@ -118,6 +120,135 @@ def run_catalog_resolver_smoke(temp_root: Path) -> None:
     target = task.subtasks[0].target_product_id
     target_title = next(product.title for product in task.subtasks[0].candidate_products if product.product_id == target)
     assert "black articulating" in target_title.lower(), target_title
+
+
+def run_candidate_metadata_smoke(temp_root: Path) -> None:
+    source = temp_root / "candidate_metadata_memoryarena.jsonl"
+    catalog = temp_root / "candidate_metadata_catalog.json"
+    output = temp_root / "candidate_metadata_agentmemory.jsonl"
+    split_dir = temp_root / "candidate_metadata_splits"
+    report = temp_root / "candidate_metadata_report.jsonl"
+    record = {
+        "id": "candidate_metadata_0",
+        "category": "unit_test",
+        "questions": [
+            "\n".join(
+                [
+                    "Product 1:",
+                    "### Select cake mix",
+                    "**Goal:** Buy the highest-priced one in available options.",
+                    "**Available Options:**",
+                    "- Alpha vanilla cake mix 16 oz.",
+                    "- Beta chocolate cake mix 18 oz.",
+                ]
+            )
+        ],
+        "answers": [{"target_asin": "BUNITMETA2", "attributes": ["Beta", "chocolate", "18 oz"]}],
+    }
+    source.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+    catalog.write_text(
+        json.dumps(
+            [
+                {
+                    "asin": "BUNITMETA1",
+                    "name": "Alpha vanilla cake mix 16 oz",
+                    "average_rating": 4.1,
+                    "pricing": "$5.50",
+                    "total_reviews": 12,
+                },
+                {
+                    "asin": "BUNITMETA2",
+                    "name": "Beta chocolate cake mix 18 oz",
+                    "average_rating": 4.8,
+                    "pricing": "$8.99",
+                    "total_reviews": 99,
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    stats = convert_file(
+        source,
+        output,
+        split_dir=split_dir,
+        report_path=report,
+        split_mode="cycle",
+        min_match_score=1,
+        catalog_paths=[catalog],
+        enrich_candidate_metadata=True,
+        candidate_metadata_min_score=90,
+    )
+    assert stats.candidate_metadata_full_steps == 1, stats
+    task = load_task_dataset(data_path=output)[0]
+    for product in task.subtasks[0].candidate_products:
+        assert product.attributes["average_rating"] in {4.1, 4.8}, product
+        assert product.attributes["price_usd"] in {5.5, 8.99}, product
+        assert product.attributes["total_reviews"] in {12, 99}, product
+        assert "asin" not in product.attributes, product
+    rows = [json.loads(line) for line in report.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["candidate_metadata_status"] == "full", rows[0]
+    assert rows[0]["candidate_metadata_enriched_count"] == 2, rows[0]
+
+
+def run_no_partial_candidate_metadata_smoke(temp_root: Path) -> None:
+    source = temp_root / "partial_candidate_metadata_memoryarena.jsonl"
+    catalog = temp_root / "partial_candidate_metadata_catalog.json"
+    output = temp_root / "partial_candidate_metadata_agentmemory.jsonl"
+    split_dir = temp_root / "partial_candidate_metadata_splits"
+    report = temp_root / "partial_candidate_metadata_report.jsonl"
+    record = {
+        "id": "candidate_metadata_partial_0",
+        "category": "unit_test",
+        "questions": [
+            "\n".join(
+                [
+                    "Product 1:",
+                    "### Select cake mix",
+                    "**Goal:** Buy the highest-priced one in available options.",
+                    "**Available Options:**",
+                    "- Alpha vanilla cake mix 16 oz.",
+                    "- Beta chocolate cake mix 18 oz.",
+                ]
+            )
+        ],
+        "answers": [{"target_asin": "BUNITMETA2", "attributes": ["Beta", "chocolate", "18 oz"]}],
+    }
+    source.write_text(json.dumps(record, ensure_ascii=False) + "\n", encoding="utf-8")
+    catalog.write_text(
+        json.dumps(
+            [
+                {
+                    "asin": "BUNITMETA2",
+                    "name": "Beta chocolate cake mix 18 oz",
+                    "average_rating": 4.8,
+                    "pricing": "$8.99",
+                    "total_reviews": 99,
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    convert_file(
+        source,
+        output,
+        split_dir=split_dir,
+        report_path=report,
+        split_mode="cycle",
+        min_match_score=1,
+        catalog_paths=[catalog],
+        enrich_candidate_metadata=True,
+        candidate_metadata_min_score=90,
+    )
+    task = load_task_dataset(data_path=output)[0]
+    for product in task.subtasks[0].candidate_products:
+        assert "average_rating" not in product.attributes, product
+        assert "price_usd" not in product.attributes, product
+        assert "total_reviews" not in product.attributes, product
+    rows = [json.loads(line) for line in report.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["candidate_metadata_status"] == "partial", rows[0]
+    assert rows[0]["candidate_metadata_enriched_count"] == 0, rows[0]
 
 
 if __name__ == "__main__":

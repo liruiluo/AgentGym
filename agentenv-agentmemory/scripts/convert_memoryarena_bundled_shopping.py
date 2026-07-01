@@ -30,6 +30,20 @@ def main() -> None:
         default="first",
         help="How to handle tied target-option matches. Ties are always recorded in the report.",
     )
+    parser.add_argument(
+        "--enrich-candidate-metadata",
+        action="store_true",
+        help=(
+            "Attach comparable product-catalog metadata to candidate observations. "
+            "Metadata is added only when every visible candidate in that subtask has a catalog match."
+        ),
+    )
+    parser.add_argument(
+        "--candidate-metadata-min-score",
+        type=int,
+        default=90,
+        help="Minimum title-match score for candidate metadata enrichment.",
+    )
     args = parser.parse_args()
 
     stats = convert_file(
@@ -42,6 +56,8 @@ def main() -> None:
         min_match_score=args.min_match_score,
         ambiguous_policy=args.ambiguous_policy,
         catalog_paths=args.catalog_path,
+        enrich_candidate_metadata=args.enrich_candidate_metadata,
+        candidate_metadata_min_score=args.candidate_metadata_min_score,
     )
     print(stats.marker())
 
