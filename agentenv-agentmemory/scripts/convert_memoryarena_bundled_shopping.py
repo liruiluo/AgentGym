@@ -16,6 +16,15 @@ def main() -> None:
     parser.add_argument("--split-mode", choices=["ratio", "cycle"], default="ratio")
     parser.add_argument("--min-match-score", type=int, default=1)
     parser.add_argument(
+        "--catalog-path",
+        action="append",
+        default=[],
+        help=(
+            "Optional MemoryArena product DB JSON file or directory. "
+            "If a product DB root is passed, product_catalog/*.json is used and huge items_shuffle.json is skipped."
+        ),
+    )
+    parser.add_argument(
         "--ambiguous-policy",
         choices=["first", "fail"],
         default="first",
@@ -32,6 +41,7 @@ def main() -> None:
         split_mode=args.split_mode,
         min_match_score=args.min_match_score,
         ambiguous_policy=args.ambiguous_policy,
+        catalog_paths=args.catalog_path,
     )
     print(stats.marker())
 

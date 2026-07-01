@@ -14,7 +14,7 @@ Current scope:
 - Exposes task actions: `BUY`, `ANSWER`.
 - Records `memory_state_diff`, `progress_score`, `compatibility_violations`, `memory_ops`, and hidden purchase history in `info`.
 
-This is still a skeleton/smoke environment. It now includes a MemoryArena bundled-shopping converter entrypoint, but it does **not** claim frozen formal MemoryArena data or RL improvement yet. The next real steps are to resolve converter target-match ambiguities with a WebShop catalog / ASIN map and run a real small-model/API rollout.
+This is still a skeleton/smoke environment. It now includes a MemoryArena bundled-shopping converter entrypoint and an optional catalog / ASIN resolver, but it does **not** claim frozen formal MemoryArena data or RL improvement yet. The next real steps are to freeze the formal converted item IDs, run a real small-model/API rollout, then move to the planned 8-card training lane.
 
 The current AgentGym-RL vLLM rollout now has a fail-fast guard for `task_name=agentmemory`: formal rollout is blocked unless raw-history leakage is explicitly allowed for a diagnostic smoke run.
 
@@ -133,13 +133,30 @@ PYTHONPATH=agentenv-agentmemory \
   --report /tmp/agentmemorygym-memoryarena/target_match_report.jsonl
 ```
 
+If a local MemoryArena product DB mirror is available, pass product catalog
+shards or the product DB root to resolve target ASINs before falling back to
+attribute-overlap matching:
+
+```bash
+PYTHONPATH=agentenv-agentmemory \
+  python3 agentenv-agentmemory/scripts/convert_memoryarena_bundled_shopping.py \
+  --input /path/to/bundled_shopping/data.jsonl \
+  --output /tmp/agentmemorygym-memoryarena/bundled_shopping.jsonl \
+  --split-dir /tmp/agentmemorygym-memoryarena/splits \
+  --report /tmp/agentmemorygym-memoryarena/target_match_report.jsonl \
+  --catalog-path /path/to/memoryarena-product-db/product_catalog/electronics_accessories_supplies.json \
+  --catalog-path /path/to/memoryarena-product-db/product_catalog/electronics_television_video.json \
+  --catalog-path /path/to/memoryarena-product-db/product_catalog/grocery_gourmet_food_pantry_staples.json \
+  --catalog-path /path/to/memoryarena-product-db/product_catalog/grocery_gourmet_food_snacks_sweets.json
+```
+
 Smoke the converter on the bundled synthetic fixture:
 
 ```bash
 PYTHONPATH=agentenv-agentmemory python3 agentenv-agentmemory/scripts/smoke_memoryarena_converter.py
 ```
 
-The converter writes a target-match audit report because MemoryArena answers expose target ASIN/attributes while prompts expose natural-language option descriptions. Full public bundled-shopping conversion currently has a small number of tied heuristic matches; resolve those with a WebShop catalog / ASIN map before treating the converted file as a frozen formal train/eval dataset.
+The converter writes a target-match audit report because MemoryArena answers expose target ASIN/attributes while prompts expose natural-language option descriptions. Without a catalog, full public bundled-shopping conversion has 12/900 tied heuristic matches. With the four currently relevant product-catalog shards above on Jingyan shared disk, the same public conversion validates with 0/900 ambiguous matches (`catalog=450`, `fallback=450`); this is still data-conversion evidence, not an RL result.
 
 ## Server
 
