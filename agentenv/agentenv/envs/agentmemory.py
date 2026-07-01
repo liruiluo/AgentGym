@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 from typing import Any, Mapping
 
@@ -203,11 +205,13 @@ class AgentMemoryAdapter(BaseAdapter):
 
 class AgentMemoryEnvClient(BaseEnvClient):
     adapter_cls = AgentMemoryAdapter
+    requires_ephemeral_context = True
+    rollout_context_policy = "latest_observation_only"
 
     def __init__(
         self,
         env_server_base: str,
-        data_len: int,
+        data_len: int | None,
         *args,
         timeout: int = 300,
         **kwargs,
@@ -215,7 +219,8 @@ class AgentMemoryEnvClient(BaseEnvClient):
         super().__init__(*args, **kwargs)
         self.env_server_base = env_server_base
         self.timeout = timeout
-        self.data_len = data_len
+        self.metadata = self.get_metadata()
+        self.data_len = data_len if data_len is not None else int(self.metadata["task_count"])
         response = requests.post(f"{self.env_server_base}/create", timeout=self.timeout)
         if response.status_code != 200:
             raise requests.RequestException(f"Failed to create environment: {response}")
@@ -226,6 +231,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
             "reward": created["reward"],
             "done": created["done"],
             "env_info": created.get("info", {}),
+            "metadata": self.metadata,
         }
         self.conversation_start = self.adapter_cls.conversation_start_dict[self.action_format]
 
@@ -235,6 +241,11 @@ class AgentMemoryEnvClient(BaseEnvClient):
     def post(self, path: str, data: dict[str, Any]) -> dict[str, Any]:
         data["id"] = self.env_id
         response = requests.post(f"{self.env_server_base}/{path}", json=data, timeout=self.timeout)
+        assert response.status_code == 200
+        return response.json()
+
+    def get_metadata(self) -> dict[str, Any]:
+        response = requests.get(f"{self.env_server_base}/metadata", timeout=self.timeout)
         assert response.status_code == 200
         return response.json()
 
@@ -258,6 +269,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
             "reward": response["reward"],
             "done": response["done"],
             "env_info": response.get("info", {}),
+            "metadata": self.metadata,
         }
         return StepOutput(
             state=response["observation"],
@@ -272,6 +284,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
             "reward": response["reward"],
             "done": response["done"],
             "env_info": response.get("info", {}),
+            "metadata": self.metadata,
         }
         return response
 

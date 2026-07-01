@@ -11,6 +11,11 @@ def hello() -> str:
     return "This is environment AgentMemoryGym."
 
 
+@app.get("/metadata")
+def metadata():
+    return server.metadata()
+
+
 @app.post("/create")
 def create():
     return server.create()

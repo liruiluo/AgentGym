@@ -3,12 +3,13 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-from .environment import AgentMemoryEnv
+from .environment import AgentMemoryEnv, load_task_dataset
 
 
 class AgentMemoryWrapper:
     def __init__(self) -> None:
         self.max_id = 0
+        self.tasks = load_task_dataset()
         self.envs: dict[int, AgentMemoryEnv] = {}
         self.info: dict[int, dict[str, Any]] = {}
         self.lock = threading.Lock()
@@ -17,7 +18,7 @@ class AgentMemoryWrapper:
         with self.lock:
             env_id = self.max_id
             self.max_id += 1
-        env = AgentMemoryEnv()
+        env = AgentMemoryEnv(tasks=self.tasks)
         observation, info = env.reset(data_idx=env_id)
         self.envs[env_id] = env
         self.info[env_id] = {
@@ -56,6 +57,14 @@ class AgentMemoryWrapper:
         del self.envs[env_id]
         del self.info[env_id]
         return True
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "task_count": len(self.tasks),
+            "task_ids": [task.task_id for task in self.tasks],
+            "splits": sorted({task.split for task in self.tasks}),
+            "source": sorted({task.source for task in self.tasks}),
+        }
 
     def require_env(self, env_id: int) -> AgentMemoryEnv:
         if env_id not in self.envs:

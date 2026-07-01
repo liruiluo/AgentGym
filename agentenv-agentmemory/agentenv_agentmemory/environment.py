@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -97,8 +98,15 @@ class AgentMemoryEnv:
 
     action_pattern = re.compile(r"^\s*([A-Za-z_]+)\s*(.*)\s*$", re.DOTALL)
 
-    def __init__(self, tasks: list[ShoppingTask] | None = None) -> None:
-        self.tasks = tasks or build_default_tasks()
+    def __init__(
+        self,
+        tasks: list[ShoppingTask] | None = None,
+        *,
+        data_path: str | Path | None = None,
+        split: str | None = None,
+        split_dir: str | Path | None = None,
+    ) -> None:
+        self.tasks = tasks or load_task_dataset(data_path=data_path, split=split, split_dir=split_dir)
         self.task: ShoppingTask | None = None
         self.data_idx = 0
         self.step_count = 0
@@ -470,10 +478,25 @@ class AgentMemoryEnv:
 
 
 def build_default_tasks() -> list[ShoppingTask]:
-    data_path = default_smoke_data_path()
-    if data_path.exists():
-        return load_tasks_from_jsonl(data_path)
-    return [build_tv_bundle_task(), build_laptop_bundle_task()]
+    return load_task_dataset()
+
+
+def load_task_dataset(
+    data_path: str | Path | None = None,
+    split: str | None = None,
+    split_dir: str | Path | None = None,
+) -> list[ShoppingTask]:
+    resolved_data_path = Path(data_path or os.environ.get("AGENTMEMORY_DATA_PATH", default_smoke_data_path()))
+    resolved_split = split if split is not None else os.environ.get("AGENTMEMORY_SPLIT")
+    resolved_split_dir = split_dir or os.environ.get("AGENTMEMORY_SPLIT_DIR")
+
+    if resolved_data_path.exists():
+        tasks = load_tasks_from_jsonl(resolved_data_path)
+    else:
+        tasks = [build_tv_bundle_task(), build_laptop_bundle_task()]
+    if resolved_split:
+        return select_tasks_by_split(tasks, resolved_split, split_dir=resolved_split_dir)
+    return tasks
 
 
 def default_smoke_data_path() -> Path:
@@ -490,6 +513,23 @@ def load_split_task_ids(split: str, split_dir: str | Path | None = None) -> list
     if not path.exists():
         raise FileNotFoundError(f"Missing AgentMemoryGym split file: {path}")
     return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip() and not line.startswith("#")]
+
+
+def select_tasks_by_split(
+    tasks: list[ShoppingTask],
+    split: str,
+    split_dir: str | Path | None = None,
+) -> list[ShoppingTask]:
+    task_by_id = {task.task_id: task for task in tasks}
+    split_task_ids = load_split_task_ids(split, split_dir=split_dir)
+    missing = [task_id for task_id in split_task_ids if task_id not in task_by_id]
+    if missing:
+        raise ValueError(f"Split '{split}' references unknown AgentMemoryGym task ids: {missing}.")
+    selected = [task_by_id[task_id] for task_id in split_task_ids]
+    mismatched = [task.task_id for task in selected if task.split != split]
+    if mismatched:
+        raise ValueError(f"Split '{split}' contains tasks whose record split differs: {mismatched}.")
+    return selected
 
 
 def load_tasks_from_jsonl(path: str | Path) -> list[ShoppingTask]:

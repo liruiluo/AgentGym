@@ -7,12 +7,16 @@ Current scope:
 - Implements a small **bundled web shopping** memory task.
 - Loads the default smoke items from `agentenv_agentmemory/data/bundled_shopping_smoke.jsonl`.
 - Keeps minimal split files under `agentenv_agentmemory/data/splits/{train,dev,test}.txt`.
+- Supports dataset selection through `AGENTMEMORY_DATA_PATH`, `AGENTMEMORY_SPLIT`, and `AGENTMEMORY_SPLIT_DIR`.
+- Exposes `/metadata` with `task_count`, `task_ids`, `splits`, and `source`.
 - Exposes LTM tools: `ADD`, `UPDATE`, `DELETE`.
 - Exposes STM tools: `RETRIEVE`, `SUMMARY`, `FILTER`.
 - Exposes task actions: `BUY`, `ANSWER`.
 - Records `memory_state_diff`, `progress_score`, `compatibility_violations`, `memory_ops`, and hidden purchase history in `info`.
 
-This is only a skeleton/smoke environment. It does **not** claim full MemoryArena conversion or RL improvement yet. The next real step is to add converted MemoryArena/WebShop-style items, train/dev/test splits, and AgentGym-RL rollout handling that prevents unlimited raw-history leakage.
+This is only a skeleton/smoke environment. It does **not** claim full MemoryArena conversion or RL improvement yet. The next real step is to add converted MemoryArena/WebShop-style items and a full latest-observation rollout implementation.
+
+The current AgentGym-RL vLLM rollout now has a fail-fast guard for `task_name=agentmemory`: formal rollout is blocked unless raw-history leakage is explicitly allowed for a diagnostic smoke run.
 
 ## Data schema
 
@@ -53,6 +57,14 @@ Validate the local data package with:
 ```bash
 PYTHONPATH=agentenv-agentmemory python3 agentenv-agentmemory/scripts/validate_agentmemory_data.py
 ```
+
+Load one split explicitly:
+
+```bash
+AGENTMEMORY_SPLIT=dev agentmemory --host 0.0.0.0 --port 8000
+```
+
+The server metadata endpoint then reports only the selected split's task ids.
 
 ## Action format
 

@@ -5,7 +5,14 @@ import re
 from pathlib import Path
 from typing import Iterable
 
-from agentenv_agentmemory.environment import default_smoke_data_path, default_split_dir, load_split_task_ids, load_tasks_from_jsonl
+from agentenv_agentmemory.environment import (
+    default_smoke_data_path,
+    default_split_dir,
+    load_split_task_ids,
+    load_task_dataset,
+    load_tasks_from_jsonl,
+    select_tasks_by_split,
+)
 
 LEAKY_PRODUCT_ID_PATTERN = re.compile(
     r"(\d|large|small|inch|kg|vesa|usb|hdmi|displayport|barrel|tv|laptop|monitor)$|"
@@ -43,6 +50,10 @@ def main() -> None:
         mismatch = [task_id for task_id in ids if task_by_id[task_id].split != split]
         if mismatch:
             raise SystemExit(f"Split {split} has task ids whose record split differs: {mismatch}")
+        selected_tasks = select_tasks_by_split(tasks, split, split_dir=args.split_dir)
+        loaded_tasks = load_task_dataset(data_path=args.data, split=split, split_dir=args.split_dir)
+        if [task.task_id for task in selected_tasks] != [task.task_id for task in loaded_tasks]:
+            raise SystemExit(f"Split {split} loader order mismatch.")
 
     covered = {task_id for ids in split_to_ids.values() for task_id in ids}
     uncovered = sorted(set(task_by_id) - covered)
