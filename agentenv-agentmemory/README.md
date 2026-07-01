@@ -157,7 +157,18 @@ Current verified full mirror on the Jingyan shared disk:
 135 files / 13,517,161,526 bytes; extra/missing/mismatch/part = 0
 ```
 
-Keep the large product DB on the shared disk rather than copying it to the devbox/local development disk.
+Keep the large product DB on the shared disk rather than copying it to the
+devbox/local development disk. For a formal freeze, prefer the helper below: it
+first scans the full product DB by target ASIN to select only relevant catalog
+shards, then calls the converter and validator and writes a manifest.
+
+```bash
+PYTHONPATH=agentenv-agentmemory \
+  python3 agentenv-agentmemory/scripts/freeze_memoryarena_bundled_shopping.py \
+  --input /path/to/bundled_shopping/data.jsonl \
+  --output-dir /path/to/freeze-run \
+  --product-db-root /home/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db
+```
 
 Smoke the converter on the bundled synthetic fixture:
 
