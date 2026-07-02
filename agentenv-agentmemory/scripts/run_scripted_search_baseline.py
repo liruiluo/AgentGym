@@ -36,6 +36,27 @@ COLOR_LABELS = {
     "yellow",
 }
 BROAD_COLOR_TOKENS = {"color", "colors", "colour", "colours", "colorful", "vibrant"}
+POLICY_MODES = (
+    "scripted-search-memory",
+    "search-full-context",
+    "search-no-memory",
+)
+POLICY_BOUNDARIES = {
+    "scripted-search-memory": (
+        "Scripted baseline only: uses visible candidate titles, current instruction text, its own ADD/RETRIEVE "
+        "memory, and public metadata returned by SEARCH. It is not RL training and not memory-improvement evidence."
+    ),
+    "search-full-context": (
+        "Scripted full-context diagnostic: uses visible candidate titles, current instruction text, prior accepted "
+        "purchase notes kept in the runner context, and public metadata returned by SEARCH. It bypasses memory-tool "
+        "decisions, so it is not a learned memory policy or RL evidence."
+    ),
+    "search-no-memory": (
+        "Scripted no-memory diagnostic: uses only current visible candidate titles, current instruction text, and "
+        "public metadata returned by SEARCH. It does not use ADD, RETRIEVE, or prior purchase notes, so compatibility "
+        "failures reflect missing cross-session memory."
+    ),
+}
 
 
 @dataclass
@@ -130,7 +151,10 @@ def phrase_tokens_match(label_tokens: list[str], text_tokens: list[str]) -> bool
     width = len(label_tokens)
     for start in range(0, len(text_tokens) - width + 1):
         window = text_tokens[start : start + width]
-        if all(bool(token_variants([label_token]) & token_variants([text_token])) for label_token, text_token in zip(label_tokens, window)):
+        if all(
+            bool(token_variants([label_token]) & token_variants([text_token]))
+            for label_token, text_token in zip(label_tokens, window)
+        ):
             return True
     return False
 
@@ -398,6 +422,7 @@ def extract_memory_value(memory_text: str, key: str) -> str | None:
     match = re.search(rf"(?:^|[;\s]){re.escape(key)}=([^;]+)", memory_text)
     return match.group(1).strip() if match else None
 
+
 def metric_key(candidate: CandidateView, preference: str) -> tuple[float, float, float, float, str]:
     hit = candidate.search_hit
     rating = hit.average_rating if hit and hit.average_rating is not None else None
@@ -457,7 +482,12 @@ def run_episode(
     include_target_audit: bool = True,
     max_buy_attempts: int = 1,
     compatibility_fallback: str = "none",
+    policy_mode: str = "scripted-search-memory",
 ) -> tuple[EpisodeResult, list[dict[str, Any]]]:
+    if policy_mode not in POLICY_MODES:
+        raise ValueError(f"Unsupported policy_mode={policy_mode!r}; expected one of {POLICY_MODES}.")
+    use_env_memory_tools = policy_mode == "scripted-search-memory"
+    use_context_memory = policy_mode in {"scripted-search-memory", "search-full-context"}
     observation, info = env.reset(data_idx=data_idx)
     task_id = info["task_id"]
     split = info["split"]
@@ -472,7 +502,7 @@ def run_episode(
     while not env.done and env.current_subtask_index < len(env.require_task().subtasks):
         subtask_index = env.current_subtask_index
         subtask = env.current_subtask()
-        if memory_texts:
+        if use_env_memory_tools and memory_texts:
             query = memory_texts[-1][:240]
             act = action("RETRIEVE", query=query, top_k=3)
             observation, reward, done, _, info = env.step(act)
@@ -492,8 +522,8 @@ def run_episode(
 
         preference = parse_preference(subtask.instruction, subtask_index)
         compatibility, avoid = parse_compatibility(subtask.instruction)
-        memory_text = "\n".join(memory_texts)
-        compatibility_memory_text = memory_texts[-1] if memory_texts else ""
+        memory_text = "\n".join(memory_texts) if use_context_memory else ""
+        compatibility_memory_text = memory_texts[-1] if use_context_memory and memory_texts else ""
         explicit_candidates = filter_explicit_attribute_compatibility(candidates, memory_text)
         active_keys, allowed_values, compatible_candidates = infer_allowed_values(
             compatibility,
@@ -562,8 +592,9 @@ def run_episode(
             break
 
         memory_value = format_memory_value(subtask_index, chosen)
-        memory_texts.append(memory_value)
-        if not done:
+        if use_context_memory:
+            memory_texts.append(memory_value)
+        if use_env_memory_tools and not done:
             add_act = action("ADD", key=f"selected_step_{subtask_index + 1}", value=memory_value)
             observation, reward, done, _, info = env.step(add_act)
             reward_sum += reward
@@ -647,7 +678,7 @@ def summarize(results: list[EpisodeResult], *, args: argparse.Namespace, started
     total_steps = sum(item.env_steps for item in results)
     return {
         "marker": "AGENTMEMORY_SCRIPTED_SEARCH_BASELINE_OK",
-        "policy": "scripted_search_heuristic_memory_manager_v0",
+        "policy": args.policy_mode,
         "compatibility_fallback": args.compatibility_fallback,
         "data_path": args.data,
         "split": args.split,
@@ -678,10 +709,7 @@ def summarize(results: list[EpisodeResult], *, args: argparse.Namespace, started
             }
             for item in results
         ],
-        "boundary": (
-            "Scripted baseline only: uses visible candidate titles, current instruction text, its own ADD/RETRIEVE "
-            "memory, and public metadata returned by SEARCH. It is not RL training and not memory-improvement evidence."
-        ),
+        "boundary": POLICY_BOUNDARIES[args.policy_mode],
     }
 
 
@@ -694,6 +722,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--task-id", action="append", help="Run only matching task_id values. Repeatable.")
+    parser.add_argument(
+        "--policy-mode",
+        choices=POLICY_MODES,
+        default="scripted-search-memory",
+        help=(
+            "Which scripted diagnostic baseline to run. 'scripted-search-memory' is the default heuristic "
+            "memory-manager baseline with ADD/RETRIEVE. 'search-full-context' keeps prior accepted purchase "
+            "notes in runner context without memory-tool actions. 'search-no-memory' ignores prior purchase notes."
+        ),
+    )
     parser.add_argument("--max-buy-attempts", type=int, default=1, help="Try up to this many ranked candidate BUY actions before ending the episode.")
     parser.add_argument(
         "--compatibility-fallback",
@@ -733,6 +771,7 @@ def main() -> None:
             include_target_audit=args.include_target_audit,
             max_buy_attempts=args.max_buy_attempts,
             compatibility_fallback=args.compatibility_fallback,
+            policy_mode=args.policy_mode,
         )
         results.append(result)
         action_rows.extend(actions)
