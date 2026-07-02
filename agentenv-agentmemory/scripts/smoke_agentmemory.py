@@ -120,6 +120,19 @@ def assert_memory_tool_contract() -> None:
     assert "Action: ADD" not in observation, observation
 
 
+def assert_bm25_retrieve() -> None:
+    env = AgentMemoryEnv()
+    env.reset(data_idx=0)
+    env.step(
+        'ADD {"key": "tv_profile", "value": "Purchased TV: 75 inches, 32kg, VESA 400x400 mounting pattern."}'
+    )
+    env.step('ADD {"key": "laptop_profile", "value": "Purchased laptop: 14 inches with usb-c port."}')
+    _, _, _, _, info = env.step('RETRIEVE {"query": "vesa tv mount", "top_k": 1}')
+    assert info["memory_ops"][0]["op"] == "RETRIEVE", info
+    assert len(env.short_term_context) == 1, env.short_term_context
+    assert "tv_profile: Purchased TV: 75 inches, 32kg, VESA 400x400 mounting pattern." in env.short_term_context[0]
+
+
 def assert_wrong_purchase(data_idx: int, actions: list[str]) -> None:
     env = AgentMemoryEnv()
     env.reset(data_idx=data_idx)
@@ -178,7 +191,9 @@ def main() -> None:
     )
     assert_session_trace_boundary()
     assert_memory_tool_contract()
+    assert_bm25_retrieve()
     print("AGENTMEMORY_DIRECT_SMOKE_OK", tv_info["task_id"], laptop_info["task_id"], monitor_info["task_id"])
+    print("AGENTMEMORY_BM25_RETRIEVE_SMOKE_OK")
 
 
 if __name__ == "__main__":
