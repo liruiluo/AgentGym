@@ -264,9 +264,22 @@ class AgentMemoryEnv:
     def action_summary(self, payload: dict[str, Any]):
         max_chars = clamp_int(payload.get("max_chars", 500), min_value=80, max_value=2000)
         span = str(payload.get("span", "session")).lower()
+        source_ids = optional_str_list(payload, "source_ids")
+        if source_ids is not None:
+            validate_context_ids(
+                source_ids,
+                active_count=len(self.short_term_context),
+                session_count=len(self.session_trace),
+                scope="all",
+            )
         if "text" in payload:
             text = require_str(payload, "text")
             summary_source = "policy_text"
+        elif source_ids is not None:
+            if not source_ids:
+                raise InvalidAction("SUMMARY source_ids must not be empty.")
+            text = "\n".join(context_items_by_ids(source_ids, self.short_term_context, self.session_trace))
+            summary_source = "source_ids"
         else:
             if span not in {"session", "active", "all"}:
                 raise InvalidAction("SUMMARY span must be one of: session, active, all.")
@@ -284,28 +297,82 @@ class AgentMemoryEnv:
         if not summary:
             raise InvalidAction("SUMMARY text/context must be non-empty.")
         self.short_term_context = [f"Summary ({summary_source}): {summary}"]
-        tool_op = {"op": "SUMMARY", "source": summary_source, "span": span, "step": self.step_count}
+        tool_op = {
+            "op": "SUMMARY",
+            "source": summary_source,
+            "span": span,
+            "source_ids": source_ids or [],
+            "step": self.step_count,
+        }
         return self.render_observation("Active retrieved/summary context replaced by summary."), -0.01, False, empty_memory_diff(), [], tool_op
 
     def action_filter(self, payload: dict[str, Any]):
-        query = require_str(payload, "query")
         scope = str(payload.get("scope", "active")).lower()
         if scope not in {"active", "session", "all"}:
             raise InvalidAction("FILTER scope must be one of: active, session, all.")
-        query_tokens = tokenize(query)
-        if not query_tokens:
-            raise InvalidAction("FILTER query must contain at least one alphanumeric token.")
 
+        keep_ids = optional_str_list(payload, "keep_ids")
+        drop_ids = optional_str_list(payload, "drop_ids")
+        has_query = "query" in payload
+        mode_count = sum(item is not None for item in [keep_ids, drop_ids]) + int(has_query)
+        if mode_count != 1:
+            raise InvalidAction("FILTER expects exactly one of: keep_ids, drop_ids, query.")
+
+        query = None
         removed = 0
-        if scope in {"active", "all"}:
-            kept, removed_active = filter_items_by_tokens(self.short_term_context, query_tokens)
-            self.short_term_context = kept
-            removed += removed_active
-        if scope in {"session", "all"}:
-            kept, removed_session = filter_items_by_tokens(self.session_trace, query_tokens)
-            self.session_trace = kept
-            removed += removed_session
-        tool_op = {"op": "FILTER", "query": query, "scope": scope, "removed": removed, "step": self.step_count}
+        if keep_ids is not None or drop_ids is not None:
+            ids = keep_ids if keep_ids is not None else drop_ids
+            if ids is None:
+                raise InvalidAction("FILTER keep_ids/drop_ids are missing.")
+            if not ids:
+                raise InvalidAction("FILTER keep_ids/drop_ids must not be empty.")
+            validate_context_ids(
+                ids,
+                active_count=len(self.short_term_context),
+                session_count=len(self.session_trace),
+                scope=scope,
+            )
+            keep_mode = keep_ids is not None
+            if scope in {"active", "all"}:
+                kept, removed_active = filter_items_by_ids(
+                    self.short_term_context,
+                    prefix="C",
+                    selected_ids=set(ids),
+                    keep_mode=keep_mode,
+                )
+                self.short_term_context = kept
+                removed += removed_active
+            if scope in {"session", "all"}:
+                kept, removed_session = filter_items_by_ids(
+                    self.session_trace,
+                    prefix="S",
+                    selected_ids=set(ids),
+                    keep_mode=keep_mode,
+                )
+                self.session_trace = kept
+                removed += removed_session
+        else:
+            query = require_str(payload, "query")
+            query_tokens = tokenize(query)
+            if not query_tokens:
+                raise InvalidAction("FILTER query must contain at least one alphanumeric token.")
+            if scope in {"active", "all"}:
+                kept, removed_active = filter_items_by_tokens(self.short_term_context, query_tokens)
+                self.short_term_context = kept
+                removed += removed_active
+            if scope in {"session", "all"}:
+                kept, removed_session = filter_items_by_tokens(self.session_trace, query_tokens)
+                self.session_trace = kept
+                removed += removed_session
+        tool_op = {
+            "op": "FILTER",
+            "query": query,
+            "keep_ids": keep_ids or [],
+            "drop_ids": drop_ids or [],
+            "scope": scope,
+            "removed": removed,
+            "step": self.step_count,
+        }
         return self.render_observation(f"Filtered {removed} context items from {scope} scope."), -0.01, False, empty_memory_diff(), [], tool_op
 
     def action_search(self, payload: dict[str, Any]):
@@ -485,12 +552,12 @@ class AgentMemoryEnv:
             lines.extend(product.render() for product in subtask.candidate_products)
         if self.session_trace:
             lines.extend(["", "Current session short-term history:"])
-            lines.extend(f"- {indent_trace_item(item)}" for item in self.session_trace)
+            lines.extend(f"- S{index}: {indent_trace_item(item)}" for index, item in enumerate(self.session_trace))
         else:
             lines.extend(["", "Current session short-term history: <empty>"])
         if self.short_term_context:
             lines.extend(["", "Active retrieved/summary context:"])
-            lines.extend(f"- {item}" for item in self.short_term_context)
+            lines.extend(f"- C{index}: {item}" for index, item in enumerate(self.short_term_context))
         else:
             lines.extend(["", "Active retrieved/summary context: <empty>"])
         lines.extend(
@@ -501,8 +568,10 @@ class AgentMemoryEnv:
                 'UPDATE {"memory_id": "mem_0000", "value": "..."}',
                 'DELETE {"memory_id": "mem_0000"}',
                 'RETRIEVE {"query": "...", "top_k": 3}',
+                'SUMMARY {"text": "...", "source_ids": ["S0", "C0"]}',
                 'SUMMARY {"span": "session", "max_chars": 500}',
-                'SUMMARY {"text": "..."}',
+                'FILTER {"keep_ids": ["C0"], "scope": "active"}',
+                'FILTER {"drop_ids": ["S0"], "scope": "session"}',
                 'FILTER {"query": "...", "scope": "active"}',
                 'SEARCH {"query": "...", "top_k": 3}',
                 'BUY {"product_id": "..."}',
@@ -787,6 +856,74 @@ def require_str(payload: dict[str, Any], key: str) -> str:
     if not isinstance(value, str):
         raise InvalidAction(f"Field '{key}' must be a string.")
     return value
+
+
+def optional_str_list(payload: dict[str, Any], key: str) -> list[str] | None:
+    if key not in payload:
+        return None
+    value = payload[key]
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise InvalidAction(f"Field '{key}' must be a list of strings.")
+    return value
+
+
+def validate_context_ids(
+    context_ids: list[str],
+    *,
+    active_count: int,
+    session_count: int,
+    scope: str,
+) -> None:
+    allowed_prefixes = {
+        "active": {"C"},
+        "session": {"S"},
+        "all": {"C", "S"},
+    }[scope]
+    for context_id in context_ids:
+        match = re.fullmatch(r"([CS])(\d+)", context_id)
+        if match is None:
+            raise InvalidAction(f"Unknown context id '{context_id}'. Expected S0/S1 or C0/C1.")
+        prefix, raw_index = match.groups()
+        if prefix not in allowed_prefixes:
+            raise InvalidAction(f"Context id '{context_id}' is outside context scope '{scope}'.")
+        index = int(raw_index)
+        count = active_count if prefix == "C" else session_count
+        if index >= count:
+            raise InvalidAction(f"Context id '{context_id}' is not visible in the current observation.")
+
+
+def context_items_by_ids(
+    context_ids: list[str],
+    active_items: list[str],
+    session_items: list[str],
+) -> list[str]:
+    items: list[str] = []
+    for context_id in context_ids:
+        prefix = context_id[0]
+        index = int(context_id[1:])
+        source = active_items if prefix == "C" else session_items
+        items.append(f"{context_id}: {source[index]}")
+    return items
+
+
+def filter_items_by_ids(
+    items: list[str],
+    *,
+    prefix: str,
+    selected_ids: set[str],
+    keep_mode: bool,
+) -> tuple[list[str], int]:
+    kept: list[str] = []
+    removed = 0
+    for index, item in enumerate(items):
+        context_id = f"{prefix}{index}"
+        selected = context_id in selected_ids
+        should_keep = selected if keep_mode else not selected
+        if should_keep:
+            kept.append(item)
+        else:
+            removed += 1
+    return kept, removed
 
 
 def empty_memory_diff() -> dict[str, list[dict[str, Any]]]:

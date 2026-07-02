@@ -73,18 +73,31 @@ def assert_memory_tool_contract() -> None:
     observation, _, _, _, info = env.step('RETRIEVE {"query": "updated tv vesa", "top_k": 1}')
     assert info["memory_ops"][0]["op"] == "RETRIEVE", info
     assert "Updated TV memory" in observation, observation
+    assert "C0: [mem_" in observation, observation
 
-    observation, _, _, _, info = env.step('SUMMARY {"span": "all", "max_chars": 160}')
+    observation, _, _, _, info = env.step(
+        'SUMMARY {"text": "The selected TV is 75-inch, 32kg, VESA 400x400.", "source_ids": ["S0", "C0"]}'
+    )
     assert info["memory_ops"][0]["op"] == "SUMMARY", info
+    assert info["memory_ops"][0]["source"] == "policy_text", info
+    assert info["memory_ops"][0]["source_ids"] == ["S0", "C0"], info
     assert "Summary (" in observation, observation
     assert "Active retrieved/summary context:" in observation, observation
+    assert "C0: Summary (policy_text)" in observation, observation
 
-    observation, _, _, _, info = env.step('FILTER {"query": "Action", "scope": "active"}')
+    observation, _, _, _, info = env.step('FILTER {"keep_ids": ["C0"], "scope": "active"}')
     assert info["memory_ops"][0]["op"] == "FILTER", info
+    assert info["memory_ops"][0]["keep_ids"] == ["C0"], info
     assert "Summary (" in observation, observation
 
-    observation, _, _, _, info = env.step('FILTER {"query": "no_matching_token", "scope": "active"}')
+    observation, reward, _, _, info = env.step('FILTER {"keep_ids": ["C999"], "scope": "active"}')
+    assert reward < 0, info
+    assert info["memory_ops"] == [], info
+    assert "Invalid action" in observation, observation
+
+    observation, _, _, _, info = env.step('FILTER {"drop_ids": ["C0"], "scope": "active"}')
     assert info["memory_ops"][0]["op"] == "FILTER", info
+    assert info["memory_ops"][0]["drop_ids"] == ["C0"], info
     assert "Active retrieved/summary context: <empty>" in observation, observation
 
     observation, _, _, _, info = env.step(f'DELETE {{"memory_id": "{memory_id}"}}')
@@ -98,11 +111,11 @@ def assert_memory_tool_contract() -> None:
     env = AgentMemoryEnv()
     env.reset(data_idx=0)
     env.step('ADD {"key": "tv_profile", "value": "Purchased TV: 75 inches."}')
-    observation, _, _, _, info = env.step('FILTER {"query": "ADD", "scope": "session"}')
+    observation, _, _, _, info = env.step('FILTER {"keep_ids": ["S0"], "scope": "session"}')
     assert info["memory_ops"][0]["op"] == "FILTER", info
     assert info["memory_ops"][0]["scope"] == "session", info
     assert "Action: ADD" in observation, observation
-    observation, _, _, _, info = env.step('FILTER {"query": "no_matching_token", "scope": "session"}')
+    observation, _, _, _, info = env.step('FILTER {"drop_ids": ["S0"], "scope": "session"}')
     assert info["memory_ops"][0]["removed"] >= 1, info
     assert "Action: ADD" not in observation, observation
 

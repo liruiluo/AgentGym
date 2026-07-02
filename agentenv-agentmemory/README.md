@@ -94,6 +94,22 @@ Observation memory sections:
 - `Current session short-term history`: automatic current-session action/tool-result trace. It clears when a successful `BUY` advances to a new shopping session.
 - `Active retrieved/summary context`: explicit context produced by `RETRIEVE`, `SUMMARY`, and `FILTER`. Long-term memory remains hidden until retrieved.
 
+Visible context items are rendered with stable IDs inside the current
+observation: `S0`, `S1`, ... for current-session STM trace entries and `C0`,
+`C1`, ... for active retrieved/summary context. The clean RL path for
+context-control tools is policy-authored:
+
+- `SUMMARY {"text": "...", "source_ids": ["S0", "C0"]}` lets the current
+  policy model write the summary tokens; the environment only validates optional
+  visible source IDs and replaces active context with that summary.
+- `FILTER {"keep_ids": ["C0"], "scope": "active"}` or
+  `FILTER {"drop_ids": ["S0"], "scope": "session"}` lets the policy choose
+  exactly which visible context IDs to keep/drop.
+
+Deterministic scaffolds remain available for smoke tests and baselines:
+`SUMMARY {"span": "session"}` and `FILTER {"query": "...", "scope": "active"}`.
+They do not call an external LLM or hidden judge.
+
 `SEARCH` is a product-catalog tool, not a memory tool: it appears in
 `info["tool_ops"]` but not in `info["memory_ops"]`.
 
