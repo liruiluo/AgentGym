@@ -318,7 +318,8 @@ def run_catalog_search_smoke(temp_root: Path) -> None:
     assert "Product search results" in observation, observation
     assert "Beta chocolate cake mix 18 oz" in observation, observation
     assert "price_usd=8.99" in observation, observation
-    assert info["memory_ops"][0]["op"] == "SEARCH", info
+    assert info["tool_ops"][0]["op"] == "SEARCH", info
+    assert info["memory_ops"] == [], info
 
 
 if __name__ == "__main__":

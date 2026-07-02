@@ -12,11 +12,12 @@ Current scope:
 - Exposes LTM tools: `ADD`, `UPDATE`, `DELETE`.
 - Exposes STM tools: `RETRIEVE`, `SUMMARY`, `FILTER`.
 - Exposes task actions: `BUY`, `ANSWER`, and optional product-catalog `SEARCH` when `AGENTMEMORY_CATALOG_INDEX_PATH` is configured.
-- Records `memory_state_diff`, `progress_score`, `compatibility_violations`, `memory_ops`, and hidden purchase history in `info`.
+- Automatically renders current-session STM as an action/tool-result trace and clears it when a successful `BUY` starts the next shopping session.
+- Records `memory_state_diff`, `progress_score`, `compatibility_violations`, `tool_ops`, memory-only `memory_ops`, `session_trace`, and hidden purchase history in `info`.
 
-This is still a skeleton/smoke environment. It now includes a MemoryArena bundled-shopping converter, catalog / ASIN resolver, strict candidate-metadata enrichment, product-catalog `SEARCH`, a scripted SEARCH baseline, and a failure-audit helper. Formal target freeze exists (`120/15/15`, `asin_catalog=900`, `ambiguous=0`), Qwen3-4B single-GPU smoke has run, and scripted SEARCH diagnostics show dev no-retry `6/15`, retry5 semantic matcher fixed `13/15`, and soft-fallback verifier `15/15`. These are interface/solvability diagnostics only and still do **not** claim RL improvement.
+This is still a skeleton/smoke environment. It now includes a MemoryArena bundled-shopping converter, catalog / ASIN resolver, strict candidate-metadata enrichment, product-catalog `SEARCH`, a scripted SEARCH baseline, and a failure-audit helper. Formal target freeze exists (`120/15/15`, `asin_catalog=900`, `ambiguous=0`), Qwen3-4B single-GPU smoke has run, and scripted SEARCH diagnostics now include memory ablations: no-memory `0/15`, full-context `6/15`, memory-tool strict no-retry `6/15`, retry5 semantic matcher fixed `13/15`, and soft-fallback verifier `15/15`. These are interface/solvability diagnostics only and still do **not** claim RL improvement.
 
-The current AgentGym-RL vLLM rollout now has a fail-fast guard for `task_name=agentmemory`: formal rollout is blocked unless raw-history leakage is explicitly allowed for a diagnostic smoke run.
+The current AgentGym-RL vLLM rollout now has a fail-fast guard for `task_name=agentmemory`: formal rollout is blocked unless raw-history leakage is explicitly allowed for a diagnostic smoke run. In the normal path, `latest-observation` means the current environment observation, including current-session STM if the environment renders it; it does not mean previous-session raw history is preserved.
 
 ## Data schema
 
@@ -87,6 +88,14 @@ RETRIEVE {"query": "tv size", "top_k": 2}
 Action:
 BUY {"product_id": "mount_b"}
 ```
+
+Observation memory sections:
+
+- `Current session short-term history`: automatic current-session action/tool-result trace. It clears when a successful `BUY` advances to a new shopping session.
+- `Active retrieved/summary context`: explicit context produced by `RETRIEVE`, `SUMMARY`, and `FILTER`. Long-term memory remains hidden until retrieved.
+
+`SEARCH` is a product-catalog tool, not a memory tool: it appears in
+`info["tool_ops"]` but not in `info["memory_ops"]`.
 
 ## Direct smoke
 
@@ -234,6 +243,26 @@ use target ids for action selection. Use `--compatibility-fallback
 ranked-all-after-compatible` only as an explicit verifier-feedback diagnostic:
 it tries strict compatibility matches first and then other visible candidates
 ranked by the same public SEARCH metadata.
+
+The runner also supports policy-surface diagnostics:
+
+```bash
+--policy-mode scripted-search-memory  # default; uses ADD/RETRIEVE memory tools
+--policy-mode search-full-context     # keeps prior accepted purchases in runner context, no memory tools
+--policy-mode search-no-memory        # ignores prior purchases and uses no memory tools
+```
+
+Current semanticfix5 dev diagnostics:
+
+```text
+search-no-memory:        0/15, mean_progress=0.1889, add/retrieve=0/0
+search-full-context:     6/15, mean_progress=0.5778, add/retrieve=0/0
+scripted-search-memory:  6/15 strict no-retry; 13/15 retry5; 15/15 soft-fallback verifier diagnostic
+```
+
+Only `scripted-search-memory` exercises the explicit memory tool surface. The
+full-context mode is a diagnostic upper/lower-bound comparison, not a learned
+memory policy.
 
 Analyze failed steps with:
 

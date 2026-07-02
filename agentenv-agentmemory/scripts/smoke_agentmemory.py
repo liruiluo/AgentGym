@@ -21,13 +21,90 @@ def run_plan(data_idx: int, actions: list[str]) -> dict:
         "source",
         "difficulty",
         "memory_dependency",
+        "tool_ops",
         "memory_ops",
         "memory_state_diff",
         "compatibility_violations",
         "purchase_history",
+        "session_trace",
     ]:
         assert key in info, f"missing info key {key}: {info}"
     return info
+
+
+def assert_session_trace_boundary() -> None:
+    env = AgentMemoryEnv()
+    observation, info = env.reset(data_idx=0)
+    assert info["session_trace"] == [], info
+    assert "Current session short-term history: <empty>" in observation, observation
+
+    observation, _, done, _, info = env.step(
+        'ADD {"key": "tv_profile", "value": "Purchased TV: 75 inches, 32kg, VESA 400x400."}'
+    )
+    assert not done, info
+    assert info["session_trace"], info
+    assert "Action: ADD" in observation, observation
+    assert "Active retrieved/summary context: <empty>" in observation, observation
+
+    observation, _, done, _, info = env.step('BUY {"product_id": "tv_b"}')
+    assert not done, info
+    assert info["session_trace"] == [], info
+    assert "Current session short-term history: <empty>" in observation, observation
+
+
+def assert_memory_tool_contract() -> None:
+    env = AgentMemoryEnv()
+    observation, _ = env.reset(data_idx=0)
+
+    observation, _, _, _, info = env.step(
+        'ADD {"key": "tv_profile", "value": "Purchased TV: 75 inches, 32kg, VESA 400x400."}'
+    )
+    assert info["tool_ops"][0]["op"] == "ADD", info
+    assert info["memory_ops"][0]["op"] == "ADD", info
+    memory_id = info["memory_state_diff"]["added"][0]["memory_id"]
+
+    observation, _, _, _, info = env.step(
+        f'UPDATE {{"memory_id": "{memory_id}", "value": "Updated TV memory: 75-inch TV, 32kg, VESA 400x400."}}'
+    )
+    assert info["memory_ops"][0]["op"] == "UPDATE", info
+    assert info["memory_state_diff"]["updated"][0]["before"]["value"].startswith("Purchased TV"), info
+    assert info["memory_state_diff"]["updated"][0]["after"]["value"].startswith("Updated TV"), info
+
+    observation, _, _, _, info = env.step('RETRIEVE {"query": "updated tv vesa", "top_k": 1}')
+    assert info["memory_ops"][0]["op"] == "RETRIEVE", info
+    assert "Updated TV memory" in observation, observation
+
+    observation, _, _, _, info = env.step('SUMMARY {"span": "all", "max_chars": 160}')
+    assert info["memory_ops"][0]["op"] == "SUMMARY", info
+    assert "Summary (" in observation, observation
+    assert "Active retrieved/summary context:" in observation, observation
+
+    observation, _, _, _, info = env.step('FILTER {"query": "Action", "scope": "active"}')
+    assert info["memory_ops"][0]["op"] == "FILTER", info
+    assert "Summary (" in observation, observation
+
+    observation, _, _, _, info = env.step('FILTER {"query": "no_matching_token", "scope": "active"}')
+    assert info["memory_ops"][0]["op"] == "FILTER", info
+    assert "Active retrieved/summary context: <empty>" in observation, observation
+
+    observation, _, _, _, info = env.step(f'DELETE {{"memory_id": "{memory_id}"}}')
+    assert info["memory_ops"][0]["op"] == "DELETE", info
+    assert info["memory_state_diff"]["deleted"][0]["memory_id"] == memory_id, info
+
+    observation, _, _, _, info = env.step('RETRIEVE {"query": "updated tv vesa", "top_k": 1}')
+    assert info["memory_ops"][0]["op"] == "RETRIEVE", info
+    assert "No relevant memory retrieved." in observation, observation
+
+    env = AgentMemoryEnv()
+    env.reset(data_idx=0)
+    env.step('ADD {"key": "tv_profile", "value": "Purchased TV: 75 inches."}')
+    observation, _, _, _, info = env.step('FILTER {"query": "ADD", "scope": "session"}')
+    assert info["memory_ops"][0]["op"] == "FILTER", info
+    assert info["memory_ops"][0]["scope"] == "session", info
+    assert "Action: ADD" in observation, observation
+    observation, _, _, _, info = env.step('FILTER {"query": "no_matching_token", "scope": "session"}')
+    assert info["memory_ops"][0]["removed"] >= 1, info
+    assert "Action: ADD" not in observation, observation
 
 
 def assert_wrong_purchase(data_idx: int, actions: list[str]) -> None:
@@ -86,6 +163,8 @@ def main() -> None:
         2,
         ['BUY {"product_id": "monitor_b"}', 'BUY {"product_id": "arm_a"}'],
     )
+    assert_session_trace_boundary()
+    assert_memory_tool_contract()
     print("AGENTMEMORY_DIRECT_SMOKE_OK", tv_info["task_id"], laptop_info["task_id"], monitor_info["task_id"])
 
 

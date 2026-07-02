@@ -10,6 +10,9 @@ from typing import Any
 from .catalog_search import search_sqlite_catalog
 
 
+MEMORY_TOOL_OPS = {"ADD", "UPDATE", "DELETE", "RETRIEVE", "SUMMARY", "FILTER"}
+
+
 @dataclass(frozen=True)
 class Product:
     product_id: str
@@ -62,11 +65,13 @@ class StepInfo:
     memory_dependency: str = "cross_session_product_attribute"
     progress_score: float = 0.0
     episode_success: bool = False
+    tool_ops: list[dict[str, Any]] = field(default_factory=list)
     memory_ops: list[dict[str, Any]] = field(default_factory=list)
     memory_state_diff: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     compatibility_violations: list[dict[str, Any]] = field(default_factory=list)
     purchase_history: list[dict[str, Any]] = field(default_factory=list)
     current_subtask_index: int = 0
+    session_trace: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -78,11 +83,13 @@ class StepInfo:
             "memory_dependency": self.memory_dependency,
             "progress_score": self.progress_score,
             "episode_success": self.episode_success,
+            "tool_ops": self.tool_ops,
             "memory_ops": self.memory_ops,
             "memory_state_diff": self.memory_state_diff,
             "compatibility_violations": self.compatibility_violations,
             "purchase_history": self.purchase_history,
             "current_subtask_index": self.current_subtask_index,
+            "session_trace": self.session_trace,
         }
 
 
@@ -94,7 +101,9 @@ class AgentMemoryEnv:
     """Minimal memory-dependent bundled shopping environment.
 
     The environment keeps long-term memory hidden unless the policy explicitly
-    calls RETRIEVE. Current v0 tasks are small handcrafted smoke items; they are
+    calls RETRIEVE. It also exposes an automatic current-session trace as STM
+    and clears that trace when a successful BUY advances to the next shopping
+    session. Current v0 tasks are small handcrafted smoke items; they are
     placeholders for converted MemoryArena/WebShop-style data.
     """
 
@@ -118,6 +127,7 @@ class AgentMemoryEnv:
         self.current_subtask_index = 0
         self.long_term_memory: dict[str, MemoryEntry] = {}
         self.short_term_context: list[str] = []
+        self.session_trace: list[str] = []
         self.purchase_history: list[dict[str, Any]] = []
         self.bundle_state: dict[str, Any] = {}
         self.memory_id_counter = 0
@@ -132,6 +142,7 @@ class AgentMemoryEnv:
         self.current_subtask_index = 0
         self.long_term_memory = {}
         self.short_term_context = []
+        self.session_trace = []
         self.purchase_history = []
         self.bundle_state = {}
         self.memory_id_counter = 0
@@ -144,23 +155,30 @@ class AgentMemoryEnv:
             return self.render_observation("Episode is already done."), 0.0, True, False, self.last_info.as_dict()
 
         self.step_count += 1
+        old_subtask_index = self.current_subtask_index
+        action_text = action.strip() if isinstance(action, str) else repr(action)
         try:
             op, payload = self.parse_action(action)
-            observation, reward, done, memory_diff, violations, memory_op = self.dispatch_action(op, payload)
+            observation, reward, done, memory_diff, violations, tool_op = self.dispatch_action(op, payload)
         except InvalidAction as exc:
             observation = self.render_observation(f"Invalid action: {exc}")
             reward = -0.1
             done = False
             memory_diff = empty_memory_diff()
             violations = []
-            memory_op = None
+            tool_op = None
+
+        if self.current_subtask_index == old_subtask_index and not done:
+            result_text = extract_last_tool_result(observation)
+            self.session_trace.append(render_session_trace_entry(self.step_count, action_text, result_text))
+            observation = self.render_observation(result_text)
 
         self.done = done
-        memory_ops = [memory_op] if memory_op is not None else []
+        tool_ops = [tool_op] if tool_op is not None else []
         self.last_info = self.build_info(
             memory_state_diff=memory_diff,
             compatibility_violations=violations,
-            memory_ops=memory_ops,
+            tool_ops=tool_ops,
         )
         return observation, reward, done, False, self.last_info.as_dict()
 
@@ -244,22 +262,51 @@ class AgentMemoryEnv:
         return self.render_observation(message), -0.01, False, empty_memory_diff(), [], memory_op
 
     def action_summary(self, payload: dict[str, Any]):
-        text = require_str(payload, "text")
-        summary = text.strip()
+        max_chars = clamp_int(payload.get("max_chars", 500), min_value=80, max_value=2000)
+        span = str(payload.get("span", "session")).lower()
+        if "text" in payload:
+            text = require_str(payload, "text")
+            summary_source = "policy_text"
+        else:
+            if span not in {"session", "active", "all"}:
+                raise InvalidAction("SUMMARY span must be one of: session, active, all.")
+            source_items: list[str] = []
+            if span in {"session", "all"}:
+                source_items.extend(self.session_trace)
+            if span in {"active", "all"}:
+                source_items.extend(self.short_term_context)
+            if not source_items:
+                raise InvalidAction("SUMMARY needs text or non-empty selected context.")
+            text = "\n".join(source_items)
+            summary_source = span
+
+        summary = compact_context_text(text, max_chars=max_chars)
         if not summary:
-            raise InvalidAction("SUMMARY text must be non-empty.")
-        self.short_term_context = [f"Summary: {summary[:500]}"]
-        memory_op = {"op": "SUMMARY", "step": self.step_count}
-        return self.render_observation("Short-term context replaced by summary."), -0.01, False, empty_memory_diff(), [], memory_op
+            raise InvalidAction("SUMMARY text/context must be non-empty.")
+        self.short_term_context = [f"Summary ({summary_source}): {summary}"]
+        tool_op = {"op": "SUMMARY", "source": summary_source, "span": span, "step": self.step_count}
+        return self.render_observation("Active retrieved/summary context replaced by summary."), -0.01, False, empty_memory_diff(), [], tool_op
 
     def action_filter(self, payload: dict[str, Any]):
         query = require_str(payload, "query")
+        scope = str(payload.get("scope", "active")).lower()
+        if scope not in {"active", "session", "all"}:
+            raise InvalidAction("FILTER scope must be one of: active, session, all.")
         query_tokens = tokenize(query)
-        self.short_term_context = [
-            item for item in self.short_term_context if tokenize(item) & query_tokens
-        ]
-        memory_op = {"op": "FILTER", "query": query, "step": self.step_count}
-        return self.render_observation("Filtered active short-term context."), -0.01, False, empty_memory_diff(), [], memory_op
+        if not query_tokens:
+            raise InvalidAction("FILTER query must contain at least one alphanumeric token.")
+
+        removed = 0
+        if scope in {"active", "all"}:
+            kept, removed_active = filter_items_by_tokens(self.short_term_context, query_tokens)
+            self.short_term_context = kept
+            removed += removed_active
+        if scope in {"session", "all"}:
+            kept, removed_session = filter_items_by_tokens(self.session_trace, query_tokens)
+            self.session_trace = kept
+            removed += removed_session
+        tool_op = {"op": "FILTER", "query": query, "scope": scope, "removed": removed, "step": self.step_count}
+        return self.render_observation(f"Filtered {removed} context items from {scope} scope."), -0.01, False, empty_memory_diff(), [], tool_op
 
     def action_search(self, payload: dict[str, Any]):
         if self.catalog_index_path is None:
@@ -271,8 +318,8 @@ class AgentMemoryEnv:
             message = "Product search results:\n" + "\n".join(result.render() for result in results)
         else:
             message = "Product search returned no results."
-        memory_op = {"op": "SEARCH", "query": query, "top_k": top_k, "step": self.step_count}
-        return self.render_observation(message), -0.01, False, empty_memory_diff(), [], memory_op
+        tool_op = {"op": "SEARCH", "tool_family": "catalog", "query": query, "top_k": top_k, "step": self.step_count}
+        return self.render_observation(message), -0.01, False, empty_memory_diff(), [], tool_op
 
     def action_buy(self, payload: dict[str, Any]):
         product_id = require_str(payload, "product_id")
@@ -293,6 +340,7 @@ class AgentMemoryEnv:
         progress_reward = 1.0
         final_bonus = 1.0 if done else 0.0
         self.short_term_context = []
+        self.session_trace = []
         if done:
             message = "All bundled shopping subtasks are complete and compatible."
         else:
@@ -435,11 +483,16 @@ class AgentMemoryEnv:
                 ]
             )
             lines.extend(product.render() for product in subtask.candidate_products)
+        if self.session_trace:
+            lines.extend(["", "Current session short-term history:"])
+            lines.extend(f"- {indent_trace_item(item)}" for item in self.session_trace)
+        else:
+            lines.extend(["", "Current session short-term history: <empty>"])
         if self.short_term_context:
-            lines.extend(["", "Active short-term memory/context:"])
+            lines.extend(["", "Active retrieved/summary context:"])
             lines.extend(f"- {item}" for item in self.short_term_context)
         else:
-            lines.extend(["", "Active short-term memory/context: <empty>"])
+            lines.extend(["", "Active retrieved/summary context: <empty>"])
         lines.extend(
             [
                 "",
@@ -448,11 +501,13 @@ class AgentMemoryEnv:
                 'UPDATE {"memory_id": "mem_0000", "value": "..."}',
                 'DELETE {"memory_id": "mem_0000"}',
                 'RETRIEVE {"query": "...", "top_k": 3}',
+                'SUMMARY {"span": "session", "max_chars": 500}',
                 'SUMMARY {"text": "..."}',
-                'FILTER {"query": "..."}',
+                'FILTER {"query": "...", "scope": "active"}',
                 'SEARCH {"query": "...", "top_k": 3}',
                 'BUY {"product_id": "..."}',
                 'ANSWER {"text": "..."}',
+                "Current session short-term history is automatic and clears when a new shopping session starts.",
                 "Long-term memory is hidden until RETRIEVE brings entries into active context.",
             ]
         )
@@ -462,9 +517,10 @@ class AgentMemoryEnv:
         self,
         memory_state_diff: dict[str, list[dict[str, Any]]],
         compatibility_violations: list[dict[str, Any]] | None = None,
-        memory_ops: list[dict[str, Any]] | None = None,
+        tool_ops: list[dict[str, Any]] | None = None,
     ) -> StepInfo:
         task = self.require_task()
+        normalized_tool_ops = tool_ops or []
         return StepInfo(
             task_id=task.task_id,
             split=task.split,
@@ -473,11 +529,13 @@ class AgentMemoryEnv:
             memory_dependency=task.memory_dependency,
             progress_score=self.current_subtask_index / len(task.subtasks),
             episode_success=self.done,
-            memory_ops=memory_ops or [],
+            tool_ops=normalized_tool_ops,
+            memory_ops=[item for item in normalized_tool_ops if item.get("op") in MEMORY_TOOL_OPS],
             memory_state_diff=memory_state_diff,
             compatibility_violations=compatibility_violations or [],
             purchase_history=list(self.purchase_history),
             current_subtask_index=self.current_subtask_index,
+            session_trace=list(self.session_trace),
         )
 
     def current_subtask(self) -> ShoppingSubtask:
@@ -494,8 +552,34 @@ class AgentMemoryEnv:
     def close(self) -> None:
         self.long_term_memory.clear()
         self.short_term_context.clear()
+        self.session_trace.clear()
         self.purchase_history.clear()
         self.bundle_state.clear()
+
+
+def extract_last_tool_result(observation: str) -> str:
+    lines = observation.splitlines()
+    for index, line in enumerate(lines):
+        if not line.startswith("Last tool/result: "):
+            continue
+        result_lines = [line.removeprefix("Last tool/result: ")]
+        for follow in lines[index + 1:]:
+            if not follow.strip():
+                break
+            result_lines.append(follow)
+        return "\n".join(result_lines).strip()
+    return ""
+
+
+def render_session_trace_entry(step_count: int, action_text: str, result_text: str) -> str:
+    lines = [f"Step {step_count}", f"Action: {action_text}"]
+    if result_text:
+        lines.append(f"Result: {result_text}")
+    return "\n".join(lines)
+
+
+def indent_trace_item(item: str) -> str:
+    return item.replace("\n", "\n  ")
 
 
 def build_default_tasks() -> list[ShoppingTask]:
@@ -724,6 +808,26 @@ def render_attr_value(value: Any) -> str:
     if isinstance(value, (tuple, list)):
         return "[" + ", ".join(str(item) for item in value) + "]"
     return str(value)
+
+
+def clamp_int(value: Any, *, min_value: int, max_value: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise InvalidAction(f"Expected integer value, got {value!r}.") from exc
+    return max(min_value, min(parsed, max_value))
+
+
+def compact_context_text(text: str, *, max_chars: int) -> str:
+    compacted = re.sub(r"\s+", " ", text).strip()
+    if len(compacted) <= max_chars:
+        return compacted
+    return compacted[: max_chars - 3].rstrip() + "..."
+
+
+def filter_items_by_tokens(items: list[str], query_tokens: set[str]) -> tuple[list[str], int]:
+    kept = [item for item in items if tokenize(item) & query_tokens]
+    return kept, len(items) - len(kept)
 
 
 def tokenize(text: str) -> set[str]:
