@@ -20,6 +20,22 @@ SEARCH_RESULT_RE = re.compile(
 ATTR_RE = re.compile(r"(average_rating|price_usd|total_reviews|match_score)=([^,)]*)")
 TOKEN_RE = re.compile(r"[a-z0-9]+")
 PREFERENCE_RE = re.compile(r"\b(highest|lowest)[- ](rated|priced|price|rating)\b", re.IGNORECASE)
+NON_SEMANTIC_ATTRIBUTE_KEYS = {"source_option"}
+COLOR_LABELS = {
+    "black",
+    "blue",
+    "brown",
+    "gold",
+    "green",
+    "orange",
+    "pink",
+    "purple",
+    "red",
+    "silver",
+    "white",
+    "yellow",
+}
+BROAD_COLOR_TOKENS = {"color", "colors", "colour", "colours", "colorful", "vibrant"}
 
 
 @dataclass
@@ -100,11 +116,45 @@ def label_matches(label: str, text: str) -> bool:
     text_norm = normalize_text(text)
     if not label_norm or not text_norm:
         return False
-    if label_norm in text_norm:
-        return True
     label_tokens = normalize_tokens(label)
+    text_tokens = normalize_tokens(text)
+    if not label_tokens or not text_tokens:
+        return False
+    if len(label_tokens) == 1:
+        return bool(token_variants(label_tokens) & token_variants(text_tokens))
+    return phrase_tokens_match(label_tokens, text_tokens)
+
+
+def phrase_tokens_match(label_tokens: list[str], text_tokens: list[str]) -> bool:
+    """Match label tokens as an adjacent phrase, allowing simple plural variants."""
+    width = len(label_tokens)
+    for start in range(0, len(text_tokens) - width + 1):
+        window = text_tokens[start : start + width]
+        if all(bool(token_variants([label_token]) & token_variants([text_token])) for label_token, text_token in zip(label_tokens, window)):
+            return True
+    return False
+
+
+def token_variants(tokens: list[str]) -> set[str]:
+    variants = set(tokens)
+    for token in tokens:
+        if len(token) > 3 and token.endswith("s"):
+            variants.add(token[:-1])
+        elif len(token) > 2 and not token.endswith("s"):
+            variants.add(f"{token}s")
+    return variants
+
+
+def broad_value_group_matches(values: list[str], text: str) -> bool:
+    """Match broad set descriptions such as "9 vibrant colors" to a color list."""
+    value_tokens = {
+        token
+        for value in values
+        for token in normalize_tokens(value)
+        if token in COLOR_LABELS
+    }
     text_tokens = set(normalize_tokens(text))
-    return bool(label_tokens) and all(token in text_tokens for token in label_tokens)
+    return len(value_tokens) >= 3 and bool(text_tokens & BROAD_COLOR_TOKENS)
 
 
 def clean_label(text: str) -> str:
@@ -220,7 +270,10 @@ def parse_optional_int(value: str | None) -> int | None:
 
 
 def candidate_text(candidate: CandidateView) -> str:
-    parts = [candidate.title, render_attrs(candidate.attributes)]
+    semantic_attrs = {
+        key: value for key, value in candidate.attributes.items() if key not in NON_SEMANTIC_ATTRIBUTE_KEYS
+    }
+    parts = [candidate.title, render_attrs(semantic_attrs)]
     if candidate.search_hit is not None:
         parts.append(candidate.search_hit.title)
     return " ".join(parts)
@@ -263,9 +316,11 @@ def infer_allowed_values(
         if compatible and any(token in normalize_tokens(memory_text) for token in ("color", "colors", "colour", "colours")):
             return [], all_allowed_values, compatible
         return [], [], candidates
-    compatible = [
-        candidate for candidate in candidates if any(label_matches(value, candidate_text(candidate)) for value in allowed_values)
-    ]
+    compatible = []
+    for candidate in candidates:
+        text = candidate_text(candidate)
+        if any(label_matches(value, text) for value in allowed_values) or broad_value_group_matches(allowed_values, text):
+            compatible.append(candidate)
     if avoided_values and len(active_keys) == 1:
         compatible = [
             candidate
@@ -609,6 +664,7 @@ def summarize(results: list[EpisodeResult], *, args: argparse.Namespace, started
         "buy_calls": sum(item.buy_calls for item in results),
         "rejected_buys": sum(item.rejected_buys for item in results),
         "max_buy_attempts": args.max_buy_attempts,
+        "task_id_filter": args.task_id or [],
         "elapsed_seconds": round(time.time() - started_at, 3),
         "task_ids": [item.task_id for item in results],
         "per_episode": [
@@ -637,6 +693,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--catalog-index", default=os.environ.get("AGENTMEMORY_CATALOG_INDEX_PATH"), required=os.environ.get("AGENTMEMORY_CATALOG_INDEX_PATH") is None)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--task-id", action="append", help="Run only matching task_id values. Repeatable.")
     parser.add_argument("--max-buy-attempts", type=int, default=1, help="Try up to this many ranked candidate BUY actions before ending the episode.")
     parser.add_argument(
         "--compatibility-fallback",
@@ -658,10 +715,18 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     env = AgentMemoryEnv(data_path=args.data, split=args.split, split_dir=args.split_dir, catalog_index_path=args.catalog_index)
-    episode_count = len(env.tasks) if args.limit is None else min(args.limit, len(env.tasks))
+    data_indices = list(range(len(env.tasks)))
+    if args.task_id:
+        requested_task_ids = set(args.task_id)
+        data_indices = [idx for idx, task in enumerate(env.tasks) if task.task_id in requested_task_ids]
+        missing_task_ids = sorted(requested_task_ids - {env.tasks[idx].task_id for idx in data_indices})
+        if missing_task_ids:
+            raise SystemExit(f"Requested task_id not found in split: {', '.join(missing_task_ids)}")
+    if args.limit is not None:
+        data_indices = data_indices[: args.limit]
     results: list[EpisodeResult] = []
     action_rows: list[dict[str, Any]] = []
-    for data_idx in range(episode_count):
+    for data_idx in data_indices:
         result, actions = run_episode(
             env,
             data_idx=data_idx,

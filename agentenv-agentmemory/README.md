@@ -14,7 +14,7 @@ Current scope:
 - Exposes task actions: `BUY`, `ANSWER`, and optional product-catalog `SEARCH` when `AGENTMEMORY_CATALOG_INDEX_PATH` is configured.
 - Records `memory_state_diff`, `progress_score`, `compatibility_violations`, `memory_ops`, and hidden purchase history in `info`.
 
-This is still a skeleton/smoke environment. It now includes a MemoryArena bundled-shopping converter, catalog / ASIN resolver, strict candidate-metadata enrichment, product-catalog `SEARCH`, a scripted SEARCH baseline, and a failure-audit helper. Formal target freeze exists (`120/15/15`, `asin_catalog=900`, `ambiguous=0`), Qwen3-4B single-GPU smoke has run, and scripted SEARCH diagnostics show dev no-retry `5/15`, retry5 `10/15`, and soft-fallback verifier `15/15`. These are interface/solvability diagnostics only and still do **not** claim RL improvement.
+This is still a skeleton/smoke environment. It now includes a MemoryArena bundled-shopping converter, catalog / ASIN resolver, strict candidate-metadata enrichment, product-catalog `SEARCH`, a scripted SEARCH baseline, and a failure-audit helper. Formal target freeze exists (`120/15/15`, `asin_catalog=900`, `ambiguous=0`), Qwen3-4B single-GPU smoke has run, and scripted SEARCH diagnostics show dev no-retry `6/15`, retry5 semantic matcher fixed `13/15`, and soft-fallback verifier `15/15`. These are interface/solvability diagnostics only and still do **not** claim RL improvement.
 
 The current AgentGym-RL vLLM rollout now has a fail-fast guard for `task_name=agentmemory`: formal rollout is blocked unless raw-history leakage is explicitly allowed for a diagnostic smoke run.
 
@@ -153,7 +153,7 @@ PYTHONPATH=agentenv-agentmemory \
 Current verified full mirror on the Jingyan shared disk:
 
 ```text
-/home/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db/
+/media/cfs/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db/
 135 files / 13,517,161,526 bytes; extra/missing/mismatch/part = 0
 ```
 
@@ -171,7 +171,7 @@ PYTHONPATH=agentenv-agentmemory \
   python3 agentenv-agentmemory/scripts/freeze_memoryarena_bundled_shopping.py \
   --input /path/to/bundled_shopping/data.jsonl \
   --output-dir /path/to/freeze-run \
-  --product-db-root /home/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db
+  --product-db-root /media/cfs/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db
 ```
 
 Smoke the converter on the bundled synthetic fixture:
@@ -195,8 +195,8 @@ Build a full SQLite/FTS index from the MemoryArena product DB on the shared disk
 ```bash
 PYTHONPATH=agentenv-agentmemory \
   python3 agentenv-agentmemory/scripts/build_memoryarena_catalog_search_index.py \
-  --product-db-root /home/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db \
-  --output /home/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db/agentmemory_catalog_search.sqlite
+  --product-db-root /media/cfs/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db \
+  --output /media/cfs/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db/agentmemory_catalog_search.sqlite
 ```
 
 Current Jingyan shared-disk index marker:
@@ -224,7 +224,7 @@ PYTHONPATH=agentenv-agentmemory \
   --data /path/to/memoryarena_agentmemory.jsonl \
   --split-dir /path/to/splits \
   --split dev \
-  --catalog-index /home/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db/agentmemory_catalog_search.sqlite \
+  --catalog-index /media/cfs/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db/agentmemory_catalog_search.sqlite \
   --output-dir /path/to/evidence/run \
   --max-buy-attempts 1
 ```
