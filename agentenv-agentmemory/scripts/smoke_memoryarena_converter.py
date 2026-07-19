@@ -314,11 +314,12 @@ def run_catalog_search_smoke(temp_root: Path) -> None:
     observation, _ = env.reset()
     assert 'SEARCH {"query": "...", "top_k": 3}' in observation, observation
     observation, reward, done, _, info = env.step('SEARCH {"query":"Beta chocolate cake mix 18 oz","top_k":2}')
-    assert reward < 0 and not done, info
+    assert reward == 0.0 and not done, info
     assert "Product search results" in observation, observation
     assert "Beta chocolate cake mix 18 oz" in observation, observation
     assert "price_usd=8.99" in observation, observation
-    assert info["memory_ops"][0]["op"] == "SEARCH", info
+    assert info["tool_ops"][0]["op"] == "SEARCH", info
+    assert info["memory_ops"] == [], info
 
 
 if __name__ == "__main__":

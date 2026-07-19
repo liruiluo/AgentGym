@@ -1,255 +1,100 @@
 # agentenv-agentmemory
 
-Minimal AgentMemoryGym environment package for the `feat/agentmemory-env-v0` branch.
-
-Current scope:
-
-- Implements a small **bundled web shopping** memory task.
-- Loads the default smoke items from `agentenv_agentmemory/data/bundled_shopping_smoke.jsonl`.
-- Keeps minimal split files under `agentenv_agentmemory/data/splits/{train,dev,test}.txt`.
-- Supports dataset selection through `AGENTMEMORY_DATA_PATH`, `AGENTMEMORY_SPLIT`, and `AGENTMEMORY_SPLIT_DIR`.
-- Exposes `/metadata` with `task_count`, `task_ids`, `splits`, and `source`.
-- Exposes LTM tools: `ADD`, `UPDATE`, `DELETE`.
-- Exposes STM tools: `RETRIEVE`, `SUMMARY`, `FILTER`.
-- Exposes task actions: `BUY`, `ANSWER`, and optional product-catalog `SEARCH` when `AGENTMEMORY_CATALOG_INDEX_PATH` is configured.
-- Records `memory_state_diff`, `progress_score`, `compatibility_violations`, `memory_ops`, and hidden purchase history in `info`.
-
-This is still a skeleton/smoke environment. It now includes a MemoryArena bundled-shopping converter, catalog / ASIN resolver, strict candidate-metadata enrichment, product-catalog `SEARCH`, a scripted SEARCH baseline, and a failure-audit helper. Formal target freeze exists (`120/15/15`, `asin_catalog=900`, `ambiguous=0`), Qwen3-4B single-GPU smoke has run, and scripted SEARCH diagnostics show dev no-retry `6/15`, retry5 semantic matcher fixed `13/15`, and soft-fallback verifier `15/15`. These are interface/solvability diagnostics only and still do **not** claim RL improvement.
-
-The current AgentGym-RL vLLM rollout now has a fail-fast guard for `task_name=agentmemory`: formal rollout is blocked unless raw-history leakage is explicitly allowed for a diagnostic smoke run.
-
-## Data schema
-
-Default smoke tasks are JSONL records:
-
-```json
-{
-  "task_id": "tv_bundle_75",
-  "split": "train",
-  "source": "memoryarena_webshop_style_handcrafted_v0",
-  "difficulty": "smoke_dependency_distance_2",
-  "memory_dependency": "tv_size_weight_vesa_reused_across_sessions",
-  "title": "...",
-  "subtasks": [
-    {
-      "instruction": "...",
-      "target_product_id": "tv_b",
-      "candidate_products": [
-        {"product_id": "tv_b", "title": "Nebula 4K TV", "attributes": {"tv_size_in": 75}}
-      ]
-    }
-  ]
-}
-```
-
-This is the placeholder schema for later MemoryArena/WebShop-style conversion.
-
-## Splits and validation
-
-The smoke package currently has one item per split:
-
-- `train`: `tv_bundle_75`
-- `dev`: `laptop_bundle_14`
-- `test`: `monitor_bundle_27`
-
-Validate the local data package with:
-
-```bash
-PYTHONPATH=agentenv-agentmemory python3 agentenv-agentmemory/scripts/validate_agentmemory_data.py
-```
-
-Load one split explicitly:
-
-```bash
-AGENTMEMORY_SPLIT=dev agentmemory --host 0.0.0.0 --port 8000
-```
-
-The server metadata endpoint then reports only the selected split's task ids.
-
-## Action format
-
-Use ReAct with one action line, for example:
+AgentMemoryGym integrates the original MemoryArena WebShop environment with six
+policy-facing memory tools. The formal action surface is:
 
 ```text
-Thought:
-I should store the TV size for later compatibility checks.
-
-Action:
-ADD {"key": "tv_size", "value": "The purchased TV is 75 inches."}
+search[keywords]
+click[current clickable value]
+ADD {"key": "...", "value": "..."}
+UPDATE {"memory_id": "mem_0000", "value": "..."}
+DELETE {"memory_id": "mem_0000"}
+RETRIEVE {"query": "...", "top_k": 3}
+SUMMARY {"text": "...", "source_ids": ["S0", "C0"]}
+FILTER {"keep_ids": ["C0"], "scope": "active"}
 ```
 
-Other examples:
+Shopping remains native WebShop: search results expose real ASINs, product and
+option pages are navigated with `click[...]`, and only `click[Buy Now]` commits
+a purchase. There is no formal synthetic `SEARCH`, `BUY`, `ANSWER`, or
+`GROUND` action.
 
-```text
-Action:
-RETRIEVE {"query": "tv size", "top_k": 2}
+## Runtime contract
 
-Action:
-BUY {"product_id": "mount_b"}
-```
+- One episode is one complete six-session bundled-shopping chain.
+- A correct purchase advances immediately without requiring `ADD` or another
+  memory action first.
+- A wrong ASIN or cumulative budget overflow gives `-0.5` and terminates the
+  chain without verifier feedback or retry.
+- Each correct non-final purchase gives `+1.0`; the sixth also receives the
+  final `+1.0` bundle bonus.
+- Native browser state, S* trace, and active C* context clear at a session
+  boundary. Policy-authored long-term memory persists but remains hidden until
+  `RETRIEVE`.
+- `ADD` and `UPDATE` preserve policy-authored text verbatim.
+- Prices and purchases come from structured native WebShop state and are
+  accumulated in integer cents. HTML parsing is not authoritative.
 
-## Direct smoke
+## Formal launch
+
+The server refuses an implicit or SQLite fallback. All native paths are
+required, and Uvicorn runs one worker so the 1.1M-product catalog and Lucene
+searcher are loaded once and shared by isolated rollout sessions.
 
 ```bash
-PYTHONPATH=agentenv-agentmemory python3 - <<'PY'
-from agentenv_agentmemory.environment import AgentMemoryEnv
-
-env = AgentMemoryEnv()
-obs, info = env.reset(data_idx=0)
-print(obs)
-print(env.step('BUY {"product_id": "tv_b"}')[0])
-print(env.step('ADD {"key": "tv_size", "value": "The TV is 75 inches."}')[0])
-print(env.step('RETRIEVE {"query": "tv size", "top_k": 1}')[0])
-print(env.step('BUY {"product_id": "mount_b"}')[0])
-PY
+PYTHONPATH=AgentGym/agentenv-agentmemory:AgentGym/agentenv \
+/path/to/workspace/runtime/venvs/webshop-py310/bin/python -m agentenv_agentmemory.launch \
+  --surface memoryarena_webshop_native_v1 \
+  --memoryarena-root /path/to/frozen/MemoryArena \
+  --raw-data /path/to/bundled_shopping/data.jsonl \
+  --items-file /path/to/items_shuffle.json \
+  --attributes-file /path/to/items_ins_v2.json \
+  --search-root /path/to/search_engine \
+  --java-home /path/to/workspace/runtime/jre11 \
+  --domain-data-path /path/to/domain_data.json \
+  --lucene-index-manifest /path/to/original_lucene_index_files.sha256 \
+  --annotation-audit-summary /path/to/summary.json \
+  --annotation-audit-chains /path/to/chains.jsonl \
+  --annotation-manual-evidence /path/to/manual_candidate_evidence.json \
+  --memoryarena-base-commit 6cd9de14b71915e39ac742a20dc33785e14b6aab \
+  --run-id <run-id> \
+  --split train \
+  --price-seed 233 \
+  --annotation-gate-mode provisional \
+  --annotation-gate-manifest /path/to/annotation_gate.json \
+  --annotation-gate-manifest-sha256 <externally-pinned-sha256> \
+  --port 8000
 ```
 
-Or run the packaged smoke helper:
+`--search-root` is the parent `search_engine/` directory; the original engine
+appends `indexes-full` itself. Passing the index leaf is rejected.
+
+Use `--annotation-gate-mode strict --annotation-gate-manifest ...` only after
+the complete six-step chains used by that split are listed as passed. A
+provisional run must bind the current audit manifest and cannot support a final
+capability claim.
+
+## Tests
+
+Mac contract tests do not import the heavy MemoryArena runtime:
 
 ```bash
-PYTHONPATH=agentenv-agentmemory python3 agentenv-agentmemory/scripts/smoke_agentmemory.py
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH=AgentGym/agentenv-agentmemory:AgentGym/agentenv \
+python3 -B -m unittest discover \
+  -s AgentGym/agentenv-agentmemory/tests -v
 ```
 
-Loader smoke:
+The adapter and full native smoke require the 9N runtime with torch, PyLucene,
+the product files, and the Lucene index. A fake backend may verify parser and
+state-machine logic, but it cannot replace a native smoke or produce model,
+reward, algorithm, curriculum, throughput, or capability evidence.
 
-```bash
-PYTHONPATH=agentenv-agentmemory python3 - <<'PY'
-from agentenv_agentmemory.environment import default_smoke_data_path, load_tasks_from_jsonl
-tasks = load_tasks_from_jsonl(default_smoke_data_path())
-print("JSONL_LOADER_SMOKE_OK", len(tasks))
-PY
-```
+## Offline legacy audit code
 
-## MemoryArena bundled-shopping converter
-
-Convert public MemoryArena `bundled_shopping` JSONL into the AgentMemoryGym JSONL schema without committing the dataset into this repo:
-
-```bash
-PYTHONPATH=agentenv-agentmemory \
-  python3 agentenv-agentmemory/scripts/convert_memoryarena_bundled_shopping.py \
-  --input https://huggingface.co/datasets/ZexueHe/memoryarena/resolve/main/bundled_shopping/data.jsonl \
-  --output /tmp/agentmemorygym-memoryarena/bundled_shopping.jsonl \
-  --split-dir /tmp/agentmemorygym-memoryarena/splits \
-  --report /tmp/agentmemorygym-memoryarena/target_match_report.jsonl
-```
-
-If a local MemoryArena product DB mirror is available, pass product catalog
-shards or the product DB root to resolve target ASINs before falling back to
-attribute-overlap matching:
-
-```bash
-PYTHONPATH=agentenv-agentmemory \
-  python3 agentenv-agentmemory/scripts/convert_memoryarena_bundled_shopping.py \
-  --input /path/to/bundled_shopping/data.jsonl \
-  --output /tmp/agentmemorygym-memoryarena/bundled_shopping.jsonl \
-  --split-dir /tmp/agentmemorygym-memoryarena/splits \
-  --report /tmp/agentmemorygym-memoryarena/target_match_report.jsonl \
-  --catalog-path /path/to/memoryarena-product-db/product_catalog/electronics_accessories_supplies.json \
-  --catalog-path /path/to/memoryarena-product-db/product_catalog/electronics_television_video.json \
-  --catalog-path /path/to/memoryarena-product-db/product_catalog/grocery_gourmet_food_pantry_staples.json \
-  --catalog-path /path/to/memoryarena-product-db/product_catalog/grocery_gourmet_food_snacks_sweets.json
-```
-
-Current verified full mirror on the Jingyan shared disk:
-
-```text
-/media/cfs/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db/
-135 files / 13,517,161,526 bytes; extra/missing/mismatch/part = 0
-```
-
-Keep the large product DB on the shared disk rather than copying it to the
-devbox/local development disk. Shared-disk capacity is not the blocker here:
-full mirroring and full indexing are allowed and intended on the shared disk.
-Do not downscope this path to a "local minimal dependency" workaround merely
-because the Mac/devbox is a 0-card development machine or lacks a local DB copy.
-For a formal freeze, prefer the helper below: it first scans the full product
-DB by target ASIN to select only relevant catalog shards, then calls the
-converter and validator and writes a manifest.
-
-```bash
-PYTHONPATH=agentenv-agentmemory \
-  python3 agentenv-agentmemory/scripts/freeze_memoryarena_bundled_shopping.py \
-  --input /path/to/bundled_shopping/data.jsonl \
-  --output-dir /path/to/freeze-run \
-  --product-db-root /media/cfs/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db
-```
-
-Smoke the converter on the bundled synthetic fixture:
-
-```bash
-PYTHONPATH=agentenv-agentmemory python3 agentenv-agentmemory/scripts/smoke_memoryarena_converter.py
-```
-
-The converter writes a target-match audit report because MemoryArena answers expose target ASIN/attributes while prompts expose natural-language option descriptions. Without a catalog, full public bundled-shopping conversion has 12/900 tied heuristic matches. With the four currently relevant product-catalog shards above on Jingyan shared disk, the same public conversion validates with 0/900 ambiguous matches (`catalog=450`, `fallback=450`); this is still data-conversion evidence, not an RL result.
-
-
-## Product-catalog SEARCH index
-
-`SEARCH` is configured through `AGENTMEMORY_CATALOG_INDEX_PATH` or the
-`AgentMemoryEnv(..., catalog_index_path=...)` constructor argument. It returns
-public product metadata only: title, average rating, price, review count, and a
-match score. It must not expose ASIN/source path/target labels in observation.
-
-Build a full SQLite/FTS index from the MemoryArena product DB on the shared disk:
-
-```bash
-PYTHONPATH=agentenv-agentmemory \
-  python3 agentenv-agentmemory/scripts/build_memoryarena_catalog_search_index.py \
-  --product-db-root /media/cfs/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db \
-  --output /media/cfs/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db/agentmemory_catalog_search.sqlite
-```
-
-Current Jingyan shared-disk index marker:
-
-```text
-AGENTMEMORY_CATALOG_SEARCH_INDEX_OK products=1031654
-index size ~= 479M
-```
-
-Example action:
-
-```text
-SEARCH {"query":"A gluten-free carrot cake mix with easy-to-use instructions and vegan-friendly ingredients.","top_k":3}
-```
-
-
-## Scripted SEARCH baseline and failure audit
-
-Strict baseline, retry diagnostic, and soft-fallback verifier diagnostic share
-the same runner:
-
-```bash
-PYTHONPATH=agentenv-agentmemory \
-  python3 agentenv-agentmemory/scripts/run_scripted_search_baseline.py \
-  --data /path/to/memoryarena_agentmemory.jsonl \
-  --split-dir /path/to/splits \
-  --split dev \
-  --catalog-index /media/cfs/ai-jingyan-train/luolirui.1/post-train/data/memoryarena-product-db/agentmemory_catalog_search.sqlite \
-  --output-dir /path/to/evidence/run \
-  --max-buy-attempts 1
-```
-
-Use `--include-target-audit` only for saved audit fields; the runner does not
-use target ids for action selection. Use `--compatibility-fallback
-ranked-all-after-compatible` only as an explicit verifier-feedback diagnostic:
-it tries strict compatibility matches first and then other visible candidates
-ranked by the same public SEARCH metadata.
-
-Analyze failed steps with:
-
-```bash
-python3 agentenv-agentmemory/scripts/analyze_scripted_search_failures.py \
-  --run-dir /path/to/evidence/run \
-  --output-dir /path/to/evidence/failure-audit
-```
-
-The analyzer prints `AGENTMEMORY_SCRIPTED_SEARCH_FAILURE_AUDIT_OK` and classifies
-residual failures such as `compatibility_filter_excluded_target`.
-
-## Server
-
-After installing package dependencies:
-
-```bash
-agentmemory --host 0.0.0.0 --port 8000
-```
+`catalog_search.py`, `memoryarena_converter.py`, the SQLite index builder, and
+their historical fixtures remain only for locating index/converter defects.
+Do not start a policy, RL rollout, smoke, curriculum, or throughput diagnostic
+on that surface. Their results do not transfer to the original WebShop task and
+the active server rejects `AGENTMEMORY_CATALOG_INDEX_PATH` and
+`AGENTMEMORY_SEARCH_TIMEOUT_MS`.

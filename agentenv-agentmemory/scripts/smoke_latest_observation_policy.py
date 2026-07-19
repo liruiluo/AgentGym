@@ -42,7 +42,7 @@ class LatestObservationMemoryPolicy:
             self.pending_buy = None
             return action("BUY", product_id=product_id)
 
-        if "Active short-term memory/context: <empty>" not in observation:
+        if "Active retrieved/summary context: <empty>" not in observation:
             return self.buy_from_retrieved_context(observation, products)
         if "larger-screen TV" in observation:
             product_id = self.pick_product_with_attr(products, "tv_size_in", "75")
@@ -104,6 +104,9 @@ class LatestObservationMemoryPolicy:
 def run_policy(data_idx: int) -> dict:
     env = AgentMemoryEnv()
     observation, info = env.reset(data_idx=data_idx)
+    assert info["session_trace"] == [], info
+    assert "Current session short-term history: <empty>" in observation
+    assert "Active retrieved/summary context: <empty>" in observation
     policy = LatestObservationMemoryPolicy()
     reward_sum = 0.0
     done = False
@@ -111,10 +114,21 @@ def run_policy(data_idx: int) -> dict:
     memory_ops: list[str] = []
     for _ in range(12):
         chosen_action = policy.act(observation)
-        action_ops.append(chosen_action.split(maxsplit=1)[0])
+        op = chosen_action.split(maxsplit=1)[0]
+        action_ops.append(op)
         observation, reward, done, _, info = env.step(chosen_action)
         memory_ops.extend(item["op"] for item in info["memory_ops"])
         reward_sum += reward
+        if op in {"ADD", "RETRIEVE"}:
+            assert info["session_trace"], info
+            assert f"Action: {op} " in observation, observation
+            assert "Current session short-term history:" in observation, observation
+        if op == "RETRIEVE":
+            assert "Active retrieved/summary context:" in observation, observation
+        if op == "BUY" and not done:
+            assert info["session_trace"] == [], info
+            assert "Current session short-term history: <empty>" in observation, observation
+            assert "Active retrieved/summary context: <empty>" in observation, observation
         if done:
             break
     assert done, f"latest-observation policy did not finish data_idx={data_idx}: {info}"

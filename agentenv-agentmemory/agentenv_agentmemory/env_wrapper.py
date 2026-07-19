@@ -1,76 +1,260 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import threading
+from pathlib import Path
 from typing import Any
 
-from .environment import AgentMemoryEnv, load_task_dataset
+from .annotation_gate import AnnotationGateDecision, validate_annotation_gate_manifest
+from .memoryarena_dataset import (
+    EXPECTED_DOMAIN_DATA_SHA256,
+    MemoryArenaDataset,
+    load_memoryarena_dataset,
+)
+from .memoryarena_webshop_env import MemoryArenaWebShopEnv
+from .native_webshop_backend import MemoryArenaNativeWebShopBackend
+
+
+NATIVE_SURFACE = "memoryarena_webshop_native_v1"
+FORBIDDEN_SURROGATE_ENV = {
+    "AGENTMEMORY_CATALOG_INDEX_PATH",
+    "AGENTMEMORY_SEARCH_TIMEOUT_MS",
+}
 
 
 class AgentMemoryWrapper:
+    """AgentGym HTTP wrapper for the original MemoryArena WebShop surface."""
+
     def __init__(self) -> None:
+        surface = os.environ.get("AGENTMEMORY_SURFACE")
+        if surface != NATIVE_SURFACE:
+            raise RuntimeError(
+                f"AGENTMEMORY_SURFACE must be explicitly set to {NATIVE_SURFACE!r}; "
+                "the legacy SQLite surface is offline engineering-audit code only."
+            )
+        forbidden = sorted(key for key in FORBIDDEN_SURROGATE_ENV if os.environ.get(key))
+        if forbidden:
+            raise RuntimeError(
+                "Native MemoryArena launch refuses legacy SQLite variables: "
+                + ", ".join(forbidden)
+            )
+
+        domain_data_path = _required_path("MEMORYARENA_WEBSHOP_DOMAIN_DATA_PATH")
+        domain_data_sha256 = _sha256_file(domain_data_path)
+        if domain_data_sha256 != EXPECTED_DOMAIN_DATA_SHA256:
+            raise RuntimeError(
+                "MemoryArena domain_data.json SHA256 mismatch: "
+                f"expected {EXPECTED_DOMAIN_DATA_SHA256}, observed {domain_data_sha256}."
+            )
+        self.backend = MemoryArenaNativeWebShopBackend(
+            memoryarena_root=_required_path("MEMORYARENA_ROOT"),
+            items_file=_required_path("MEMORYARENA_WEBSHOP_ITEMS_FILE"),
+            attributes_file=_required_path("MEMORYARENA_WEBSHOP_ATTR_FILE"),
+            search_root=_required_path("MEMORYARENA_WEBSHOP_SEARCH_ROOT"),
+            java_home=_required_path("MEMORYARENA_WEBSHOP_JAVA_HOME"),
+            price_seed=_env_int("AGENTMEMORY_WEBSHOP_PRICE_SEED", 233),
+        )
+        self.dataset = load_memoryarena_dataset(
+            _required_path("AGENTMEMORY_MEMORYARENA_RAW_PATH"),
+            frozen_product_asins=self.backend.product_asins(),
+            domain_data_sha256=domain_data_sha256,
+        )
+        split_tasks = self._select_tasks(self.dataset)
+        self.annotation_gate = self._validate_annotation_gate()
+        allowed_task_ids = set(self.annotation_gate.allowed_task_ids)
+        self.tasks = tuple(task for task in split_tasks if task.task_id in allowed_task_ids)
+        if not self.tasks:
+            raise RuntimeError("Annotation gate clears zero tasks in the selected split.")
         self.max_id = 0
-        self.tasks = load_task_dataset()
-        self.envs: dict[int, AgentMemoryEnv] = {}
+        self.envs: dict[int, MemoryArenaWebShopEnv] = {}
         self.info: dict[int, dict[str, Any]] = {}
-        self.lock = threading.Lock()
+        self.env_locks: dict[int, threading.RLock] = {}
+        self.lock = threading.RLock()
 
     def create(self) -> dict[str, Any]:
         with self.lock:
             env_id = self.max_id
             self.max_id += 1
-        env = AgentMemoryEnv(tasks=self.tasks)
-        observation, info = env.reset(data_idx=env_id)
-        self.envs[env_id] = env
-        self.info[env_id] = {
-            "observation": observation,
-            "reward": 0.0,
-            "done": False,
-            "info": info,
-        }
-        return {"id": env_id, "observation": observation, "reward": 0.0, "done": False, "info": info}
+            env = MemoryArenaWebShopEnv(
+                bundles=self.tasks,
+                backend=self.backend,
+                env_uid=f"env{env_id}",
+            )
+            observation, info = env.reset(data_idx=env_id)
+            payload = {
+                "id": env_id,
+                "observation": observation,
+                "reward": 0.0,
+                "done": False,
+                "info": info,
+            }
+            self.envs[env_id] = env
+            self.info[env_id] = payload
+            self.env_locks[env_id] = threading.RLock()
+            return payload
 
     def step(self, env_id: int, action: str) -> dict[str, Any]:
         env = self.require_env(env_id)
-        observation, reward, done, _, info = env.step(action)
-        payload = {"observation": observation, "reward": reward, "done": done, "info": info}
-        self.info[env_id] = payload
-        return payload
+        with self.require_lock(env_id):
+            observation, reward, done, _, info = env.step(action)
+            payload = {
+                "observation": observation,
+                "reward": reward,
+                "done": done,
+                "info": info,
+            }
+            self.info[env_id] = payload
+            return payload
 
     def reset(self, env_id: int, data_idx: int = 0) -> dict[str, Any]:
         env = self.require_env(env_id)
-        observation, info = env.reset(data_idx=data_idx)
-        payload = {"id": env_id, "observation": observation, "reward": 0.0, "done": False, "info": info}
-        self.info[env_id] = payload
-        return payload
+        with self.require_lock(env_id):
+            observation, info = env.reset(data_idx=data_idx)
+            payload = {
+                "id": env_id,
+                "observation": observation,
+                "reward": 0.0,
+                "done": False,
+                "info": info,
+            }
+            self.info[env_id] = payload
+            return payload
 
     def observation(self, env_id: int) -> str:
         self.require_env(env_id)
-        return self.info[env_id]["observation"]
+        with self.require_lock(env_id):
+            return self.info[env_id]["observation"]
 
     def detail(self, env_id: int) -> dict[str, Any]:
         self.require_env(env_id)
-        return self.info[env_id]
+        with self.require_lock(env_id):
+            return self.info[env_id]
 
     def close(self, env_id: int) -> bool:
         env = self.require_env(env_id)
-        env.close()
-        del self.envs[env_id]
-        del self.info[env_id]
+        with self.require_lock(env_id):
+            env.close()
+        with self.lock:
+            del self.envs[env_id]
+            del self.info[env_id]
+            del self.env_locks[env_id]
         return True
 
     def metadata(self) -> dict[str, Any]:
+        provenance = self.dataset.provenance
         return {
+            "surface": NATIVE_SURFACE,
             "task_count": len(self.tasks),
-            "task_ids": [task.task_id for task in self.tasks],
             "splits": sorted({task.split for task in self.tasks}),
-            "source": sorted({task.source for task in self.tasks}),
-            "catalog_search_configured": bool(self.envs[next(iter(self.envs))].catalog_index_path) if self.envs else False,
+            "raw_dataset_sha256": provenance.raw_dataset_sha256,
+            "split_manifest_sha256": provenance.split_manifest_sha256,
+            "memoryarena_commit": provenance.memoryarena_commit,
+            "domain_data_sha256": provenance.domain_data_sha256,
+            "annotation_gate_mode": self.annotation_gate.mode,
+            "annotation_gate_sha256": self.annotation_gate.manifest_sha256,
+            "annotation_gate_allowed_task_ids_sha256": self.annotation_gate.allowed_task_ids_sha256,
+            "annotation_gate_allowed_task_count": len(self.annotation_gate.allowed_task_ids),
+            "backend": self.backend.metadata(),
         }
 
-    def require_env(self, env_id: int) -> AgentMemoryEnv:
-        if env_id not in self.envs:
-            raise KeyError(f"Unknown environment id {env_id}.")
-        return self.envs[env_id]
+    def require_env(self, env_id: int) -> MemoryArenaWebShopEnv:
+        try:
+            return self.envs[env_id]
+        except KeyError as exc:
+            raise KeyError(f"Unknown environment id {env_id}.") from exc
+
+    def require_lock(self, env_id: int) -> threading.RLock:
+        try:
+            return self.env_locks[env_id]
+        except KeyError as exc:
+            raise KeyError(f"Unknown environment id {env_id}.") from exc
+
+    @staticmethod
+    def _select_tasks(dataset: MemoryArenaDataset):
+        split = os.environ.get("AGENTMEMORY_SPLIT", "train")
+        if split == "all":
+            tasks = dataset.bundles
+        else:
+            tasks = dataset.for_split(split)
+        if not tasks:
+            raise RuntimeError(f"No MemoryArena tasks selected for split {split!r}.")
+        return tuple(tasks)
+
+    def _validate_annotation_gate(self) -> AnnotationGateDecision:
+        mode = _required_env("AGENTMEMORY_ANNOTATION_GATE_MODE")
+        if mode not in {"provisional", "strict"}:
+            raise RuntimeError("AGENTMEMORY_ANNOTATION_GATE_MODE must be provisional or strict.")
+        manifest_path = _required_path("AGENTMEMORY_ANNOTATION_GATE_MANIFEST")
+        manifest_sha256 = _required_env("AGENTMEMORY_ANNOTATION_GATE_MANIFEST_SHA256")
+        run_id = _required_env("AGENTMEMORY_RUN_ID")
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            selected_task_ids = payload["allowed_task_ids"]
+        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise RuntimeError(f"Cannot read annotation gate task IDs: {manifest_path}") from exc
+
+        decision = validate_annotation_gate_manifest(
+            manifest_path,
+            expected_mode=mode,
+            expected_run_id=run_id,
+            expected_manifest_sha256=manifest_sha256,
+            selected_task_ids=selected_task_ids,
+            raw_dataset_path=_required_path("AGENTMEMORY_MEMORYARENA_RAW_PATH"),
+            domain_data_path=_required_path("MEMORYARENA_WEBSHOP_DOMAIN_DATA_PATH"),
+            items_shuffle_path=_required_path("MEMORYARENA_WEBSHOP_ITEMS_FILE"),
+            items_ins_v2_path=_required_path("MEMORYARENA_WEBSHOP_ATTR_FILE"),
+            lucene_index_manifest_path=_required_path("MEMORYARENA_LUCENE_INDEX_MANIFEST"),
+            lucene_index_root=_required_path("MEMORYARENA_WEBSHOP_SEARCH_ROOT") / "indexes-full",
+            audit_summary_path=_required_path("AGENTMEMORY_ANNOTATION_AUDIT_SUMMARY"),
+            audit_chains_path=_required_path("AGENTMEMORY_ANNOTATION_AUDIT_CHAINS"),
+            manual_evidence_path=_required_path("AGENTMEMORY_ANNOTATION_MANUAL_EVIDENCE"),
+            memoryarena_repo_path=_required_path("MEMORYARENA_ROOT"),
+            memoryarena_base_commit=_required_env("MEMORYARENA_BASE_COMMIT"),
+            price_seed=_env_int("AGENTMEMORY_WEBSHOP_PRICE_SEED", 233),
+        )
+        backend_metadata = self.backend.metadata()
+        if decision.price_table_sha256 != backend_metadata["price_table_sha256"]:
+            raise RuntimeError("Annotation gate and native backend price-table hashes disagree.")
+        if decision.price_table_row_count != backend_metadata["product_count"]:
+            raise RuntimeError("Annotation gate and native backend price-table row counts disagree.")
+        return decision
+
+
+def _required_path(key: str) -> Path:
+    value = os.environ.get(key)
+    if not value:
+        raise RuntimeError(f"Required environment variable is missing: {key}")
+    path = Path(value).expanduser().resolve()
+    if not path.exists():
+        raise RuntimeError(f"Required path does not exist for {key}: {path}")
+    return path
+
+
+def _required_env(key: str) -> str:
+    value = os.environ.get(key)
+    if not value:
+        raise RuntimeError(f"Required environment variable is missing: {key}")
+    return value
+
+
+def _env_int(key: str, default: int) -> int:
+    value = os.environ.get(key)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{key} must be an integer.") from exc
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 server = AgentMemoryWrapper()

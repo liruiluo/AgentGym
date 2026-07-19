@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Mapping
 
 import requests
@@ -23,8 +24,30 @@ from agentenv.controller.types import (
 
 AGENTMEMORY_FUNCTION_DESCRIPTION = [
     {
+        "name": "search",
+        "description": "Use the original WebShop search bar with policy-chosen keywords.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "keywords": {"type": "string", "description": "WebShop search keywords."},
+            },
+            "required": ["keywords"],
+        },
+    },
+    {
+        "name": "click",
+        "description": "Click one value currently exposed by the original WebShop page.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "item": {"type": "string", "description": "Current clickable value."},
+            },
+            "required": ["item"],
+        },
+    },
+    {
         "name": "add",
-        "description": "Store a high-value fact into long-term memory.",
+        "description": "Store exactly the provided key and value in hidden long-term memory.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -36,31 +59,31 @@ AGENTMEMORY_FUNCTION_DESCRIPTION = [
     },
     {
         "name": "update",
-        "description": "Update an existing long-term memory by memory_id or key.",
+        "description": "Update an existing long-term memory by memory_id.",
         "parameters": {
             "type": "object",
             "properties": {
                 "memory_id": {"type": "string", "description": "Memory id such as mem_0000."},
-                "key": {"type": "string", "description": "Optional memory key."},
+                "key": {"type": "string", "description": "Optional replacement memory key."},
                 "value": {"type": "string", "description": "New memory value."},
             },
-            "required": ["value"],
+            "required": ["memory_id", "value"],
         },
     },
     {
         "name": "delete",
-        "description": "Delete an obsolete or wrong long-term memory.",
+        "description": "Delete an obsolete or wrong long-term memory by memory_id.",
         "parameters": {
             "type": "object",
             "properties": {
                 "memory_id": {"type": "string", "description": "Memory id such as mem_0000."},
-                "key": {"type": "string", "description": "Optional memory key."},
             },
+            "required": ["memory_id"],
         },
     },
     {
         "name": "retrieve",
-        "description": "Retrieve relevant long-term memories into active short-term context.",
+        "description": "Match a query against text previously stored with add and expose matching memories as active context.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -72,60 +95,73 @@ AGENTMEMORY_FUNCTION_DESCRIPTION = [
     },
     {
         "name": "summary",
-        "description": "Replace active short-term context with a concise summary.",
+        "description": "Replace active context with policy-authored text grounded in visible context IDs.",
         "parameters": {
             "type": "object",
             "properties": {
                 "text": {"type": "string", "description": "Summary text."},
+                "source_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Visible S*/C* context IDs used for the summary.",
+                },
             },
-            "required": ["text"],
+            "required": ["text", "source_ids"],
         },
     },
     {
         "name": "filter",
-        "description": "Keep only active short-term context related to the query.",
+        "description": "Keep or drop already visible short-term context IDs.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "Filter query."},
+                "keep_ids": {"type": "array", "items": {"type": "string"}, "description": "Context IDs to keep, such as C0 or S0."},
+                "drop_ids": {"type": "array", "items": {"type": "string"}, "description": "Context IDs to drop, such as C0 or S0."},
+                "scope": {"type": "string", "description": "active, session, or all."},
             },
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "buy",
-        "description": "Buy a candidate product in the current shopping session.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "product_id": {"type": "string", "description": "Visible candidate product id."},
-            },
-            "required": ["product_id"],
-        },
-    },
-    {
-        "name": "answer",
-        "description": "Provide a final answer or bundle summary.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "text": {"type": "string", "description": "Answer text."},
-            },
-            "required": ["text"],
         },
     },
 ]
 
 FUNCTION_TO_ACTION = {
+    "search": "search",
+    "click": "click",
     "add": "ADD",
     "update": "UPDATE",
     "delete": "DELETE",
     "retrieve": "RETRIEVE",
     "summary": "SUMMARY",
     "filter": "FILTER",
-    "buy": "BUY",
-    "answer": "ANSWER",
 }
+
+MEMORY_ACTION_NAMES = ("ADD", "UPDATE", "DELETE", "RETRIEVE", "SUMMARY", "FILTER")
+NATIVE_ACTION_NAMES = ("search", "click")
+ACTION_NAMES = (*NATIVE_ACTION_NAMES, *MEMORY_ACTION_NAMES)
+NATIVE_ACTION_RE = re.compile(r"\A(search|click)\[([^\[\]\r\n]+)\]\Z")
+MEMORY_ACTION_RE = re.compile(
+    r"\A(" + "|".join(MEMORY_ACTION_NAMES) + r")\s+(\{.*\})\Z",
+    flags=re.DOTALL,
+)
+
+# In thinking mode the model reasons inside a <think>...</think> block before the
+# action. Depending on where the opening tag was emitted -- inside the response,
+# or already in the chat-template generation prompt -- the captured text is either
+# "<think>reasoning</think>\naction" or "reasoning</think>\naction". Either way,
+# only the text after the final </think> is the action to execute.
+_THINK_CLOSE_RE = re.compile(r"</think\s*>", flags=re.IGNORECASE)
+
+
+def strip_think_prefix(text: str) -> str:
+    """Drop a leading chain-of-thought block, returning just the action portion.
+
+    Everything up to and including the last </think> is reasoning and is removed.
+    Text with no </think> (legacy no-thinking replies) is returned unchanged, so
+    this is a safe no-op when thinking is disabled.
+    """
+    matches = list(_THINK_CLOSE_RE.finditer(text))
+    if matches:
+        return text[matches[-1].end():]
+    return text
 
 
 class AgentMemoryAdapter(BaseAdapter):
@@ -135,7 +171,7 @@ class AgentMemoryAdapter(BaseAdapter):
                 {
                     "from": "human",
                     "loss": None,
-                    "value": "You are operating in AgentMemoryGym, a multi-session memory-dependent agent environment. Every round you receive the current active context and task view. Long-term memory is hidden unless you call RETRIEVE. Use memory tools only when useful, because they have a small cost. Reply in exactly this format:\n\nThought:\nbrief reasoning\n\nAction:\n<one action>\n\nValid actions are ADD/UPDATE/DELETE/RETRIEVE/SUMMARY/FILTER/BUY/ANSWER with a JSON object payload, e.g. ADD {\"key\": \"tv_size\", \"value\": \"The purchased TV is 75 inches.\"} or BUY {\"product_id\": \"mount_b\"}.",
+                    "value": "You are operating in AgentMemoryGym on the original MemoryArena WebShop surface. Native shopping actions are search[keywords] and click[current clickable value]; click[Buy Now] commits the current product. ADD stores the provided key/value verbatim in hidden long-term memory. RETRIEVE matches its query against text previously stored with ADD and exposes matches as C* context. SUMMARY and FILTER operate only on visible S*/C* items. A committed purchase that advances the session clears the native page state and S*/C* context; long-term memory remains hidden until RETRIEVE. Once you have selected the current product, use ADD before click[Buy Now] to save one concise memory containing its identity and visible compatibility-relevant attributes. At the start of every later shopping session, use RETRIEVE to expose the relevant prior-purchase memories before choosing a compatible product. The environment does not perform these memory actions for you and does not reject an otherwise correct purchase when ADD was skipped. A purchase that fails verification ends the episode without revealing the verifier reason. Reply in exactly this format:\n\nThought:\nbrief reasoning\n\nAction:\n<exactly one native bracket action or uppercase memory-tool JSON action>",
                 }
             ),
             ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
@@ -145,7 +181,7 @@ class AgentMemoryAdapter(BaseAdapter):
                 {
                     "from": "human",
                     "loss": None,
-                    "value": "You are operating in AgentMemoryGym. Long-term memory is hidden unless you retrieve it. Use the available functions to manage memory or perform task actions.\n\n"
+                    "value": "You are operating in AgentMemoryGym on the original MemoryArena WebShop surface. Long-term memory is hidden unless you retrieve it. Before committing the selected product, use add to save its identity and visible compatibility-relevant attributes; at the start of every later shopping session, use retrieve to expose the relevant prior-purchase memories before choosing. The environment does not enforce add-before-buy. Invoke exactly one available function.\n\n"
                     + format_function_call_prompt(AGENTMEMORY_FUNCTION_DESCRIPTION),
                 }
             ),
@@ -156,13 +192,48 @@ class AgentMemoryAdapter(BaseAdapter):
                 {
                     "from": "human",
                     "loss": None,
-                    "value": "You are operating in AgentMemoryGym. Long-term memory is hidden unless you retrieve it. Write Python code to call exactly one available function.\n\n"
+                    "value": "You are operating in AgentMemoryGym on the original MemoryArena WebShop surface. Long-term memory is hidden unless you retrieve it. Before committing the selected product, use add to save its identity and visible compatibility-relevant attributes; at the start of every later shopping session, use retrieve to expose the relevant prior-purchase memories before choosing. The environment does not enforce add-before-buy. Write Python code to call exactly one available function.\n\n"
                     + format_code_as_action_prompt(AGENTMEMORY_FUNCTION_DESCRIPTION),
                 }
             ),
             ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
         ),
     }
+
+    @staticmethod
+    def parse_react(text: str) -> ActionWithTought:
+        # Thinking mode emits "<think>reasoning</think>\n<action>". Separate the
+        # reasoning first: a stray "Action:"/"search["/"click[" inside the
+        # reasoning must not be mistaken for the executable action. The removed
+        # reasoning is kept as the thought. For legacy no-thinking replies
+        # strip_think_prefix is a no-op, so behaviour is unchanged.
+        action_text = strip_think_prefix(text)
+        think_thought = ""
+        if action_text != text:
+            removed = text[: len(text) - len(action_text)]
+            think_thought = re.sub(r"</?think\s*>", "", removed, flags=re.IGNORECASE).strip()
+
+        if "Action:" not in action_text:
+            bare_action = extract_bare_env_action(action_text)
+            if bare_action:
+                return ActionWithTought(thought=think_thought, action=bare_action)
+        parsed = BaseAdapter.parse_react(action_text)
+        if parsed.action:
+            try:
+                action_name, arguments = parse_env_action(parsed.action)
+                return ActionWithTought(
+                    thought=parsed.thought or think_thought,
+                    action=format_action(action_name, arguments),
+                )
+            except Exception:
+                return ActionWithTought(
+                    thought=parsed.thought or think_thought,
+                    action="",
+                )
+        bare_action = extract_bare_env_action(action_text)
+        if bare_action:
+            return ActionWithTought(thought=parsed.thought or think_thought, action=bare_action)
+        return ActionWithTought(thought=parsed.thought or think_thought, action="")
 
     @staticmethod
     def parse_function_calling(text: str) -> ActionWithTought:
@@ -220,6 +291,11 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self.env_server_base = env_server_base
         self.timeout = timeout
         self.metadata = self.get_metadata()
+        if self.metadata.get("surface") != "memoryarena_webshop_native_v1":
+            raise RuntimeError(
+                "AgentMemoryGym client requires the original MemoryArena WebShop surface; "
+                f"observed {self.metadata.get('surface')!r}."
+            )
         self.data_len = data_len if data_len is not None else int(self.metadata["task_count"])
         response = requests.post(f"{self.env_server_base}/create", timeout=self.timeout)
         if response.status_code != 200:
@@ -254,7 +330,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
 
     def step(self, action: str) -> StepOutput:
         if action.endswith("</s>"):
-            action = action[:-5]
+            action = action[:-4]
         try:
             parsed_action = self.adapter_cls.action_parser(action, self.action_format)
         except Exception as exc:
@@ -276,6 +352,10 @@ class AgentMemoryEnvClient(BaseEnvClient):
             reward=response["reward"],
             done=response["done"],
         )
+
+    @property
+    def sample_excluded(self) -> bool:
+        return bool(self.info.get("env_info", {}).get("sample_excluded", False))
 
     def reset(self, idx: int = 0) -> dict[str, Any]:
         response = self.post("reset", {"data_idx": idx})
@@ -308,15 +388,43 @@ class AgentMemoryTask(BaseTask):
 
 
 def format_action(action_name: str, arguments: dict[str, Any]) -> str:
+    if action_name == "search":
+        return f"search[{_require_function_text(arguments, 'keywords')}]"
+    if action_name == "click":
+        return f"click[{_require_function_text(arguments, 'item')}]"
+    if action_name not in MEMORY_ACTION_NAMES:
+        raise ValueError(f"Unsupported AgentMemoryGym action: {action_name}")
     return f"{action_name} {json.dumps(arguments, ensure_ascii=False)}"
 
 
+def extract_bare_env_action(text: str) -> str:
+    # Remove any leading <think>...</think> reasoning so only the action remains.
+    cleaned = strip_think_prefix(text).strip()
+    if cleaned.endswith("</s>"):
+        cleaned = cleaned[:-4].strip()
+    # The entire post-thinking remainder must be exactly one action. This keeps
+    # multi-line memory JSON intact while rejecting extra prefix/suffix text.
+    try:
+        action_name, arguments = parse_env_action(cleaned)
+        return format_action(action_name, arguments)
+    except Exception:
+        return ""
+
+
 def parse_env_action(action: str) -> tuple[str, dict[str, Any]]:
-    parts = action.strip().split(" ", 1)
-    action_name = parts[0]
-    if len(parts) == 1:
-        return action_name, {}
-    return action_name, json.loads(parts[1])
+    cleaned = action.strip()
+    native_match = NATIVE_ACTION_RE.fullmatch(cleaned)
+    if native_match is not None:
+        argument = native_match.group(2).strip()
+        key = "keywords" if native_match.group(1) == "search" else "item"
+        return native_match.group(1), {key: argument}
+    memory_match = MEMORY_ACTION_RE.fullmatch(cleaned)
+    if memory_match is None:
+        raise ValueError("Expected one native bracket action or uppercase memory-tool JSON action.")
+    payload = json.loads(memory_match.group(2))
+    if not isinstance(payload, dict):
+        raise ValueError("Memory-tool payload must be a JSON object.")
+    return memory_match.group(1), payload
 
 
 def build_code_action_functions() -> dict[str, Any]:
@@ -327,3 +435,14 @@ def build_code_action_functions() -> dict[str, Any]:
         return code_action
 
     return {function_name: make_function(action_name) for function_name, action_name in FUNCTION_TO_ACTION.items()}
+
+
+def _require_function_text(arguments: dict[str, Any], key: str) -> str:
+    if set(arguments) != {key}:
+        raise ValueError(f"Expected exactly one function argument: {key}")
+    value = arguments[key]
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Function argument {key} must be a non-empty string.")
+    if any(char in value for char in "[]\r\n"):
+        raise ValueError(f"Function argument {key} contains an invalid bracket or newline.")
+    return value.strip()

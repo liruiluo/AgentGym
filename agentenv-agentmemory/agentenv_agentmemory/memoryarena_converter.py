@@ -305,7 +305,7 @@ def extract_instruction(question: str) -> str:
     section = question.split("----------------------------------------------------------------")[-1].strip()
     if "**Available Options:**" in section:
         section = section.split("**Available Options:**", maxsplit=1)[0].strip()
-    return section + "\nUse memory tools to preserve any product attributes needed by later products."
+    return section
 
 
 def infer_target_product(

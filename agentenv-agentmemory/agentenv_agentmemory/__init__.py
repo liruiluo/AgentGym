@@ -1,4 +1,4 @@
-from .environment import AgentMemoryEnv
+from .memoryarena_webshop_env import MemoryArenaWebShopEnv
 
 
 def launch() -> None:
@@ -7,4 +7,4 @@ def launch() -> None:
     run_launch()
 
 
-__all__ = ["AgentMemoryEnv", "launch"]
+__all__ = ["MemoryArenaWebShopEnv", "launch"]
