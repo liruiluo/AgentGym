@@ -333,12 +333,15 @@ class AgentMemoryEnvClient(BaseEnvClient):
             action = action[:-4]
         try:
             parsed_action = self.adapter_cls.action_parser(action, self.action_format)
-        except Exception as exc:
-            return StepOutput(
-                state=f"Invalid Action: {exc}\n\n{self.observe()}",
-                reward=-0.1,
-                done=False,
-            )
+        except Exception:
+            # The environment owns step advancement, rejection rewards, and the
+            # formal reward ledger even when the adapter cannot parse the action.
+            parsed_action = action
+        if not isinstance(parsed_action, str) or not parsed_action.strip():
+            # Some adapter paths report an unparseable action as an empty string
+            # instead of raising. Preserve the sampled action so the environment
+            # remains the authority for validity, reward, and formal evidence.
+            parsed_action = action
         response = self.post("step", {"action": parsed_action})
         self.info = {
             "observation": response["observation"],

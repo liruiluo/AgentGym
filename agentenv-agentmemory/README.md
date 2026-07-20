@@ -24,7 +24,7 @@ a purchase. There is no formal synthetic `SEARCH`, `BUY`, `ANSWER`, or
 - One episode is one complete six-session bundled-shopping chain.
 - A correct purchase advances immediately without requiring `ADD` or another
   memory action first.
-- A wrong ASIN or cumulative budget overflow gives `-0.5` and terminates the
+- A wrong ASIN or cumulative budget overflow gives `-0.01` and terminates the
   chain without verifier feedback or retry.
 - Each correct non-final purchase gives `+1.0`; the sixth also receives the
   final `+1.0` bundle bonus.

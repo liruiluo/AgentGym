@@ -11,6 +11,7 @@ from agentenv.controller.types import ActionFormat
 from agentenv.envs.agentmemory import (
     AGENTMEMORY_FUNCTION_DESCRIPTION,
     AgentMemoryAdapter,
+    AgentMemoryEnvClient,
     extract_bare_env_action,
     parse_env_action,
 )
@@ -90,6 +91,51 @@ class NativeAgentMemoryAdapterTests(unittest.TestCase):
         self.assertIn("click[Buy Now]", prompt)
         self.assertNotIn(" BUY ", prompt)
         self.assertNotIn("GROUND", prompt)
+
+    def test_client_sends_unparsed_action_to_environment_for_authoritative_rejection(self) -> None:
+        class RejectingAdapter:
+            @staticmethod
+            def action_parser(action, action_format):
+                del action, action_format
+                raise ValueError("malformed policy action")
+
+        client = AgentMemoryEnvClient.__new__(AgentMemoryEnvClient)
+        client.adapter_cls = RejectingAdapter
+        client.action_format = ActionFormat.REACT
+        client.metadata = {"surface": "memoryarena_webshop_native_v1"}
+        client.info = {
+            "observation": "old observation",
+            "reward": 0.0,
+            "done": False,
+            "env_info": {"step": 3},
+            "metadata": client.metadata,
+        }
+        raw_action = "not a valid action"
+        component = {
+            "name": "invalid_action",
+            "value": -0.01,
+            "op": "INVALID",
+            "step": 4,
+        }
+
+        def post(path, data):
+            self.assertEqual(path, "step")
+            self.assertEqual(data, {"action": raw_action})
+            return {
+                "observation": "authoritative invalid action response",
+                "reward": -0.01,
+                "done": False,
+                "info": {"step": 4, "reward_components": [component]},
+            }
+
+        client.post = post
+        output = client.step(raw_action)
+
+        self.assertEqual(output.state, "authoritative invalid action response")
+        self.assertEqual(output.reward, -0.01)
+        self.assertFalse(output.done)
+        self.assertEqual(client.info["env_info"]["step"], 4)
+        self.assertEqual(client.info["env_info"]["reward_components"], [component])
 
 
 if __name__ == "__main__":

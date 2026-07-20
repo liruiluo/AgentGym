@@ -6,9 +6,17 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+from .formal_native_contract import build_reward_components, infer_raw_action_op
 from .memoryarena_dataset import MemoryArenaBundle
 from .memory_state import MemoryEntry, rank_memory_entries_bm25
 from .native_webshop_backend import NativePage, NativeWebShopBackend
+from .reward_hierarchy import (
+    EXACT_REPEAT_ACTION_PENALTY,
+    FIRST_VALID_ADD_BONUS,
+    FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
+    INVALID_ACTION_PENALTY,
+    WRONG_BUY_TERMINAL_FAILURE,
+)
 
 
 MEMORY_TOOL_OPS = {"ADD", "UPDATE", "DELETE", "RETRIEVE", "SUMMARY", "FILTER"}
@@ -68,7 +76,10 @@ class MemoryArenaWebShopEnv:
         self.session_trace: list[str] = []
         self.purchase_ledger: list[dict[str, Any]] = []
         self.last_tool_ops: list[dict[str, Any]] = []
+        self.last_reward_components: list[dict[str, Any]] = []
         self.last_memory_diff = _empty_memory_diff()
+        self.valid_zero_reward_action_counts_this_session: dict[str, int] = {}
+        self.rewarded_memory_ops_this_session: set[str] = set()
 
     def reset(self, seed: int | None = None, data_idx: int = 0):
         del seed
@@ -89,7 +100,9 @@ class MemoryArenaWebShopEnv:
         self.session_trace = []
         self.purchase_ledger = []
         self.last_tool_ops = []
+        self.last_reward_components = []
         self.last_memory_diff = _empty_memory_diff()
+        self._reset_session_reward_state()
         self.native_page = self.backend.open_session(
             self._new_native_session_token(),
             self.bundle.questions[0],
@@ -102,20 +115,35 @@ class MemoryArenaWebShopEnv:
 
         self.step_count += 1
         self.last_tool_ops = []
+        self.last_reward_components = []
         self.last_memory_diff = _empty_memory_diff()
         action_text = action.strip() if isinstance(action, str) else repr(action)
+        parsed: ParsedAction | None = None
+        action_executed = False
         try:
             parsed = parse_mixed_action(action)
             if parsed.is_native:
                 observation, reward, done = self._step_native(parsed)
             else:
                 observation, reward, done = self._step_memory(parsed)
+            action_executed = True
         except InvalidNativeAction as exc:
             message = f"Invalid action: {exc}"
             self._append_trace(action_text, message)
             observation = self.render_observation(message)
-            reward = -0.1
+            reward = INVALID_ACTION_PENALTY
             done = False
+            attempted_op = parsed.op if parsed is not None else infer_raw_action_op(action_text)
+            self.last_reward_components = [
+                {
+                    "name": "invalid_action",
+                    "value": reward,
+                    "op": attempted_op,
+                    "step": self.step_count,
+                    "raw_action": action_text,
+                    "error": str(exc),
+                }
+            ]
         except NativeWebShopInfrastructureError as exc:
             self.status = "infra_error"
             self.done = True
@@ -133,6 +161,31 @@ class MemoryArenaWebShopEnv:
             )
             reward = 0.0
             done = True
+            attempted_op = parsed.op if parsed is not None else infer_raw_action_op(action_text)
+            self.last_reward_components = [
+                {
+                    "name": "infrastructure_error_excluded",
+                    "value": reward,
+                    "op": attempted_op,
+                    "step": self.step_count,
+                    "error_type": type(exc).__name__,
+                }
+            ]
+
+        if not self.last_reward_components:
+            self.last_reward_components = build_reward_components(
+                raw_action=action_text,
+                reward=reward,
+                step=self.step_count,
+                tool_ops=self.last_tool_ops,
+            )
+        if action_executed and parsed is not None:
+            reward = self._apply_session_action_shaping(
+                parsed=parsed,
+                raw_action=action_text,
+                reward=reward,
+                done=done,
+            )
 
         self.done = bool(done)
         return observation, float(reward), self.done, False, self.build_info()
@@ -179,6 +232,7 @@ class MemoryArenaWebShopEnv:
             "status": self.status,
             "current_subtask_index": self.current_session_index,
             "tool_ops": list(self.last_tool_ops),
+            "reward_components": [dict(item) for item in self.last_reward_components],
             "memory_ops": [item for item in self.last_tool_ops if item.get("op") in MEMORY_TOOL_OPS],
             "memory_state_diff": self.last_memory_diff,
             "purchase_history": list(self.purchase_ledger),
@@ -202,7 +256,7 @@ class MemoryArenaWebShopEnv:
                 "raw_action": parsed.raw_action,
                 "step": self.step_count,
             }
-            if parsed.op == "search":
+            if parsed.op == "SEARCH":
                 tool_op["result_count"] = sum(
                     1 for value in page.clickables
                     if self.backend.has_product(str(value))
@@ -214,6 +268,53 @@ class MemoryArenaWebShopEnv:
         if parsed.raw_action.lower() != "click[buy now]":
             raise NativeWebShopInfrastructureError("Native backend committed a purchase for a non-purchase action.")
         return self._commit_purchase(parsed.raw_action, page)
+
+    def _apply_session_action_shaping(
+        self,
+        *,
+        parsed: ParsedAction,
+        raw_action: str,
+        reward: float,
+        done: bool,
+    ) -> float:
+        if done or float(reward) != 0.0:
+            return float(reward)
+
+        occurrence = self.valid_zero_reward_action_counts_this_session.get(raw_action, 0) + 1
+        self.valid_zero_reward_action_counts_this_session[raw_action] = occurrence
+
+        component_name: str | None = None
+        component_value = 0.0
+        if parsed.op == "ADD" and "ADD" not in self.rewarded_memory_ops_this_session:
+            self.rewarded_memory_ops_this_session.add("ADD")
+            component_name = "memory_add_first_valid_this_session"
+            component_value = FIRST_VALID_ADD_BONUS
+        elif (
+            parsed.op == "RETRIEVE"
+            and self.current_session_index >= 1
+            and "RETRIEVE" not in self.rewarded_memory_ops_this_session
+        ):
+            self.rewarded_memory_ops_this_session.add("RETRIEVE")
+            component_name = "memory_retrieve_first_valid_later_session"
+            component_value = FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS
+        elif occurrence >= 2:
+            component_name = "exact_repeated_valid_zero_reward_action"
+            component_value = EXACT_REPEAT_ACTION_PENALTY
+
+        if component_name is None:
+            return float(reward)
+        self.last_reward_components.append(
+            {
+                "name": component_name,
+                "value": component_value,
+                "op": parsed.op,
+                "step": self.step_count,
+                "raw_action": raw_action,
+                "session_index": self.current_session_index,
+                "occurrence": occurrence,
+            }
+        )
+        return float(reward) + component_value
 
     def _commit_purchase(self, raw_action: str, page: NativePage) -> tuple[str, float, bool]:
         bundle = self._require_bundle()
@@ -246,13 +347,18 @@ class MemoryArenaWebShopEnv:
         if not purchase_correct:
             self.status = "failed_purchase"
             self._close_native_session()
-            return self.render_terminal_observation("The shopping episode has ended."), -0.5, True
+            return (
+                self.render_terminal_observation("The shopping episode has ended."),
+                WRONG_BUY_TERMINAL_FAILURE,
+                True,
+            )
 
         self.spent_cents = new_spent_cents
         self.current_session_index += 1
         self._close_native_session()
         self.active_context = []
         self.session_trace = []
+        self._reset_session_reward_state()
         if final_purchase:
             self.status = "success"
             self.native_page = page
@@ -407,6 +513,10 @@ class MemoryArenaWebShopEnv:
     def _append_trace(self, action: str, result: str) -> None:
         self.session_trace.append(f"Action: {action}\nResult: {result}")
 
+    def _reset_session_reward_state(self) -> None:
+        self.valid_zero_reward_action_counts_this_session = {}
+        self.rewarded_memory_ops_this_session = set()
+
     def _new_native_session_token(self) -> str:
         token = f"amg_{self.env_uid}_{self.episode_counter}_{self.current_session_index}"
         self.native_session_token = token
@@ -439,7 +549,7 @@ def parse_mixed_action(action: str) -> ParsedAction:
         if not argument:
             raise InvalidNativeAction(f"{native_match.group(1)} argument must be non-empty.")
         raw_action = f"{native_match.group(1)}[{argument}]"
-        return ParsedAction(op=native_match.group(1), raw_action=raw_action)
+        return ParsedAction(op=native_match.group(1).upper(), raw_action=raw_action)
 
     memory_match = MEMORY_ACTION_RE.fullmatch(text)
     if memory_match is None:
