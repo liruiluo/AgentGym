@@ -7,7 +7,11 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from .annotation_gate import AnnotationGateDecision, validate_annotation_gate_manifest
+from .annotation_gate import (
+    ANNOTATION_GATE_MODES,
+    AnnotationGateDecision,
+    validate_annotation_gate_manifest,
+)
 from .memoryarena_dataset import (
     EXPECTED_DOMAIN_DATA_SHA256,
     MemoryArenaDataset,
@@ -184,8 +188,12 @@ class AgentMemoryWrapper:
 
     def _validate_annotation_gate(self) -> AnnotationGateDecision:
         mode = _required_env("AGENTMEMORY_ANNOTATION_GATE_MODE")
-        if mode not in {"provisional", "strict"}:
-            raise RuntimeError("AGENTMEMORY_ANNOTATION_GATE_MODE must be provisional or strict.")
+        if mode not in ANNOTATION_GATE_MODES:
+            raise RuntimeError(
+                "AGENTMEMORY_ANNOTATION_GATE_MODE must be one of: "
+                + ", ".join(ANNOTATION_GATE_MODES)
+                + "."
+            )
         manifest_path = _required_path("AGENTMEMORY_ANNOTATION_GATE_MANIFEST")
         manifest_sha256 = _required_env("AGENTMEMORY_ANNOTATION_GATE_MANIFEST_SHA256")
         run_id = _required_env("AGENTMEMORY_RUN_ID")

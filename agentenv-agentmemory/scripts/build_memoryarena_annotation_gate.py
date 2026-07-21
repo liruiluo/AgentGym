@@ -5,6 +5,7 @@ import argparse
 from pathlib import Path
 
 from agentenv_agentmemory.annotation_gate import (
+    ANNOTATION_GATE_MODES,
     AnnotationGateError,
     build_annotation_gate_bindings,
     build_annotation_gate_manifest,
@@ -18,7 +19,7 @@ def parse_args() -> argparse.Namespace:
         description="Build and validate a run-specific MemoryArena annotation gate."
     )
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--mode", choices=("provisional", "strict"), required=True)
+    parser.add_argument("--mode", choices=ANNOTATION_GATE_MODES, required=True)
     parser.add_argument("--raw-data", required=True)
     parser.add_argument("--domain-data", required=True)
     parser.add_argument("--items-file", required=True)

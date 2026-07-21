@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import os
 
+from .annotation_gate import ANNOTATION_GATE_MODES
+
 
 NATIVE_SURFACE = "memoryarena_webshop_native_v1"
 
@@ -31,7 +33,7 @@ def launch() -> None:
     parser.add_argument("--price-seed", type=int, default=233)
     parser.add_argument(
         "--annotation-gate-mode",
-        choices=["provisional", "strict"],
+        choices=ANNOTATION_GATE_MODES,
         default="provisional",
     )
     parser.add_argument("--annotation-gate-manifest", required=True)

@@ -74,6 +74,12 @@ the complete six-step chains used by that split are listed as passed. A
 provisional run must bind the current audit manifest and cannot support a final
 capability claim.
 
+`--annotation-gate-mode trust_all` preserves every canonical audit verdict in
+the manifest while allowing `pass`, `unknown`, `fail`, and
+`semantic_ambiguity` chains. Use it only when the run contract explicitly
+treats the upstream annotations as authoritative; it does not relabel those
+audit verdicts as passed.
+
 ## Tests
 
 Mac contract tests do not import the heavy MemoryArena runtime:

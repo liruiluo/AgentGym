@@ -10,6 +10,7 @@ from collections import Counter
 from pathlib import Path
 
 from agentenv_agentmemory.annotation_gate import (
+    ANNOTATION_GATE_MODES,
     AnnotationGateBindings,
     AnnotationGateError,
     AnnotationGateTrustRoot,
@@ -325,6 +326,42 @@ class AnnotationGateTests(unittest.TestCase):
         write_annotation_gate_manifest(manifest, self.fixture.manifest)
         with self.assertRaisesRegex(AnnotationGateError, "manifest SHA256 mismatch"):
             self.fixture.validate(["fixture_task_3"], mode="strict")
+
+    def test_trust_all_allows_every_verdict_without_relabeling(self) -> None:
+        manifest = self.fixture.build("trust_all")
+        manifest_sha256 = self.fixture.write(manifest)
+        all_task_ids = [f"fixture_task_{index}" for index in range(4)]
+
+        self.assertEqual(
+            ANNOTATION_GATE_MODES,
+            ("provisional", "strict", "trust_all"),
+        )
+        self.assertEqual(manifest["allowed_task_ids"], all_task_ids)
+        self.assertEqual(manifest["excluded_task_ids"], [])
+        self.assertEqual(
+            manifest["policy"]["allowed_verdicts"],
+            ["fail", "pass", "semantic_ambiguity", "unknown"],
+        )
+        self.assertEqual(
+            [row["verdict"] for row in manifest["task_verdicts"]],
+            list(self.fixture.statuses),
+        )
+        self.assertFalse(manifest["policy"]["unknown_is_proven_correct"])
+
+        decision = self.fixture.validate(
+            all_task_ids,
+            mode="trust_all",
+            expected_manifest_sha256=manifest_sha256,
+        )
+        self.assertEqual(decision.mode, "trust_all")
+        self.assertEqual(decision.allowed_task_ids, tuple(all_task_ids))
+
+    def test_unknown_mode_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            AnnotationGateError,
+            "expected one of provisional, strict, trust_all",
+        ):
+            self.fixture.build("accept_anything")
 
     def test_manifest_tamper_is_rebuilt_from_canonical_evidence(self) -> None:
         manifest = self.fixture.build()

@@ -29,7 +29,9 @@ VERDICTS = frozenset({"pass", "fail", "unknown", "semantic_ambiguity"})
 ALLOWED_VERDICTS = {
     "provisional": frozenset({"pass", "unknown"}),
     "strict": frozenset({"pass"}),
+    "trust_all": VERDICTS,
 }
+ANNOTATION_GATE_MODES = tuple(ALLOWED_VERDICTS)
 STEP_CHECKS = frozenset(
     {
         "target_alignment",
@@ -1176,7 +1178,8 @@ def _allowed_verdicts(mode: str) -> frozenset[str]:
         return ALLOWED_VERDICTS[mode]
     except KeyError as exc:
         raise AnnotationGateError(
-            f"Unsupported annotation gate mode {mode!r}; expected provisional or strict."
+            f"Unsupported annotation gate mode {mode!r}; expected one of "
+            f"{', '.join(ANNOTATION_GATE_MODES)}."
         ) from exc
 
 
