@@ -170,9 +170,24 @@ class MixedActionParserTests(unittest.TestCase):
 
 
 class MemoryArenaWebShopEnvTests(unittest.TestCase):
-    def make_env(self, *, backend: FakeNativeBackend | None = None, budget_cents: int = 10_000):
+    def make_env(
+        self,
+        *,
+        backend: FakeNativeBackend | None = None,
+        budget_cents: int = 10_000,
+        first_valid_add_reward: float = FIRST_VALID_ADD_BONUS,
+        first_valid_later_session_retrieve_reward: float = FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
+    ):
         backend = backend or FakeNativeBackend()
-        env = MemoryArenaWebShopEnv(bundles=[make_bundle(budget_cents=budget_cents)], backend=backend, env_uid="test")
+        env = MemoryArenaWebShopEnv(
+            bundles=[make_bundle(budget_cents=budget_cents)],
+            backend=backend,
+            env_uid="test",
+            first_valid_add_reward=first_valid_add_reward,
+            first_valid_later_session_retrieve_reward=(
+                first_valid_later_session_retrieve_reward
+            ),
+        )
         env.reset()
         return env, backend
 
@@ -345,6 +360,43 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
             names=["retrieve_transition", "memory_retrieve_first_valid_later_session"],
             step=12,
         )
+
+    def test_later_session_retrieve_bonus_supports_explicit_run_override(self) -> None:
+        env, _ = self.make_env(first_valid_later_session_retrieve_reward=0.1)
+
+        self.assertEqual(
+            env.reward_contract()["first_valid_later_session_retrieve_reward"],
+            0.1,
+        )
+        _, initial_info = env.reset()
+        self.assertEqual(
+            initial_info["reward_contract"][
+                "first_valid_later_session_retrieve_reward"
+            ],
+            0.1,
+        )
+
+        purchase(env, TARGETS[0])
+        _, reward, _, _, info = env.step('RETRIEVE {"query":"prior","top_k":3}')
+
+        self.assertEqual(reward, 0.1)
+        self.assert_reward_ledger(
+            reward=reward,
+            info=info,
+            op="RETRIEVE",
+            names=["retrieve_transition", "memory_retrieve_first_valid_later_session"],
+            step=4,
+        )
+        self.assertEqual(info["reward_components"][-1]["value"], 0.1)
+
+    def test_memory_reward_override_rejects_nonfinite_or_negative_values(self) -> None:
+        for value in (-0.1, float("nan"), float("inf"), True):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                MemoryArenaWebShopEnv(
+                    bundles=[make_bundle()],
+                    backend=FakeNativeBackend(),
+                    first_valid_later_session_retrieve_reward=value,
+                )
 
     def test_exact_repeated_valid_action_penalty_resets_on_session_advance(self) -> None:
         env, _ = self.make_env()

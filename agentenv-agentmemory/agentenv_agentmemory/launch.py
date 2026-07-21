@@ -4,6 +4,10 @@ import argparse
 import os
 
 from .annotation_gate import ANNOTATION_GATE_MODES
+from .reward_hierarchy import (
+    FIRST_VALID_ADD_BONUS,
+    FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
+)
 
 
 NATIVE_SURFACE = "memoryarena_webshop_native_v1"
@@ -32,6 +36,16 @@ def launch() -> None:
     parser.add_argument("--split", choices=["train", "dev", "test", "all"], default="train")
     parser.add_argument("--price-seed", type=int, default=233)
     parser.add_argument(
+        "--memory-first-add-reward",
+        type=float,
+        default=FIRST_VALID_ADD_BONUS,
+    )
+    parser.add_argument(
+        "--memory-first-later-retrieve-reward",
+        type=float,
+        default=FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
+    )
+    parser.add_argument(
         "--annotation-gate-mode",
         choices=ANNOTATION_GATE_MODES,
         default="provisional",
@@ -57,6 +71,10 @@ def launch() -> None:
         "AGENTMEMORY_RUN_ID": args.run_id,
         "AGENTMEMORY_SPLIT": args.split,
         "AGENTMEMORY_WEBSHOP_PRICE_SEED": str(args.price_seed),
+        "AGENTMEMORY_FIRST_VALID_ADD_REWARD": str(args.memory_first_add_reward),
+        "AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD": str(
+            args.memory_first_later_retrieve_reward
+        ),
         "AGENTMEMORY_ANNOTATION_GATE_MODE": args.annotation_gate_mode,
         "AGENTMEMORY_ANNOTATION_GATE_MANIFEST": args.annotation_gate_manifest,
         "AGENTMEMORY_ANNOTATION_GATE_MANIFEST_SHA256": args.annotation_gate_manifest_sha256,
