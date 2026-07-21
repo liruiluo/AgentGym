@@ -6,7 +6,7 @@ import json
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -15,6 +15,7 @@ from ..runtime.domain import DomainContract, DomainTransition
 
 TRAVEL_SURFACE = "memoryarena_travel_planner_v3"
 TRAVEL_DOMAIN_ID = "travel_planner"
+TRAVEL_MAX_STEPS_PER_PHASE = 30
 TRAVEL_TOOL_OPS = (
     "FlightSearch",
     "RestaurantSearch",
@@ -24,18 +25,27 @@ TRAVEL_TOOL_OPS = (
     "CitySearch",
 )
 TRAVEL_UPSTREAM_RELATIVE_PATHS = (
+    "run_travel.py",
+    "agent/travel_planner.py",
     "env/env_systems/travel_env.py",
     "env/env_systems/travel_planner_env/data_loader.py",
     "env/env_systems/travel_planner_env/eval.py",
     "env/env_systems/travel_planner_env/prompts.py",
     "env/env_systems/travel_planner_env/tool_executor.py",
     "env/env_systems/travel_planner_env/tool_schemas.py",
+    "env/env_systems/travel_planner_env/tools/accommodations.py",
+    "env/env_systems/travel_planner_env/tools/attractions.py",
+    "env/env_systems/travel_planner_env/tools/cities.py",
+    "env/env_systems/travel_planner_env/tools/distance_matrix.py",
+    "env/env_systems/travel_planner_env/tools/flights.py",
+    "env/env_systems/travel_planner_env/tools/func.py",
+    "env/env_systems/travel_planner_env/tools/restaurants.py",
 )
 _ACTION_RE = re.compile(
     r"\A(" + "|".join((*TRAVEL_TOOL_OPS, "SUBMIT_PLAN")) + r")\s+(\{.*\})\Z",
     flags=re.DOTALL,
 )
-_NAME_RE = re.compile(r"\bI am\s+([^\.\n]+)", flags=re.IGNORECASE)
+_NAME_RE = re.compile(r"\AI am (\w+)\.")
 
 
 TRAVEL_CONTRACT = DomainContract(
@@ -57,7 +67,7 @@ TRAVEL_CONTRACT = DomainContract(
         'CitySearch {"state": "..."}',
         'SUBMIT_PLAN {"plan": "=== Name\'s Plan ===\\nDay 1: ..."}',
     ),
-    max_steps=30,
+    max_steps=TRAVEL_MAX_STEPS_PER_PHASE,
 )
 
 
@@ -72,6 +82,7 @@ class TravelPhase:
 @dataclass(frozen=True)
 class TravelTask:
     task_id: str
+    source_id: Any
     base_person: dict[str, Any]
     phases: tuple[TravelPhase, ...]
 
@@ -97,6 +108,11 @@ class TravelPlannerFactory:
         self.tasks_path = Path(tasks_path).expanduser().resolve()
         self.tasks = load_travel_tasks(self.tasks_path)
         self.task_count = len(self.tasks)
+        self.max_phase_count = max(len(task.phases) for task in self.tasks)
+        self.contract = replace(
+            TRAVEL_CONTRACT,
+            max_steps=TRAVEL_MAX_STEPS_PER_PHASE * self.max_phase_count,
+        )
         self.dataset_sha256 = _sha256_file(self.tasks_path)
         self.memoryarena_root = (
             Path(memoryarena_root).expanduser().resolve()
@@ -136,6 +152,7 @@ class TravelPlannerFactory:
             tool_executor=self.tool_executor,
             judge=self.judge,
             env_uid=env_uid,
+            contract=self.contract,
         )
 
     def metadata(self) -> dict[str, Any]:
@@ -145,6 +162,9 @@ class TravelPlannerFactory:
             "native_tool_ops": list(TRAVEL_TOOL_OPS),
             "judge": "memoryarena_travel_slot_similarity_v1",
             "wrong_submission_semantics": "continue_to_next_traveler",
+            "max_steps_per_phase": TRAVEL_MAX_STEPS_PER_PHASE,
+            "max_phase_count": self.max_phase_count,
+            "max_episode_steps": self.contract.max_steps,
             "upstream_provenance": self.upstream_provenance,
         }
 
@@ -161,6 +181,7 @@ class TravelPlannerDriver:
         tool_executor: Any,
         judge: TravelJudge,
         env_uid: str,
+        contract: DomainContract = TRAVEL_CONTRACT,
     ) -> None:
         if not tasks:
             raise ValueError("TravelPlannerDriver requires tasks")
@@ -168,17 +189,19 @@ class TravelPlannerDriver:
         self.tool_executor = tool_executor
         self.judge = judge
         self.env_uid = env_uid
+        self.contract = contract
         self.task: TravelTask | None = None
         self.data_idx = 0
         self.phase_index = 0
+        self.phase_step_count = 0
         self.phase_results: list[bool] = []
         self.done = False
         self.status = "idle"
 
     def reset(self, data_idx: int) -> DomainTransition:
-        self.data_idx = int(data_idx) % len(self.tasks)
-        self.task = self.tasks[self.data_idx]
+        self.data_idx, self.task = self._select_task(data_idx)
         self.phase_index = 0
+        self.phase_step_count = 0
         self.phase_results = []
         self.done = False
         self.status = "active"
@@ -189,13 +212,21 @@ class TravelPlannerDriver:
             raise RuntimeError("Travel driver must be reset before step")
         if self.done:
             return self._transition("The travel episode is already complete.", done=True)
+        self.phase_step_count += 1
         parsed = _parse_action(action)
         if parsed is None:
-            return self._invalid(action, env_step, "invalid Travel action grammar")
+            transition = self._invalid(
+                action,
+                env_step,
+                "invalid Travel action grammar",
+            )
+            return self._apply_phase_limit(transition, env_step)
         op, payload = parsed
         if op == "SUBMIT_PLAN":
-            return self._submit_plan(payload, action, env_step)
-        return self._tool_step(op, payload, action, env_step)
+            transition = self._submit_plan(payload, action, env_step)
+            return self._apply_phase_limit(transition, env_step)
+        transition = self._tool_step(op, payload, action, env_step)
+        return self._apply_phase_limit(transition, env_step)
 
     def close(self) -> None:
         self.status = "closed"
@@ -212,8 +243,9 @@ class TravelPlannerDriver:
             result = str(self.tool_executor.execute(op, payload))
         except Exception as exc:
             return self._infra_error(op, env_step, exc)
-        if result.startswith("Error executing ") or result.startswith("Error: Unknown tool"):
-            return self._invalid(raw_action, env_step, result)
+        upstream_error = result.startswith("Error executing ") or result.startswith(
+            "Error: Unknown tool"
+        )
         component = {
             "name": "travel_tool_transition",
             "value": 0.0,
@@ -224,7 +256,7 @@ class TravelPlannerDriver:
             f"Tool result ({op}):\n{result}\n\n{self._render_phase()}",
             action_execution={
                 "op": op,
-                "status": "executed",
+                "status": "executed_with_error" if upstream_error else "executed",
                 "step": env_step,
                 "arguments": dict(payload),
             },
@@ -234,6 +266,7 @@ class TravelPlannerDriver:
                     "step": env_step,
                     "arguments": dict(payload),
                     "result_length": len(result),
+                    "upstream_error_result": upstream_error,
                 },
             ),
             reward_components=(component,),
@@ -270,6 +303,8 @@ class TravelPlannerDriver:
         }
         self.phase_results.append(passed)
         self.phase_index += 1
+        completed_phase_step_count = self.phase_step_count
+        self.phase_step_count = 0
         final = self.phase_index == len(self.task.phases)
         self.done = final
         episode_success = final and all(self.phase_results)
@@ -314,8 +349,84 @@ class TravelPlannerDriver:
             domain_evidence={
                 "task_id": self.task.task_id,
                 "judge_id": "memoryarena_travel_slot_similarity_v1",
+                "completed_phase_step_count": completed_phase_step_count,
+                "phase_completion_reason": "submitted_plan",
             },
         )
+
+    def _apply_phase_limit(
+        self,
+        transition: DomainTransition,
+        env_step: int,
+    ) -> DomainTransition:
+        if transition.done or transition.sample_excluded:
+            return transition
+        if self.phase_step_count < TRAVEL_MAX_STEPS_PER_PHASE:
+            return transition
+
+        task = self._require_task()
+        completed_phase_index = self.phase_index
+        completed_phase_step_count = self.phase_step_count
+        self.phase_results.append(False)
+        self.phase_index += 1
+        self.phase_step_count = 0
+        final = self.phase_index == len(task.phases)
+        self.done = final
+        self.status = "completed_with_errors" if final else "active"
+        timeout_component = {
+            "name": "travel_phase_step_limit",
+            "value": 0.0,
+            "op": "PHASE_TIMEOUT",
+            "step": env_step,
+        }
+        observation = (
+            "The current traveler exhausted the native 30-step planning budget. "
+            "The submitted plan is therefore incorrect."
+        )
+        if final:
+            observation += " All traveler phases have been evaluated."
+        else:
+            observation += " The next traveler phase is ready.\n\n" + self._render_phase()
+        execution = dict(transition.action_execution)
+        execution.update(
+            {
+                "phase_timeout": True,
+                "phase_index": completed_phase_index,
+                "phase_advanced": True,
+                "terminal": final,
+            }
+        )
+        return self._transition(
+            observation,
+            done=final,
+            status=self.status,
+            action_execution=execution,
+            tool_ops=(
+                *transition.tool_ops,
+                {
+                    "op": "PHASE_TIMEOUT",
+                    "step": env_step,
+                    "phase_index": completed_phase_index,
+                    "phase_advanced": True,
+                    "terminal": final,
+                },
+            ),
+            reward_components=(*transition.reward_components, timeout_component),
+            domain_evidence={
+                **transition.domain_evidence,
+                "completed_phase_step_count": completed_phase_step_count,
+                "phase_completion_reason": "native_step_limit",
+            },
+        )
+
+    def _select_task(self, seed: int) -> tuple[int, TravelTask]:
+        value = int(seed)
+        for index, task in enumerate(self.tasks):
+            if task.source_id == value:
+                return index, task
+        if 0 <= value < len(self.tasks):
+            return value, self.tasks[value]
+        return 0, self.tasks[0]
 
     def _invalid(self, raw_action: str, env_step: int, message: str) -> DomainTransition:
         component = {
@@ -425,6 +536,15 @@ class TravelPlannerDriver:
         sample_excluded: bool = False,
     ) -> DomainTransition:
         task = self._require_task()
+        phase = self._current_phase()
+        evidence = {
+            "task_id": task.task_id,
+            "source_id": task.source_id,
+            "round_index": phase.round_index,
+            "phase_step_count": self.phase_step_count,
+            "max_steps_per_phase": TRAVEL_MAX_STEPS_PER_PHASE,
+            **(domain_evidence or {}),
+        }
         return DomainTransition(
             observation=observation,
             reward=reward,
@@ -436,7 +556,7 @@ class TravelPlannerDriver:
             action_execution=action_execution or {},
             tool_ops=tool_ops,
             reward_components=reward_components,
-            domain_evidence=domain_evidence or {"task_id": task.task_id},
+            domain_evidence=evidence,
             sample_excluded=sample_excluded,
         )
 
@@ -470,9 +590,34 @@ def _parse_task(payload: dict[str, Any], line_number: int) -> TravelTask:
     for field in ("name", "query", "daily_plans"):
         if field not in base:
             raise ValueError(f"Travel row {line_number} base person is missing {field}")
+    answers_by_round: dict[int, Any] = {}
+    for index, answer in enumerate(answers, start=1):
+        answer_round = (
+            int(answer.get("round_idx", index))
+            if isinstance(answer, dict)
+            else index
+        )
+        if answer_round in answers_by_round:
+            raise ValueError(
+                f"Travel row {line_number} has duplicate answer round {answer_round}"
+            )
+        answers_by_round[answer_round] = answer
+
     phases = []
-    for index, (question, answer) in enumerate(zip(questions, answers), start=1):
+    question_rounds = set()
+    for index, question in enumerate(questions, start=1):
         query, name, round_index = _normalize_question(question, index)
+        if round_index in question_rounds:
+            raise ValueError(
+                f"Travel row {line_number} has duplicate question round {round_index}"
+            )
+        question_rounds.add(round_index)
+        try:
+            answer = answers_by_round[round_index]
+        except KeyError as exc:
+            raise ValueError(
+                f"Travel row {line_number} has no answer for round {round_index}"
+            ) from exc
         plans, answer_name, answer_round = _normalize_answer(answer, name, round_index)
         if answer_name and answer_name != name:
             raise ValueError(f"Travel row {line_number} phase {index} name mismatch")
@@ -486,8 +631,16 @@ def _parse_task(payload: dict[str, Any], line_number: int) -> TravelTask:
                 ground_truth_plans=tuple(dict(plan) for plan in plans),
             )
         )
+    extra_answer_rounds = set(answers_by_round).difference(question_rounds)
+    if extra_answer_rounds:
+        raise ValueError(
+            f"Travel row {line_number} has answers without questions: "
+            f"{sorted(extra_answer_rounds)}"
+        )
+    source_id = payload.get("id", line_number)
     return TravelTask(
-        task_id=str(payload.get("id", line_number)),
+        task_id=str(source_id),
+        source_id=source_id,
         base_person={
             "name": str(base["name"]),
             "query": str(base["query"]),
@@ -510,7 +663,7 @@ def _normalize_question(question: Any, index: int) -> tuple[str, str, int]:
         raise ValueError(f"Travel question {index} must contain text")
     if not name:
         match = _NAME_RE.search(query)
-        name = match.group(1).strip() if match else f"Traveler{index}"
+        name = match.group(1).strip() if match else "Person"
     return query.strip(), str(name).strip(), round_index
 
 
@@ -556,6 +709,7 @@ def _format_plan(name: str, plans: Sequence[dict[str, Any]]) -> str:
         day = plan.get("days", plan.get("day"))
         lines.append(f"Day {day}:")
         lines.extend(f"{label}: {plan.get(key, '-')}" for label, key in slots)
+        lines.append("")
     return "\n".join(lines)
 
 

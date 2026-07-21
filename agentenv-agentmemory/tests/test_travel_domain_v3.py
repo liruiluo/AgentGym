@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from agentenv_agentmemory.domains.travel import (
+    TRAVEL_MAX_STEPS_PER_PHASE,
     TRAVEL_UPSTREAM_RELATIVE_PATHS,
     TravelPlannerFactory,
     attest_travel_upstream,
@@ -16,12 +17,16 @@ from agentenv_agentmemory.runtime.wrapper import DomainEnvWrapper
 
 
 class FakeTravelTools:
-    def __init__(self):
+    def __init__(self, result="flight F123 at 09:00", error=None):
         self.calls = []
+        self.result = result
+        self.error = error
 
     def execute(self, op, payload):
         self.calls.append((op, dict(payload)))
-        return "flight F123 at 09:00"
+        if self.error is not None:
+            raise self.error
+        return self.result
 
 
 def exact_judge(plan, name, ground_truth_plans):
@@ -87,6 +92,11 @@ class TravelDomainV3Test(unittest.TestCase):
             self.wrapper.metadata()["wrong_submission_semantics"],
             "continue_to_next_traveler",
         )
+        self.assertEqual(
+            self.wrapper.metadata()["max_steps_per_phase"],
+            TRAVEL_MAX_STEPS_PER_PHASE,
+        )
+        self.assertEqual(self.wrapper.metadata()["max_episode_steps"], 60)
 
     def test_native_tool_is_one_zero_reward_transition(self):
         stepped = self.wrapper.step(
@@ -120,6 +130,36 @@ class TravelDomainV3Test(unittest.TestCase):
                 )
             ],
         )
+
+    def test_upstream_error_string_remains_an_executed_tool_result(self):
+        self.tools.result = "Error executing FlightSearch: missing flight table"
+        stepped = self.wrapper.step(
+            self.env_id,
+            'Action: FlightSearch {"origin": "A", "destination": "B", '
+            '"date": "2022-01-01"}',
+        )
+        self.assertEqual(stepped["reward"], 0.0)
+        self.assertFalse(stepped["done"])
+        self.assertEqual(
+            stepped["info"]["action_execution"]["status"],
+            "executed_with_error",
+        )
+        self.assertIn(self.tools.result, stepped["observation"])
+        self.assertEqual(
+            stepped["info"]["tool_ops"][0]["upstream_error_result"],
+            True,
+        )
+
+    def test_executor_exception_is_excluded_infrastructure_failure(self):
+        self.tools.error = RuntimeError("database unavailable")
+        stepped = self.wrapper.step(
+            self.env_id,
+            'Action: CitySearch {"state": "Texas"}',
+        )
+        self.assertTrue(stepped["done"])
+        self.assertEqual(stepped["info"]["status"], "infra_error")
+        self.assertTrue(stepped["info"]["sample_excluded"])
+        self.assertNotIn("database unavailable", stepped["observation"])
 
     def test_correct_plan_advances_and_requires_retrieve_for_hidden_ltm(self):
         added = self.wrapper.step(
@@ -174,6 +214,85 @@ class TravelDomainV3Test(unittest.TestCase):
         self.assertTrue(second["done"])
         self.assertTrue(second["info"]["episode_success"])
         self.assertEqual(second["info"]["phase_index"], 2)
+
+    def test_native_30_step_limit_is_phase_local_and_visible_in_evidence(self):
+        for step in range(1, TRAVEL_MAX_STEPS_PER_PHASE):
+            transition = self.wrapper.step(
+                self.env_id,
+                f'Action: CitySearch {{"state": "State {step}"}}',
+            )
+            self.assertEqual(transition["info"]["phase_index"], 0)
+            self.assertFalse(transition["done"])
+
+        timed_out = self.wrapper.step(
+            self.env_id,
+            f'Action: CitySearch {{"state": "State {TRAVEL_MAX_STEPS_PER_PHASE}"}}',
+        )
+        info = timed_out["info"]
+        self.assertEqual(timed_out["reward"], 0.0)
+        self.assertFalse(timed_out["done"])
+        self.assertEqual(info["phase_index"], 1)
+        self.assertTrue(info["action_execution"]["phase_timeout"])
+        self.assertEqual(info["domain_evidence"]["phase_completion_reason"], "native_step_limit")
+        self.assertEqual(
+            info["domain_evidence"]["completed_phase_step_count"],
+            TRAVEL_MAX_STEPS_PER_PHASE,
+        )
+        self.assertEqual(info["tool_ops"][-1]["op"], "PHASE_TIMEOUT")
+        self.assertIn("I am Dana. second query", timed_out["observation"])
+
+        completed = self.wrapper.step(
+            self.env_id,
+            'Action: SUBMIT_PLAN {"plan": "SECRET_B"}',
+        )
+        self.assertTrue(completed["done"])
+        self.assertFalse(completed["info"]["episode_success"])
+        self.assertEqual(
+            completed["info"]["domain_evidence"]["completed_phase_step_count"],
+            1,
+        )
+
+    def test_reset_clears_memory_phase_state_and_uses_original_seed_fallback(self):
+        self.wrapper.step(
+            self.env_id,
+            'Action: ADD {"key": "base", "value": "Base City F000"}',
+        )
+        self.wrapper.step(
+            self.env_id,
+            'Action: SUBMIT_PLAN {"plan": "SECRET_A"}',
+        )
+        reset = self.wrapper.reset(self.env_id, data_idx=999)
+        self.assertEqual(reset["info"]["phase_index"], 0)
+        self.assertEqual(reset["info"]["domain_evidence"]["source_id"], 7)
+        self.assertEqual(reset["info"]["domain_evidence"]["phase_step_count"], 0)
+        self.assertIn("Fixed base traveler", reset["observation"])
+        self.assertNotIn("Base City F000", reset["observation"])
+        self.assertEqual(
+            reset["info"]["domain_evidence"]["memory_inventory_count"],
+            0,
+        )
+
+    def test_round_index_join_matches_upstream_when_answers_are_reordered(self):
+        payload = json.loads(self.tasks_path.read_text(encoding="utf-8"))
+        payload["answers"] = [
+            {"round_idx": 2, "daily_plans": [{"secret": "SECRET_B"}]},
+            {"round_idx": 1, "daily_plans": [{"secret": "SECRET_A"}]},
+        ]
+        reordered_path = Path(self.tempdir.name) / "travel-reordered.jsonl"
+        reordered_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        factory = TravelPlannerFactory(
+            tasks_path=reordered_path,
+            tool_executor=self.tools,
+            judge=exact_judge,
+        )
+        driver = factory.create("reordered")
+        driver.reset(7)
+        first = driver.step('SUBMIT_PLAN {"plan": "SECRET_A"}', env_step=1)
+        second = driver.step('SUBMIT_PLAN {"plan": "SECRET_B"}', env_step=2)
+        self.assertEqual(first.reward, 1.0)
+        self.assertEqual(second.reward, 1.0)
+        self.assertTrue(second.done)
+        self.assertTrue(second.episode_success)
 
 
 class TravelUpstreamAttestationTest(unittest.TestCase):
