@@ -96,11 +96,16 @@ the product files, and the Lucene index. A fake backend may verify parser and
 state-machine logic, but it cannot replace a native smoke or produce model,
 reward, algorithm, curriculum, throughput, or capability evidence.
 
-## Offline legacy audit code
+## Repository boundary
 
-`catalog_search.py`, `memoryarena_converter.py`, the SQLite index builder, and
-their historical fixtures remain only for locating index/converter defects.
-Do not start a policy, RL rollout, smoke, curriculum, or throughput diagnostic
-on that surface. Their results do not transfer to the original WebShop task and
-the active server rejects `AGENTMEMORY_CATALOG_INDEX_PATH` and
-`AGENTMEMORY_SEARCH_TIMEOUT_MS`.
+This package contains only the native MemoryArena WebShop runtime and its
+contract tests. Converted datasets, frozen launch inputs, experiment manifests,
+runtime evidence, and one-off analysis programs belong in the external
+AgentMemoryGym workspace rather than this source repository.
+
+The retired SQLite/FTS shopping surrogate is not shipped here. The native
+server rejects `AGENTMEMORY_CATALOG_INDEX_PATH` and
+`AGENTMEMORY_SEARCH_TIMEOUT_MS` so an old launcher cannot silently restore it.
+
+Maintained operational entrypoints are grouped by responsibility under
+`scripts/audits/`, `scripts/services/`, and `scripts/smoke/`.
