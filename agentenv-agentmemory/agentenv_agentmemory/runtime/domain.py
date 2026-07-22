@@ -9,6 +9,15 @@ from typing import Any, Protocol, runtime_checkable
 
 FORMAL_SCHEMA_V3 = "agentmemory_formal_step_v3"
 
+MEMORY_ACTION_DESCRIPTIONS = (
+    'ADD {"key": "...", "value": "..."}',
+    'UPDATE {"memory_id": "mem_0000", "value": "..."}',
+    'DELETE {"memory_id": "mem_0000"}',
+    'RETRIEVE {"query": "...", "top_k": 3}',
+    'SUMMARY {"text": "...", "source_ids": ["S0", "C0"]}',
+    'FILTER {"keep_ids": ["C0"], "scope": "active"}',
+)
+
 
 def _empty_mapping() -> dict[str, Any]:
     return {}
@@ -36,6 +45,48 @@ class DomainContract:
     @property
     def sha256(self) -> str:
         return contract_digest(self)
+
+    @property
+    def canonical_system_prompt(self) -> str:
+        return render_system_prompt(self)
+
+    @property
+    def system_prompt_sha256(self) -> str:
+        return hashlib.sha256(
+            self.canonical_system_prompt.encode("utf-8")
+        ).hexdigest()
+
+
+def render_system_prompt(contract: DomainContract) -> str:
+    """Render the complete model-facing contract exposed by v3 metadata."""
+
+    return "\n\n".join(
+        [
+            contract.system_prompt.strip(),
+            "Native domain action forms:\n"
+            + "\n".join(
+                f"- {item.strip()}" for item in contract.native_action_descriptions
+            ),
+            "Policy memory action forms:\n"
+            + "\n".join(f"- {item}" for item in MEMORY_ACTION_DESCRIPTIONS),
+            (
+                "Cross-phase memory lifecycle:\n"
+                "- ADD writes policy-authored text to long-term memory for the "
+                "current episode.\n"
+                "- A native phase advance clears the current phase's short-term/page "
+                "trace and active retrieved or summarized S*/C* context. Long-term "
+                "memory is retained, but it is not automatically visible in the next "
+                "phase.\n"
+                "- RETRIEVE queries text previously written with ADD and exposes "
+                "matching long-term memories in active context for the current phase."
+            ),
+            (
+                "Reply in exactly this format:\n\n"
+                "Thought:\nbrief reasoning\n\nAction:\n"
+                "<exactly one native domain action or uppercase memory action>"
+            ),
+        ]
+    )
 
 
 def contract_digest(contract: DomainContract) -> str:

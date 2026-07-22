@@ -55,8 +55,7 @@ TRAVEL_CONTRACT = DomainContract(
         "contains a fixed base traveler followed by sequential traveler phases. "
         "Use one native JSON action at a time to inspect the frozen local travel "
         "database. Submit the current traveler's complete plan with SUBMIT_PLAN. "
-        "The server privately evaluates the plan and never exposes answer labels. "
-        "Reply with brief reasoning followed by exactly one Action line."
+        "The server privately evaluates the plan and never exposes answer labels."
     ),
     native_action_descriptions=(
         'FlightSearch {"origin": "...", "destination": "...", "date": "YYYY-MM-DD"}',
@@ -503,10 +502,6 @@ class TravelPlannerDriver:
         sections.append(
             f"Current traveler: {phase.name}\n"
             f"Query: {phase.query}"
-        )
-        sections.append(
-            "Native Travel actions:\n"
-            + "\n".join(f"- {item}" for item in self.contract.native_action_descriptions)
         )
         return "\n\n".join(sections)
 

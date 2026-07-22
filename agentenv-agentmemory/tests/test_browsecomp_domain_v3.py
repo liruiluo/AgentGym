@@ -9,8 +9,13 @@ import unittest
 from pathlib import Path
 
 from agentenv_agentmemory.domains.browsecomp import (
+    BROWSECOMP_FINAL_MAX_ITERATIONS,
+    BROWSECOMP_FROZEN_CORPUS_REPOSITORY,
+    BROWSECOMP_FROZEN_CORPUS_REVISION,
+    BROWSECOMP_SUBQUERY_MAX_ITERATIONS,
     BROWSECOMP_UPSTREAM_RELATIVE_PATHS,
     BrowseCompPlusFactory,
+    attest_browsecomp_search_assets,
     attest_browsecomp_upstream,
     load_browsecomp_tasks,
 )
@@ -124,6 +129,14 @@ class BrowseCompDomainV3Test(unittest.TestCase):
             0.0,
         )
         self.assertEqual(self.wrapper.metadata()["max_steps"], 100)
+        prompt = self.wrapper.metadata()["system_prompt"]
+        for action in self.wrapper.metadata()["native_action_descriptions"]:
+            self.assertEqual(prompt.count(action), 1)
+            self.assertNotIn(action, observation)
+
+    def test_reset_rejects_out_of_range_data_index_instead_of_wrapping(self):
+        with self.assertRaisesRegex(IndexError, "outside"):
+            self.wrapper.reset(self.env_id, data_idx=1)
 
     def test_lowercase_native_search_is_one_zero_reward_transition(self):
         stepped = self.wrapper.step(
@@ -144,6 +157,89 @@ class BrowseCompDomainV3Test(unittest.TestCase):
             stepped["info"]["formal_schema_version"],
             "agentmemory_formal_step_v3",
         )
+        self.assertEqual(
+            stepped["info"]["domain_evidence"]["native_iteration_count"],
+            1,
+        )
+        for action in self.wrapper.metadata()["native_action_descriptions"]:
+            self.assertNotIn(action, stepped["observation"])
+
+    def test_phase_budget_counts_native_turns_but_not_memory_actions(self):
+        for index in range(5):
+            memory = self.wrapper.step(
+                self.env_id,
+                f'Action: ADD {{"key": "k{index}", "value": "v{index}"}}',
+            )
+            self.assertEqual(memory["info"]["phase_index"], 0)
+
+        invalid = self.wrapper.step(self.env_id, "Action: malformed-native-action")
+        self.assertEqual(
+            invalid["info"]["domain_evidence"]["native_iteration_count"],
+            1,
+        )
+        for index in range(BROWSECOMP_SUBQUERY_MAX_ITERATIONS - 2):
+            searched = self.wrapper.step(
+                self.env_id,
+                f'Action: search {{"query": "query {index}"}}',
+            )
+        self.assertEqual(searched["info"]["phase_index"], 0)
+        self.assertEqual(
+            searched["info"]["domain_evidence"]["native_iteration_count"],
+            BROWSECOMP_SUBQUERY_MAX_ITERATIONS - 1,
+        )
+
+        exhausted = self.wrapper.step(
+            self.env_id,
+            'Action: search {"query": "last allowed query"}',
+        )
+        self.assertEqual(exhausted["reward"], 0.0)
+        self.assertFalse(exhausted["done"])
+        self.assertEqual(exhausted["info"]["phase_index"], 1)
+        self.assertTrue(exhausted["info"]["action_execution"]["phase_budget_exhausted"])
+        self.assertEqual(
+            exhausted["info"]["tool_ops"][-1]["op"],
+            "PHASE_BUDGET_EXHAUSTED",
+        )
+        self.assertEqual(
+            exhausted["info"]["domain_evidence"]["native_iteration_count"],
+            BROWSECOMP_SUBQUERY_MAX_ITERATIONS,
+        )
+        self.assertIn("second research question", exhausted["observation"])
+        self.assertEqual(self.judge.calls, [])
+
+    def test_final_budget_exhaustion_without_answer_ends_incorrect(self):
+        self.wrapper.step(
+            self.env_id,
+            'Action: SUBMIT_ANSWER {"answer": "draft one"}',
+        )
+        self.wrapper.step(
+            self.env_id,
+            'Action: SUBMIT_ANSWER {"answer": "draft two"}',
+        )
+        for index in range(BROWSECOMP_FINAL_MAX_ITERATIONS - 1):
+            searched = self.wrapper.step(
+                self.env_id,
+                f'Action: search {{"query": "final query {index}"}}',
+            )
+        self.assertFalse(searched["done"])
+        self.assertEqual(
+            searched["info"]["domain_evidence"]["native_iteration_count"],
+            BROWSECOMP_FINAL_MAX_ITERATIONS - 1,
+        )
+
+        exhausted = self.wrapper.step(
+            self.env_id,
+            'Action: search {"query": "last final query"}',
+        )
+        self.assertEqual(exhausted["reward"], 0.0)
+        self.assertTrue(exhausted["done"])
+        self.assertFalse(exhausted["info"]["episode_success"])
+        self.assertEqual(exhausted["info"]["status"], "completed_incorrect")
+        self.assertEqual(exhausted["info"]["phase_index"], 3)
+        self.assertFalse(
+            exhausted["info"]["domain_evidence"]["extractable_answer"]
+        )
+        self.assertEqual(self.judge.calls, [])
 
     def test_search_case_and_strict_payload_match_native_tool_contract(self):
         uppercase = self.wrapper.step(
@@ -255,6 +351,116 @@ class BrowseCompDomainV3Test(unittest.TestCase):
 
 
 class BrowseCompLoaderTest(unittest.TestCase):
+    def test_progressive_search_schema_is_ground_truth_and_decomposition(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            source = Path(tempdir) / "progressive_search.jsonl"
+            source.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "id": 7,
+                                "questions": ["subquery one", "subquery two", "final"],
+                                "answers": ["private one", "private two", "final answer"],
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "id": 8,
+                                "questions": ["only final"],
+                                "answers": ["another answer"],
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            tasks = load_browsecomp_tasks(source, source)
+            self.assertEqual([task.query_id for task in tasks], ["7", "8"])
+            self.assertEqual(
+                [(phase.kind, phase.query) for phase in tasks[0].phases],
+                [
+                    ("subquery", "subquery one"),
+                    ("subquery", "subquery two"),
+                    ("final", "final"),
+                ],
+            )
+            self.assertEqual(tasks[0].final_answer, "final answer")
+            self.assertEqual(
+                [(phase.kind, phase.query) for phase in tasks[1].phases],
+                [("final", "only final")],
+            )
+
+    def test_progressive_source_metadata_records_single_source_provenance(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            source = Path(tempdir) / "progressive_search.jsonl"
+            source.write_text(
+                json.dumps(
+                    {
+                        "id": 7,
+                        "questions": ["subquery", "final"],
+                        "answers": ["private", "final answer"],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            factory = BrowseCompPlusFactory(
+                ground_truth_path=source,
+                search_tool=lambda query: "[]",
+                judge=lambda question, predicted, correct: {"correct": False},
+            )
+            metadata = factory.metadata()
+            self.assertEqual(metadata["dataset_schema"], "progressive_search")
+            self.assertEqual(metadata["decomposition_mode"], "progressive_search_direct")
+            self.assertEqual(metadata["dataset_sha256"], metadata["decomposition_sha256"])
+
+    def test_progressive_search_schema_fails_closed_on_misaligned_lists(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            source = Path(tempdir) / "progressive_search.jsonl"
+            source.write_text(
+                json.dumps(
+                    {
+                        "id": 7,
+                        "questions": ["subquery", "final"],
+                        "answers": ["only one answer"],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "misaligned"):
+                load_browsecomp_tasks(source)
+
+    def test_progressive_search_schema_rejects_mixed_legacy_rows(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            source = Path(tempdir) / "mixed.jsonl"
+            source.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "id": 7,
+                                "questions": ["final"],
+                                "answers": ["answer"],
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "query_id": "8",
+                                "query": "final",
+                                "answer": "answer",
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "mixes progressive"):
+                load_browsecomp_tasks(source)
+
     def test_missing_decomposition_replays_run_search_original_query_fallback(self):
         with tempfile.TemporaryDirectory() as tempdir:
             ground_truth = Path(tempdir) / "ground_truth.jsonl"
@@ -363,6 +569,103 @@ class BrowseCompLoaderTest(unittest.TestCase):
             selected["question"][:-1],
         )
         self.assertEqual(tasks[0].phases[-1].query, selected["question"][-1])
+
+
+class BrowseCompSearchAssetAttestationTest(unittest.TestCase):
+    @staticmethod
+    def _fixture(root: Path):
+        index_path = root / "shard0.index"
+        id_map_path = root / "shard0_id_map.json"
+        corpus_path = root / "corpus.jsonl"
+        manifest_path = root / "corpus.manifest.json"
+        index_path.write_bytes(b"fixture-index")
+        id_map_path.write_text(
+            json.dumps({"ids": ["0", "1"]}) + "\n",
+            encoding="utf-8",
+        )
+        corpus_path.write_text(
+            json.dumps({"docid": "0", "text": "zero"})
+            + "\n"
+            + json.dumps({"docid": "1", "text": "one"})
+            + "\n",
+            encoding="utf-8",
+        )
+        source_sha = "a" * 64
+        manifest = {
+            "format": "agentmemory_browsecomp_corpus_manifest_v1",
+            "source": {
+                "input_glob": "/frozen/*.parquet",
+                "repository": BROWSECOMP_FROZEN_CORPUS_REPOSITORY,
+                "revision": BROWSECOMP_FROZEN_CORPUS_REVISION,
+                "file_count": 1,
+                "files": [{"sha256": source_sha}],
+                "columns": ["docid", "text", "url"],
+            },
+            "projection": {"output_columns": ["docid", "text"]},
+            "output": {
+                "path": str(corpus_path.resolve()),
+                "sha256": hashlib.sha256(corpus_path.read_bytes()).hexdigest(),
+                "row_count": 2,
+            },
+        }
+        manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+        kwargs = {
+            "index_pattern": str(root / "shard*.index"),
+            "corpus_path": corpus_path,
+            "corpus_manifest_path": manifest_path,
+            "embedding_model": "text-embedding-3-small",
+            "expected_index_shards": (
+                {
+                    "name": "shard0.index",
+                    "index_sha256": hashlib.sha256(index_path.read_bytes()).hexdigest(),
+                    "id_map_sha256": hashlib.sha256(id_map_path.read_bytes()).hexdigest(),
+                    "vector_count": 2,
+                },
+            ),
+            "expected_corpus_shards": (source_sha,),
+            "expected_document_count": 2,
+        }
+        return manifest, manifest_path, kwargs
+
+    def test_manifest_binds_frozen_repository_revision_and_exact_bytes(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            _, _, kwargs = self._fixture(Path(tempdir))
+            evidence = attest_browsecomp_search_assets(**kwargs)
+
+        self.assertEqual(
+            evidence["corpus_repository"],
+            BROWSECOMP_FROZEN_CORPUS_REPOSITORY,
+        )
+        self.assertEqual(
+            evidence["corpus_revision"],
+            BROWSECOMP_FROZEN_CORPUS_REVISION,
+        )
+        self.assertEqual(evidence["document_count"], 2)
+
+    def test_malformed_manifest_fields_fail_closed_with_runtime_errors(self):
+        cases = (
+            ("top_level", "JSON object"),
+            ("repository", "repository/revision"),
+            ("source_file", "source files"),
+            ("row_count", "row count"),
+        )
+        for case, message in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tempdir:
+                manifest, manifest_path, kwargs = self._fixture(Path(tempdir))
+                if case == "top_level":
+                    payload = []
+                else:
+                    payload = manifest
+                    if case == "repository":
+                        payload["source"]["repository"] = "unbound/repository"
+                    elif case == "source_file":
+                        payload["source"]["files"] = ["not-an-object"]
+                    else:
+                        payload["output"]["row_count"] = "2"
+                manifest_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+                with self.assertRaisesRegex(RuntimeError, message):
+                    attest_browsecomp_search_assets(**kwargs)
 
 
 class BrowseCompUpstreamAttestationTest(unittest.TestCase):

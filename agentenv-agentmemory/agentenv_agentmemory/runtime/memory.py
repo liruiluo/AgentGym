@@ -6,8 +6,6 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from ..memory_state import MemoryEntry, rank_memory_entries_bm25
-
-
 MEMORY_TOOL_OPS = ("ADD", "UPDATE", "DELETE", "RETRIEVE", "SUMMARY", "FILTER")
 _MEMORY_ACTION_RE = re.compile(
     r"\A(" + "|".join(MEMORY_TOOL_OPS) + r")\s+(\{.*\})\Z",
@@ -159,20 +157,6 @@ class MemoryToolRuntime:
         if not self.active_context:
             lines.append("<empty>")
         return "\n".join(lines)
-
-    @staticmethod
-    def action_contract() -> str:
-        return "\n".join(
-            [
-                "Memory actions:",
-                'ADD {"key": "...", "value": "..."}',
-                'UPDATE {"memory_id": "mem_0000", "value": "..."}',
-                'DELETE {"memory_id": "mem_0000"}',
-                'RETRIEVE {"query": "...", "top_k": 3}',
-                'SUMMARY {"text": "...", "source_ids": ["S0", "C0"]}',
-                'FILTER {"keep_ids": ["C0"], "scope": "active"}',
-            ]
-        )
 
     def _add(self, payload, env_step, diff):
         _require_fields(payload, required={"key", "value"})

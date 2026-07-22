@@ -16,6 +16,7 @@ from .reward_hierarchy import (
     FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
     INVALID_ACTION_PENALTY,
     WRONG_BUY_TERMINAL_FAILURE,
+    build_memoryarena_reward_contract,
 )
 
 
@@ -54,12 +55,26 @@ class MemoryArenaWebShopEnv:
         bundles: Sequence[MemoryArenaBundle],
         backend: NativeWebShopBackend,
         env_uid: str | None = None,
+        first_valid_add_reward: float = FIRST_VALID_ADD_BONUS,
+        first_valid_later_session_retrieve_reward: float = FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
     ) -> None:
         if not bundles:
             raise ValueError("MemoryArenaWebShopEnv requires at least one bundle.")
         self.bundles = tuple(bundles)
         self.backend = backend
         self.env_uid = env_uid or uuid.uuid4().hex[:12]
+        self._reward_contract = build_memoryarena_reward_contract(
+            first_valid_add_reward=first_valid_add_reward,
+            first_valid_later_session_retrieve_reward=(
+                first_valid_later_session_retrieve_reward
+            ),
+        )
+        self.first_valid_add_reward = float(
+            self._reward_contract["first_valid_add_reward"]
+        )
+        self.first_valid_later_session_retrieve_reward = float(
+            self._reward_contract["first_valid_later_session_retrieve_reward"]
+        )
         self.episode_counter = 0
         self.bundle: MemoryArenaBundle | None = None
         self.data_idx = 0
@@ -221,24 +236,32 @@ class MemoryArenaWebShopEnv:
 
     def build_info(self) -> dict[str, Any]:
         bundle = self._require_bundle()
+        phase_count = len(bundle.questions)
+        subtask_count = len(bundle.target_asins)
         return {
             "task_id": bundle.task_id,
             "task_family": "bundled_shopping",
             "split": bundle.split,
             "source": "memoryarena_original_webshop",
             "surface": self.surface,
-            "progress_score": self.current_session_index / 6.0,
+            "progress_score": self.current_session_index / float(phase_count),
             "episode_success": self.status == "success",
             "status": self.status,
             "current_subtask_index": self.current_session_index,
+            "phase_count": phase_count,
+            "subtask_count": subtask_count,
             "tool_ops": list(self.last_tool_ops),
             "reward_components": [dict(item) for item in self.last_reward_components],
             "memory_ops": [item for item in self.last_tool_ops if item.get("op") in MEMORY_TOOL_OPS],
             "memory_state_diff": self.last_memory_diff,
             "purchase_history": list(self.purchase_ledger),
             "session_trace": list(self.session_trace),
+            "reward_contract": self.reward_contract(),
             "sample_excluded": self.status == "infra_error",
         }
+
+    def reward_contract(self) -> dict[str, Any]:
+        return dict(self._reward_contract)
 
     def _step_native(self, parsed: ParsedAction) -> tuple[str, float, bool]:
         if self.native_session_token is None:
@@ -288,7 +311,7 @@ class MemoryArenaWebShopEnv:
         if parsed.op == "ADD" and "ADD" not in self.rewarded_memory_ops_this_session:
             self.rewarded_memory_ops_this_session.add("ADD")
             component_name = "memory_add_first_valid_this_session"
-            component_value = FIRST_VALID_ADD_BONUS
+            component_value = self.first_valid_add_reward
         elif (
             parsed.op == "RETRIEVE"
             and self.current_session_index >= 1
@@ -296,7 +319,7 @@ class MemoryArenaWebShopEnv:
         ):
             self.rewarded_memory_ops_this_session.add("RETRIEVE")
             component_name = "memory_retrieve_first_valid_later_session"
-            component_value = FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS
+            component_value = self.first_valid_later_session_retrieve_reward
         elif occurrence >= 2:
             component_name = "exact_repeated_valid_zero_reward_action"
             component_value = EXACT_REPEAT_ACTION_PENALTY

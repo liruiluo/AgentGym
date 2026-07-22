@@ -15,6 +15,7 @@ EXACT_REPEAT_ACTION_PENALTY = MICRO_ACTION_PENALTY
 NONTERMINAL_NEGATIVE_SHAPING_BUDGET = 0.04
 MAX_ROUND_TIMEOUT_FAILURE = MICRO_ACTION_PENALTY
 WRONG_BUY_TERMINAL_FAILURE = MICRO_ACTION_PENALTY
+MEMORYARENA_REWARD_CONTRACT_VERSION = "memoryarena_webshop_micro_rewards_v1"
 
 
 # Every currently reachable negative component that is not itself a terminal
@@ -55,6 +56,38 @@ TERMINAL_NEGATIVE_OUTCOME_COMPONENTS = frozenset(
 
 class RewardHierarchyError(RuntimeError):
     pass
+
+
+def build_memoryarena_reward_contract(
+    *,
+    first_valid_add_reward: float = FIRST_VALID_ADD_BONUS,
+    first_valid_later_session_retrieve_reward: float = FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
+) -> dict[str, float | str]:
+    for name, value in (
+        ("first_valid_add_reward", first_valid_add_reward),
+        (
+            "first_valid_later_session_retrieve_reward",
+            first_valid_later_session_retrieve_reward,
+        ),
+    ):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or float(value) < 0.0
+        ):
+            raise ValueError(f"{name} must be a finite, non-negative number.")
+
+    return {
+        "version": MEMORYARENA_REWARD_CONTRACT_VERSION,
+        "first_valid_add_reward": float(first_valid_add_reward),
+        "first_valid_later_session_retrieve_reward": float(
+            first_valid_later_session_retrieve_reward
+        ),
+        "exact_repeat_action_penalty": EXACT_REPEAT_ACTION_PENALTY,
+        "invalid_action_penalty": INVALID_ACTION_PENALTY,
+        "wrong_buy_terminal_failure": WRONG_BUY_TERMINAL_FAILURE,
+    }
 
 
 def apply_nonterminal_negative_shaping_budget(

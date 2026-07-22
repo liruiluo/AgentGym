@@ -252,6 +252,39 @@ class TravelDomainV3Test(unittest.TestCase):
             1,
         )
 
+    def test_memory_actions_do_not_consume_native_phase_budget(self):
+        for index in range(15):
+            self.wrapper.step(
+                self.env_id,
+                f'Action: ADD {{"key": "memo-{index}", "value": "State {index}"}}',
+            )
+            self.wrapper.step(
+                self.env_id,
+                f'Action: RETRIEVE {{"query": "State {index}", "top_k": 1}}',
+            )
+
+        for step in range(1, TRAVEL_MAX_STEPS_PER_PHASE):
+            transition = self.wrapper.step(
+                self.env_id,
+                f'Action: CitySearch {{"state": "Native {step}"}}',
+            )
+            self.assertEqual(transition["info"]["phase_index"], 0)
+            self.assertFalse(
+                transition["info"]["action_execution"].get("phase_timeout", False)
+            )
+
+        timed_out = self.wrapper.step(
+            self.env_id,
+            f'Action: CitySearch '
+            f'{{"state": "Native {TRAVEL_MAX_STEPS_PER_PHASE}"}}',
+        )
+        self.assertEqual(timed_out["info"]["phase_index"], 1)
+        self.assertTrue(timed_out["info"]["action_execution"]["phase_timeout"])
+        self.assertEqual(
+            timed_out["info"]["domain_evidence"]["completed_phase_step_count"],
+            TRAVEL_MAX_STEPS_PER_PHASE,
+        )
+
     def test_reset_clears_memory_phase_state_and_uses_original_seed_fallback(self):
         self.wrapper.step(
             self.env_id,

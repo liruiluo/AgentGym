@@ -170,9 +170,24 @@ class MixedActionParserTests(unittest.TestCase):
 
 
 class MemoryArenaWebShopEnvTests(unittest.TestCase):
-    def make_env(self, *, backend: FakeNativeBackend | None = None, budget_cents: int = 10_000):
+    def make_env(
+        self,
+        *,
+        backend: FakeNativeBackend | None = None,
+        budget_cents: int = 10_000,
+        first_valid_add_reward: float = FIRST_VALID_ADD_BONUS,
+        first_valid_later_session_retrieve_reward: float = FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
+    ):
         backend = backend or FakeNativeBackend()
-        env = MemoryArenaWebShopEnv(bundles=[make_bundle(budget_cents=budget_cents)], backend=backend, env_uid="test")
+        env = MemoryArenaWebShopEnv(
+            bundles=[make_bundle(budget_cents=budget_cents)],
+            backend=backend,
+            env_uid="test",
+            first_valid_add_reward=first_valid_add_reward,
+            first_valid_later_session_retrieve_reward=(
+                first_valid_later_session_retrieve_reward
+            ),
+        )
         env.reset()
         return env, backend
 
@@ -192,6 +207,30 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
         self.assertEqual({item["op"] for item in components}, {op})
         self.assertEqual({item["step"] for item in components}, {step})
         self.assertAlmostEqual(sum(float(item["value"]) for item in components), reward)
+
+    def test_info_reports_phase_and_subtask_counts_across_lifecycle(self) -> None:
+        env, _ = self.make_env()
+
+        _, reset_info = env.reset()
+        self.assertEqual(reset_info["phase_count"], 6)
+        self.assertEqual(reset_info["subtask_count"], 6)
+        self.assertEqual(reset_info["current_subtask_index"], 0)
+        self.assertEqual(reset_info["progress_score"], 0.0)
+
+        _, _, done, _, progressed_info = purchase(env, TARGETS[0])
+        self.assertFalse(done)
+        self.assertEqual(progressed_info["phase_count"], 6)
+        self.assertEqual(progressed_info["subtask_count"], 6)
+        self.assertEqual(progressed_info["current_subtask_index"], 1)
+        self.assertAlmostEqual(progressed_info["progress_score"], 1 / 6)
+
+        for asin in TARGETS[1:]:
+            _, _, done, _, terminal_info = purchase(env, asin)
+        self.assertTrue(done)
+        self.assertEqual(terminal_info["phase_count"], 6)
+        self.assertEqual(terminal_info["subtask_count"], 6)
+        self.assertEqual(terminal_info["current_subtask_index"], 6)
+        self.assertEqual(terminal_info["progress_score"], 1.0)
 
     def test_native_search_and_nonpurchase_click_have_exact_zero_ledgers(self) -> None:
         env, _ = self.make_env()
@@ -345,6 +384,49 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
             names=["retrieve_transition", "memory_retrieve_first_valid_later_session"],
             step=12,
         )
+
+    def test_memory_micro_rewards_support_explicit_run_overrides(self) -> None:
+        env, _ = self.make_env(
+            first_valid_add_reward=0.2,
+            first_valid_later_session_retrieve_reward=0.1,
+        )
+
+        _, reset_info = env.reset()
+        self.assertEqual(
+            reset_info["reward_contract"]["first_valid_add_reward"],
+            0.2,
+        )
+        self.assertEqual(
+            reset_info["reward_contract"][
+                "first_valid_later_session_retrieve_reward"
+            ],
+            0.1,
+        )
+        _, add_reward, _, _, _ = env.step('ADD {"key":"prior","value":"item"}')
+        self.assertEqual(add_reward, 0.2)
+
+        purchase(env, TARGETS[0])
+        _, retrieve_reward, _, _, info = env.step(
+            'RETRIEVE {"query":"prior","top_k":3}'
+        )
+
+        self.assertEqual(retrieve_reward, 0.1)
+        self.assert_reward_ledger(
+            reward=retrieve_reward,
+            info=info,
+            op="RETRIEVE",
+            names=["retrieve_transition", "memory_retrieve_first_valid_later_session"],
+            step=5,
+        )
+
+    def test_memory_reward_override_rejects_nonfinite_or_negative_values(self) -> None:
+        for value in (-0.1, float("nan"), float("inf"), True):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                MemoryArenaWebShopEnv(
+                    bundles=[make_bundle()],
+                    backend=FakeNativeBackend(),
+                    first_valid_later_session_retrieve_reward=value,
+                )
 
     def test_exact_repeated_valid_action_penalty_resets_on_session_advance(self) -> None:
         env, _ = self.make_env()

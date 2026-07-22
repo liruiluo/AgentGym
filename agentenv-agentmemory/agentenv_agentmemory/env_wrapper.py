@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import threading
 from pathlib import Path
@@ -19,6 +20,11 @@ from .memoryarena_dataset import (
 )
 from .memoryarena_webshop_env import MemoryArenaWebShopEnv
 from .native_webshop_backend import MemoryArenaNativeWebShopBackend
+from .reward_hierarchy import (
+    FIRST_VALID_ADD_BONUS,
+    FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
+    build_memoryarena_reward_contract,
+)
 
 
 NATIVE_SURFACE = "memoryarena_webshop_native_v1"
@@ -44,6 +50,17 @@ class AgentMemoryWrapper:
                 "Native MemoryArena launch refuses legacy SQLite variables: "
                 + ", ".join(forbidden)
             )
+
+        self.reward_contract = build_memoryarena_reward_contract(
+            first_valid_add_reward=_env_nonnegative_float(
+                "AGENTMEMORY_FIRST_VALID_ADD_REWARD",
+                FIRST_VALID_ADD_BONUS,
+            ),
+            first_valid_later_session_retrieve_reward=_env_nonnegative_float(
+                "AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD",
+                FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
+            ),
+        )
 
         domain_data_path = _required_path("MEMORYARENA_WEBSHOP_DOMAIN_DATA_PATH")
         domain_data_sha256 = _sha256_file(domain_data_path)
@@ -85,6 +102,14 @@ class AgentMemoryWrapper:
                 bundles=self.tasks,
                 backend=self.backend,
                 env_uid=f"env{env_id}",
+                first_valid_add_reward=float(
+                    self.reward_contract["first_valid_add_reward"]
+                ),
+                first_valid_later_session_retrieve_reward=float(
+                    self.reward_contract[
+                        "first_valid_later_session_retrieve_reward"
+                    ]
+                ),
             )
             observation, info = env.reset(data_idx=env_id)
             payload = {
@@ -160,6 +185,7 @@ class AgentMemoryWrapper:
             "annotation_gate_sha256": self.annotation_gate.manifest_sha256,
             "annotation_gate_allowed_task_ids_sha256": self.annotation_gate.allowed_task_ids_sha256,
             "annotation_gate_allowed_task_count": len(self.annotation_gate.allowed_task_ids),
+            "reward_contract": dict(self.reward_contract),
             "backend": self.backend.metadata(),
         }
 
@@ -257,12 +283,20 @@ def _env_int(key: str, default: int) -> int:
         raise RuntimeError(f"{key} must be an integer.") from exc
 
 
+def _env_nonnegative_float(key: str, default: float) -> float:
+    value = os.environ.get(key)
+    try:
+        parsed = float(default if value is None else value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{key} must be a finite, non-negative number.") from exc
+    if not math.isfinite(parsed) or parsed < 0.0:
+        raise RuntimeError(f"{key} must be a finite, non-negative number.")
+    return parsed
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-server = AgentMemoryWrapper()

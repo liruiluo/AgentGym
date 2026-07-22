@@ -1,7 +1,10 @@
 from fastapi import FastAPI
 
-from .env_wrapper import server
 from .model import CloseRequestBody, ResetRequestBody, StepRequestBody
+from .runtime.server_factory import build_server
+
+
+server = build_server()
 
 app = FastAPI()
 

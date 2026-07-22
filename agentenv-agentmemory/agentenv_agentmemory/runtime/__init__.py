@@ -10,7 +10,9 @@ from .domain import (
     DomainDriver,
     DomainFactory,
     DomainTransition,
+    MEMORY_ACTION_DESCRIPTIONS,
     contract_digest,
+    render_system_prompt,
 )
 from .memory import MemoryRewardPolicy, MemoryToolRuntime
 from .registry import DomainRegistry
@@ -24,7 +26,9 @@ __all__ = [
     "DomainRegistry",
     "DomainTransition",
     "MemoryAugmentedDriver",
+    "MEMORY_ACTION_DESCRIPTIONS",
     "MemoryRewardPolicy",
     "MemoryToolRuntime",
     "contract_digest",
+    "render_system_prompt",
 ]

@@ -10,6 +10,7 @@ from .memory import MemoryActionError, MemoryRewardPolicy, MemoryToolRuntime
 
 
 _THINK_CLOSE_RE = re.compile(r"</think\s*>", flags=re.IGNORECASE)
+_ACTION_ENVELOPE_RE = re.compile(r"(?m)^[ \t]*Action:[ \t]*(?:\r?\n[ \t]*)?")
 
 
 class MemoryAugmentedDriver:
@@ -79,7 +80,9 @@ class MemoryAugmentedDriver:
                 action_execution=execution,
                 tool_ops=(memory_result.tool_op,),
                 reward_components=memory_result.reward_components,
-                domain_evidence={"memory_state_diff": memory_result.state_diff},
+                domain_evidence=self._inherited_domain_evidence(
+                    memory_state_diff=memory_result.state_diff,
+                ),
             )
             self.transition = transition
             return self._decorate(transition, prefix=memory_result.message)
@@ -96,6 +99,12 @@ class MemoryAugmentedDriver:
         components = [dict(item) for item in transition.reward_components]
         reward = float(transition.reward)
         action_status = str(execution.get("status", "")).lower()
+        action_op = str(execution.get("op", "")).upper()
+        if action_status == "invalid" or action_op == "INVALID":
+            reward, components = self._apply_native_invalid_penalty(
+                reward,
+                components,
+            )
         valid_zero_reward = (
             not transition.done
             and reward == 0.0
@@ -172,7 +181,74 @@ class MemoryAugmentedDriver:
                 "step": self.env_step,
             },
             reward_components=(component,),
+            domain_evidence=self._inherited_domain_evidence(
+                memory_action_error=message,
+            ),
         )
+
+    def _inherited_domain_evidence(
+        self,
+        *,
+        memory_state_diff: dict[str, list[Any]] | None = None,
+        memory_action_error: str | None = None,
+    ) -> dict[str, Any]:
+        assert self.transition is not None
+        evidence = deepcopy(self.transition.domain_evidence)
+        evidence.pop("memory_state_diff", None)
+        evidence.pop("memory_action_error", None)
+        evidence.update(
+            {
+                "phase_index_before": self.transition.phase_index,
+                "phase_advanced": False,
+                "memory_state_diff": memory_state_diff
+                or {"added": [], "updated": [], "deleted": []},
+            }
+        )
+        if memory_action_error is not None:
+            evidence["memory_action_error"] = memory_action_error
+        return evidence
+
+    def _apply_native_invalid_penalty(
+        self,
+        reward: float,
+        components: list[dict[str, Any]],
+    ) -> tuple[float, list[dict[str, Any]]]:
+        if self.invalid_action_penalty == 0.0:
+            return reward, components
+
+        replaced = []
+        inserted = False
+        for component in components:
+            is_invalid = (
+                str(component.get("name", "")) == "invalid_action"
+                or str(component.get("op", "")).upper() == "INVALID"
+            )
+            if not is_invalid:
+                replaced.append(component)
+                continue
+            if inserted:
+                continue
+            canonical = dict(component)
+            canonical.update(
+                {
+                    "name": "invalid_action",
+                    "value": self.invalid_action_penalty,
+                    "op": "INVALID",
+                    "step": self.env_step,
+                }
+            )
+            replaced.append(canonical)
+            inserted = True
+        if not inserted:
+            replaced.append(
+                {
+                    "name": "invalid_action",
+                    "value": self.invalid_action_penalty,
+                    "op": "INVALID",
+                    "step": self.env_step,
+                }
+            )
+        return sum(float(item.get("value", 0.0)) for item in replaced), replaced
 
     def _decorate(
         self,
@@ -187,7 +263,6 @@ class MemoryAugmentedDriver:
             [
                 transition.observation.strip(),
                 self.memory.render_context(),
-                self.memory.action_contract(),
             ]
         )
         evidence = dict(transition.domain_evidence)
@@ -303,7 +378,8 @@ class DomainEnvWrapper:
                 "task_count": self.factory.task_count,
                 "contract_id": contract.contract_id,
                 "contract_sha256": contract.sha256,
-                "system_prompt": contract.system_prompt,
+                "system_prompt": contract.canonical_system_prompt,
+                "system_prompt_sha256": contract.system_prompt_sha256,
                 "native_action_descriptions": list(
                     contract.native_action_descriptions
                 ),
@@ -374,6 +450,7 @@ def extract_submitted_action(raw_policy_output: str) -> str:
     matches = list(_THINK_CLOSE_RE.finditer(text))
     if matches:
         text = text[matches[-1].end() :].strip()
-    if "Action:" in text:
-        text = text.rsplit("Action:", 1)[-1].strip()
+    action_envelopes = list(_ACTION_ENVELOPE_RE.finditer(text))
+    if action_envelopes:
+        text = text[action_envelopes[0].end() :].strip()
     return text
