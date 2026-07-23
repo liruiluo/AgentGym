@@ -3,6 +3,7 @@ from __future__ import annotations
 import glob
 import hashlib
 import importlib
+import importlib.util
 import json
 import os
 import re
@@ -10,7 +11,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any, Callable, Sequence
 from urllib.parse import urlparse
 
@@ -1474,16 +1475,7 @@ def _build_upstream_bm25_search(
             f"BrowseComp BM25 Lucene index lacks a segments file: {index_path}"
         )
 
-    search_agent_dir = memoryarena_root / "env/env_systems/web_search_env/search_agent"
-    for path in (memoryarena_root, search_agent_dir):
-        path_text = str(path)
-        if path_text not in sys.path:
-            sys.path.insert(0, path_text)
-    client_module = _import_upstream_search_client_without_api_key()
-    bm25_module = importlib.import_module(
-        "env.env_systems.web_search_env.searcher.searchers.bm25_searcher"
-    )
-    _require_module_under_root(client_module, memoryarena_root)
+    bm25_module = _load_upstream_bm25_module(memoryarena_root)
     _require_module_under_root(bm25_module, memoryarena_root)
 
     upstream_searcher = bm25_module.BM25Searcher(
@@ -1504,36 +1496,43 @@ def _build_upstream_bm25_search(
             f"expected {BROWSECOMP_FROZEN_DOCUMENT_COUNT}, observed {document_count}"
         )
 
-    class _SearchToolCompatibleBM25:
-        def search(self, query: str, k: int, allowed_docids=None):
-            if allowed_docids:
-                raise RuntimeError(
-                    "BrowseComp BM25 integration does not support docid filtering"
-                )
-            return upstream_searcher.search(query, k)
-
-        def get_document(self, docid: str):
-            return upstream_searcher.get_document(docid)
-
-        def search_description(self, k: int = 10) -> str:
-            return upstream_searcher.search_description(k)
-
-        def get_document_description(self) -> str:
-            return upstream_searcher.get_document_description()
-
-    handler = client_module.SearchToolHandler(
-        searcher=_SearchToolCompatibleBM25(),
-        snippet_max_tokens=None,
-        k=BROWSECOMP_FROZEN_SEARCH_K,
-        include_get_document=True,
-        allowed_docids=None,
-        step_memory_client=None,
-    )
-    handler.snippet_max_tokens = BROWSECOMP_FROZEN_SNIPPET_TOKENS
-    handler.tokenizer = _load_frozen_snippet_tokenizer()
+    tokenizer = _load_frozen_snippet_tokenizer()
 
     def execute(tool_name: str, arguments: dict[str, Any]) -> str:
-        return handler.execute_tool(tool_name, arguments)
+        if tool_name == "search":
+            candidates = upstream_searcher.search(
+                arguments["query"],
+                BROWSECOMP_FROZEN_SEARCH_K,
+            )
+            results = []
+            for candidate in candidates:
+                text = candidate["text"]
+                tokens = tokenizer.encode(text, add_special_tokens=False)
+                snippet = (
+                    tokenizer.decode(
+                        tokens[:BROWSECOMP_FROZEN_SNIPPET_TOKENS],
+                        skip_special_tokens=True,
+                    )
+                    if len(tokens) > BROWSECOMP_FROZEN_SNIPPET_TOKENS
+                    else text
+                )
+                result = {"docid": candidate["docid"]}
+                if candidate.get("score") is not None:
+                    result["score"] = candidate["score"]
+                result["snippet"] = snippet
+                results.append(result)
+            return json.dumps(results, indent=2)
+        if tool_name == "get_document":
+            document = upstream_searcher.get_document(arguments["docid"])
+            if document is None:
+                document = {
+                    "error": (
+                        "Document with docid "
+                        f"'{arguments['docid']}' not found"
+                    )
+                }
+            return json.dumps(document, indent=2)
+        raise ValueError(f"Unknown tool: {tool_name}")
 
     index_files = sorted(path for path in index_path.iterdir() if path.is_file())
     commit_files = sorted(index_path.glob("segments_*")) + sorted(
@@ -1543,6 +1542,7 @@ def _build_upstream_bm25_search(
         "mode": "memoryarena_upstream_bm25_lucene_integration_assets",
         "backend": BROWSECOMP_BM25_INTEGRATION_BACKEND,
         "implementation": "memoryarena_upstream_pyserini_bm25_searcher",
+        "tool_adapter": "agentmemory_search_tool_handler_equivalent_v1",
         "document_count": document_count,
         "index_file_count": len(index_files),
         "index_total_bytes": sum(path.stat().st_size for path in index_files),
@@ -1555,6 +1555,67 @@ def _build_upstream_bm25_search(
     }
     public_config["config_sha256"] = _sha256_json(public_config)
     return execute, public_config
+
+
+def _load_upstream_bm25_module(memoryarena_root: Path) -> ModuleType:
+    """Load upstream BM25 without executing its dense-heavy package initializer."""
+
+    searchers_dir = (
+        memoryarena_root
+        / "env/env_systems/web_search_env/searcher/searchers"
+    ).resolve()
+    base_path = searchers_dir / "base.py"
+    bm25_path = searchers_dir / "bm25_searcher.py"
+    for path in (base_path, bm25_path):
+        if not path.is_file():
+            raise RuntimeError(f"MemoryArena BM25 source file is missing: {path}")
+
+    namespace = "_agentmemory_frozen_browsecomp_bm25_" + hashlib.sha256(
+        str(searchers_dir).encode("utf-8")
+    ).hexdigest()[:16]
+    package = sys.modules.get(namespace)
+    if package is None:
+        package = ModuleType(namespace)
+        package.__path__ = [str(searchers_dir)]
+        package.__package__ = namespace
+        sys.modules[namespace] = package
+
+    base_module_name = f"{namespace}.base"
+    bm25_module_name = f"{namespace}.bm25_searcher"
+    had_base = base_module_name in sys.modules
+    try:
+        _load_module_from_file(base_module_name, base_path)
+        return _load_module_from_file(bm25_module_name, bm25_path)
+    except BaseException:
+        if not had_base:
+            sys.modules.pop(base_module_name, None)
+        sys.modules.pop(bm25_module_name, None)
+        if not any(name.startswith(f"{namespace}.") for name in sys.modules):
+            sys.modules.pop(namespace, None)
+        raise
+
+
+def _load_module_from_file(module_name: str, path: Path) -> ModuleType:
+    existing = sys.modules.get(module_name)
+    if existing is not None:
+        existing_path = Path(getattr(existing, "__file__", "")).resolve()
+        if existing_path != path.resolve():
+            raise RuntimeError(
+                f"Frozen module cache collision for {module_name}: {existing_path}"
+            )
+        return existing
+
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load frozen module source: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
 
 
 def _import_upstream_search_client_without_api_key():

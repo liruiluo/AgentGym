@@ -27,10 +27,12 @@ from agentenv_agentmemory.domains.browsecomp import (
     BROWSECOMP_SURFACES,
     BROWSECOMP_UPSTREAM_REQUIRED_FILES,
     BrowseCompPlusFactory,
+    _build_upstream_bm25_search,
     _build_upstream_search,
     _build_upstream_judge,
     _import_upstream_search_client_without_api_key,
     _judge_provenance,
+    _load_upstream_bm25_module,
     _load_frozen_snippet_tokenizer,
     aggregate_browsecomp_paper_metrics,
     attest_browsecomp_cross_source_parity,
@@ -223,6 +225,152 @@ class BrowseCompContractTest(unittest.TestCase):
 
         self.assertNotIn(secret, output.getvalue())
         self.assertEqual(output.getvalue().count("None"), 2)
+
+    def test_bm25_loader_skips_dense_package_initializer(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            searchers = (
+                root / "env/env_systems/web_search_env/searcher/searchers"
+            )
+            searchers.mkdir(parents=True)
+            (searchers / "__init__.py").write_text(
+                "raise AssertionError('dense package initializer executed')\n",
+                encoding="utf-8",
+            )
+            (searchers / "base.py").write_text(
+                "class BaseSearcher:\n    pass\n",
+                encoding="utf-8",
+            )
+            (searchers / "bm25_searcher.py").write_text(
+                "from .base import BaseSearcher\n"
+                "class BM25Searcher(BaseSearcher):\n    pass\n",
+                encoding="utf-8",
+            )
+
+            real_import = __import__
+
+            def reject_dense_dependency(name, *args, **kwargs):
+                if name in {"datasets", "faiss"}:
+                    raise ModuleNotFoundError(name)
+                return real_import(name, *args, **kwargs)
+
+            with patch("builtins.__import__", side_effect=reject_dense_dependency):
+                module = _load_upstream_bm25_module(root)
+
+        self.assertEqual(module.BM25Searcher.__name__, "BM25Searcher")
+        self.assertEqual(Path(module.__file__).name, "bm25_searcher.py")
+
+    def test_bm25_loader_rolls_back_partial_modules_after_failure(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            searchers = (
+                root / "env/env_systems/web_search_env/searcher/searchers"
+            )
+            searchers.mkdir(parents=True)
+            (searchers / "base.py").write_text(
+                "class BaseSearcher:\n    pass\n",
+                encoding="utf-8",
+            )
+            (searchers / "bm25_searcher.py").write_text(
+                "raise RuntimeError('injected failure')\n",
+                encoding="utf-8",
+            )
+            namespace = (
+                "_agentmemory_frozen_browsecomp_bm25_"
+                + hashlib.sha256(str(searchers.resolve()).encode("utf-8"))
+                .hexdigest()[:16]
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "injected failure"):
+                _load_upstream_bm25_module(root)
+
+        self.assertNotIn(namespace, sys.modules)
+        self.assertNotIn(f"{namespace}.base", sys.modules)
+        self.assertNotIn(f"{namespace}.bm25_searcher", sys.modules)
+
+    def test_bm25_tool_adapter_preserves_search_and_document_rendering(self):
+        class FakeLuceneSearcher:
+            num_docs = 100195
+
+        class FakeBM25Searcher:
+            def __init__(self, args):
+                self.args = args
+                self.searcher = FakeLuceneSearcher()
+
+            def search(self, query, k):
+                self.last_search = (query, k)
+                return [
+                    {
+                        "docid": "DOC-1",
+                        "score": 1.25,
+                        "text": "one two three four",
+                    }
+                ]
+
+            def get_document(self, docid):
+                return {"docid": docid, "text": "full document"}
+
+        class FakeTokenizer:
+            @staticmethod
+            def encode(text, add_special_tokens=False):
+                return text.split()
+
+            @staticmethod
+            def decode(tokens, skip_special_tokens=True):
+                return " ".join(tokens)
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            index = root / "index"
+            index.mkdir()
+            (index / "segments_1").write_bytes(b"segments")
+            with (
+                patch(
+                    "agentenv_agentmemory.domains.browsecomp."
+                    "_load_upstream_bm25_module",
+                    return_value=types.SimpleNamespace(
+                        BM25Searcher=FakeBM25Searcher,
+                        __file__=str(root / "bm25_searcher.py"),
+                    ),
+                ),
+                patch(
+                    "agentenv_agentmemory.domains.browsecomp."
+                    "_require_module_under_root"
+                ),
+                patch(
+                    "agentenv_agentmemory.domains.browsecomp."
+                    "_load_frozen_snippet_tokenizer",
+                    return_value=FakeTokenizer(),
+                ),
+            ):
+                execute, provenance = _build_upstream_bm25_search(
+                    root,
+                    index_path=index,
+                )
+
+            search_result = json.loads(execute("search", {"query": "query"}))
+            document = json.loads(
+                execute("get_document", {"docid": "DOC-1"})
+            )
+
+        self.assertEqual(
+            search_result,
+            [
+                {
+                    "docid": "DOC-1",
+                    "score": 1.25,
+                    "snippet": "one two three four",
+                }
+            ],
+        )
+        self.assertEqual(
+            document,
+            {"docid": "DOC-1", "text": "full document"},
+        )
+        self.assertEqual(
+            provenance["tool_adapter"],
+            "agentmemory_search_tool_handler_equivalent_v1",
+        )
 
     def test_upstream_judge_imports_cannot_print_openai_api_key(self):
         secret = "unit-test-secret-must-not-appear"
