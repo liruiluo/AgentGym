@@ -7,7 +7,8 @@ from urllib.parse import urlparse
 
 from ..domains import (
     BROWSECOMP_SURFACES,
-    FORMAL_REASONING_SURFACES,
+    FORMAL_REASONING_PAPER_EVAL_SURFACES,
+    FORMAL_REASONING_SURFACES_BY_MODE,
     TRAVEL_SURFACES,
     BrowseCompPlusFactory,
     FormalReasoningFactory,
@@ -55,6 +56,14 @@ def build_server():
             "Travel paper_eval refuses reward overlays so its canonical paper "
             "ledger cannot be mixed with shaped rollout rewards"
         )
+    if surface in FORMAL_REASONING_PAPER_EVAL_SURFACES.values() and any(
+        value != 0.0
+        for value in (first_add, first_later_retrieve, exact_repeat, invalid_action)
+    ):
+        raise RuntimeError(
+            "Formal Reasoning paper_eval refuses reward overlays so its canonical "
+            "paper ledger cannot be mixed with shaped rollout rewards"
+        )
     return DomainEnvWrapper(
         factory,
         reward_policy=MemoryRewardPolicy(
@@ -73,11 +82,14 @@ def build_domain_registry() -> DomainRegistry:
             surface,
             lambda contract_mode=contract_mode: _build_travel_factory(contract_mode),
         )
-    for domain, surface in FORMAL_REASONING_SURFACES.items():
-        registry.register(
-            surface,
-            lambda domain=domain: _build_formal_reasoning_factory(domain),
-        )
+    for contract_mode, surfaces in FORMAL_REASONING_SURFACES_BY_MODE.items():
+        for domain, surface in surfaces.items():
+            registry.register(
+                surface,
+                lambda domain=domain, contract_mode=contract_mode: (
+                    _build_formal_reasoning_factory(domain, contract_mode)
+                ),
+            )
     for contract_mode, surface in BROWSECOMP_SURFACES.items():
         registry.register(
             surface,
@@ -109,7 +121,10 @@ def _build_travel_factory(contract_mode: str) -> TravelPlannerFactory:
     )
 
 
-def _build_formal_reasoning_factory(domain: str) -> FormalReasoningFactory:
+def _build_formal_reasoning_factory(
+    domain: str,
+    contract_mode: str,
+) -> FormalReasoningFactory:
     tasks_path = _required_file("AGENTMEMORY_FORMAL_REASONING_TASKS_PATH")
     dataset_config = f"formal_reasoning_{domain}"
     base_commit = _required_env("MEMORYARENA_BASE_COMMIT")
@@ -120,6 +135,7 @@ def _build_formal_reasoning_factory(domain: str) -> FormalReasoningFactory:
         )
     return FormalReasoningFactory(
         domain=domain,
+        contract_mode=contract_mode,
         tasks_path=tasks_path,
         dataset_provenance=attest_frozen_memoryarena_dataset(
             tasks_path,

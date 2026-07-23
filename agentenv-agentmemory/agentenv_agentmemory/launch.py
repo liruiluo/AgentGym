@@ -6,7 +6,7 @@ import os
 from .annotation_gate import ANNOTATION_GATE_MODES
 from .domains import (
     BROWSECOMP_SURFACES,
-    FORMAL_REASONING_SURFACES,
+    FORMAL_REASONING_SURFACES_BY_MODE,
     TRAVEL_SURFACES,
     V3_SURFACES,
 )
@@ -158,7 +158,11 @@ def launch() -> None:
                 "MEMORYARENA_TRAVEL_DATABASE_PATH": args.travel_database_path,
             }
         )
-    elif args.surface in FORMAL_REASONING_SURFACES.values():
+    elif args.surface in {
+        surface
+        for surfaces in FORMAL_REASONING_SURFACES_BY_MODE.values()
+        for surface in surfaces.values()
+    }:
         _require_args(
             parser,
             args,

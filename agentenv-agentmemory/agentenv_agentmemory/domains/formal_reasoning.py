@@ -18,13 +18,36 @@ from .memoryarena_dataset import (
 
 
 FORMAL_REASONING_DOMAINS = ("math", "phys")
-FORMAL_REASONING_SURFACES = {
+FORMAL_REASONING_CONTRACT_MODES = ("failfast", "paper_eval")
+FORMAL_REASONING_FAILFAST_SURFACES = {
     "math": "memoryarena_formal_reasoning_math_failfast_v3",
     "phys": "memoryarena_formal_reasoning_phys_failfast_v3",
+}
+FORMAL_REASONING_PAPER_EVAL_SURFACES = {
+    "math": "memoryarena_formal_reasoning_math_paper_eval_one_action_v3",
+    "phys": "memoryarena_formal_reasoning_phys_paper_eval_one_action_v3",
+}
+# Compatibility alias for existing training launchers.
+FORMAL_REASONING_SURFACES = FORMAL_REASONING_FAILFAST_SURFACES
+FORMAL_REASONING_SURFACES_BY_MODE = {
+    "failfast": FORMAL_REASONING_FAILFAST_SURFACES,
+    "paper_eval": FORMAL_REASONING_PAPER_EVAL_SURFACES,
+}
+FORMAL_REASONING_SURFACE_SPECS = {
+    surface: (domain, contract_mode)
+    for contract_mode, surfaces in FORMAL_REASONING_SURFACES_BY_MODE.items()
+    for domain, surface in surfaces.items()
 }
 FORMAL_REASONING_DOMAIN_IDS = {
     "math": "formal_reasoning_math",
     "phys": "formal_reasoning_phys",
+}
+FORMAL_REASONING_PAPER_METRIC_CONTRACT = (
+    "memoryarena_formal_reasoning_ps_final_sr_v1"
+)
+FORMAL_REASONING_PAPER_DATASET_SCOPES = {
+    "math": "memoryarena_formal_reasoning_math_frozen40",
+    "phys": "memoryarena_formal_reasoning_phys_frozen20",
 }
 FROZEN_MEMORYARENA_COMMIT = "6cd9de14b71915e39ac742a20dc33785e14b6aab"
 FORMAL_REASONING_RUNTIME_IMPORT_RELATIVE_PATHS = (
@@ -76,26 +99,52 @@ FORMAL_JUDGE_PROMPT_TEMPLATE_SHA256 = hashlib.sha256(
 ).hexdigest()
 
 
-def _contract(domain: str) -> DomainContract:
+def _contract(domain: str, contract_mode: str) -> DomainContract:
     label = "mathematics" if domain == "math" else "physics"
+    if contract_mode == "failfast":
+        outcome_text = (
+            "A correct answer advances to the next question and earns +1; an "
+            "incorrect answer ends the episode immediately."
+        )
+        contract_id = (
+            f"memoryarena_formal_reasoning_{domain}_failfast_v3_20260721"
+        )
+    elif contract_mode == "paper_eval":
+        outcome_text = (
+            "Every submitted answer is privately judged and then advances to the "
+            "next question, whether correct or incorrect. A correct answer earns "
+            "+1 and an incorrect answer earns 0. The final question's correctness "
+            "determines task success."
+        )
+        contract_id = (
+            "memoryarena_formal_reasoning_"
+            f"{domain}_paper_eval_one_action_v3_20260723"
+        )
+    else:  # pragma: no cover - callers validate this boundary.
+        raise ValueError(f"unsupported formal-reasoning contract mode: {contract_mode}")
     return DomainContract(
-        contract_id=f"memoryarena_formal_reasoning_{domain}_failfast_v3_20260721",
+        contract_id=contract_id,
         system_prompt=(
             f"You are operating the MemoryArena formal-reasoning {label} domain. "
             "An episode contains sequential questions from one paper. The current "
             "question and its published background are visible; answer text is "
-            "privately evaluated by the original MemoryArena judge. A correct answer "
-            "advances to the next question and earns +1; an incorrect answer ends the "
-            "episode immediately. Submit one final answer for the current question."
+            "privately evaluated by the original MemoryArena judge. "
+            f"{outcome_text} Submit one final answer for the current question."
         ),
         native_action_descriptions=("<final answer text>",),
         max_steps=64,
     )
 
 
-FORMAL_REASONING_CONTRACTS = {
-    domain: _contract(domain) for domain in FORMAL_REASONING_DOMAINS
+FORMAL_REASONING_CONTRACTS_BY_MODE = {
+    contract_mode: {
+        domain: _contract(domain, contract_mode)
+        for domain in FORMAL_REASONING_DOMAINS
+    }
+    for contract_mode in FORMAL_REASONING_CONTRACT_MODES
 }
+# Compatibility alias for the existing fail-fast training contract.
+FORMAL_REASONING_CONTRACTS = FORMAL_REASONING_CONTRACTS_BY_MODE["failfast"]
 
 
 @dataclass(frozen=True)
@@ -120,6 +169,7 @@ class FormalReasoningFactory:
         self,
         *,
         domain: str,
+        contract_mode: str = "failfast",
         tasks_path: str | Path,
         dataset_provenance: MemoryArenaDatasetProvenance,
         memoryarena_root: str | Path | None = None,
@@ -132,10 +182,16 @@ class FormalReasoningFactory:
                 "formal-reasoning domain must be one of: "
                 + ", ".join(FORMAL_REASONING_DOMAINS)
             )
+        if contract_mode not in FORMAL_REASONING_CONTRACT_MODES:
+            raise ValueError(
+                "formal-reasoning contract_mode must be one of: "
+                + ", ".join(FORMAL_REASONING_CONTRACT_MODES)
+            )
         self.domain = domain
+        self.contract_mode = contract_mode
         self.domain_id = FORMAL_REASONING_DOMAIN_IDS[domain]
-        self.surface = FORMAL_REASONING_SURFACES[domain]
-        self.contract = FORMAL_REASONING_CONTRACTS[domain]
+        self.surface = FORMAL_REASONING_SURFACES_BY_MODE[contract_mode][domain]
+        self.contract = FORMAL_REASONING_CONTRACTS_BY_MODE[contract_mode][domain]
         self.tasks_path = Path(tasks_path).expanduser().resolve()
         if (
             judge is not None
@@ -207,13 +263,14 @@ class FormalReasoningFactory:
     def create(self, env_uid: str):
         return FormalReasoningDriver(
             domain=self.domain,
+            contract_mode=self.contract_mode,
             tasks=self.tasks,
             judge=self.judge,
             env_uid=env_uid,
         )
 
     def metadata(self) -> dict[str, Any]:
-        return {
+        metadata = {
             "source": "MemoryArena",
             "dataset_config": self.domain_id,
             "dataset_sha256": self.dataset_sha256,
@@ -222,11 +279,41 @@ class FormalReasoningFactory:
             "dataset_provenance": self.dataset_provenance.metadata(),
             "judge": "memoryarena_llm_math_equivalence_v1",
             "judge_provenance": self.judge_provenance,
-            "semantic_variant": "ordered_subtask_failfast_v1",
-            "phase_transition": "advance_on_correct; terminal_on_incorrect",
-            "episode_success": "all_questions_correct",
+            "contract_mode": self.contract_mode,
+            "semantic_variant": (
+                "ordered_subtask_failfast_v1"
+                if self.contract_mode == "failfast"
+                else "paper_metric_continue_on_incorrect_one_action_v1"
+            ),
+            "phase_transition": (
+                "advance_on_correct; terminal_on_incorrect"
+                if self.contract_mode == "failfast"
+                else "advance_after_every_judged_answer"
+            ),
+            "episode_success": (
+                "all_questions_correct"
+                if self.contract_mode == "failfast"
+                else "final_question_correct"
+            ),
             "upstream_provenance": self.upstream_provenance,
         }
+        if self.contract_mode == "paper_eval":
+            full_public_panel = (
+                self.dataset_provenance.mode == "frozen_public_hf_dataset"
+            )
+            metadata["paper_evaluation"] = {
+                "id": FORMAL_REASONING_PAPER_METRIC_CONTRACT,
+                "dataset_scope": FORMAL_REASONING_PAPER_DATASET_SCOPES[self.domain],
+                "available": True,
+                "metrics": ["PS", "SR"],
+                "metric_scale": "unit_interval",
+                "canonical_semantics": True,
+                "paper_panel_complete": full_public_panel,
+                "paper_column_eligible": full_public_panel,
+                "continue_after_incorrect": True,
+                "separate_from_online_reward": True,
+            }
+        return metadata
 
 
 class FormalReasoningDriver:
@@ -234,18 +321,24 @@ class FormalReasoningDriver:
         self,
         *,
         domain: str,
+        contract_mode: str,
         tasks: Sequence[FormalReasoningTask],
         judge: FormalReasoningJudge,
         env_uid: str,
     ) -> None:
         if domain not in FORMAL_REASONING_DOMAINS:
             raise ValueError(f"unsupported formal-reasoning domain: {domain}")
+        if contract_mode not in FORMAL_REASONING_CONTRACT_MODES:
+            raise ValueError(
+                f"unsupported formal-reasoning contract mode: {contract_mode}"
+            )
         if not tasks:
             raise ValueError("FormalReasoningDriver requires tasks")
         self.domain = domain
+        self.contract_mode = contract_mode
         self.domain_id = FORMAL_REASONING_DOMAIN_IDS[domain]
-        self.surface = FORMAL_REASONING_SURFACES[domain]
-        self.contract = FORMAL_REASONING_CONTRACTS[domain]
+        self.surface = FORMAL_REASONING_SURFACES_BY_MODE[contract_mode][domain]
+        self.contract = FORMAL_REASONING_CONTRACTS_BY_MODE[contract_mode][domain]
         self.tasks = tuple(tasks)
         self.judge = judge
         self.env_uid = env_uid
@@ -295,16 +388,19 @@ class FormalReasoningDriver:
 
         answer_sha256 = hashlib.sha256(answer.encode("utf-8")).hexdigest()
         self.phase_results.append(passed)
-        if passed:
+        phase_advanced = passed or self.contract_mode == "paper_eval"
+        if phase_advanced:
             self.phase_index += 1
-        final = passed and self.phase_index == len(self.task.phases)
-        self.done = final or not passed
-        episode_success = final
+        final = self.phase_index == len(self.task.phases)
+        self.done = final or (self.contract_mode == "failfast" and not passed)
+        episode_success = final and passed
         self.status = (
             "success"
             if episode_success
+            else "complete_final_incorrect"
+            if final
             else "failed_on_incorrect_answer"
-            if not passed
+            if self.contract_mode == "failfast" and not passed
             else "active"
         )
         component = {
@@ -322,8 +418,8 @@ class FormalReasoningDriver:
             "step": env_step,
             "committed": True,
             "submission_correct": passed,
-            "phase_index": self.phase_index - 1 if passed else self.phase_index,
-            "phase_advanced": passed,
+            "phase_index": self.phase_index - 1 if phase_advanced else self.phase_index,
+            "phase_advanced": phase_advanced,
             "terminal": self.done,
             "answer_sha256": answer_sha256,
         }
@@ -342,11 +438,13 @@ class FormalReasoningDriver:
             evidence["judge_output_sha256"] = hashlib.sha256(
                 str(judge_output).encode("utf-8")
             ).hexdigest()
+        if self.contract_mode == "paper_eval" and final:
+            evidence["paper_evaluation"] = self._paper_evaluation_ledger()
         observation = (
             "All formal-reasoning questions have been evaluated."
             if final
             else "The submitted answer ended the formal-reasoning episode."
-            if not passed
+            if self.contract_mode == "failfast" and not passed
             else "The submitted answer was evaluated. The next question is ready.\n\n"
             + self._render_phase()
         )
@@ -365,6 +463,28 @@ class FormalReasoningDriver:
             reward_components=(component,),
             domain_evidence=evidence,
         )
+
+    def _paper_evaluation_ledger(self) -> dict[str, Any]:
+        task = self._require_task()
+        phase_count = len(task.phases)
+        correct_count = sum(self.phase_results)
+        final_success = bool(self.phase_results[-1])
+        return {
+            "metric_contract": FORMAL_REASONING_PAPER_METRIC_CONTRACT,
+            "dataset_scope": FORMAL_REASONING_PAPER_DATASET_SCOPES[self.domain],
+            "task_id": task.task_id,
+            "paper_name": task.paper_name,
+            "complete": True,
+            "phase_results": list(self.phase_results),
+            "completed_phase_count": len(self.phase_results),
+            "process_score_numerator": correct_count,
+            "process_score_denominator": phase_count,
+            "process_score": correct_count / phase_count,
+            "final_sr_numerator": int(final_success),
+            "final_sr_denominator": 1,
+            "final_success": final_success,
+            "online_reward_is_separate": True,
+        }
 
     def close(self) -> None:
         self.status = "closed"

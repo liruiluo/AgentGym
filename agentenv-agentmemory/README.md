@@ -3,8 +3,9 @@
 AgentMemoryGym integrates all four MemoryArena environment families behind one
 HTTP/runtime contract and adds the same policy-facing memory tools without
 exposing private answers. MemoryArena Formal Reasoning contains separate Math
-and Physics data domains. Search and Travel each have separate paper-evaluation
-and fail-fast contracts, so AMG exposes seven runnable surfaces:
+and Physics data domains. Search, Travel, and both Formal data domains expose
+separate paper-evaluation and fail-fast contracts, so AMG exposes nine runnable
+surfaces:
 
 | MemoryArena family | AMG surface |
 | --- | --- |
@@ -13,14 +14,16 @@ and fail-fast contracts, so AMG exposes seven runnable surfaces:
 | Travel Planner / paper eval | `memoryarena_travel_planner_paper_eval_one_action_v3` |
 | Web Search / public221 paper eval | `memoryarena_progressive_search_paper_eval_public221_one_action_v3` |
 | Web Search / public221 fail-fast | `memoryarena_progressive_search_failfast_public221_one_action_v3` |
-| Formal Reasoning / Math | `memoryarena_formal_reasoning_math_failfast_v3` |
-| Formal Reasoning / Physics | `memoryarena_formal_reasoning_phys_failfast_v3` |
+| Formal Reasoning / Math fail-fast | `memoryarena_formal_reasoning_math_failfast_v3` |
+| Formal Reasoning / Math paper eval | `memoryarena_formal_reasoning_math_paper_eval_one_action_v3` |
+| Formal Reasoning / Physics fail-fast | `memoryarena_formal_reasoning_phys_failfast_v3` |
+| Formal Reasoning / Physics paper eval | `memoryarena_formal_reasoning_phys_paper_eval_one_action_v3` |
 
 Math and Physics are separate runnable/evaluation surfaces, not separate
 upstream environment families. The paper reports them in separate columns and
 forms its all-task average over Shopping, Travel, Search, Math, and Physics.
-Only each domain's `paper_eval` contract contributes paper-style Search or
-Travel metrics; both fail-fast surfaces are named training variants.
+Only each domain's `paper_eval` contract contributes paper-style metrics;
+fail-fast surfaces are named training variants.
 
 The Web Shopping action surface is:
 
@@ -122,6 +125,13 @@ a purchase. There is no formal synthetic `SEARCH`, `BUY`, `ANSWER`, or
   `+1` for each correct subtask, advances once, and terminates with reward `0`
   on the first wrong subtask while retaining earlier rewards. This termination
   rule is an AMG training variant, not the original continuing runner.
+- Formal Math/Physics `paper_eval_one_action_v3` preserves the original runner's
+  continuation semantics: every judged answer advances, including an incorrect
+  answer. Each correct answer gives `+1`, each incorrect answer gives `0`, and
+  terminal evidence records the complete ordered verdict sequence. Task PS is
+  the fraction of correct questions; task success and the paper SR contribution
+  are determined only by the final question, matching frozen upstream
+  `formal_reasoning_env/eval.py`. Paper-eval refuses reward overlays.
 - V3 adapters are reward-neutral by default for memory/invalid-action overlays.
   Any optional overlay must be explicit in the launch manifest and cannot be
   reported as the unmodified upstream reward contract.
@@ -208,8 +218,8 @@ classes and their SHA256 values are attested before the tool executor starts.
 
 Formal Reasoning uses the same adapter for both data domains, but each launch
 must point at the separately frozen `formal_reasoning_math` or
-`formal_reasoning_phys` dataset export. Run them separately and retain the
-`failfast_v3` label in all results:
+`formal_reasoning_phys` dataset export. Run Math and Physics separately, and do
+not mix a fail-fast diagnostic with the corresponding paper-eval result:
 
 ```bash
 python -m agentenv_agentmemory.launch $COMMON \
@@ -220,11 +230,25 @@ python -m agentenv_agentmemory.launch $COMMON \
   --port 8002
 
 python -m agentenv_agentmemory.launch $COMMON \
+  --surface memoryarena_formal_reasoning_math_paper_eval_one_action_v3 \
+  --formal-reasoning-tasks-path /path/to/formal_reasoning_math.jsonl \
+  --formal-reasoning-judge-model <judge-model> \
+  --formal-reasoning-judge-base-url http://127.0.0.1:8100/v1 \
+  --port 8003
+
+python -m agentenv_agentmemory.launch $COMMON \
   --surface memoryarena_formal_reasoning_phys_failfast_v3 \
   --formal-reasoning-tasks-path /path/to/formal_reasoning_phys.jsonl \
   --formal-reasoning-judge-model <judge-model> \
   --formal-reasoning-judge-base-url http://127.0.0.1:8100/v1 \
-  --port 8003
+  --port 8004
+
+python -m agentenv_agentmemory.launch $COMMON \
+  --surface memoryarena_formal_reasoning_phys_paper_eval_one_action_v3 \
+  --formal-reasoning-tasks-path /path/to/formal_reasoning_phys.jsonl \
+  --formal-reasoning-judge-model <judge-model> \
+  --formal-reasoning-judge-base-url http://127.0.0.1:8100/v1 \
+  --port 8005
 ```
 
 Progressive Search requires the frozen public221 dataset, four exact FAISS

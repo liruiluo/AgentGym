@@ -10,7 +10,9 @@ from unittest.mock import patch
 
 from agentenv_agentmemory.domains import (
     BROWSECOMP_SURFACES,
+    FORMAL_REASONING_PAPER_EVAL_SURFACES,
     FORMAL_REASONING_SURFACES,
+    FORMAL_REASONING_SURFACES_BY_MODE,
     TRAVEL_SURFACES,
 )
 from agentenv_agentmemory.env_wrapper import NATIVE_SURFACE
@@ -187,72 +189,93 @@ class DomainServerFactoryTest(unittest.TestCase):
             ):
                 server_factory.build_server()
 
-    def test_math_and_physics_bind_explicit_failfast_factories(self):
+    def test_math_and_physics_bind_explicit_contract_modes(self):
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)
             tasks = root / "formal.jsonl"
             memoryarena = root / "MemoryArena"
             tasks.write_text("{}\n", encoding="utf-8")
             memoryarena.mkdir()
-            for domain, surface in FORMAL_REASONING_SURFACES.items():
-                environment = {
-                    "AGENTMEMORY_SURFACE": surface,
-                    "AGENTMEMORY_FORMAL_REASONING_TASKS_PATH": str(tasks),
-                    "MEMORYARENA_ROOT": str(memoryarena),
-                    "MEMORYARENA_BASE_COMMIT": FROZEN_MEMORYARENA_COMMIT,
-                    "AGENTMEMORY_FORMAL_REASONING_JUDGE_MODEL": "judge-model",
-                    "AGENTMEMORY_FORMAL_REASONING_JUDGE_BASE_URL": (
-                        "https://judge.example/v1/"
-                    ),
-                    "AGENTMEMORY_FORMAL_REASONING_JUDGE_TEMPERATURE": "0.25",
-                    "AGENTMEMORY_FORMAL_REASONING_JUDGE_MAX_TOKENS": "1234",
-                }
-                factory = self._factory(surface)
-                dataset_provenance = object()
-                sentinel = object()
-                with (
-                    self.subTest(domain=domain),
-                    patch.dict(
-                        os.environ,
-                        environment,
-                        clear=True,
-                    ),
-                    patch.object(
-                        server_factory,
-                        "attest_frozen_memoryarena_dataset",
-                        return_value=dataset_provenance,
-                    ) as dataset_attester,
-                    patch.object(
-                        server_factory,
-                        "FormalReasoningFactory",
-                        return_value=factory,
-                    ) as factory_type,
-                    patch.object(
-                        server_factory,
-                        "DomainEnvWrapper",
-                        return_value=sentinel,
-                    ),
-                ):
-                    self.assertIs(server_factory.build_server(), sentinel)
+            for contract_mode, surfaces in FORMAL_REASONING_SURFACES_BY_MODE.items():
+                for domain, surface in surfaces.items():
+                    environment = {
+                        "AGENTMEMORY_SURFACE": surface,
+                        "AGENTMEMORY_FORMAL_REASONING_TASKS_PATH": str(tasks),
+                        "MEMORYARENA_ROOT": str(memoryarena),
+                        "MEMORYARENA_BASE_COMMIT": FROZEN_MEMORYARENA_COMMIT,
+                        "AGENTMEMORY_FORMAL_REASONING_JUDGE_MODEL": "judge-model",
+                        "AGENTMEMORY_FORMAL_REASONING_JUDGE_BASE_URL": (
+                            "https://judge.example/v1/"
+                        ),
+                        "AGENTMEMORY_FORMAL_REASONING_JUDGE_TEMPERATURE": "0.25",
+                        "AGENTMEMORY_FORMAL_REASONING_JUDGE_MAX_TOKENS": "1234",
+                    }
+                    factory = self._factory(surface)
+                    dataset_provenance = object()
+                    sentinel = object()
+                    with (
+                        self.subTest(domain=domain, contract_mode=contract_mode),
+                        patch.dict(
+                            os.environ,
+                            environment,
+                            clear=True,
+                        ),
+                        patch.object(
+                            server_factory,
+                            "attest_frozen_memoryarena_dataset",
+                            return_value=dataset_provenance,
+                        ) as dataset_attester,
+                        patch.object(
+                            server_factory,
+                            "FormalReasoningFactory",
+                            return_value=factory,
+                        ) as factory_type,
+                        patch.object(
+                            server_factory,
+                            "DomainEnvWrapper",
+                            return_value=sentinel,
+                        ),
+                    ):
+                        self.assertIs(server_factory.build_server(), sentinel)
 
-                factory_type.assert_called_once_with(
-                    domain=domain,
-                    tasks_path=tasks.resolve(),
-                    dataset_provenance=dataset_provenance,
-                    memoryarena_root=memoryarena.resolve(),
-                    judge_config={
-                        "backend": "openai",
-                        "model_name": "judge-model",
-                        "base_url": "https://judge.example/v1",
-                        "temperature": 0.25,
-                        "max_tokens": 1234,
-                    },
-                    expected_memoryarena_commit=FROZEN_MEMORYARENA_COMMIT,
-                )
-                dataset_attester.assert_called_once_with(
-                    tasks.resolve(),
-                    config=f"formal_reasoning_{domain}",
-                )
+                    factory_type.assert_called_once_with(
+                        domain=domain,
+                        contract_mode=contract_mode,
+                        tasks_path=tasks.resolve(),
+                        dataset_provenance=dataset_provenance,
+                        memoryarena_root=memoryarena.resolve(),
+                        judge_config={
+                            "backend": "openai",
+                            "model_name": "judge-model",
+                            "base_url": "https://judge.example/v1",
+                            "temperature": 0.25,
+                            "max_tokens": 1234,
+                        },
+                        expected_memoryarena_commit=FROZEN_MEMORYARENA_COMMIT,
+                    )
+                    dataset_attester.assert_called_once_with(
+                        tasks.resolve(),
+                        config=f"formal_reasoning_{domain}",
+                    )
+
+    def test_formal_paper_eval_rejects_nonzero_reward_overlay(self):
+        environment = {
+            "AGENTMEMORY_SURFACE": FORMAL_REASONING_PAPER_EVAL_SURFACES["math"],
+            "AGENTMEMORY_FIRST_ADD_REWARD": "0.1",
+        }
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(
+                server_factory,
+                "build_domain_registry",
+                return_value=SimpleNamespace(build=lambda surface: object()),
+            ),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "Formal Reasoning paper_eval refuses",
+            ),
+        ):
+            server_factory.build_server()
 
     def test_formal_reasoning_rejects_unfrozen_memoryarena_commit(self):
         with tempfile.TemporaryDirectory() as tempdir:

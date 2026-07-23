@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 from agentenv_agentmemory.domains import (
     BROWSECOMP_SURFACES,
-    FORMAL_REASONING_SURFACES,
+    FORMAL_REASONING_SURFACES_BY_MODE,
     TRAVEL_SURFACES,
 )
 from agentenv_agentmemory.env_wrapper import NATIVE_SURFACE
@@ -214,47 +214,48 @@ class DomainLaunchTest(unittest.TestCase):
         uvicorn.run.assert_not_called()
 
     def test_math_and_physics_launch_bind_judge_configuration(self):
-        for domain, surface in FORMAL_REASONING_SURFACES.items():
-            with self.subTest(domain=domain):
-                configured, _ = self._launch(
-                    [
-                        "--surface",
-                        surface,
-                        "--memoryarena-root",
-                        "/memoryarena",
-                        "--formal-reasoning-tasks-path",
+        for contract_mode, surfaces in FORMAL_REASONING_SURFACES_BY_MODE.items():
+            for domain, surface in surfaces.items():
+                with self.subTest(domain=domain, contract_mode=contract_mode):
+                    configured, _ = self._launch(
+                        [
+                            "--surface",
+                            surface,
+                            "--memoryarena-root",
+                            "/memoryarena",
+                            "--formal-reasoning-tasks-path",
+                            "/data/formal.jsonl",
+                            "--formal-reasoning-judge-model",
+                            "judge-model",
+                            "--formal-reasoning-judge-base-url",
+                            "https://judge.example/v1",
+                            "--formal-reasoning-judge-temperature",
+                            "0.25",
+                            "--formal-reasoning-judge-max-tokens",
+                            "1234",
+                            "--memoryarena-base-commit",
+                            "a" * 40,
+                            "--run-id",
+                            f"formal-{domain}",
+                        ]
+                    )
+                    self.assertEqual(configured["AGENTMEMORY_SURFACE"], surface)
+                    self.assertEqual(
+                        configured["AGENTMEMORY_FORMAL_REASONING_TASKS_PATH"],
                         "/data/formal.jsonl",
-                        "--formal-reasoning-judge-model",
+                    )
+                    self.assertEqual(
+                        configured["AGENTMEMORY_FORMAL_REASONING_JUDGE_MODEL"],
                         "judge-model",
-                        "--formal-reasoning-judge-base-url",
-                        "https://judge.example/v1",
-                        "--formal-reasoning-judge-temperature",
+                    )
+                    self.assertEqual(
+                        configured["AGENTMEMORY_FORMAL_REASONING_JUDGE_TEMPERATURE"],
                         "0.25",
-                        "--formal-reasoning-judge-max-tokens",
+                    )
+                    self.assertEqual(
+                        configured["AGENTMEMORY_FORMAL_REASONING_JUDGE_MAX_TOKENS"],
                         "1234",
-                        "--memoryarena-base-commit",
-                        "a" * 40,
-                        "--run-id",
-                        f"formal-{domain}",
-                    ]
-                )
-            self.assertEqual(configured["AGENTMEMORY_SURFACE"], surface)
-            self.assertEqual(
-                configured["AGENTMEMORY_FORMAL_REASONING_TASKS_PATH"],
-                "/data/formal.jsonl",
-            )
-            self.assertEqual(
-                configured["AGENTMEMORY_FORMAL_REASONING_JUDGE_MODEL"],
-                "judge-model",
-            )
-            self.assertEqual(
-                configured["AGENTMEMORY_FORMAL_REASONING_JUDGE_TEMPERATURE"],
-                "0.25",
-            )
-            self.assertEqual(
-                configured["AGENTMEMORY_FORMAL_REASONING_JUDGE_MAX_TOKENS"],
-                "1234",
-            )
+                    )
 
     def test_browsecomp_launch_binds_every_production_input(self):
         for contract_mode, surface in BROWSECOMP_SURFACES.items():

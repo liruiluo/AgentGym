@@ -10,6 +10,8 @@ from typing import Any
 
 from agentenv_agentmemory.domains.formal_reasoning import (
     FORMAL_JUDGE_PROMPT_TEMPLATE_SHA256,
+    FORMAL_REASONING_PAPER_EVAL_SURFACES,
+    FORMAL_REASONING_PAPER_METRIC_CONTRACT,
     FORMAL_REASONING_RUNTIME_IMPORT_RELATIVE_PATHS,
     FORMAL_REASONING_UPSTREAM_RELATIVE_PATHS,
     FormalReasoningFactory,
@@ -82,6 +84,25 @@ class FormalReasoningDomainTest(unittest.TestCase):
         if self.env_id in self.wrapper.envs:
             self.wrapper.close(self.env_id)
         self.tempdir.cleanup()
+
+    def _paper_eval_wrapper(self):
+        judge = RecordingJudge()
+        factory = FormalReasoningFactory(
+            domain="math",
+            contract_mode="paper_eval",
+            tasks_path=self.tasks_path,
+            dataset_provenance=attest_injected_test_dataset(
+                self.tasks_path,
+                config="formal_reasoning_math",
+            ),
+            judge=judge,
+        )
+        wrapper = DomainEnvWrapper(factory)
+        env_id = wrapper.create()["id"]
+        self.addCleanup(
+            lambda: wrapper.close(env_id) if env_id in wrapper.envs else None
+        )
+        return factory, wrapper, env_id, judge
 
     def test_reset_renders_original_math_agent_prompt_without_private_answer(self):
         self.assertIn("### BACKGROUND:\nShared definitions", self.created["observation"])
@@ -168,6 +189,77 @@ class FormalReasoningDomainTest(unittest.TestCase):
         self.assertTrue(final["done"])
         self.assertFalse(final["info"]["episode_success"])
         self.assertEqual(final["info"]["phase_index"], 1)
+
+    def test_paper_eval_wrong_answer_advances_and_final_answer_defines_sr(self):
+        factory, wrapper, env_id, judge = self._paper_eval_wrapper()
+        first = wrapper.step(env_id, "Action: wrong-answer")
+        self.assertEqual(judge.calls, [("wrong-answer", "answer-one")])
+        self.assertEqual(first["reward"], 0.0)
+        self.assertFalse(first["done"])
+        self.assertEqual(first["info"]["phase_index"], 1)
+        self.assertIn("Question two?", first["observation"])
+        self.assertNotIn("incorrect", first["observation"].lower())
+
+        final = wrapper.step(env_id, "Action: answer-two")
+        self.assertEqual(final["reward"], 1.0)
+        self.assertTrue(final["done"])
+        self.assertTrue(final["info"]["episode_success"])
+        self.assertEqual(final["info"]["phase_index"], 2)
+        ledger = final["info"]["domain_evidence"]["paper_evaluation"]
+        self.assertEqual(
+            ledger,
+            {
+                "metric_contract": FORMAL_REASONING_PAPER_METRIC_CONTRACT,
+                "dataset_scope": "memoryarena_formal_reasoning_math_frozen40",
+                "task_id": "10",
+                "paper_name": "paper-a",
+                "complete": True,
+                "phase_results": [False, True],
+                "completed_phase_count": 2,
+                "process_score_numerator": 1,
+                "process_score_denominator": 2,
+                "process_score": 0.5,
+                "final_sr_numerator": 1,
+                "final_sr_denominator": 1,
+                "final_success": True,
+                "online_reward_is_separate": True,
+            },
+        )
+        self.assertEqual(
+            factory.surface,
+            FORMAL_REASONING_PAPER_EVAL_SURFACES["math"],
+        )
+
+    def test_paper_eval_final_wrong_is_failure_after_earlier_reward(self):
+        _, wrapper, env_id, _ = self._paper_eval_wrapper()
+        first = wrapper.step(env_id, "Action: answer-one")
+        final = wrapper.step(env_id, "Action: wrong-answer")
+        self.assertEqual(first["reward"], 1.0)
+        self.assertEqual(final["reward"], 0.0)
+        self.assertTrue(final["done"])
+        self.assertFalse(final["info"]["episode_success"])
+        self.assertEqual(final["info"]["status"], "complete_final_incorrect")
+        ledger = final["info"]["domain_evidence"]["paper_evaluation"]
+        self.assertEqual(ledger["phase_results"], [True, False])
+        self.assertEqual(ledger["process_score"], 0.5)
+        self.assertFalse(ledger["final_success"])
+
+    def test_paper_eval_metadata_is_ineligible_for_injected_fixture(self):
+        factory, wrapper, _, _ = self._paper_eval_wrapper()
+        metadata = wrapper.metadata()
+        self.assertEqual(factory.contract_mode, "paper_eval")
+        self.assertEqual(metadata["contract_mode"], "paper_eval")
+        self.assertEqual(metadata["episode_success"], "final_question_correct")
+        self.assertEqual(
+            metadata["phase_transition"],
+            "advance_after_every_judged_answer",
+        )
+        paper = metadata["paper_evaluation"]
+        self.assertEqual(paper["id"], FORMAL_REASONING_PAPER_METRIC_CONTRACT)
+        self.assertTrue(paper["canonical_semantics"])
+        self.assertTrue(paper["continue_after_incorrect"])
+        self.assertFalse(paper["paper_panel_complete"])
+        self.assertFalse(paper["paper_column_eligible"])
 
     def test_phase_advance_clears_visible_trace_but_ltm_remains_retrievable(self):
         self.wrapper.step(
