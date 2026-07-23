@@ -5,11 +5,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
+from agentenv_agentmemory.env_wrapper import AgentMemoryWrapper
 from agentenv_agentmemory.memoryarena_dataset import (
     ACTION_SURFACE_VERSION,
     EXPECTED_DOMAIN_DATA_SHA256,
     EXPECTED_MEMORYARENA_COMMIT,
+    MemoryArenaDatasetProvenance,
     MemoryArenaDatasetError,
     load_memoryarena_bundles,
     load_memoryarena_dataset,
@@ -147,6 +150,45 @@ class MemoryArenaDatasetTests(unittest.TestCase):
             dataset.provenance.split_manifest_sha256,
         )
         self.assertEqual(dataset.bundles[149].provenance.source_line_number, 150)
+
+    def test_webshop_metadata_exposes_complete_dataset_provenance(self) -> None:
+        provenance = MemoryArenaDatasetProvenance(
+            raw_dataset_path="/frozen/bundled_shopping_data.jsonl",
+            raw_dataset_sha256="1" * 64,
+            memoryarena_commit="2" * 40,
+            domain_data_sha256="3" * 64,
+            action_surface_version=ACTION_SURFACE_VERSION,
+            split_strategy="source_position_mod10_8_1_1_v1",
+            split_manifest_sha256="4" * 64,
+            split_counts=(("train", 120), ("dev", 15), ("test", 15)),
+            bundle_count=150,
+            sessions_per_bundle=6,
+            session_count=900,
+            target_asin_membership_verified=True,
+        )
+        wrapper = AgentMemoryWrapper.__new__(AgentMemoryWrapper)
+        wrapper.dataset = SimpleNamespace(provenance=provenance)
+        wrapper.tasks = tuple(
+            SimpleNamespace(split=split)
+            for split in ("train", "dev", "test")
+        )
+        wrapper.annotation_gate = SimpleNamespace(
+            mode="strict",
+            manifest_sha256="5" * 64,
+            allowed_task_ids_sha256="6" * 64,
+            allowed_task_ids=("a", "b", "c"),
+        )
+        wrapper.reward_contract = {"contract": "fixture"}
+        wrapper.backend = SimpleNamespace(metadata=lambda: {"backend": "fixture"})
+
+        metadata = wrapper.metadata()
+
+        self.assertEqual(metadata["task_count"], 3)
+        self.assertEqual(metadata["dataset_sha256"], "1" * 64)
+        self.assertEqual(metadata["raw_dataset_sha256"], "1" * 64)
+        self.assertEqual(metadata["dataset_provenance"], provenance.as_manifest())
+        self.assertEqual(metadata["dataset_provenance"]["bundle_count"], 150)
+        self.assertEqual(metadata["dataset_provenance"]["session_count"], 900)
 
     def test_preserves_question_instruction_candidate_context_and_answer(self) -> None:
         records = [make_record(0)]

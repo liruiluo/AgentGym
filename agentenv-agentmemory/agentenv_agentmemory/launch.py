@@ -5,11 +5,12 @@ import os
 
 from .annotation_gate import ANNOTATION_GATE_MODES
 from .domains import (
-    BROWSECOMP_SURFACE,
+    BROWSECOMP_SURFACES,
     FORMAL_REASONING_SURFACES,
-    TRAVEL_SURFACE,
+    TRAVEL_SURFACES,
     V3_SURFACES,
 )
+from .domains.browsecomp import BROWSECOMP_FROZEN_EMBEDDING_MODEL
 from .reward_hierarchy import (
     FIRST_VALID_ADD_BONUS,
     FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
@@ -43,7 +44,9 @@ def launch() -> None:
     parser.add_argument("--annotation-manual-evidence")
     parser.add_argument("--memoryarena-base-commit", required=True)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--split", choices=["train", "dev", "test", "all"], default="train")
+    parser.add_argument(
+        "--split", choices=["train", "dev", "test", "all"], default="train"
+    )
     parser.add_argument("--price-seed", type=int, default=233)
     parser.add_argument(
         "--annotation-gate-mode",
@@ -67,8 +70,7 @@ def launch() -> None:
         type=int,
         default=4096,
     )
-    parser.add_argument("--browsecomp-ground-truth-path")
-    parser.add_argument("--browsecomp-decomposition-path")
+    parser.add_argument("--browsecomp-tasks-path")
     parser.add_argument("--browsecomp-index-path")
     parser.add_argument("--browsecomp-corpus-path")
     parser.add_argument("--browsecomp-corpus-manifest")
@@ -76,8 +78,17 @@ def launch() -> None:
         "--browsecomp-embedding-provider",
         choices=["openai", "openrouter"],
     )
-    parser.add_argument("--browsecomp-embedding-model")
+    parser.add_argument(
+        "--browsecomp-embedding-model",
+        choices=[BROWSECOMP_FROZEN_EMBEDDING_MODEL],
+        default=BROWSECOMP_FROZEN_EMBEDDING_MODEL,
+    )
     parser.add_argument("--browsecomp-judge-model")
+    parser.add_argument(
+        "--browsecomp-judge-max-tokens",
+        type=int,
+        default=8000,
+    )
     parser.add_argument("--browsecomp-api-base-url")
     parser.add_argument("--memory-first-add-reward", type=float)
     parser.add_argument("--memory-first-later-retrieve-reward", type=float)
@@ -139,7 +150,7 @@ def launch() -> None:
                 ),
             }
         )
-    elif args.surface == TRAVEL_SURFACE:
+    elif args.surface in TRAVEL_SURFACES.values():
         _require_args(parser, args, "travel_tasks_path", "travel_database_path")
         configured.update(
             {
@@ -176,28 +187,23 @@ def launch() -> None:
                 ),
             }
         )
-    elif args.surface == BROWSECOMP_SURFACE:
+    elif args.surface in BROWSECOMP_SURFACES.values():
         _require_args(
             parser,
             args,
-            "browsecomp_ground_truth_path",
-            "browsecomp_decomposition_path",
+            "browsecomp_tasks_path",
             "browsecomp_index_path",
             "browsecomp_corpus_path",
             "browsecomp_corpus_manifest",
             "browsecomp_embedding_provider",
-            "browsecomp_embedding_model",
             "browsecomp_judge_model",
             "browsecomp_api_base_url",
         )
+        if args.browsecomp_judge_max_tokens < 1:
+            parser.error("--browsecomp-judge-max-tokens must be positive")
         configured.update(
             {
-                "AGENTMEMORY_BROWSECOMP_GROUND_TRUTH_PATH": (
-                    args.browsecomp_ground_truth_path
-                ),
-                "AGENTMEMORY_BROWSECOMP_DECOMPOSITION_PATH": (
-                    args.browsecomp_decomposition_path
-                ),
+                "AGENTMEMORY_BROWSECOMP_TASKS_PATH": args.browsecomp_tasks_path,
                 "MEMORYARENA_BROWSECOMP_INDEX_PATH": args.browsecomp_index_path,
                 "MEMORYARENA_BROWSECOMP_CORPUS_PATH": args.browsecomp_corpus_path,
                 "MEMORYARENA_BROWSECOMP_CORPUS_MANIFEST": (
@@ -210,6 +216,9 @@ def launch() -> None:
                     args.browsecomp_embedding_model
                 ),
                 "AGENTMEMORY_BROWSECOMP_JUDGE_MODEL": args.browsecomp_judge_model,
+                "AGENTMEMORY_BROWSECOMP_JUDGE_MAX_TOKENS": str(
+                    args.browsecomp_judge_max_tokens
+                ),
                 "OPENAI_BASE_URL": args.browsecomp_api_base_url,
             }
         )
@@ -233,16 +242,17 @@ def launch() -> None:
                 "AGENTMEMORY_FIRST_LATER_RETRIEVE_REWARD": str(
                     first_later_retrieve_reward
                 ),
-                "AGENTMEMORY_EXACT_REPEAT_REWARD": str(
-                    args.memory_exact_repeat_reward
-                ),
+                "AGENTMEMORY_EXACT_REPEAT_REWARD": str(args.memory_exact_repeat_reward),
                 "AGENTMEMORY_INVALID_ACTION_REWARD": str(args.invalid_action_reward),
             }
         )
     for key, value in configured.items():
         os.environ[key] = value
 
-    for legacy_key in ["AGENTMEMORY_CATALOG_INDEX_PATH", "AGENTMEMORY_SEARCH_TIMEOUT_MS"]:
+    for legacy_key in [
+        "AGENTMEMORY_CATALOG_INDEX_PATH",
+        "AGENTMEMORY_SEARCH_TIMEOUT_MS",
+    ]:
         if os.environ.get(legacy_key):
             parser.error(f"native launch refuses legacy SQLite variable {legacy_key}")
 
@@ -255,11 +265,11 @@ def launch() -> None:
 
 
 def _require_args(parser: argparse.ArgumentParser, args, *names: str) -> None:
-    missing = [f"--{name.replace('_', '-')}" for name in names if not getattr(args, name)]
+    missing = [
+        f"--{name.replace('_', '-')}" for name in names if not getattr(args, name)
+    ]
     if missing:
-        parser.error(
-            f"surface {args.surface!r} requires: " + ", ".join(missing)
-        )
+        parser.error(f"surface {args.surface!r} requires: " + ", ".join(missing))
 
 
 if __name__ == "__main__":

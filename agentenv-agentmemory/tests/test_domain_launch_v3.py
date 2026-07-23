@@ -7,9 +7,9 @@ import unittest
 from unittest.mock import Mock, patch
 
 from agentenv_agentmemory.domains import (
-    BROWSECOMP_SURFACE,
+    BROWSECOMP_SURFACES,
     FORMAL_REASONING_SURFACES,
-    TRAVEL_SURFACE,
+    TRAVEL_SURFACES,
 )
 from agentenv_agentmemory.env_wrapper import NATIVE_SURFACE
 from agentenv_agentmemory.launch import launch
@@ -23,52 +23,58 @@ class DomainLaunchTest(unittest.TestCase):
     def _launch(self, arguments):
         uvicorn = types.ModuleType("uvicorn")
         uvicorn.run = Mock()
-        with patch.dict(sys.modules, {"uvicorn": uvicorn}), patch.object(
-            sys,
-            "argv",
-            ["agentmemory", *arguments],
-        ), patch.dict(os.environ, {}, clear=True):
+        with (
+            patch.dict(sys.modules, {"uvicorn": uvicorn}),
+            patch.object(
+                sys,
+                "argv",
+                ["agentmemory", *arguments],
+            ),
+            patch.dict(os.environ, {}, clear=True),
+        ):
             launch()
             configured = dict(os.environ)
         return configured, uvicorn.run
 
-    def test_travel_launch_is_explicit_and_reward_neutral_by_default(self):
-        configured, run = self._launch(
-            [
-                "--surface",
-                TRAVEL_SURFACE,
-                "--memoryarena-root",
-                "/memoryarena",
-                "--travel-tasks-path",
-                "/data/travel.jsonl",
-                "--travel-database-path",
-                "/data/travel-db",
-                "--memoryarena-base-commit",
-                "a" * 40,
-                "--run-id",
-                "travel-test",
-            ]
-        )
-        self.assertEqual(configured["AGENTMEMORY_SURFACE"], TRAVEL_SURFACE)
-        self.assertEqual(configured["AGENTMEMORY_FIRST_ADD_REWARD"], "0.0")
-        self.assertEqual(
-            configured["AGENTMEMORY_FIRST_LATER_RETRIEVE_REWARD"],
-            "0.0",
-        )
-        self.assertEqual(configured["AGENTMEMORY_EXACT_REPEAT_REWARD"], "0.0")
-        self.assertEqual(configured["AGENTMEMORY_INVALID_ACTION_REWARD"], "0.0")
-        run.assert_called_once_with(
-            "agentenv_agentmemory.server:app",
-            host="0.0.0.0",
-            port=8000,
-            workers=1,
-        )
+    def test_travel_launches_bind_both_explicit_surfaces_reward_neutrally(self):
+        for contract_mode, surface in TRAVEL_SURFACES.items():
+            with self.subTest(contract_mode=contract_mode):
+                configured, run = self._launch(
+                    [
+                        "--surface",
+                        surface,
+                        "--memoryarena-root",
+                        "/memoryarena",
+                        "--travel-tasks-path",
+                        "/data/travel.jsonl",
+                        "--travel-database-path",
+                        "/data/travel-db",
+                        "--memoryarena-base-commit",
+                        "a" * 40,
+                        "--run-id",
+                        f"travel-{contract_mode}-test",
+                    ]
+                )
+            self.assertEqual(configured["AGENTMEMORY_SURFACE"], surface)
+            self.assertEqual(configured["AGENTMEMORY_FIRST_ADD_REWARD"], "0.0")
+            self.assertEqual(
+                configured["AGENTMEMORY_FIRST_LATER_RETRIEVE_REWARD"],
+                "0.0",
+            )
+            self.assertEqual(configured["AGENTMEMORY_EXACT_REPEAT_REWARD"], "0.0")
+            self.assertEqual(configured["AGENTMEMORY_INVALID_ACTION_REWARD"], "0.0")
+            run.assert_called_once_with(
+                "agentenv_agentmemory.server:app",
+                host="0.0.0.0",
+                port=8000,
+                workers=1,
+            )
 
     def test_travel_reward_overlay_requires_explicit_values(self):
         configured, _ = self._launch(
             [
                 "--surface",
-                TRAVEL_SURFACE,
+                TRAVEL_SURFACES["failfast"],
                 "--memoryarena-root",
                 "/memoryarena",
                 "--travel-tasks-path",
@@ -120,7 +126,9 @@ class DomainLaunchTest(unittest.TestCase):
         for key, value in values.items():
             arguments.extend([f"--{key}", value])
         configured, _ = self._launch(arguments)
-        self.assertEqual(configured["AGENTMEMORY_MEMORYARENA_RAW_PATH"], values["raw-data"])
+        self.assertEqual(
+            configured["AGENTMEMORY_MEMORYARENA_RAW_PATH"], values["raw-data"]
+        )
         self.assertEqual(
             configured["MEMORYARENA_WEBSHOP_ITEMS_FILE"],
             values["items-file"],
@@ -134,9 +142,7 @@ class DomainLaunchTest(unittest.TestCase):
             str(FIRST_VALID_ADD_BONUS),
         )
         self.assertEqual(
-            configured[
-                "AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD"
-            ],
+            configured["AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD"],
             str(FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS),
         )
         self.assertNotIn("AGENTMEMORY_FIRST_ADD_REWARD", configured)
@@ -185,20 +191,23 @@ class DomainLaunchTest(unittest.TestCase):
     def test_surface_specific_required_arguments_fail_closed(self):
         uvicorn = types.ModuleType("uvicorn")
         uvicorn.run = Mock()
-        with patch.dict(sys.modules, {"uvicorn": uvicorn}), patch.object(
-            sys,
-            "argv",
-            [
-                "agentmemory",
-                "--surface",
-                TRAVEL_SURFACE,
-                "--memoryarena-root",
-                "/memoryarena",
-                "--memoryarena-base-commit",
-                "a" * 40,
-                "--run-id",
-                "missing-travel-paths",
-            ],
+        with (
+            patch.dict(sys.modules, {"uvicorn": uvicorn}),
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "agentmemory",
+                    "--surface",
+                    TRAVEL_SURFACES["failfast"],
+                    "--memoryarena-root",
+                    "/memoryarena",
+                    "--memoryarena-base-commit",
+                    "a" * 40,
+                    "--run-id",
+                    "missing-travel-paths",
+                ],
+            ),
         ):
             with self.assertRaises(SystemExit):
                 launch()
@@ -248,72 +257,81 @@ class DomainLaunchTest(unittest.TestCase):
             )
 
     def test_browsecomp_launch_binds_every_production_input(self):
-        configured, _ = self._launch(
-            [
-                "--surface",
-                BROWSECOMP_SURFACE,
-                "--memoryarena-root",
-                "/memoryarena",
-                "--browsecomp-ground-truth-path",
-                "/data/ground-truth.jsonl",
-                "--browsecomp-decomposition-path",
-                "/data/decomposition.jsonl",
-                "--browsecomp-index-path",
+        for contract_mode, surface in BROWSECOMP_SURFACES.items():
+            with self.subTest(contract_mode=contract_mode):
+                configured, _ = self._launch(
+                    [
+                        "--surface",
+                        surface,
+                        "--memoryarena-root",
+                        "/memoryarena",
+                        "--browsecomp-tasks-path",
+                        "/data/progressive-search.jsonl",
+                        "--browsecomp-index-path",
+                        "/data/indexes/shard*.index",
+                        "--browsecomp-corpus-path",
+                        "/data/corpus.jsonl",
+                        "--browsecomp-corpus-manifest",
+                        "/data/corpus.manifest.json",
+                        "--browsecomp-embedding-provider",
+                        "openai",
+                        "--browsecomp-embedding-model",
+                        "text-embedding-3-small",
+                        "--browsecomp-judge-model",
+                        "judge-model",
+                        "--browsecomp-judge-max-tokens",
+                        "1234",
+                        "--browsecomp-api-base-url",
+                        "https://api.example/v1",
+                        "--memoryarena-base-commit",
+                        "b" * 40,
+                        "--run-id",
+                        "browsecomp-test",
+                    ]
+                )
+            self.assertEqual(configured["AGENTMEMORY_SURFACE"], surface)
+            self.assertEqual(
+                configured["AGENTMEMORY_BROWSECOMP_TASKS_PATH"],
+                "/data/progressive-search.jsonl",
+            )
+            self.assertEqual(
+                configured["MEMORYARENA_BROWSECOMP_INDEX_PATH"],
                 "/data/indexes/shard*.index",
-                "--browsecomp-corpus-path",
-                "/data/corpus.jsonl",
-                "--browsecomp-corpus-manifest",
+            )
+            self.assertEqual(
+                configured["MEMORYARENA_BROWSECOMP_CORPUS_MANIFEST"],
                 "/data/corpus.manifest.json",
-                "--browsecomp-embedding-provider",
+            )
+            self.assertEqual(
+                configured["AGENTMEMORY_BROWSECOMP_EMBEDDING_PROVIDER"],
                 "openai",
-                "--browsecomp-embedding-model",
-                "embedding-model",
-                "--browsecomp-judge-model",
-                "judge-model",
-                "--browsecomp-api-base-url",
-                "https://api.example/v1",
-                "--memoryarena-base-commit",
-                "b" * 40,
-                "--run-id",
-                "browsecomp-test",
-            ]
-        )
-        self.assertEqual(configured["AGENTMEMORY_SURFACE"], BROWSECOMP_SURFACE)
-        self.assertEqual(
-            configured["AGENTMEMORY_BROWSECOMP_DECOMPOSITION_PATH"],
-            "/data/decomposition.jsonl",
-        )
-        self.assertEqual(
-            configured["MEMORYARENA_BROWSECOMP_INDEX_PATH"],
-            "/data/indexes/shard*.index",
-        )
-        self.assertEqual(
-            configured["MEMORYARENA_BROWSECOMP_CORPUS_MANIFEST"],
-            "/data/corpus.manifest.json",
-        )
-        self.assertEqual(
-            configured["AGENTMEMORY_BROWSECOMP_EMBEDDING_PROVIDER"],
-            "openai",
-        )
-        self.assertEqual(configured["OPENAI_BASE_URL"], "https://api.example/v1")
+            )
+            self.assertEqual(
+                configured["AGENTMEMORY_BROWSECOMP_JUDGE_MAX_TOKENS"],
+                "1234",
+            )
+            self.assertEqual(configured["OPENAI_BASE_URL"], "https://api.example/v1")
 
     def test_browsecomp_missing_required_input_fails_before_uvicorn(self):
         uvicorn = types.ModuleType("uvicorn")
         uvicorn.run = Mock()
-        with patch.dict(sys.modules, {"uvicorn": uvicorn}), patch.object(
-            sys,
-            "argv",
-            [
-                "agentmemory",
-                "--surface",
-                BROWSECOMP_SURFACE,
-                "--memoryarena-root",
-                "/memoryarena",
-                "--memoryarena-base-commit",
-                "b" * 40,
-                "--run-id",
-                "missing-browsecomp-inputs",
-            ],
+        with (
+            patch.dict(sys.modules, {"uvicorn": uvicorn}),
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "agentmemory",
+                    "--surface",
+                    BROWSECOMP_SURFACES["paper_eval"],
+                    "--memoryarena-root",
+                    "/memoryarena",
+                    "--memoryarena-base-commit",
+                    "b" * 40,
+                    "--run-id",
+                    "missing-browsecomp-inputs",
+                ],
+            ),
         ):
             with self.assertRaises(SystemExit):
                 launch()

@@ -4,13 +4,23 @@ import json
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from agentenv_agentmemory.domains.formal_reasoning import (
+    FORMAL_JUDGE_PROMPT_TEMPLATE_SHA256,
+    FORMAL_REASONING_RUNTIME_IMPORT_RELATIVE_PATHS,
     FORMAL_REASONING_UPSTREAM_RELATIVE_PATHS,
     FormalReasoningFactory,
+    _FORMAL_JUDGE_PROMPT_TEMPLATE,
+    _judge_provenance,
+    _normalize_upstream_judge_config,
     attest_formal_reasoning_upstream,
     load_formal_reasoning_tasks,
+)
+from agentenv_agentmemory.domains.memoryarena_dataset import (
+    attest_injected_test_dataset,
 )
 from agentenv_agentmemory.runtime.wrapper import DomainEnvWrapper
 
@@ -57,6 +67,10 @@ class FormalReasoningDomainTest(unittest.TestCase):
         self.factory = FormalReasoningFactory(
             domain="math",
             tasks_path=self.tasks_path,
+            dataset_provenance=attest_injected_test_dataset(
+                self.tasks_path,
+                config="formal_reasoning_math",
+            ),
             judge=self.judge,
         )
         self.wrapper = DomainEnvWrapper(self.factory)
@@ -176,6 +190,10 @@ class FormalReasoningDomainTest(unittest.TestCase):
         factory = FormalReasoningFactory(
             domain="math",
             tasks_path=self.tasks_path,
+            dataset_provenance=attest_injected_test_dataset(
+                self.tasks_path,
+                config="formal_reasoning_math",
+            ),
             judge=fail_judge,
         )
         wrapper = DomainEnvWrapper(factory)
@@ -197,14 +215,129 @@ class FormalReasoningDomainTest(unittest.TestCase):
         physics = FormalReasoningFactory(
             domain="phys",
             tasks_path=self.tasks_path,
+            dataset_provenance=attest_injected_test_dataset(
+                self.tasks_path,
+                config="formal_reasoning_phys",
+            ),
             judge=self.judge,
         )
         self.assertEqual(self.factory.domain_id, "formal_reasoning_math")
         self.assertEqual(physics.domain_id, "formal_reasoning_phys")
         self.assertNotEqual(self.factory.surface, physics.surface)
 
+    def test_factory_rejects_dataset_provenance_for_other_formal_surface(self):
+        physics_provenance = attest_injected_test_dataset(
+            self.tasks_path,
+            config="formal_reasoning_phys",
+        )
+        with self.assertRaisesRegex(RuntimeError, "dataset config mismatch"):
+            FormalReasoningFactory(
+                domain="math",
+                tasks_path=self.tasks_path,
+                dataset_provenance=physics_provenance,
+                judge=self.judge,
+            )
+
+    def test_injected_judge_requires_injected_test_dataset_provenance(self):
+        mislabeled = replace(
+            attest_injected_test_dataset(
+                self.tasks_path,
+                config="formal_reasoning_math",
+            ),
+            mode="frozen_public_hf_dataset",
+        )
+        with self.assertRaisesRegex(RuntimeError, "injected-test dataset"):
+            FormalReasoningFactory(
+                domain="math",
+                tasks_path=self.tasks_path,
+                dataset_provenance=mislabeled,
+                judge=self.judge,
+            )
+
+    def test_metadata_identifies_explicit_test_dataset_and_judge(self):
+        metadata = self.factory.metadata()
+        self.assertEqual(
+            metadata["dataset_provenance"]["mode"],
+            "injected_test_fixture",
+        )
+        judge = metadata["judge_provenance"]
+        self.assertEqual(judge["mode"], "injected_test_double")
+        self.assertEqual(
+            judge["prompt_template_sha256"],
+            FORMAL_JUDGE_PROMPT_TEMPLATE_SHA256,
+        )
+        self.assertRegex(judge["config_sha256"], r"^[0-9a-f]{64}$")
+
 
 class FormalReasoningDatasetTest(unittest.TestCase):
+    def test_judge_config_rejects_nonfinite_temperature_and_boolean_tokens(self):
+        base = {
+            "backend": "openai",
+            "model_name": "judge-model",
+            "base_url": "https://judge.example/v1",
+            "temperature": 0.0,
+            "max_tokens": 128,
+        }
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(temperature=value), self.assertRaisesRegex(
+                RuntimeError,
+                "temperature must be finite",
+            ):
+                _normalize_upstream_judge_config({**base, "temperature": value})
+        with self.assertRaisesRegex(RuntimeError, "max_tokens must be positive"):
+            _normalize_upstream_judge_config({**base, "max_tokens": True})
+
+    def test_factory_has_no_implicit_unattested_fixture_mode(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            path = Path(tempdir) / "fixture.jsonl"
+            write_tasks(path)
+            with self.assertRaisesRegex(TypeError, "dataset_provenance"):
+                FormalReasoningFactory(  # type: ignore[call-arg]
+                    domain="math",
+                    tasks_path=path,
+                    judge=RecordingJudge(),
+                )
+
+    def test_public_judge_provenance_hashes_endpoint_without_disclosing_it(self):
+        base_url = "https://private-judge.example/v1"
+        evidence: dict[str, Any] = _judge_provenance(
+            {
+                "backend": "openai",
+                "model_name": "judge-model",
+                "base_url": base_url,
+                "temperature": 0.25,
+                "max_tokens": 1234,
+            },
+            mode="upstream_memoryarena_judge",
+        )
+        self.assertEqual(evidence["backend"], "openai")
+        self.assertEqual(evidence["model"], "judge-model")
+        self.assertEqual(evidence["temperature"], 0.25)
+        self.assertEqual(evidence["max_tokens"], 1234)
+        self.assertRegex(evidence["endpoint_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(evidence["prompt_template_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(evidence["config_sha256"], r"^[0-9a-f]{64}$")
+        self.assertNotIn(base_url, json.dumps(evidence))
+
+    def test_prompt_template_matches_pinned_upstream_judge_text(self):
+        expected = (
+            "\n"
+            "            You are a math expert. \n"
+            "            Determine if these two expressions are mathematically "
+            "equivalent answer for the given question:\n"
+            "            Question: None\n"
+            "            Expression 1: candidate\n"
+            "            Expression 2: reference\n"
+            "\n"
+            '            Respond only with "yes" or "no". '
+        )
+        rendered = _FORMAL_JUDGE_PROMPT_TEMPLATE["user"].format(
+            query=None,
+            action="candidate",
+            ground_truth="reference",
+        )
+        self.assertEqual(rendered, expected)
+
     def test_rejects_misaligned_phase_arrays(self):
         with tempfile.TemporaryDirectory() as tempdir:
             path = Path(tempdir) / "bad.jsonl"
@@ -274,9 +407,19 @@ class FormalReasoningUpstreamAttestationTest(unittest.TestCase):
         )
         self.assertEqual(evidence["memoryarena_commit"], self.commit)
         self.assertEqual(
-            set(evidence["source_files_sha256"]),
-            set(FORMAL_REASONING_UPSTREAM_RELATIVE_PATHS),
+            set(evidence["runtime_import_entry_files_sha256"]),
+            set(FORMAL_REASONING_RUNTIME_IMPORT_RELATIVE_PATHS),
         )
+        selected = {
+            *evidence["runtime_import_entry_files_sha256"],
+            *evidence["reference_entrypoint_files_sha256"],
+        }
+        self.assertEqual(selected, set(FORMAL_REASONING_UPSTREAM_RELATIVE_PATHS))
+        self.assertEqual(
+            evidence["pristine_git_scopes"],
+            ["env", "agent/math.py", "run_math.py"],
+        )
+        self.assertRegex(evidence["env_git_tree_oid"], r"^[0-9a-f]{40}$")
 
     def test_rejects_modified_formal_reasoning_source(self):
         path = self.root / FORMAL_REASONING_UPSTREAM_RELATIVE_PATHS[0]
@@ -288,7 +431,7 @@ class FormalReasoningUpstreamAttestationTest(unittest.TestCase):
             )
 
     def test_allows_unrelated_memoryarena_changes(self):
-        unrelated = self.root / "env/env_systems/web_shopping_env/local_patch.py"
+        unrelated = self.root / "docs/local_note.md"
         unrelated.parent.mkdir(parents=True, exist_ok=True)
         unrelated.write_text("# unrelated\n", encoding="utf-8")
         evidence = attest_formal_reasoning_upstream(
@@ -296,6 +439,44 @@ class FormalReasoningUpstreamAttestationTest(unittest.TestCase):
             expected_commit=self.commit,
         )
         self.assertEqual(evidence["memoryarena_commit"], self.commit)
+
+    def test_allows_untracked_non_python_runtime_assets(self):
+        asset = self.root / "env/env_systems/web_search_env/index/shard0.index"
+        asset.parent.mkdir(parents=True, exist_ok=True)
+        asset.write_bytes(b"frozen runtime asset")
+        evidence = attest_formal_reasoning_upstream(
+            self.root,
+            expected_commit=self.commit,
+        )
+        self.assertEqual(evidence["memoryarena_commit"], self.commit)
+
+    def test_rejects_untracked_transitive_env_source(self):
+        transitive = self.root / "env/env_systems/web_shopping_env/local_patch.py"
+        transitive.parent.mkdir(parents=True, exist_ok=True)
+        transitive.write_text("# can affect package import\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "untracked or ignored Python"):
+            attest_formal_reasoning_upstream(
+                self.root,
+                expected_commit=self.commit,
+            )
+
+    def test_rejects_ignored_python_that_can_change_package_imports(self):
+        ignored = self.root / "env/env_systems/formal_reasoning_env/__init__.py"
+        ignored.parent.mkdir(parents=True, exist_ok=True)
+        ignored.write_text("# ignored import hook\n", encoding="utf-8")
+        self._git("config", "core.excludesFile", "/dev/null")
+        (self.root / ".gitignore").write_text(
+            "env/env_systems/formal_reasoning_env/__init__.py\n",
+            encoding="utf-8",
+        )
+        self._git("add", ".gitignore")
+        self._git("commit", "-m", "ignore generated package hook")
+        commit = self._git("rev-parse", "HEAD").strip()
+        with self.assertRaisesRegex(RuntimeError, "ignored Python source"):
+            attest_formal_reasoning_upstream(
+                self.root,
+                expected_commit=commit,
+            )
 
 
 if __name__ == "__main__":

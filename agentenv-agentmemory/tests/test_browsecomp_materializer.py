@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -49,6 +51,43 @@ class BrowseCompMaterializerTests(unittest.TestCase):
                 self.module.materialize_rows(
                     [{"docid": "D-1", "text": "x", "url": "u", "title": "x"}]
                 )
+            )
+
+    def test_canonical_jsonl_encoding_has_stable_bytes(self):
+        encoded = self.module.encode_projected_row({"text": "second", "docid": "D-1"})
+        self.assertEqual(encoded, b'{"docid":"D-1","text":"second"}\n')
+        self.assertEqual(
+            hashlib.sha256(encoded).hexdigest(),
+            "b8e62b36a38da3384b4c64bb871e5e12ad9ba3ad18287db602f639eb6e2a7096",
+        )
+
+    def test_source_attestation_hashes_actual_files(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            source = Path(tempdir) / "source.parquet"
+            source.write_bytes(b"parquet fixture")
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            evidence = self.module.attest_source_paths(
+                (source.resolve(),),
+                expected_source_sha256=(digest,),
+            )
+            self.assertEqual(evidence[0]["size_bytes"], len(b"parquet fixture"))
+            source.write_bytes(b"tampered")
+            with self.assertRaisesRegex(ValueError, "do not match"):
+                self.module.attest_source_paths(
+                    (source.resolve(),),
+                    expected_source_sha256=(digest,),
+                )
+
+    def test_manifest_paths_are_relative_to_manifest_directory(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            source = root / "corpus-source" / "data.parquet"
+            manifest = root / "corpus.manifest.json"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"fixture")
+            self.assertEqual(
+                self.module.relative_manifest_path(source, manifest),
+                "corpus-source/data.parquet",
             )
         with self.assertRaisesRegex(ValueError, "duplicate docid"):
             list(

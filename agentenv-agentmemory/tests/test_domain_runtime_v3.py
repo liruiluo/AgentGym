@@ -38,6 +38,25 @@ class DomainTransitionTest(unittest.TestCase):
         self.assertEqual(contract.sha256, contract.sha256)
         self.assertEqual(len(contract.sha256), 64)
 
+    def test_workflow_progress_is_not_labeled_as_correctness_score(self):
+        contract = DomainContract("c", "prompt", ("ACTION",), 3)
+        transition = DomainTransition(
+            observation="x",
+            reward=0.0,
+            done=False,
+            status="active",
+            phase_index=1,
+            phase_count=2,
+            episode_success=False,
+        )
+        info = transition.to_info(
+            domain_id="test",
+            surface="test_surface",
+            contract=contract,
+        )
+        self.assertEqual(info["workflow_progress"], 0.5)
+        self.assertNotIn("progress_score", info)
+
 
 class DomainRegistryTest(unittest.TestCase):
     def test_production_registry_covers_exactly_the_four_v3_surfaces(self):
@@ -151,6 +170,40 @@ class DomainWrapperTest(unittest.TestCase):
             ],
         )
         wrapper.close(env_id)
+
+    def test_contract_max_steps_is_enforced_across_memory_actions(self):
+        actions = [
+            'ADD {"key": "a", "value": "one"}',
+            'ADD {"key": "b", "value": "two"}',
+            'RETRIEVE {"query": "one", "top_k": 3}',
+            'UPDATE {"memory_id": "mem_0000", "value": "updated"}',
+        ]
+
+        results = [self.wrapper.step(self.env_id, action) for action in actions]
+
+        self.assertEqual([item["done"] for item in results], [False, False, False, True])
+        terminal = results[-1]
+        self.assertEqual(terminal["info"]["status"], "max_steps_exhausted")
+        self.assertFalse(terminal["info"]["episode_success"])
+        self.assertTrue(
+            terminal["info"]["action_execution"]["max_steps_exhausted"]
+        )
+        self.assertEqual(
+            terminal["info"]["domain_evidence"]["max_steps_limit"],
+            self.wrapper.factory.contract.max_steps,
+        )
+        self.assertEqual(
+            terminal["reward"],
+            sum(
+                component["value"]
+                for component in terminal["info"]["reward_components"]
+            ),
+        )
+
+        repeated = self.wrapper.step(self.env_id, 'ADD {"key": "c", "value": "three"}')
+        self.assertTrue(repeated["done"])
+        self.assertEqual(repeated["info"]["status"], "max_steps_exhausted")
+        self.assertEqual(repeated["info"]["action_execution"]["step"], 4)
 
     def test_explicit_invalid_overlay_replaces_domain_penalty_once(self):
         wrapper = DomainEnvWrapper(

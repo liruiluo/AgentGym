@@ -153,9 +153,9 @@ class DomainTransition:
         surface: str,
         contract: DomainContract,
     ) -> dict[str, Any]:
-        progress_score = None
+        workflow_progress = None
         if self.phase_count:
-            progress_score = self.phase_index / self.phase_count
+            workflow_progress = self.phase_index / self.phase_count
         return {
             "formal_schema_version": FORMAL_SCHEMA_V3,
             "domain_id": domain_id,
@@ -165,7 +165,8 @@ class DomainTransition:
             "status": self.status,
             "phase_index": self.phase_index,
             "phase_count": self.phase_count,
-            "progress_score": progress_score,
+            # This is phase traversal, not the paper's correctness-based PS.
+            "workflow_progress": workflow_progress,
             "episode_success": self.episode_success,
             "action_execution": dict(self.action_execution),
             "tool_ops": [dict(item) for item in self.tool_ops],

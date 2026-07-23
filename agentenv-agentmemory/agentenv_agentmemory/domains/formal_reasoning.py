@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import math
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -10,6 +11,10 @@ from pathlib import Path
 from typing import Any, Callable, Sequence, Union
 
 from ..runtime.domain import DomainContract, DomainTransition
+from .memoryarena_dataset import (
+    MemoryArenaDatasetProvenance,
+    verify_memoryarena_dataset_provenance,
+)
 
 
 FORMAL_REASONING_DOMAINS = ("math", "phys")
@@ -21,13 +26,54 @@ FORMAL_REASONING_DOMAIN_IDS = {
     "math": "formal_reasoning_math",
     "phys": "formal_reasoning_phys",
 }
-FORMAL_REASONING_UPSTREAM_RELATIVE_PATHS = (
-    "agent/math.py",
+FROZEN_MEMORYARENA_COMMIT = "6cd9de14b71915e39ac742a20dc33785e14b6aab"
+FORMAL_REASONING_RUNTIME_IMPORT_RELATIVE_PATHS = (
+    "env/__init__.py",
+    "env/env_client.py",
+    "env/env_systems/__init__.py",
+    "env/env_systems/base_env.py",
+    "env/env_systems/webshop_env.py",
+    "env/env_systems/browsecomp_plus_env.py",
     "env/env_systems/math_env.py",
-    "env/env_systems/formal_reasoning_env/eval.py",
+    "env/env_systems/travel_env.py",
     "env/env_systems/formal_reasoning_env/llm_backend.py",
+)
+FORMAL_REASONING_REFERENCE_RELATIVE_PATHS = (
+    "agent/math.py",
+    "env/env_systems/formal_reasoning_env/eval.py",
     "run_math.py",
 )
+FORMAL_REASONING_UPSTREAM_RELATIVE_PATHS = (
+    *FORMAL_REASONING_RUNTIME_IMPORT_RELATIVE_PATHS,
+    *FORMAL_REASONING_REFERENCE_RELATIVE_PATHS,
+)
+FORMAL_REASONING_PRISTINE_GIT_SCOPES = ("env", "agent/math.py", "run_math.py")
+_FORMAL_JUDGE_PROMPT_TEMPLATE = {
+    "query_mode": "none_matching_run_math.py",
+    "system": (
+        "You are a helpful assistant that judges the equivalence of two "
+        "mathematical expressions."
+    ),
+    "user": (
+        "\n"
+        "            You are a math expert. \n"
+        "            Determine if these two expressions are mathematically "
+        "equivalent answer for the given question:\n"
+        "            Question: {query}\n"
+        "            Expression 1: {action}\n"
+        "            Expression 2: {ground_truth}\n"
+        "\n"
+        '            Respond only with "yes" or "no". '
+    ),
+}
+FORMAL_JUDGE_PROMPT_TEMPLATE_SHA256 = hashlib.sha256(
+    json.dumps(
+        _FORMAL_JUDGE_PROMPT_TEMPLATE,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+).hexdigest()
 
 
 def _contract(domain: str) -> DomainContract:
@@ -75,6 +121,7 @@ class FormalReasoningFactory:
         *,
         domain: str,
         tasks_path: str | Path,
+        dataset_provenance: MemoryArenaDatasetProvenance,
         memoryarena_root: str | Path | None = None,
         judge: FormalReasoningJudge | None = None,
         judge_config: dict[str, Any] | None = None,
@@ -90,14 +137,42 @@ class FormalReasoningFactory:
         self.surface = FORMAL_REASONING_SURFACES[domain]
         self.contract = FORMAL_REASONING_CONTRACTS[domain]
         self.tasks_path = Path(tasks_path).expanduser().resolve()
+        if (
+            judge is not None
+            and isinstance(dataset_provenance, MemoryArenaDatasetProvenance)
+            and dataset_provenance.mode != "injected_test_fixture"
+        ):
+            raise RuntimeError(
+                "an injected formal judge requires explicit injected-test "
+                "dataset provenance"
+            )
+        verify_memoryarena_dataset_provenance(
+            self.tasks_path,
+            expected_config=self.domain_id,
+            provenance=dataset_provenance,
+        )
+        self.dataset_provenance = dataset_provenance
         self.tasks = load_formal_reasoning_tasks(self.tasks_path)
         self.task_count = len(self.tasks)
         self.dataset_sha256 = _sha256_file(self.tasks_path)
+        self.phase_count = sum(len(task.phases) for task in self.tasks)
+        if (
+            self.dataset_sha256 != dataset_provenance.sha256
+            or self.task_count != dataset_provenance.record_count
+            or self.phase_count != dataset_provenance.phase_count
+        ):
+            raise RuntimeError(
+                "Loaded formal-reasoning tasks differ from their dataset provenance"
+            )
         self.memoryarena_root = (
             Path(memoryarena_root).expanduser().resolve()
             if memoryarena_root is not None
             else None
         )
+        if self.memoryarena_root is not None and expected_memoryarena_commit is None:
+            raise RuntimeError(
+                "expected_memoryarena_commit is required for an upstream formal judge"
+            )
         self.upstream_provenance = (
             attest_formal_reasoning_upstream(
                 self.memoryarena_root,
@@ -107,15 +182,26 @@ class FormalReasoningFactory:
             else {"mode": "injected_test_double"}
         )
         if judge is None:
+            if dataset_provenance.mode != "frozen_public_hf_dataset":
+                raise RuntimeError(
+                    "An upstream formal judge requires frozen public dataset provenance"
+                )
             if self.memoryarena_root is None:
                 raise RuntimeError(
                     "memoryarena_root is required when a formal-reasoning judge "
                     "is not injected"
                 )
+            normalized_judge_config = _normalize_upstream_judge_config(judge_config)
             judge = build_upstream_formal_reasoning_judge(
                 self.memoryarena_root,
-                config=judge_config or {},
+                config=normalized_judge_config,
             )
+            self.judge_provenance = _judge_provenance(
+                normalized_judge_config,
+                mode="upstream_memoryarena_judge",
+            )
+        else:
+            self.judge_provenance = _injected_judge_provenance()
         self.judge = judge
 
     def create(self, env_uid: str):
@@ -131,7 +217,11 @@ class FormalReasoningFactory:
             "source": "MemoryArena",
             "dataset_config": self.domain_id,
             "dataset_sha256": self.dataset_sha256,
+            "task_count": self.task_count,
+            "phase_count": self.phase_count,
+            "dataset_provenance": self.dataset_provenance.metadata(),
             "judge": "memoryarena_llm_math_equivalence_v1",
+            "judge_provenance": self.judge_provenance,
             "semantic_variant": "ordered_subtask_failfast_v1",
             "phase_transition": "advance_on_correct; terminal_on_incorrect",
             "episode_success": "all_questions_correct",
@@ -488,14 +578,104 @@ def build_upstream_formal_reasoning_judge(
     return judge
 
 
+def _normalize_upstream_judge_config(
+    config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        raise RuntimeError("formal-reasoning judge_config must be an explicit mapping")
+    required = ("backend", "model_name", "base_url", "temperature", "max_tokens")
+    missing = [key for key in required if key not in config]
+    if missing:
+        raise RuntimeError(
+            "formal-reasoning judge_config lacks explicit fields: " + ", ".join(missing)
+        )
+    backend = str(config["backend"]).strip().lower()
+    model_name = str(config["model_name"]).strip()
+    base_url = str(config["base_url"]).strip().rstrip("/")
+    if not backend or not model_name or not base_url:
+        raise RuntimeError("formal-reasoning judge configuration cannot contain blanks")
+    try:
+        temperature = float(config["temperature"])
+        max_tokens = int(config["max_tokens"])
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("formal-reasoning judge numeric configuration is invalid") from exc
+    if not math.isfinite(temperature):
+        raise RuntimeError("formal-reasoning judge temperature must be finite")
+    if isinstance(config["max_tokens"], bool) or max_tokens < 1:
+        raise RuntimeError("formal-reasoning judge max_tokens must be positive")
+    return {
+        "backend": backend,
+        "model_name": model_name,
+        "base_url": base_url,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+
+
+def _judge_provenance(config: dict[str, Any], *, mode: str) -> dict[str, Any]:
+    endpoint_sha256 = hashlib.sha256(config["base_url"].encode("utf-8")).hexdigest()
+    public_config = {
+        "mode": mode,
+        "backend": config["backend"],
+        "model": config["model_name"],
+        "temperature": config["temperature"],
+        "max_tokens": config["max_tokens"],
+        "endpoint_sha256": endpoint_sha256,
+        "prompt_template_sha256": FORMAL_JUDGE_PROMPT_TEMPLATE_SHA256,
+    }
+    public_config["config_sha256"] = hashlib.sha256(
+        json.dumps(
+            public_config,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return public_config
+
+
+def _injected_judge_provenance() -> dict[str, Any]:
+    payload = {
+        "mode": "injected_test_double",
+        "backend": "injected_test_double",
+        "model": "injected_test_double",
+        "temperature": None,
+        "max_tokens": None,
+        "endpoint_sha256": None,
+        "prompt_template_sha256": FORMAL_JUDGE_PROMPT_TEMPLATE_SHA256,
+    }
+    payload["config_sha256"] = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return payload
+
+
 def _load_upstream_math_module(memoryarena_root: Path):
-    if not memoryarena_root.exists():
-        raise RuntimeError(f"MemoryArena root does not exist: {memoryarena_root}")
-    root_text = str(memoryarena_root)
+    root = memoryarena_root.expanduser().resolve()
+    if not root.exists():
+        raise RuntimeError(f"MemoryArena root does not exist: {root}")
+    root_text = str(root)
     if root_text not in sys.path:
         sys.path.insert(0, root_text)
     module = importlib.import_module("env.env_systems.math_env")
-    _require_module_under_root(module, memoryarena_root)
+    for module_name in (
+        "env",
+        "env.env_systems",
+        "env.env_systems.base_env",
+        "env.env_systems.math_env",
+        "env.env_systems.formal_reasoning_env.llm_backend",
+    ):
+        imported = sys.modules.get(module_name)
+        if imported is None:
+            raise RuntimeError(
+                f"Expected MemoryArena runtime module was not imported: {module_name}"
+            )
+        _require_module_under_root(imported, root)
     return module
 
 
@@ -519,36 +699,59 @@ def attest_formal_reasoning_upstream(
         root,
         "status",
         "--porcelain=v1",
-        "--untracked-files=all",
+        "--untracked-files=no",
         "--",
-        *FORMAL_REASONING_UPSTREAM_RELATIVE_PATHS,
+        *FORMAL_REASONING_PRISTINE_GIT_SCOPES,
     )
     if status.strip():
         raise RuntimeError(
             "MemoryArena formal-reasoning source is not pristine at the pinned commit:\n"
             + status.rstrip()
         )
-    source_sha256 = {}
+    tracked_env_files = set(
+        _git(root, "ls-files", "--", "env").splitlines()
+    )
+    unexpected_python_files = sorted(
+        str(path.relative_to(root))
+        for path in (root / "env").rglob("*.py")
+        if str(path.relative_to(root)) not in tracked_env_files
+        and "__pycache__" not in path.parts
+    )
+    if unexpected_python_files:
+        raise RuntimeError(
+            "MemoryArena env contains untracked or ignored Python source that can "
+            "alter imports:\n" + "\n".join(unexpected_python_files)
+        )
+    selected_source_sha256 = {}
     for relative_path in FORMAL_REASONING_UPSTREAM_RELATIVE_PATHS:
         path = root / relative_path
         if not path.is_file():
             raise RuntimeError(
                 f"Missing MemoryArena formal-reasoning source file: {path}"
             )
-        source_sha256[relative_path] = _sha256_file(path)
+        selected_source_sha256[relative_path] = _sha256_file(path)
     digest = hashlib.sha256(
         json.dumps(
-            source_sha256,
+            selected_source_sha256,
             ensure_ascii=True,
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
     return {
-        "mode": "pinned_pristine_upstream",
+        "mode": "pinned_pristine_upstream_scopes",
         "memoryarena_commit": commit,
-        "source_files_sha256": source_sha256,
-        "source_bundle_sha256": digest,
+        "pristine_git_scopes": list(FORMAL_REASONING_PRISTINE_GIT_SCOPES),
+        "env_git_tree_oid": _git(root, "rev-parse", f"{commit}:env").strip(),
+        "runtime_import_entry_files_sha256": {
+            path: selected_source_sha256[path]
+            for path in FORMAL_REASONING_RUNTIME_IMPORT_RELATIVE_PATHS
+        },
+        "reference_entrypoint_files_sha256": {
+            path: selected_source_sha256[path]
+            for path in FORMAL_REASONING_REFERENCE_RELATIVE_PATHS
+        },
+        "selected_files_bundle_sha256": digest,
     }
 
 

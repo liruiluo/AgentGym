@@ -58,6 +58,7 @@ class MemoryAugmentedDriver:
                 submitted_action=submitted_action,
                 message=str(exc),
             )
+            transition = self._enforce_max_steps(transition)
             self.transition = transition
             return self._decorate(transition, prefix=f"Invalid action: {exc}")
 
@@ -84,6 +85,7 @@ class MemoryAugmentedDriver:
                     memory_state_diff=memory_result.state_diff,
                 ),
             )
+            transition = self._enforce_max_steps(transition)
             self.transition = transition
             return self._decorate(transition, prefix=memory_result.message)
 
@@ -144,6 +146,7 @@ class MemoryAugmentedDriver:
             },
             sample_excluded=transition.sample_excluded,
         )
+        transition = self._enforce_max_steps(transition)
         self.transition = transition
         return self._decorate(transition)
 
@@ -196,6 +199,10 @@ class MemoryAugmentedDriver:
         evidence = deepcopy(self.transition.domain_evidence)
         evidence.pop("memory_state_diff", None)
         evidence.pop("memory_action_error", None)
+        evidence.pop("transition_event", None)
+        evidence.pop("paper_evaluation", None)
+        if "active_round_index" in evidence:
+            evidence["round_index"] = evidence["active_round_index"]
         evidence.update(
             {
                 "phase_index_before": self.transition.phase_index,
@@ -249,6 +256,44 @@ class MemoryAugmentedDriver:
                 }
             )
         return sum(float(item.get("value", 0.0)) for item in replaced), replaced
+
+    def _enforce_max_steps(self, transition: DomainTransition) -> DomainTransition:
+        if transition.done or self.env_step < self.contract.max_steps:
+            return transition
+
+        execution = deepcopy(transition.action_execution)
+        execution.update(
+            {
+                "max_steps_exhausted": True,
+                "max_steps_limit": self.contract.max_steps,
+            }
+        )
+        evidence = deepcopy(transition.domain_evidence)
+        evidence.update(
+            {
+                "max_steps_exhausted": True,
+                "max_steps_limit": self.contract.max_steps,
+            }
+        )
+        return DomainTransition(
+            observation=(
+                transition.observation.rstrip()
+                + "\n\nMaximum episode action count reached."
+            ),
+            reward=transition.reward,
+            done=True,
+            status="max_steps_exhausted",
+            phase_index=transition.phase_index,
+            phase_count=transition.phase_count,
+            episode_success=False,
+            action_execution=execution,
+            tool_ops=tuple(deepcopy(item) for item in transition.tool_ops),
+            reward_components=tuple(
+                deepcopy(item) for item in transition.reward_components
+            ),
+            domain_evidence=evidence,
+            sample_excluded=False,
+        )
 
     def _decorate(
         self,

@@ -25,6 +25,18 @@ SOURCE_COLUMNS = ("docid", "text", "url")
 OUTPUT_COLUMNS = ("docid", "text")
 FROZEN_CORPUS_REPOSITORY = "Tevatron/browsecomp-plus-corpus"
 FROZEN_CORPUS_REVISION = "b27b02bc3e45511b8b82a13e6f90ce761df726f6"
+FROZEN_SOURCE_SHA256 = (
+    "7c07f9e23b1ca548110fd831714cadc67d44db5223bace6e45fcaa795d3153d0",
+    "e92d8202e0f656a85b262153dbcd22ecf80ea2d0c96d9884f9c8e25480b869ab",
+    "0e4113a4503342527258d8f2c49877747435f3e65bfe1f7306b4f488c8d225fe",
+    "0ceea5e703332a2e3ce700f641273400d84583fad84b659d3248ed06d3a9fef3",
+    "15b62914ddc3de6946893c770f07d5d84d29646e833ca1447955668f2b57940c",
+    "a9a75708ad37c522e93a774e5a968a3129e12b0559971c8f950a5628e0201df0",
+    "290062b60c1a6ebba7d5469a37a431f0a2596e68788295284b1b2d35db07b62c",
+)
+FROZEN_OUTPUT_SHA256 = (
+    "6b306573f6194367d5e2a7daaae12d9cb4242409413f261ea6d81a19d7cf4b26"
+)
 
 
 class CorpusMaterializationError(ValueError):
@@ -71,22 +83,80 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def encode_projected_row(row: Mapping[str, str]) -> bytes:
+    """Return the canonical JSONL bytes used by the frozen materializer."""
+
+    if set(row) != set(OUTPUT_COLUMNS):
+        raise CorpusMaterializationError("projected row does not match output schema")
+    return (
+        json.dumps(
+            {column: row[column] for column in OUTPUT_COLUMNS},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def attest_source_paths(
+    input_paths: tuple[Path, ...],
+    *,
+    expected_source_sha256: tuple[str, ...] = FROZEN_SOURCE_SHA256,
+) -> list[dict[str, Any]]:
+    """Hash the actual parquet bytes before materialization starts."""
+
+    if len(input_paths) != len(expected_source_sha256):
+        raise CorpusMaterializationError(
+            "frozen corpus requires exactly "
+            f"{len(expected_source_sha256)} parquet shards"
+        )
+    evidence = [
+        {
+            "path": str(path),
+            "sha256": sha256_file(path),
+            "size_bytes": path.stat().st_size,
+        }
+        for path in input_paths
+    ]
+    if tuple(sorted(item["sha256"] for item in evidence)) != tuple(
+        sorted(expected_source_sha256)
+    ):
+        raise CorpusMaterializationError(
+            "parquet shard bytes do not match the frozen corpus source"
+        )
+    return evidence
+
+
+def relative_manifest_path(path: Path, manifest_path: Path) -> str:
+    """Encode a portable path relative to the manifest directory."""
+
+    return Path(os.path.relpath(path, start=manifest_path.parent)).as_posix()
+
+
 def materialize_parquet_corpus(
     input_glob: str,
     output_path: Path,
     manifest_path: Path,
     *,
     batch_size: int = 1024,
+    expected_source_sha256: tuple[str, ...] = FROZEN_SOURCE_SHA256,
+    expected_output_sha256: str = FROZEN_OUTPUT_SHA256,
 ) -> dict[str, Any]:
     """Project sorted parquet shards and write a reproducible manifest."""
 
     if batch_size <= 0:
         raise CorpusMaterializationError("batch_size must be positive")
-    input_paths = tuple(Path(value).resolve() for value in sorted(glob.glob(input_glob)))
+    input_paths = tuple(
+        Path(value).resolve() for value in sorted(glob.glob(input_glob))
+    )
     if not input_paths:
         raise FileNotFoundError(f"no parquet files matched --input-glob {input_glob!r}")
     if any(not path.is_file() for path in input_paths):
         raise FileNotFoundError("one or more parquet inputs are not regular files")
+    frozen_source_evidence = attest_source_paths(
+        input_paths,
+        expected_source_sha256=expected_source_sha256,
+    )
 
     try:
         import pyarrow.parquet as parquet
@@ -114,7 +184,10 @@ def materialize_parquet_corpus(
             delete=False,
         ) as handle:
             temporary_output = Path(handle.name)
-            for input_path in input_paths:
+            for input_path, frozen_evidence in zip(
+                input_paths,
+                frozen_source_evidence,
+            ):
                 parquet_file = parquet.ParquetFile(input_path)
                 columns = tuple(parquet_file.schema_arrow.names)
                 if columns != SOURCE_COLUMNS:
@@ -133,27 +206,25 @@ def materialize_parquet_corpus(
                                 f"duplicate docid {projected['docid']!r} across shards"
                             )
                         seen_docids.add(projected["docid"])
-                        line = (
-                            json.dumps(
-                                projected,
-                                ensure_ascii=False,
-                                separators=(",", ":"),
-                            )
-                            + "\n"
-                        ).encode("utf-8")
+                        line = encode_projected_row(projected)
                         handle.write(line)
                         output_digest.update(line)
                         total_rows += 1
                         shard_rows += 1
                 source_files.append(
                     {
-                        "path": str(input_path),
-                        "sha256": sha256_file(input_path),
-                        "size_bytes": input_path.stat().st_size,
+                        "path": relative_manifest_path(input_path, manifest_path),
+                        "sha256": frozen_evidence["sha256"],
+                        "size_bytes": frozen_evidence["size_bytes"],
                         "row_count": shard_rows,
                         "columns": list(columns),
                     }
                 )
+        observed_output_sha256 = output_digest.hexdigest()
+        if observed_output_sha256 != expected_output_sha256:
+            raise CorpusMaterializationError(
+                "materialized corpus bytes do not match the canonical output SHA256"
+            )
         os.replace(temporary_output, output_path)
         temporary_output = None
     finally:
@@ -161,7 +232,8 @@ def materialize_parquet_corpus(
             temporary_output.unlink(missing_ok=True)
 
     manifest = {
-        "format": "agentmemory_browsecomp_corpus_manifest_v1",
+        "format": "agentmemory_browsecomp_corpus_manifest_v2",
+        "path_base": "manifest_directory",
         "source": {
             "input_glob": input_glob,
             "repository": FROZEN_CORPUS_REPOSITORY,
@@ -175,10 +247,11 @@ def materialize_parquet_corpus(
             "discarded_columns": ["url"],
             "consumer": "MemoryArena OpenAISearcher._load_corpus",
             "ordering": "lexicographic input path, then parquet row order",
+            "encoding": "utf-8 compact JSON objects plus LF",
         },
         "output": {
-            "path": str(output_path),
-            "sha256": output_digest.hexdigest(),
+            "path": relative_manifest_path(output_path, manifest_path),
+            "sha256": observed_output_sha256,
             "row_count": total_rows,
         },
     }
