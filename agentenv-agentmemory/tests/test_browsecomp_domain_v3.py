@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -22,6 +23,7 @@ from agentenv_agentmemory.domains.browsecomp import (
     BROWSECOMP_SURFACES,
     BROWSECOMP_UPSTREAM_REQUIRED_FILES,
     BrowseCompPlusFactory,
+    _import_upstream_search_client_without_api_key,
     _judge_provenance,
     _load_frozen_snippet_tokenizer,
     aggregate_browsecomp_paper_metrics,
@@ -127,6 +129,32 @@ class BrowseCompContractTest(unittest.TestCase):
         created = wrapper.create()
         self.wrappers.append((wrapper, created["id"]))
         return factory, wrapper, created
+
+    def test_upstream_client_import_cannot_print_openai_api_key(self):
+        secret = "unit-test-secret-must-not-appear"
+        imported = object()
+
+        def fake_import(name):
+            print("ENV OPENAI_API_KEY:", repr(os.getenv("OPENAI_API_KEY")))
+            return imported
+
+        output = io.StringIO()
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": secret}, clear=True),
+            patch(
+                "agentenv_agentmemory.domains.browsecomp.importlib.import_module",
+                side_effect=fake_import,
+            ),
+            patch("sys.stdout", output),
+        ):
+            self.assertIs(
+                _import_upstream_search_client_without_api_key(),
+                imported,
+            )
+            self.assertEqual(os.environ["OPENAI_API_KEY"], secret)
+
+        self.assertNotIn(secret, output.getvalue())
+        self.assertIn("None", output.getvalue())
 
     def test_metadata_names_public_panel_and_exact_search_contract(self):
         self.assertEqual(

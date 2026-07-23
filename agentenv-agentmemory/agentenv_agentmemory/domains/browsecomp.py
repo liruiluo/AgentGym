@@ -1316,9 +1316,7 @@ def _build_upstream_search(
         path_text = str(path)
         if path_text not in sys.path:
             sys.path.insert(0, path_text)
-    client_module = importlib.import_module(
-        "env.env_systems.web_search_env.search_agent.openai_client"
-    )
+    client_module = _import_upstream_search_client_without_api_key()
     searcher_module = importlib.import_module(
         "env.env_systems.web_search_env.searcher.searchers.openai_searcher"
     )
@@ -1359,6 +1357,20 @@ def _build_upstream_search(
         return handler.execute_tool(tool_name, arguments)
 
     return execute
+
+
+def _import_upstream_search_client_without_api_key():
+    """Import the frozen client without exposing a credential to import output."""
+
+    key_present = "OPENAI_API_KEY" in os.environ
+    api_key = os.environ.pop("OPENAI_API_KEY", None)
+    try:
+        return importlib.import_module(
+            "env.env_systems.web_search_env.search_agent.openai_client"
+        )
+    finally:
+        if key_present:
+            os.environ["OPENAI_API_KEY"] = api_key or ""
 
 
 def _normalize_embedding_endpoint(endpoint: str | None) -> str:
