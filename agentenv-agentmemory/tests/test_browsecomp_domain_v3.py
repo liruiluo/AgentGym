@@ -145,7 +145,7 @@ class BrowseCompContractTest(unittest.TestCase):
                 "agentenv_agentmemory.domains.browsecomp.importlib.import_module",
                 side_effect=fake_import,
             ),
-            patch("sys.stdout", output),
+            patch.object(sys, "stdout", output),
         ):
             self.assertIs(
                 _import_upstream_search_client_without_api_key(),
