@@ -1362,12 +1362,18 @@ def _build_upstream_search(
 def _import_upstream_search_client_without_api_key():
     """Import the frozen client without exposing a credential to import output."""
 
+    return _import_upstream_module_without_api_key(
+        "env.env_systems.web_search_env.search_agent.openai_client"
+    )
+
+
+def _import_upstream_module_without_api_key(module_name: str):
+    """Import frozen upstream code without exposing the OpenAI credential."""
+
     key_present = "OPENAI_API_KEY" in os.environ
     api_key = os.environ.pop("OPENAI_API_KEY", None)
     try:
-        return importlib.import_module(
-            "env.env_systems.web_search_env.search_agent.openai_client"
-        )
+        return importlib.import_module(module_name)
     finally:
         if key_present:
             os.environ["OPENAI_API_KEY"] = api_key or ""
@@ -1851,8 +1857,10 @@ def _build_upstream_judge(
     for path in (memoryarena_root, web_search_root):
         if str(path) not in sys.path:
             sys.path.insert(0, str(path))
-    module = importlib.import_module("env.env_systems.browsecomp_plus_env")
-    prompts_module = importlib.import_module("search_agent.prompts")
+    module = _import_upstream_module_without_api_key(
+        "env.env_systems.browsecomp_plus_env"
+    )
+    prompts_module = _import_upstream_module_without_api_key("search_agent.prompts")
     _require_module_under_root(module, memoryarena_root)
     _require_module_under_root(prompts_module, memoryarena_root)
     prompt_sha256 = hashlib.sha256(

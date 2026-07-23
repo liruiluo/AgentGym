@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import agentenv_agentmemory.domains.browsecomp as browsecomp_module
 from agentenv_agentmemory.domains.browsecomp import (
     BROWSECOMP_FROZEN_CORPUS_REPOSITORY,
     BROWSECOMP_FROZEN_CORPUS_REVISION,
@@ -23,6 +24,7 @@ from agentenv_agentmemory.domains.browsecomp import (
     BROWSECOMP_SURFACES,
     BROWSECOMP_UPSTREAM_REQUIRED_FILES,
     BrowseCompPlusFactory,
+    _build_upstream_judge,
     _import_upstream_search_client_without_api_key,
     _judge_provenance,
     _load_frozen_snippet_tokenizer,
@@ -155,6 +157,61 @@ class BrowseCompContractTest(unittest.TestCase):
 
         self.assertNotIn(secret, output.getvalue())
         self.assertIn("None", output.getvalue())
+
+    def test_upstream_judge_imports_cannot_print_openai_api_key(self):
+        secret = "unit-test-secret-must-not-appear"
+        prompt = "frozen grader prompt"
+
+        class FakeJudgeEnvironment:
+            @staticmethod
+            def evaluate_answer_with_judge(*args, **kwargs):
+                return {"correct": True}
+
+        imported = {
+            "env.env_systems.browsecomp_plus_env": types.SimpleNamespace(
+                BrowseCompPlusEnvironment=FakeJudgeEnvironment,
+            ),
+            "search_agent.prompts": types.SimpleNamespace(
+                GRADER_TEMPLATE=prompt,
+            ),
+        }
+
+        def fake_import(name):
+            print("ENV OPENAI_API_KEY:", repr(os.getenv("OPENAI_API_KEY")))
+            return imported[name]
+
+        output = io.StringIO()
+        fake_openai = types.SimpleNamespace(OpenAI=lambda **kwargs: object())
+        with (
+            patch.object(sys, "stdout", output),
+            patch.dict(os.environ, {"OPENAI_API_KEY": secret}, clear=True),
+            patch.object(
+                browsecomp_module.importlib,
+                "import_module",
+                side_effect=fake_import,
+            ),
+            patch.object(browsecomp_module, "_require_module_under_root"),
+            patch.object(
+                browsecomp_module,
+                "BROWSECOMP_JUDGE_PROMPT_TEMPLATE_SHA256",
+                hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            ),
+            patch.dict(sys.modules, {"openai": fake_openai}),
+        ):
+            judge = _build_upstream_judge(
+                Path("/frozen-memoryarena"),
+                config={
+                    "backend": "openai_responses",
+                    "model_name": "gpt-4.1",
+                    "base_url": "https://api.example/v1",
+                    "max_tokens": 32,
+                },
+            )
+            self.assertTrue(callable(judge))
+            self.assertEqual(os.environ["OPENAI_API_KEY"], secret)
+
+        self.assertNotIn(secret, output.getvalue())
+        self.assertEqual(output.getvalue().count("None"), 2)
 
     def test_metadata_names_public_panel_and_exact_search_contract(self):
         self.assertEqual(
