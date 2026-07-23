@@ -24,6 +24,7 @@ from agentenv_agentmemory.domains.browsecomp import (
     BROWSECOMP_SURFACES,
     BROWSECOMP_UPSTREAM_REQUIRED_FILES,
     BrowseCompPlusFactory,
+    _build_upstream_search,
     _build_upstream_judge,
     _import_upstream_search_client_without_api_key,
     _judge_provenance,
@@ -157,6 +158,68 @@ class BrowseCompContractTest(unittest.TestCase):
 
         self.assertNotIn(secret, output.getvalue())
         self.assertIn("None", output.getvalue())
+
+    def test_all_upstream_search_imports_cannot_print_openai_api_key(self):
+        secret = "unit-test-secret-must-not-appear"
+
+        class FakeSearchToolHandler:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+            def execute_tool(self, tool_name, arguments):
+                return f"{tool_name}:{arguments}"
+
+        imported = {
+            "env.env_systems.web_search_env.search_agent.openai_client": (
+                types.SimpleNamespace(SearchToolHandler=FakeSearchToolHandler)
+            ),
+            "env.env_systems.web_search_env.searcher.searchers.openai_searcher": (
+                types.SimpleNamespace(OpenAISearcher=lambda args: object())
+            ),
+        }
+
+        def fake_import(name):
+            print("ENV OPENAI_API_KEY:", repr(os.getenv("OPENAI_API_KEY")))
+            return imported[name]
+
+        output = io.StringIO()
+        tokenizer = object()
+        with (
+            patch.object(sys, "stdout", output),
+            patch.dict(
+                os.environ,
+                {
+                    "OPENAI_API_KEY": secret,
+                    "OPENAI_BASE_URL": "https://api.example/v1",
+                },
+                clear=True,
+            ),
+            patch.object(
+                browsecomp_module.importlib,
+                "import_module",
+                side_effect=fake_import,
+            ),
+            patch.object(browsecomp_module, "_require_module_under_root"),
+            patch.object(browsecomp_module, "validate_loaded_browsecomp_searcher"),
+            patch.object(
+                browsecomp_module,
+                "_load_frozen_snippet_tokenizer",
+                return_value=tokenizer,
+            ),
+        ):
+            execute = _build_upstream_search(
+                Path("/frozen-memoryarena"),
+                index_path="/frozen-index/shard*.index",
+                corpus_path="/frozen-corpus/corpus.jsonl",
+                embedding_model="text-embedding-3-small",
+                provider="openai",
+                embedding_endpoint="https://api.example/v1",
+            )
+            self.assertTrue(callable(execute))
+            self.assertEqual(os.environ["OPENAI_API_KEY"], secret)
+
+        self.assertNotIn(secret, output.getvalue())
+        self.assertEqual(output.getvalue().count("None"), 2)
 
     def test_upstream_judge_imports_cannot_print_openai_api_key(self):
         secret = "unit-test-secret-must-not-appear"

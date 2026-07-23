@@ -1317,7 +1317,7 @@ def _build_upstream_search(
         if path_text not in sys.path:
             sys.path.insert(0, path_text)
     client_module = _import_upstream_search_client_without_api_key()
-    searcher_module = importlib.import_module(
+    searcher_module = _import_upstream_module_without_api_key(
         "env.env_systems.web_search_env.searcher.searchers.openai_searcher"
     )
     _require_module_under_root(client_module, memoryarena_root)
