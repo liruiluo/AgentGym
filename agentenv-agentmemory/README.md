@@ -120,6 +120,15 @@ a purchase. There is no formal synthetic `SEARCH`, `BUY`, `ANSWER`, or
   the endpoint text or API key. Paper evaluation requires provider `openai`.
   The fail-fast surface may use the fixed OpenRouter route only under the
   explicit `failfast_openrouter_nonpaper_embedding_v1` metadata variant.
+- `memoryarena_progressive_search_bm25_integration_smoke_public221_one_action_v3`
+  is a separate integration-only surface. It reuses MemoryArena's upstream
+  Pyserini `BM25Searcher` with an explicit local Lucene index and keeps the same
+  one-action fail-fast phase state machine. Metadata fixes
+  `search_backend.id=bm25_lucene_integration`, `integration_only=true`, and
+  `paper_eligible=false`. This surface cannot produce the MemoryArena paper
+  Search column and does not disable, relax, or substitute for the dense
+  `text-embedding-3-small` provenance guard on the two canonical Search
+  surfaces.
 - Formal Math/Physics preserve the upstream questions, background, ordering,
   and equivalence judge. Their explicitly named AMG `failfast_v3` variant gives
   `+1` for each correct subtask, advances once, and terminates with reward `0`
@@ -283,6 +292,22 @@ provider. Judge and embedding metadata record public provider/model/config
 fields and endpoint SHA256 values; credentials and endpoint text are not
 emitted. Search, embedding, judge-transport, or judge-parse failures terminate
 immediately as excluded infrastructure samples without adding a phase verdict.
+
+For adapter/PPO integration QA when an exact dense embedding route is
+unavailable, launch the separately named BM25 surface. Pyserini and Java are
+runtime dependencies; the Lucene index belongs in the workspace data/runtime
+layer, not this source repository:
+
+```bash
+python -m agentenv_agentmemory.launch $COMMON \
+  --surface memoryarena_progressive_search_bm25_integration_smoke_public221_one_action_v3 \
+  --browsecomp-tasks-path /path/to/progressive_search/data.jsonl \
+  --browsecomp-bm25-index-path /path/to/browsecomp/lucene_index \
+  --browsecomp-judge-model <judge-model> \
+  --browsecomp-judge-max-tokens 8000 \
+  --browsecomp-api-base-url <openai-compatible-base-url> \
+  --port 8005
+```
 
 ## Tests
 

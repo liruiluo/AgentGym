@@ -1,6 +1,10 @@
 """Domain drivers for the AgentMemoryGym v3 runtime."""
 
-from .browsecomp import BROWSECOMP_SURFACES, BrowseCompPlusFactory
+from .browsecomp import (
+    BROWSECOMP_BM25_INTEGRATION_SURFACE,
+    BROWSECOMP_SURFACES,
+    BrowseCompPlusFactory,
+)
 from .formal_reasoning import (
     FORMAL_REASONING_PAPER_EVAL_SURFACES,
     FORMAL_REASONING_SURFACES,
@@ -18,9 +22,11 @@ V3_SURFACES = (
     FORMAL_REASONING_PAPER_EVAL_SURFACES["phys"],
     BROWSECOMP_SURFACES["paper_eval"],
     BROWSECOMP_SURFACES["failfast"],
+    BROWSECOMP_BM25_INTEGRATION_SURFACE,
 )
 
 __all__ = [
+    "BROWSECOMP_BM25_INTEGRATION_SURFACE",
     "BROWSECOMP_SURFACES",
     "BrowseCompPlusFactory",
     "FORMAL_REASONING_PAPER_EVAL_SURFACES",

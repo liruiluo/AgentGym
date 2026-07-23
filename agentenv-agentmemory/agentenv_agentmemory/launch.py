@@ -5,6 +5,7 @@ import os
 
 from .annotation_gate import ANNOTATION_GATE_MODES
 from .domains import (
+    BROWSECOMP_BM25_INTEGRATION_SURFACE,
     BROWSECOMP_SURFACES,
     FORMAL_REASONING_SURFACES_BY_MODE,
     TRAVEL_SURFACES,
@@ -74,6 +75,7 @@ def launch() -> None:
     parser.add_argument("--browsecomp-index-path")
     parser.add_argument("--browsecomp-corpus-path")
     parser.add_argument("--browsecomp-corpus-manifest")
+    parser.add_argument("--browsecomp-bm25-index-path")
     parser.add_argument(
         "--browsecomp-embedding-provider",
         choices=["openai", "openrouter"],
@@ -189,6 +191,30 @@ def launch() -> None:
                 "AGENTMEMORY_FORMAL_REASONING_JUDGE_MAX_TOKENS": str(
                     args.formal_reasoning_judge_max_tokens
                 ),
+            }
+        )
+    elif args.surface == BROWSECOMP_BM25_INTEGRATION_SURFACE:
+        _require_args(
+            parser,
+            args,
+            "browsecomp_tasks_path",
+            "browsecomp_bm25_index_path",
+            "browsecomp_judge_model",
+            "browsecomp_api_base_url",
+        )
+        if args.browsecomp_judge_max_tokens < 1:
+            parser.error("--browsecomp-judge-max-tokens must be positive")
+        configured.update(
+            {
+                "AGENTMEMORY_BROWSECOMP_TASKS_PATH": args.browsecomp_tasks_path,
+                "MEMORYARENA_BROWSECOMP_BM25_INDEX_PATH": (
+                    args.browsecomp_bm25_index_path
+                ),
+                "AGENTMEMORY_BROWSECOMP_JUDGE_MODEL": args.browsecomp_judge_model,
+                "AGENTMEMORY_BROWSECOMP_JUDGE_MAX_TOKENS": str(
+                    args.browsecomp_judge_max_tokens
+                ),
+                "OPENAI_BASE_URL": args.browsecomp_api_base_url,
             }
         )
     elif args.surface in BROWSECOMP_SURFACES.values():

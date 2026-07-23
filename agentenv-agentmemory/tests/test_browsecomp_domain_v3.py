@@ -13,6 +13,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agentenv_agentmemory.domains.browsecomp import (
+    BROWSECOMP_BM25_INTEGRATION_BACKEND,
+    BROWSECOMP_BM25_INTEGRATION_SURFACE,
+    BROWSECOMP_DENSE_BACKEND,
     BROWSECOMP_FROZEN_CORPUS_REPOSITORY,
     BROWSECOMP_FROZEN_CORPUS_REVISION,
     BROWSECOMP_FROZEN_MEMORYARENA_COMMIT,
@@ -290,6 +293,68 @@ class BrowseCompContractTest(unittest.TestCase):
                 judge=self.judge,
                 test_mode=True,
             )
+
+    def test_bm25_integration_is_a_separate_nonpaper_surface(self):
+        factory = BrowseCompPlusFactory(
+            contract_mode="failfast",
+            tasks_path=self.tasks_path,
+            dataset_provenance=self.provenance,
+            search_backend=BROWSECOMP_BM25_INTEGRATION_BACKEND,
+            search_tool=self.search,
+            judge=self.judge,
+            test_mode=True,
+        )
+        metadata = factory.metadata()
+        self.assertEqual(factory.surface, BROWSECOMP_BM25_INTEGRATION_SURFACE)
+        self.assertEqual(metadata["search_backend"]["id"], BROWSECOMP_BM25_INTEGRATION_BACKEND)
+        self.assertTrue(metadata["search_backend"]["integration_only"])
+        self.assertFalse(metadata["search_backend"]["paper_eligible"])
+        self.assertFalse(metadata["paper_evaluation"]["available"])
+        self.assertEqual(
+            metadata["embedding_route_provenance"]["mode"],
+            "not_applicable_separate_bm25_surface",
+        )
+        self.assertFalse(
+            metadata["embedding_route_provenance"][
+                "dense_provenance_guard_changed"
+            ]
+        )
+        self.assertIn(
+            "not eligible for the MemoryArena paper Search column",
+            factory.contract.canonical_system_prompt,
+        )
+
+        wrapper = DomainEnvWrapper(factory, reward_policy=MemoryRewardPolicy())
+        created = wrapper.create()
+        env_id = created["id"]
+        self.wrappers.append((wrapper, env_id))
+        transition = wrapper.step(
+            env_id,
+            'Action: search {"query":"evidence"}',
+        )
+        evidence = transition["info"]["domain_evidence"]
+        self.assertEqual(evidence["surface"], BROWSECOMP_BM25_INTEGRATION_SURFACE)
+        self.assertEqual(
+            evidence["search_backend"],
+            BROWSECOMP_BM25_INTEGRATION_BACKEND,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "failfast-only"):
+            BrowseCompPlusFactory(
+                contract_mode="paper_eval",
+                tasks_path=self.tasks_path,
+                dataset_provenance=self.provenance,
+                search_backend=BROWSECOMP_BM25_INTEGRATION_BACKEND,
+                search_tool=self.search,
+                judge=self.judge,
+                test_mode=True,
+            )
+
+        dense_factory, _, _ = self._create("failfast")
+        self.assertEqual(
+            dense_factory.metadata()["search_backend"]["id"],
+            BROWSECOMP_DENSE_BACKEND,
+        )
 
     def test_memory_action_does_not_consume_longest_task_native_quota(self):
         questions = [f"phase {index}" for index in range(16)]

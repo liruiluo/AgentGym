@@ -31,6 +31,16 @@ BROWSECOMP_SURFACES = {
         "memoryarena_progressive_search_failfast_public221_one_action_v3"
     ),
 }
+BROWSECOMP_BM25_INTEGRATION_SURFACE = (
+    "memoryarena_progressive_search_bm25_integration_smoke_public221_"
+    "one_action_v3"
+)
+BROWSECOMP_DENSE_BACKEND = "dense_openai"
+BROWSECOMP_BM25_INTEGRATION_BACKEND = "bm25_lucene_integration"
+BROWSECOMP_SEARCH_BACKENDS = (
+    BROWSECOMP_DENSE_BACKEND,
+    BROWSECOMP_BM25_INTEGRATION_BACKEND,
+)
 BROWSECOMP_PUBLIC_TASK_COUNT = 221
 BROWSECOMP_PUBLIC_PHASE_COUNT = 1641
 BROWSECOMP_PAPER_TASK_COUNT = 256
@@ -217,6 +227,8 @@ class BrowseCompPlusFactory:
         search_tool: BrowseSearch | None = None,
         judge: BrowseJudge | None = None,
         expected_memoryarena_commit: str | None = None,
+        search_backend: str = BROWSECOMP_DENSE_BACKEND,
+        bm25_index_path: str | Path | None = None,
         test_mode: bool = False,
     ) -> None:
         if contract_mode not in BROWSECOMP_CONTRACT_MODES:
@@ -224,16 +236,41 @@ class BrowseCompPlusFactory:
                 "BrowseComp contract_mode must be one of: "
                 + ", ".join(BROWSECOMP_CONTRACT_MODES)
             )
+        if search_backend not in BROWSECOMP_SEARCH_BACKENDS:
+            raise ValueError(
+                "BrowseComp search_backend must be one of: "
+                + ", ".join(BROWSECOMP_SEARCH_BACKENDS)
+            )
+        if (
+            search_backend == BROWSECOMP_BM25_INTEGRATION_BACKEND
+            and contract_mode != "failfast"
+        ):
+            raise RuntimeError(
+                "Progressive Search BM25 integration is a failfast-only, "
+                "non-paper surface"
+            )
         self.contract_mode = contract_mode
-        if provider not in {"openai", "openrouter"}:
+        self.search_backend = search_backend
+        if search_backend == BROWSECOMP_DENSE_BACKEND and provider not in {
+            "openai",
+            "openrouter",
+        }:
             raise ValueError(
                 "BrowseComp embedding provider must be openai or openrouter"
             )
-        if contract_mode == "paper_eval" and provider != "openai":
+        if (
+            search_backend == BROWSECOMP_DENSE_BACKEND
+            and contract_mode == "paper_eval"
+            and provider != "openai"
+        ):
             raise RuntimeError(
                 "Progressive Search paper_eval requires the OpenAI embedding provider"
             )
-        self.surface = BROWSECOMP_SURFACES[contract_mode]
+        self.surface = (
+            BROWSECOMP_BM25_INTEGRATION_SURFACE
+            if search_backend == BROWSECOMP_BM25_INTEGRATION_BACKEND
+            else BROWSECOMP_SURFACES[contract_mode]
+        )
         self.contract = BROWSECOMP_CONTRACTS[contract_mode]
         self.tasks_path = Path(tasks_path).expanduser().resolve()
         verify_memoryarena_dataset_provenance(
@@ -257,18 +294,25 @@ class BrowseCompPlusFactory:
             raise RuntimeError(
                 "Loaded Progressive Search tasks differ from dataset provenance"
             )
-        self.embedding_route_provenance = (
-            _embedding_route_provenance(
-                provider=provider,
-                model=embedding_model,
-                endpoint=embedding_endpoint,
-                contract_mode=contract_mode,
+        if search_backend == BROWSECOMP_BM25_INTEGRATION_BACKEND:
+            self.embedding_route_provenance = {
+                "mode": "not_applicable_separate_bm25_surface",
+                "paper_eligible": False,
+                "dense_provenance_guard_changed": False,
+            }
+        else:
+            self.embedding_route_provenance = (
+                _embedding_route_provenance(
+                    provider=provider,
+                    model=embedding_model,
+                    endpoint=embedding_endpoint,
+                    contract_mode=contract_mode,
+                )
+                if embedding_endpoint is not None
+                else {"mode": "injected_test_double"}
+                if test_mode
+                else None
             )
-            if embedding_endpoint is not None
-            else {"mode": "injected_test_double"}
-            if test_mode
-            else None
-        )
         if self.embedding_route_provenance is None:
             raise RuntimeError(
                 "Production Progressive Search requires an explicit embedding endpoint"
@@ -284,10 +328,23 @@ class BrowseCompPlusFactory:
         total_action_limit = native_action_limit + memory_action_allowance
         self.native_action_limit = native_action_limit
         self.memory_action_allowance = memory_action_allowance
+        backend_prompt = (
+            " This integration-only surface uses MemoryArena's upstream "
+            "Pyserini BM25Searcher over a local Lucene index. It is not eligible "
+            "for the MemoryArena paper Search column and does not relax or replace "
+            "the dense text-embedding-3-small provenance contract."
+            if search_backend == BROWSECOMP_BM25_INTEGRATION_BACKEND
+            else ""
+        )
         self.contract = DomainContract(
-            contract_id=self.contract.contract_id,
+            contract_id=(
+                f"{BROWSECOMP_BM25_INTEGRATION_SURFACE}_20260723"
+                if search_backend == BROWSECOMP_BM25_INTEGRATION_BACKEND
+                else self.contract.contract_id
+            ),
             system_prompt=(
                 self.contract.system_prompt
+                + backend_prompt
                 + " The global episode action cap is separate from the native "
                 "per-phase limits and reserves up to "
                 f"{BROWSECOMP_MEMORY_ACTION_ALLOWANCE_PER_PHASE} memory actions "
@@ -334,38 +391,58 @@ class BrowseCompPlusFactory:
                     "Production Search requires frozen MemoryArena commit "
                     f"{BROWSECOMP_FROZEN_MEMORYARENA_COMMIT}"
                 )
-            if index_path is None or corpus_path is None or corpus_manifest_path is None:
-                raise RuntimeError(
-                    "Production Search requires explicit index, corpus, and corpus "
-                    "manifest paths"
-                )
-            resolved_index_path = _resolve_search_path(
-                self.memoryarena_root,
-                index_path,
-            )
-            resolved_corpus_path = Path(
-                _resolve_search_path(self.memoryarena_root, corpus_path)
-            )
-            resolved_manifest_path = Path(corpus_manifest_path).expanduser().resolve()
             normalized_judge_config = _normalize_judge_config(judge_config)
             self.upstream_provenance = attest_browsecomp_upstream(
                 self.memoryarena_root,
                 expected_commit=BROWSECOMP_FROZEN_MEMORYARENA_COMMIT,
             )
-            self.search_asset_provenance = attest_browsecomp_search_assets(
-                index_pattern=resolved_index_path,
-                corpus_path=resolved_corpus_path,
-                corpus_manifest_path=resolved_manifest_path,
-                embedding_model=embedding_model,
-            )
-            search_tool = _build_upstream_search(
-                self.memoryarena_root,
-                index_path=resolved_index_path,
-                corpus_path=resolved_corpus_path,
-                embedding_model=embedding_model,
-                provider=provider,
-                embedding_endpoint=embedding_endpoint,
-            )
+            if search_backend == BROWSECOMP_BM25_INTEGRATION_BACKEND:
+                if bm25_index_path is None:
+                    raise RuntimeError(
+                        "Production BM25 integration requires an explicit Lucene "
+                        "index directory"
+                    )
+                resolved_bm25_index = Path(bm25_index_path).expanduser().resolve()
+                search_tool, self.search_asset_provenance = (
+                    _build_upstream_bm25_search(
+                        self.memoryarena_root,
+                        index_path=resolved_bm25_index,
+                    )
+                )
+            else:
+                if (
+                    index_path is None
+                    or corpus_path is None
+                    or corpus_manifest_path is None
+                ):
+                    raise RuntimeError(
+                        "Production Search requires explicit index, corpus, and "
+                        "corpus manifest paths"
+                    )
+                resolved_index_path = _resolve_search_path(
+                    self.memoryarena_root,
+                    index_path,
+                )
+                resolved_corpus_path = Path(
+                    _resolve_search_path(self.memoryarena_root, corpus_path)
+                )
+                resolved_manifest_path = (
+                    Path(corpus_manifest_path).expanduser().resolve()
+                )
+                self.search_asset_provenance = attest_browsecomp_search_assets(
+                    index_pattern=resolved_index_path,
+                    corpus_path=resolved_corpus_path,
+                    corpus_manifest_path=resolved_manifest_path,
+                    embedding_model=embedding_model,
+                )
+                search_tool = _build_upstream_search(
+                    self.memoryarena_root,
+                    index_path=resolved_index_path,
+                    corpus_path=resolved_corpus_path,
+                    embedding_model=embedding_model,
+                    provider=provider,
+                    embedding_endpoint=embedding_endpoint,
+                )
             judge = _build_upstream_judge(
                 self.memoryarena_root,
                 config=normalized_judge_config,
@@ -386,6 +463,8 @@ class BrowseCompPlusFactory:
             judge=self.judge,
             env_uid=env_uid,
             contract=self.contract,
+            surface=self.surface,
+            search_backend=self.search_backend,
         )
 
     def metadata(self) -> dict[str, Any]:
@@ -411,10 +490,24 @@ class BrowseCompPlusFactory:
             },
             "contract_mode": self.contract_mode,
             "semantic_variant": (
-                "paper_metric_evaluation_continue_on_incorrect_one_action_v1"
+                "ordered_phase_failfast_bm25_integration_one_action_v1"
+                if self.search_backend == BROWSECOMP_BM25_INTEGRATION_BACKEND
+                else "paper_metric_evaluation_continue_on_incorrect_one_action_v1"
                 if self.contract_mode == "paper_eval"
                 else "ordered_phase_failfast_training_one_action_v1"
             ),
+            "search_backend": {
+                "id": self.search_backend,
+                "implementation": (
+                    "memoryarena_upstream_pyserini_bm25_searcher"
+                    if self.search_backend == BROWSECOMP_BM25_INTEGRATION_BACKEND
+                    else "memoryarena_upstream_openai_faiss_searcher"
+                ),
+                "integration_only": (
+                    self.search_backend == BROWSECOMP_BM25_INTEGRATION_BACKEND
+                ),
+                "paper_eligible": self.search_backend == BROWSECOMP_DENSE_BACKEND,
+            },
             "action_granularity": {
                 "variant": "one_action_v3",
                 "policy_actions_per_turn": 1,
@@ -463,7 +556,10 @@ class BrowseCompPlusFactory:
             "paper_evaluation": {
                 "id": "memoryarena_progressive_search_ps_sr_at_k_final_sr_v1",
                 "dataset_scope": "public221_of_paper256",
-                "available": self.contract_mode == "paper_eval",
+                "available": (
+                    self.contract_mode == "paper_eval"
+                    and self.search_backend == BROWSECOMP_DENSE_BACKEND
+                ),
                 "metrics": ["PS", "SR@k", "SR"],
                 "metric_scale": "unit_interval",
                 "paper_panel_complete": False,
@@ -490,13 +586,16 @@ class BrowseCompPlusDriver:
         judge: BrowseJudge,
         env_uid: str,
         contract: DomainContract,
+        surface: str,
+        search_backend: str,
     ) -> None:
         if contract_mode not in BROWSECOMP_CONTRACT_MODES:
             raise ValueError(f"unsupported BrowseComp contract mode: {contract_mode}")
         if not tasks:
             raise ValueError("BrowseCompPlusDriver requires tasks")
         self.contract_mode = contract_mode
-        self.surface = BROWSECOMP_SURFACES[contract_mode]
+        self.surface = surface
+        self.search_backend = search_backend
         self.contract = contract
         self.tasks = tuple(tasks)
         self.search_tool = search_tool
@@ -1033,6 +1132,8 @@ class BrowseCompPlusDriver:
         return {
             "query_id": self._require_task().query_id,
             "contract_mode": self.contract_mode,
+            "surface": self.surface,
+            "search_backend": self.search_backend,
             "retrieved_docids": list(self.retrieved_docids),
         }
 
@@ -1357,6 +1458,103 @@ def _build_upstream_search(
         return handler.execute_tool(tool_name, arguments)
 
     return execute
+
+
+def _build_upstream_bm25_search(
+    memoryarena_root: Path,
+    *,
+    index_path: Path,
+) -> tuple[BrowseSearch, dict[str, Any]]:
+    if not index_path.is_dir():
+        raise RuntimeError(
+            f"BrowseComp BM25 Lucene index directory does not exist: {index_path}"
+        )
+    if not any(index_path.glob("segments_*")):
+        raise RuntimeError(
+            f"BrowseComp BM25 Lucene index lacks a segments file: {index_path}"
+        )
+
+    search_agent_dir = memoryarena_root / "env/env_systems/web_search_env/search_agent"
+    for path in (memoryarena_root, search_agent_dir):
+        path_text = str(path)
+        if path_text not in sys.path:
+            sys.path.insert(0, path_text)
+    client_module = _import_upstream_search_client_without_api_key()
+    bm25_module = importlib.import_module(
+        "env.env_systems.web_search_env.searcher.searchers.bm25_searcher"
+    )
+    _require_module_under_root(client_module, memoryarena_root)
+    _require_module_under_root(bm25_module, memoryarena_root)
+
+    upstream_searcher = bm25_module.BM25Searcher(
+        SimpleNamespace(index_path=str(index_path))
+    )
+    document_count = getattr(upstream_searcher.searcher, "num_docs", None)
+    if callable(document_count):
+        document_count = document_count()
+    try:
+        document_count = int(document_count)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "BrowseComp BM25 searcher did not expose a valid document count"
+        ) from exc
+    if document_count != BROWSECOMP_FROZEN_DOCUMENT_COUNT:
+        raise RuntimeError(
+            "BrowseComp BM25 index document count differs from the frozen corpus: "
+            f"expected {BROWSECOMP_FROZEN_DOCUMENT_COUNT}, observed {document_count}"
+        )
+
+    class _SearchToolCompatibleBM25:
+        def search(self, query: str, k: int, allowed_docids=None):
+            if allowed_docids:
+                raise RuntimeError(
+                    "BrowseComp BM25 integration does not support docid filtering"
+                )
+            return upstream_searcher.search(query, k)
+
+        def get_document(self, docid: str):
+            return upstream_searcher.get_document(docid)
+
+        def search_description(self, k: int = 10) -> str:
+            return upstream_searcher.search_description(k)
+
+        def get_document_description(self) -> str:
+            return upstream_searcher.get_document_description()
+
+    handler = client_module.SearchToolHandler(
+        searcher=_SearchToolCompatibleBM25(),
+        snippet_max_tokens=None,
+        k=BROWSECOMP_FROZEN_SEARCH_K,
+        include_get_document=True,
+        allowed_docids=None,
+        step_memory_client=None,
+    )
+    handler.snippet_max_tokens = BROWSECOMP_FROZEN_SNIPPET_TOKENS
+    handler.tokenizer = _load_frozen_snippet_tokenizer()
+
+    def execute(tool_name: str, arguments: dict[str, Any]) -> str:
+        return handler.execute_tool(tool_name, arguments)
+
+    index_files = sorted(path for path in index_path.iterdir() if path.is_file())
+    commit_files = sorted(index_path.glob("segments_*")) + sorted(
+        index_path.glob("*.si")
+    )
+    public_config = {
+        "mode": "memoryarena_upstream_bm25_lucene_integration_assets",
+        "backend": BROWSECOMP_BM25_INTEGRATION_BACKEND,
+        "implementation": "memoryarena_upstream_pyserini_bm25_searcher",
+        "document_count": document_count,
+        "index_file_count": len(index_files),
+        "index_total_bytes": sum(path.stat().st_size for path in index_files),
+        "lucene_commit_files_sha256": {
+            path.name: _sha256_file(path) for path in commit_files
+        },
+        "integration_only": True,
+        "paper_eligible": False,
+        "dense_provenance_guard_changed": False,
+    }
+    public_config["config_sha256"] = _sha256_json(public_config)
+    return execute, public_config
 
 
 def _import_upstream_search_client_without_api_key():

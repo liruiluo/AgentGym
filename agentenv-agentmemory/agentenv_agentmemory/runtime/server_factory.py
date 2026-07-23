@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from ..domains import (
+    BROWSECOMP_BM25_INTEGRATION_SURFACE,
     BROWSECOMP_SURFACES,
     FORMAL_REASONING_PAPER_EVAL_SURFACES,
     FORMAL_REASONING_SURFACES_BY_MODE,
@@ -16,6 +17,8 @@ from ..domains import (
 )
 from ..env_wrapper import AgentMemoryWrapper, NATIVE_SURFACE
 from ..domains.browsecomp import (
+    BROWSECOMP_BM25_INTEGRATION_BACKEND,
+    BROWSECOMP_DENSE_BACKEND,
     BROWSECOMP_FROZEN_EMBEDDING_MODEL,
     BROWSECOMP_FROZEN_MEMORYARENA_COMMIT,
     BROWSECOMP_OPENROUTER_ENDPOINT,
@@ -97,6 +100,13 @@ def build_domain_registry() -> DomainRegistry:
                 contract_mode
             ),
         )
+    registry.register(
+        BROWSECOMP_BM25_INTEGRATION_SURFACE,
+        lambda: _build_browsecomp_factory(
+            "failfast",
+            search_backend=BROWSECOMP_BM25_INTEGRATION_BACKEND,
+        ),
+    )
     return registry
 
 
@@ -161,7 +171,47 @@ def _build_formal_reasoning_factory(
     )
 
 
-def _build_browsecomp_factory(contract_mode: str) -> BrowseCompPlusFactory:
+def _build_browsecomp_factory(
+    contract_mode: str,
+    *,
+    search_backend: str = BROWSECOMP_DENSE_BACKEND,
+) -> BrowseCompPlusFactory:
+    if search_backend == BROWSECOMP_BM25_INTEGRATION_BACKEND:
+        tasks_path = _required_file("AGENTMEMORY_BROWSECOMP_TASKS_PATH")
+        judge_model = _required_env("AGENTMEMORY_BROWSECOMP_JUDGE_MODEL")
+        base_commit = _required_env("MEMORYARENA_BASE_COMMIT")
+        if base_commit != BROWSECOMP_FROZEN_MEMORYARENA_COMMIT:
+            raise RuntimeError(
+                "MEMORYARENA_BASE_COMMIT must match the frozen Progressive Search "
+                f"commit {BROWSECOMP_FROZEN_MEMORYARENA_COMMIT}"
+            )
+        _required_env("OPENAI_API_KEY")
+        openai_base_url = _required_http_url("OPENAI_BASE_URL")
+        return BrowseCompPlusFactory(
+            contract_mode="failfast",
+            tasks_path=tasks_path,
+            dataset_provenance=attest_frozen_memoryarena_dataset(
+                tasks_path,
+                config="progressive_search",
+            ),
+            memoryarena_root=_required_directory("MEMORYARENA_ROOT"),
+            search_backend=BROWSECOMP_BM25_INTEGRATION_BACKEND,
+            bm25_index_path=_required_directory(
+                "MEMORYARENA_BROWSECOMP_BM25_INDEX_PATH"
+            ),
+            judge_config={
+                "backend": "openai_responses",
+                "model_name": judge_model,
+                "base_url": openai_base_url,
+                "max_tokens": _env_int(
+                    "AGENTMEMORY_BROWSECOMP_JUDGE_MAX_TOKENS",
+                    8000,
+                ),
+            },
+            expected_memoryarena_commit=BROWSECOMP_FROZEN_MEMORYARENA_COMMIT,
+        )
+    if search_backend != BROWSECOMP_DENSE_BACKEND:
+        raise RuntimeError(f"Unsupported BrowseComp search backend: {search_backend}")
     provider = _required_env("AGENTMEMORY_BROWSECOMP_EMBEDDING_PROVIDER")
     if provider not in {"openai", "openrouter"}:
         raise RuntimeError(

@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from agentenv_agentmemory.domains import (
+    BROWSECOMP_BM25_INTEGRATION_SURFACE,
     BROWSECOMP_SURFACES,
     FORMAL_REASONING_SURFACES_BY_MODE,
     TRAVEL_SURFACES,
@@ -337,6 +338,46 @@ class DomainLaunchTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 launch()
         uvicorn.run.assert_not_called()
+
+    def test_browsecomp_bm25_launch_does_not_bind_dense_inputs(self):
+        configured, _ = self._launch(
+            [
+                "--surface",
+                BROWSECOMP_BM25_INTEGRATION_SURFACE,
+                "--memoryarena-root",
+                "/memoryarena",
+                "--browsecomp-tasks-path",
+                "/data/progressive-search.jsonl",
+                "--browsecomp-bm25-index-path",
+                "/data/lucene-index",
+                "--browsecomp-judge-model",
+                "judge-model",
+                "--browsecomp-judge-max-tokens",
+                "1234",
+                "--browsecomp-api-base-url",
+                "https://api.example/v1",
+                "--memoryarena-base-commit",
+                "b" * 40,
+                "--run-id",
+                "browsecomp-bm25-test",
+            ]
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_SURFACE"],
+            BROWSECOMP_BM25_INTEGRATION_SURFACE,
+        )
+        self.assertEqual(
+            configured["MEMORYARENA_BROWSECOMP_BM25_INDEX_PATH"],
+            "/data/lucene-index",
+        )
+        for key in (
+            "MEMORYARENA_BROWSECOMP_INDEX_PATH",
+            "MEMORYARENA_BROWSECOMP_CORPUS_PATH",
+            "MEMORYARENA_BROWSECOMP_CORPUS_MANIFEST",
+            "AGENTMEMORY_BROWSECOMP_EMBEDDING_PROVIDER",
+            "AGENTMEMORY_BROWSECOMP_EMBEDDING_MODEL",
+        ):
+            self.assertNotIn(key, configured)
 
 
 if __name__ == "__main__":

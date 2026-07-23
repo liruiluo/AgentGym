@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agentenv_agentmemory.domains import (
+    BROWSECOMP_BM25_INTEGRATION_SURFACE,
     BROWSECOMP_SURFACES,
     FORMAL_REASONING_PAPER_EVAL_SURFACES,
     FORMAL_REASONING_SURFACES,
@@ -18,6 +19,7 @@ from agentenv_agentmemory.domains import (
 from agentenv_agentmemory.env_wrapper import NATIVE_SURFACE
 from agentenv_agentmemory.domains.formal_reasoning import FROZEN_MEMORYARENA_COMMIT
 from agentenv_agentmemory.domains.browsecomp import (
+    BROWSECOMP_BM25_INTEGRATION_BACKEND,
     BROWSECOMP_FROZEN_MEMORYARENA_COMMIT,
     BROWSECOMP_OPENROUTER_ENDPOINT,
 )
@@ -350,6 +352,65 @@ class DomainServerFactoryTest(unittest.TestCase):
             dataset_attester.assert_called_once_with(
                 paths["tasks"].resolve(),
                 config="progressive_search",
+            )
+
+    def test_browsecomp_bm25_surface_binds_only_lucene_backend_inputs(self):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            environment, paths = self._browsecomp_environment(root)
+            bm25_index = root / "lucene-index"
+            bm25_index.mkdir()
+            environment.update(
+                {
+                    "AGENTMEMORY_SURFACE": BROWSECOMP_BM25_INTEGRATION_SURFACE,
+                    "MEMORYARENA_BROWSECOMP_BM25_INDEX_PATH": str(bm25_index),
+                }
+            )
+            for key in (
+                "MEMORYARENA_BROWSECOMP_INDEX_PATH",
+                "MEMORYARENA_BROWSECOMP_CORPUS_PATH",
+                "MEMORYARENA_BROWSECOMP_CORPUS_MANIFEST",
+                "AGENTMEMORY_BROWSECOMP_EMBEDDING_PROVIDER",
+                "AGENTMEMORY_BROWSECOMP_EMBEDDING_MODEL",
+            ):
+                environment.pop(key, None)
+            factory = self._factory(BROWSECOMP_BM25_INTEGRATION_SURFACE)
+            sentinel = object()
+            dataset_provenance = object()
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch.object(
+                    server_factory,
+                    "attest_frozen_memoryarena_dataset",
+                    return_value=dataset_provenance,
+                ),
+                patch.object(
+                    server_factory,
+                    "BrowseCompPlusFactory",
+                    return_value=factory,
+                ) as factory_type,
+                patch.object(
+                    server_factory,
+                    "DomainEnvWrapper",
+                    return_value=sentinel,
+                ),
+            ):
+                self.assertIs(server_factory.build_server(), sentinel)
+
+            factory_type.assert_called_once_with(
+                contract_mode="failfast",
+                tasks_path=paths["tasks"].resolve(),
+                dataset_provenance=dataset_provenance,
+                memoryarena_root=paths["memoryarena"].resolve(),
+                search_backend=BROWSECOMP_BM25_INTEGRATION_BACKEND,
+                bm25_index_path=bm25_index.resolve(),
+                judge_config={
+                    "backend": "openai_responses",
+                    "model_name": "judge-model",
+                    "base_url": "https://api.example/v1",
+                    "max_tokens": 8000,
+                },
+                expected_memoryarena_commit=BROWSECOMP_FROZEN_MEMORYARENA_COMMIT,
             )
 
     def test_browsecomp_paper_eval_rejects_openrouter_before_asset_attestation(self):
