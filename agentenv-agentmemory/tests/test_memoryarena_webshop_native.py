@@ -208,6 +208,30 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
         self.assertEqual({item["step"] for item in components}, {step})
         self.assertAlmostEqual(sum(float(item["value"]) for item in components), reward)
 
+    def test_info_reports_phase_and_subtask_counts_across_lifecycle(self) -> None:
+        env, _ = self.make_env()
+
+        _, reset_info = env.reset()
+        self.assertEqual(reset_info["phase_count"], 6)
+        self.assertEqual(reset_info["subtask_count"], 6)
+        self.assertEqual(reset_info["current_subtask_index"], 0)
+        self.assertEqual(reset_info["progress_score"], 0.0)
+
+        _, _, done, _, progressed_info = purchase(env, TARGETS[0])
+        self.assertFalse(done)
+        self.assertEqual(progressed_info["phase_count"], 6)
+        self.assertEqual(progressed_info["subtask_count"], 6)
+        self.assertEqual(progressed_info["current_subtask_index"], 1)
+        self.assertAlmostEqual(progressed_info["progress_score"], 1 / 6)
+
+        for asin in TARGETS[1:]:
+            _, _, done, _, terminal_info = purchase(env, asin)
+        self.assertTrue(done)
+        self.assertEqual(terminal_info["phase_count"], 6)
+        self.assertEqual(terminal_info["subtask_count"], 6)
+        self.assertEqual(terminal_info["current_subtask_index"], 6)
+        self.assertEqual(terminal_info["progress_score"], 1.0)
+
     def test_native_search_and_nonpurchase_click_have_exact_zero_ledgers(self) -> None:
         env, _ = self.make_env()
 
@@ -361,31 +385,38 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
             step=12,
         )
 
-    def test_later_session_retrieve_bonus_supports_explicit_run_override(self) -> None:
-        env, _ = self.make_env(first_valid_later_session_retrieve_reward=0.1)
-
-        self.assertEqual(
-            env.reward_contract()["first_valid_later_session_retrieve_reward"],
-            0.1,
+    def test_memory_micro_rewards_support_explicit_run_overrides(self) -> None:
+        env, _ = self.make_env(
+            first_valid_add_reward=0.2,
+            first_valid_later_session_retrieve_reward=0.1,
         )
-        _, initial_info = env.reset()
+
+        _, reset_info = env.reset()
         self.assertEqual(
-            initial_info["reward_contract"][
+            reset_info["reward_contract"]["first_valid_add_reward"],
+            0.2,
+        )
+        self.assertEqual(
+            reset_info["reward_contract"][
                 "first_valid_later_session_retrieve_reward"
             ],
             0.1,
         )
+        _, add_reward, _, _, _ = env.step('ADD {"key":"prior","value":"item"}')
+        self.assertEqual(add_reward, 0.2)
 
         purchase(env, TARGETS[0])
-        _, reward, _, _, info = env.step('RETRIEVE {"query":"prior","top_k":3}')
+        _, retrieve_reward, _, _, info = env.step(
+            'RETRIEVE {"query":"prior","top_k":3}'
+        )
 
-        self.assertEqual(reward, 0.1)
+        self.assertEqual(retrieve_reward, 0.1)
         self.assert_reward_ledger(
-            reward=reward,
+            reward=retrieve_reward,
             info=info,
             op="RETRIEVE",
             names=["retrieve_transition", "memory_retrieve_first_valid_later_session"],
-            step=4,
+            step=5,
         )
         self.assertEqual(info["reward_components"][-1]["value"], 0.1)
 

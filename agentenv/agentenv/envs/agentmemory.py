@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from typing import Any, Mapping
@@ -142,6 +143,9 @@ MEMORY_ACTION_RE = re.compile(
     r"\A(" + "|".join(MEMORY_ACTION_NAMES) + r")\s+(\{.*\})\Z",
     flags=re.DOTALL,
 )
+FORMAL_SCHEMA_V3 = "agentmemory_formal_step_v3"
+WEBSHOP_V2_SURFACE = "memoryarena_webshop_native_v1"
+_SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
 # In thinking mode the model reasons inside a <think>...</think> block before the
 # action. Depending on where the opening tag was emitted -- inside the response,
@@ -149,6 +153,62 @@ MEMORY_ACTION_RE = re.compile(
 # "<think>reasoning</think>\naction" or "reasoning</think>\naction". Either way,
 # only the text after the final </think> is the action to execute.
 _THINK_CLOSE_RE = re.compile(r"</think\s*>", flags=re.IGNORECASE)
+
+
+def build_v3_conversation_start(
+    metadata: Mapping[str, Any],
+) -> tuple[ConversationMessage, ConversationMessage]:
+    system_prompt = _required_metadata_text(metadata, "system_prompt")
+    return (
+        ConversationMessage({"from": "human", "loss": None, "value": system_prompt}),
+        ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
+    )
+
+
+def _required_metadata_text(metadata: Mapping[str, Any], key: str) -> str:
+    value = metadata.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"AgentMemoryGym metadata requires non-empty {key}")
+    return value.strip()
+
+
+def _validate_v3_metadata(metadata: Mapping[str, Any]) -> None:
+    for key in (
+        "surface",
+        "domain_id",
+        "contract_id",
+        "contract_sha256",
+        "system_prompt_sha256",
+    ):
+        _required_metadata_text(metadata, key)
+    contract_sha256 = str(metadata["contract_sha256"])
+    if _SHA256_RE.fullmatch(contract_sha256) is None:
+        raise RuntimeError(
+            "AgentMemoryGym v3 metadata contract_sha256 must be lowercase SHA-256"
+        )
+    prompt_sha256 = str(metadata["system_prompt_sha256"])
+    if _SHA256_RE.fullmatch(prompt_sha256) is None:
+        raise RuntimeError(
+            "AgentMemoryGym v3 metadata system_prompt_sha256 must be lowercase SHA-256"
+        )
+    system_prompt = _required_metadata_text(metadata, "system_prompt")
+    observed_prompt_sha256 = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
+    if observed_prompt_sha256 != prompt_sha256:
+        raise RuntimeError(
+            "AgentMemoryGym v3 metadata system_prompt_sha256 does not match system_prompt"
+        )
+    native_actions = metadata.get("native_action_descriptions")
+    if not isinstance(native_actions, list) or not native_actions or any(
+        not isinstance(item, str) or not item.strip() for item in native_actions
+    ):
+        raise RuntimeError(
+            "AgentMemoryGym v3 metadata requires native_action_descriptions"
+        )
+    if any(item.strip() not in system_prompt for item in native_actions):
+        raise RuntimeError(
+            "AgentMemoryGym v3 system_prompt must contain every native action form"
+        )
+    build_v3_conversation_start(metadata)
 
 
 def strip_think_prefix(text: str) -> str:
@@ -278,6 +338,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
     adapter_cls = AgentMemoryAdapter
     requires_ephemeral_context = True
     rollout_context_policy = "latest_observation_only"
+    is_v3 = False
 
     def __init__(
         self,
@@ -291,10 +352,24 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self.env_server_base = env_server_base
         self.timeout = timeout
         self.metadata = self.get_metadata()
-        if self.metadata.get("surface") != "memoryarena_webshop_native_v1":
+        self.surface = _required_metadata_text(self.metadata, "surface")
+        self.formal_schema_version = self.metadata.get("formal_schema_version")
+        self.domain_id = self.metadata.get("domain_id")
+        self.system_prompt = self.metadata.get("system_prompt")
+        self.contract_id = self.metadata.get("contract_id")
+        self.contract_sha256 = self.metadata.get("contract_sha256")
+        self.system_prompt_sha256 = self.metadata.get("system_prompt_sha256")
+        self.is_v3 = self.formal_schema_version == FORMAL_SCHEMA_V3
+        if self.is_v3:
+            _validate_v3_metadata(self.metadata)
+            if self.action_format is not ActionFormat.REACT:
+                raise RuntimeError(
+                    "AgentMemoryGym v3 domains currently require action_format='react'"
+                )
+        elif self.surface != WEBSHOP_V2_SURFACE:
             raise RuntimeError(
-                "AgentMemoryGym client requires the original MemoryArena WebShop surface; "
-                f"observed {self.metadata.get('surface')!r}."
+                "AgentMemoryGym client received an unsupported legacy surface without "
+                f"the v3 schema: {self.surface!r}"
             )
         self.data_len = data_len if data_len is not None else int(self.metadata["task_count"])
         response = requests.post(f"{self.env_server_base}/create", timeout=self.timeout)
@@ -309,7 +384,11 @@ class AgentMemoryEnvClient(BaseEnvClient):
             "env_info": created.get("info", {}),
             "metadata": self.metadata,
         }
-        self.conversation_start = self.adapter_cls.conversation_start_dict[self.action_format]
+        self.conversation_start = (
+            build_v3_conversation_start(self.metadata)
+            if self.is_v3
+            else self.adapter_cls.conversation_start_dict[self.action_format]
+        )
 
     def __len__(self):
         return self.data_len
@@ -322,7 +401,10 @@ class AgentMemoryEnvClient(BaseEnvClient):
 
     def get_metadata(self) -> dict[str, Any]:
         response = requests.get(f"{self.env_server_base}/metadata", timeout=self.timeout)
-        assert response.status_code == 200
+        if response.status_code != 200:
+            raise requests.RequestException(
+                f"Failed to fetch AgentMemoryGym metadata: {response}"
+            )
         return response.json()
 
     def observe(self) -> str:
@@ -331,17 +413,21 @@ class AgentMemoryEnvClient(BaseEnvClient):
     def step(self, action: str) -> StepOutput:
         if action.endswith("</s>"):
             action = action[:-4]
-        try:
-            parsed_action = self.adapter_cls.action_parser(action, self.action_format)
-        except Exception:
-            # The environment owns step advancement, rejection rewards, and the
-            # formal reward ledger even when the adapter cannot parse the action.
+        if self.is_v3:
+            # V3 native grammars are domain-owned. Preserve the exact sampled text
+            # so the server records and judges the same action PPO generated.
             parsed_action = action
-        if not isinstance(parsed_action, str) or not parsed_action.strip():
-            # Some adapter paths report an unparseable action as an empty string
-            # instead of raising. Preserve the sampled action so the environment
-            # remains the authority for validity, reward, and formal evidence.
-            parsed_action = action
+        else:
+            try:
+                parsed_action = self.adapter_cls.action_parser(
+                    action,
+                    self.action_format,
+                )
+            except Exception:
+                # WebShop remains server-authoritative for invalid sampled text.
+                parsed_action = action
+            if not isinstance(parsed_action, str) or not parsed_action.strip():
+                parsed_action = action
         response = self.post("step", {"action": parsed_action})
         self.info = {
             "observation": response["observation"],

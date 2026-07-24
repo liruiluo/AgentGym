@@ -173,10 +173,13 @@ class AgentMemoryWrapper:
 
     def metadata(self) -> dict[str, Any]:
         provenance = self.dataset.provenance
+        dataset_provenance = provenance.as_manifest()
         return {
             "surface": NATIVE_SURFACE,
             "task_count": len(self.tasks),
             "splits": sorted({task.split for task in self.tasks}),
+            "dataset_sha256": provenance.raw_dataset_sha256,
+            "dataset_provenance": dataset_provenance,
             "raw_dataset_sha256": provenance.raw_dataset_sha256,
             "split_manifest_sha256": provenance.split_manifest_sha256,
             "memoryarena_commit": provenance.memoryarena_commit,
@@ -300,6 +303,3 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-server = AgentMemoryWrapper()

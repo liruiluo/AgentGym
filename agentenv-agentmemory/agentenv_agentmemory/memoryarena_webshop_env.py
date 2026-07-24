@@ -236,16 +236,20 @@ class MemoryArenaWebShopEnv:
 
     def build_info(self) -> dict[str, Any]:
         bundle = self._require_bundle()
+        phase_count = len(bundle.questions)
+        subtask_count = len(bundle.target_asins)
         return {
             "task_id": bundle.task_id,
             "task_family": "bundled_shopping",
             "split": bundle.split,
             "source": "memoryarena_original_webshop",
             "surface": self.surface,
-            "progress_score": self.current_session_index / 6.0,
+            "progress_score": self.current_session_index / float(phase_count),
             "episode_success": self.status == "success",
             "status": self.status,
             "current_subtask_index": self.current_session_index,
+            "phase_count": phase_count,
+            "subtask_count": subtask_count,
             "tool_ops": list(self.last_tool_ops),
             "reward_components": [dict(item) for item in self.last_reward_components],
             "memory_ops": [item for item in self.last_tool_ops if item.get("op") in MEMORY_TOOL_OPS],
