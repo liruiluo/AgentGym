@@ -75,6 +75,7 @@ class AgentMemoryWrapper:
             attributes_file=_required_path("MEMORYARENA_WEBSHOP_ATTR_FILE"),
             search_root=_required_path("MEMORYARENA_WEBSHOP_SEARCH_ROOT"),
             java_home=_required_path("MEMORYARENA_WEBSHOP_JAVA_HOME"),
+            expected_memoryarena_commit=_required_env("MEMORYARENA_BASE_COMMIT"),
             price_seed=_env_int("AGENTMEMORY_WEBSHOP_PRICE_SEED", 233),
         )
         self.dataset = load_memoryarena_dataset(

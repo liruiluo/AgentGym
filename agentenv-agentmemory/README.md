@@ -201,6 +201,14 @@ COMMON="--memoryarena-root /path/to/frozen/MemoryArena \
   --run-id <run-id>"
 ```
 
+The Web Shopping runtime additionally fails closed unless the imported
+MemoryArena WebShop source is pristine at that commit. Keep external task
+instructions and the AMG reward ledger in `agentenv-agentmemory`; do not patch
+the upstream `SimServer` constructor, reward function, Lucene import, or goal
+module in the frozen checkout. Generate each new annotation gate against the
+same pristine checkout. Run-specific launchers and gates from older experiments
+remain historical evidence and are not reusable with a different source tree.
+
 Travel Planner fail-fast training and paper evaluation:
 
 ```bash
