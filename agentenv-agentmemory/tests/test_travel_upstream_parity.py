@@ -22,6 +22,7 @@ from agentenv_agentmemory.domains.memoryarena_dataset import (
 
 MEMORYARENA_ROOT = os.environ.get("MEMORYARENA_ROOT")
 TRAVEL_DATABASE_PATH = os.environ.get("MEMORYARENA_TRAVEL_DATABASE_PATH")
+TRAVEL_TASKS_PATH = os.environ.get("MEMORYARENA_TRAVEL_TASKS_PATH")
 
 
 def _travel_row(task_id: int, *, second: bool = False) -> dict:
@@ -116,6 +117,9 @@ class TravelUpstreamParityTest(unittest.TestCase):
             sys.modules["datasets"] = datasets_stub
             cls._installed_datasets_stub = True
         cls.travel_module = importlib.import_module("env.env_systems.travel_env")
+        cls.data_loader_module = importlib.import_module(
+            "env.env_systems.travel_planner_env.data_loader"
+        )
         cls.executor_module = importlib.import_module(
             "env.env_systems.travel_planner_env.tool_executor"
         )
@@ -336,6 +340,15 @@ class TravelUpstreamParityTest(unittest.TestCase):
             first_answer["daily_plans"],
         ).replace("Current City: Dallas", "Current City: nowhere")
         exact_second_plan = _format_plan("Dana", second_answer["daily_plans"])
+        second_row = self.rows[1]
+        exact_third_plan = _format_plan(
+            "Noah",
+            second_row["answers"][0]["daily_plans"],
+        )
+        exact_fourth_plan = _format_plan(
+            "Mia",
+            second_row["answers"][1]["daily_plans"],
+        )
 
         self.driver.reset(0)
         online = self.driver.step(
@@ -357,6 +370,14 @@ class TravelUpstreamParityTest(unittest.TestCase):
                 (7, 2): self.factory.parse_submitted_plan(
                     exact_second_plan,
                     "Dana",
+                ),
+                (99, 1): self.factory.parse_submitted_plan(
+                    exact_third_plan,
+                    "Noah",
+                ),
+                (99, 2): self.factory.parse_submitted_plan(
+                    exact_fourth_plan,
+                    "Mia",
                 ),
             }
         )
@@ -406,11 +427,18 @@ class TravelUpstreamParityTest(unittest.TestCase):
         self.assertIsNone(ledger["group_constraint_rate"])
 
     @unittest.skipUnless(
-        os.environ.get("MEMORYARENA_FULL_TRAVEL_SMOKE") == "1",
-        "set MEMORYARENA_FULL_TRAVEL_SMOKE=1 for the 270-group replay",
+        os.environ.get("MEMORYARENA_FULL_TRAVEL_SMOKE") == "1"
+        and TRAVEL_TASKS_PATH,
+        "set MEMORYARENA_FULL_TRAVEL_SMOKE=1 and "
+        "MEMORYARENA_TRAVEL_TASKS_PATH for the 270-group replay",
     )
     def test_all_270_groups_match_native_oracle_replay(self):
-        rows = self.travel_module.load_travel_data()
+        tasks_source = Path(TRAVEL_TASKS_PATH).expanduser().resolve()
+        rows = [
+            self.data_loader_module._convert_row(json.loads(line))
+            for line in tasks_source.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
         self.assertEqual(len(rows), 270)
         tasks_path = Path(self.tempdir.name) / "all_travel.jsonl"
         tasks_path.write_text(
