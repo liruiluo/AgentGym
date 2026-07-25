@@ -384,6 +384,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
             "env_info": created.get("info", {}),
             "metadata": self.metadata,
         }
+        self.last_action_submission: dict[str, str] | None = None
         self.conversation_start = (
             build_v3_conversation_start(self.metadata)
             if self.is_v3
@@ -411,6 +412,8 @@ class AgentMemoryEnvClient(BaseEnvClient):
         return self.info["observation"]
 
     def step(self, action: str) -> StepOutput:
+        raw_policy_output = action
+        parser_status = "server_native_v3"
         if action.endswith("</s>"):
             action = action[:-4]
         if self.is_v3:
@@ -423,12 +426,20 @@ class AgentMemoryEnvClient(BaseEnvClient):
                     action,
                     self.action_format,
                 )
+                parser_status = "adapter_parsed"
             except Exception:
                 # WebShop remains server-authoritative for invalid sampled text.
                 parsed_action = action
+                parser_status = "raw_fallback"
             if not isinstance(parsed_action, str) or not parsed_action.strip():
                 parsed_action = action
+                parser_status = "raw_fallback"
         response = self.post("step", {"action": parsed_action})
+        self.last_action_submission = {
+            "raw_policy_output": raw_policy_output,
+            "submitted_action": parsed_action,
+            "parser_status": parser_status,
+        }
         self.info = {
             "observation": response["observation"],
             "reward": response["reward"],
@@ -448,6 +459,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
 
     def reset(self, idx: int = 0) -> dict[str, Any]:
         response = self.post("reset", {"data_idx": idx})
+        self.last_action_submission = None
         self.info = {
             "observation": response["observation"],
             "reward": response["reward"],
