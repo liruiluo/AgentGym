@@ -530,6 +530,100 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
         self.assertIn(authored, observation)
         self.assertEqual(info["memory_ops"][0]["retrieved_count"], 1)
 
+
+    def test_counterfactual_source_question_is_not_visible_after_session_advance(self) -> None:
+        source_only_markers = [
+            "SOURCE_SESSION_ONLY_VESA_400X400",
+            "SOURCE_SESSION_ONLY_MOUNT_B",
+            "SYNTHETIC_TARGET_SECRET",
+            TARGETS[0],
+        ]
+        later_question = (
+            "Question 2: buy a wall mount compatible with the previous TV. "
+            "This request intentionally does not restate the TV size, weight, or VESA."
+        )
+        questions = (
+            "Question 1: buy the TV with SOURCE_SESSION_ONLY_VESA_400X400; "
+            "the later compatible mount is SOURCE_SESSION_ONLY_MOUNT_B.",
+            later_question,
+            "Question 3: continue the bundle.",
+            "Question 4: continue the bundle.",
+            "Question 5: continue the bundle.",
+            "Question 6: continue the bundle.",
+        )
+        bundle = make_bundle()
+        bundle = MemoryArenaBundle(
+            task_id=bundle.task_id,
+            questions=questions,
+            target_asins=bundle.target_asins,
+            budget_cents=bundle.budget_cents,
+            split=bundle.split,
+            source_row_id=bundle.source_row_id,
+            provenance=bundle.provenance,
+            sessions=bundle.sessions,
+            category=bundle.category,
+            answer_attributes=bundle.answer_attributes,
+        )
+        env = MemoryArenaWebShopEnv(
+            bundles=[bundle],
+            backend=FakeNativeBackend(),
+            env_uid="counterfactual-leakage",
+        )
+        env.reset()
+
+        observation, reward, done, _, info = purchase(env, TARGETS[0])
+
+        self.assertEqual(reward, 1.0)
+        self.assertFalse(done)
+        self.assertEqual(info["current_subtask_index"], 1)
+        self.assertIn(later_question, observation)
+        for marker in source_only_markers:
+            self.assertNotIn(marker, observation)
+
+    def test_counterfactual_memory_is_causal_only_after_retrieve(self) -> None:
+        def advance_with_hidden_memory(memory_value: str):
+            env, _ = self.make_env()
+            add_observation, _, _, _, _ = env.step(
+                f'ADD {{"key":"prior_tv","value":"{memory_value}"}}'
+            )
+            self.assertIn(memory_value, add_observation)
+            observation, reward, done, _, info = purchase(env, TARGETS[0])
+            self.assertEqual(reward, 1.0)
+            self.assertFalse(done)
+            self.assertEqual(info["current_subtask_index"], 1)
+            return env, observation
+
+        env_a, no_retrieve_a = advance_with_hidden_memory(
+            "CAUSAL_MOUNT_A because prior TV is VESA_200X200"
+        )
+        env_b, no_retrieve_b = advance_with_hidden_memory(
+            "CAUSAL_MOUNT_B because prior TV is VESA_400X400"
+        )
+
+        self.assertEqual(no_retrieve_a, no_retrieve_b)
+        for observation in (no_retrieve_a, no_retrieve_b):
+            self.assertNotIn("CAUSAL_MOUNT_A", observation)
+            self.assertNotIn("CAUSAL_MOUNT_B", observation)
+            self.assertNotIn("VESA_200X200", observation)
+            self.assertNotIn("VESA_400X400", observation)
+            self.assertIn("Active retrieved/summary context:\n<empty>", observation)
+
+        retrieve_a, _, _, _, info_a = env_a.step(
+            'RETRIEVE {"query":"prior tv vesa mount","top_k":3}'
+        )
+        retrieve_b, _, _, _, info_b = env_b.step(
+            'RETRIEVE {"query":"prior tv vesa mount","top_k":3}'
+        )
+
+        self.assertEqual(info_a["memory_ops"][0]["retrieved_count"], 1)
+        self.assertEqual(info_b["memory_ops"][0]["retrieved_count"], 1)
+        self.assertIn("CAUSAL_MOUNT_A", retrieve_a)
+        self.assertIn("VESA_200X200", retrieve_a)
+        self.assertNotIn("CAUSAL_MOUNT_B", retrieve_a)
+        self.assertIn("CAUSAL_MOUNT_B", retrieve_b)
+        self.assertIn("VESA_400X400", retrieve_b)
+        self.assertNotIn("CAUSAL_MOUNT_A", retrieve_b)
+
     def test_full_six_purchase_chain_succeeds(self) -> None:
         env, backend = self.make_env()
         rewards = []
