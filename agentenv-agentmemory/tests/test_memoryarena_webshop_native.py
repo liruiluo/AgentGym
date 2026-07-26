@@ -179,6 +179,7 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
         first_valid_add_reward: float = FIRST_VALID_ADD_BONUS,
         first_valid_later_session_retrieve_reward: float = FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
         ltm_inventory_mode: str = "hidden",
+        ltm_transition_notice_mode: str = "none",
     ):
         backend = backend or FakeNativeBackend()
         env = MemoryArenaWebShopEnv(
@@ -190,6 +191,7 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
                 first_valid_later_session_retrieve_reward
             ),
             ltm_inventory_mode=ltm_inventory_mode,
+            ltm_transition_notice_mode=ltm_transition_notice_mode,
         )
         env.reset()
         return env, backend
@@ -563,6 +565,37 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
         self.assertIn(authored_value, observation)
         self.assertEqual(info["memory_ops"][0]["retrieved_memory_ids"], ["mem_0000"])
 
+    def test_transition_notice_reports_state_only_on_first_later_session_turn(self) -> None:
+        authored_value = "Alpha 7 secret compatibility value"
+        env, _ = self.make_env(
+            ltm_inventory_mode="keys",
+            ltm_transition_notice_mode="state",
+        )
+        env.step(
+            f'ADD {{"key":"product_1","value":"{authored_value}"}}'
+        )
+
+        observation, _, done, _, info = purchase(env, TARGETS[0])
+
+        self.assertFalse(done)
+        self.assertIn("Session transition state:", observation)
+        self.assertIn("1 long-term memory entry remains stored", observation)
+        self.assertIn("Its value is hidden until RETRIEVE", observation)
+        self.assertNotIn(authored_value, observation)
+        self.assertEqual(info["ltm_transition_notice_mode"], "state")
+
+        observation, _, _, _, _ = env.step("search[item]")
+        self.assertNotIn("Session transition state:", observation)
+
+    def test_transition_notice_is_opt_in(self) -> None:
+        env, _ = self.make_env(ltm_inventory_mode="keys")
+        env.step('ADD {"key":"product_1","value":"Alpha 7 facts"}')
+
+        observation, _, _, _, info = purchase(env, TARGETS[0])
+
+        self.assertNotIn("Session transition state:", observation)
+        self.assertEqual(info["ltm_transition_notice_mode"], "none")
+
     def test_key_inventory_rejects_scratchpad_keys(self) -> None:
         env, _ = self.make_env(ltm_inventory_mode="keys")
 
@@ -621,6 +654,10 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
     def test_rejects_unknown_ltm_inventory_mode(self) -> None:
         with self.assertRaisesRegex(ValueError, "ltm_inventory_mode"):
             self.make_env(ltm_inventory_mode="values")
+
+    def test_rejects_unknown_ltm_transition_notice_mode(self) -> None:
+        with self.assertRaisesRegex(ValueError, "ltm_transition_notice_mode"):
+            self.make_env(ltm_transition_notice_mode="instruction")
 
     def test_full_six_purchase_chain_succeeds(self) -> None:
         env, backend = self.make_env()

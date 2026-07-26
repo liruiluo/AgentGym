@@ -16,7 +16,10 @@ from .reward_hierarchy import (
     FIRST_VALID_ADD_BONUS,
     FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
 )
-from .memoryarena_webshop_env import LTM_INVENTORY_MODES
+from .memoryarena_webshop_env import (
+    LTM_INVENTORY_MODES,
+    LTM_TRANSITION_NOTICE_MODES,
+)
 
 
 NATIVE_SURFACE = "memoryarena_webshop_native_v1"
@@ -102,6 +105,11 @@ def launch() -> None:
         choices=LTM_INVENTORY_MODES,
         default="hidden",
     )
+    parser.add_argument(
+        "--ltm-transition-notice-mode",
+        choices=LTM_TRANSITION_NOTICE_MODES,
+        default="none",
+    )
     args = parser.parse_args()
 
     configured = {
@@ -157,6 +165,9 @@ def launch() -> None:
                     else args.memory_first_later_retrieve_reward
                 ),
                 "AGENTMEMORY_LTM_INVENTORY_MODE": args.ltm_inventory_mode,
+                "AGENTMEMORY_LTM_TRANSITION_NOTICE_MODE": (
+                    args.ltm_transition_notice_mode
+                ),
             }
         )
     elif args.surface in TRAVEL_SURFACES.values():

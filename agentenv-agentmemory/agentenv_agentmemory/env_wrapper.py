@@ -21,6 +21,7 @@ from .memoryarena_dataset import (
 from .memoryarena_webshop_env import (
     LTM_INVENTORY_KEY_MAX_CHARS,
     LTM_INVENTORY_MODES,
+    LTM_TRANSITION_NOTICE_MODES,
     MemoryArenaWebShopEnv,
 )
 from .native_webshop_backend import MemoryArenaNativeWebShopBackend
@@ -69,6 +70,11 @@ class AgentMemoryWrapper:
             "AGENTMEMORY_LTM_INVENTORY_MODE",
             default="hidden",
             choices=LTM_INVENTORY_MODES,
+        )
+        self.ltm_transition_notice_mode = _env_choice(
+            "AGENTMEMORY_LTM_TRANSITION_NOTICE_MODE",
+            default="none",
+            choices=LTM_TRANSITION_NOTICE_MODES,
         )
 
         domain_data_path = _required_path("MEMORYARENA_WEBSHOP_DOMAIN_DATA_PATH")
@@ -121,6 +127,7 @@ class AgentMemoryWrapper:
                     ]
                 ),
                 ltm_inventory_mode=self.ltm_inventory_mode,
+                ltm_transition_notice_mode=self.ltm_transition_notice_mode,
             )
             observation, info = env.reset(data_idx=env_id)
             payload = {
@@ -201,6 +208,7 @@ class AgentMemoryWrapper:
             "annotation_gate_allowed_task_count": len(self.annotation_gate.allowed_task_ids),
             "reward_contract": dict(self.reward_contract),
             "ltm_inventory_mode": self.ltm_inventory_mode,
+            "ltm_transition_notice_mode": self.ltm_transition_notice_mode,
             "ltm_inventory_key_max_chars": LTM_INVENTORY_KEY_MAX_CHARS,
             "ltm_inventory_key_format": "ascii_identifier",
             "backend": self.backend.metadata(),

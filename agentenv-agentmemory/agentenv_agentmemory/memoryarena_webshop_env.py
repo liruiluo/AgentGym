@@ -22,6 +22,7 @@ from .reward_hierarchy import (
 
 MEMORY_TOOL_OPS = {"ADD", "UPDATE", "DELETE", "RETRIEVE", "SUMMARY", "FILTER"}
 LTM_INVENTORY_MODES = ("hidden", "keys")
+LTM_TRANSITION_NOTICE_MODES = ("none", "state")
 LTM_INVENTORY_KEY_MAX_CHARS = 24
 LTM_INVENTORY_KEY_RE = re.compile(
     rf"\A[A-Za-z0-9](?:[A-Za-z0-9 _-]{{0,{LTM_INVENTORY_KEY_MAX_CHARS - 2}}}"
@@ -64,6 +65,7 @@ class MemoryArenaWebShopEnv:
         first_valid_add_reward: float = FIRST_VALID_ADD_BONUS,
         first_valid_later_session_retrieve_reward: float = FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
         ltm_inventory_mode: str = "hidden",
+        ltm_transition_notice_mode: str = "none",
     ) -> None:
         if not bundles:
             raise ValueError("MemoryArenaWebShopEnv requires at least one bundle.")
@@ -72,10 +74,16 @@ class MemoryArenaWebShopEnv:
                 "ltm_inventory_mode must be one of: "
                 + ", ".join(LTM_INVENTORY_MODES)
             )
+        if ltm_transition_notice_mode not in LTM_TRANSITION_NOTICE_MODES:
+            raise ValueError(
+                "ltm_transition_notice_mode must be one of: "
+                + ", ".join(LTM_TRANSITION_NOTICE_MODES)
+            )
         self.bundles = tuple(bundles)
         self.backend = backend
         self.env_uid = env_uid or uuid.uuid4().hex[:12]
         self.ltm_inventory_mode = ltm_inventory_mode
+        self.ltm_transition_notice_mode = ltm_transition_notice_mode
         self._reward_contract = build_memoryarena_reward_contract(
             first_valid_add_reward=first_valid_add_reward,
             first_valid_later_session_retrieve_reward=(
@@ -231,6 +239,7 @@ class MemoryArenaWebShopEnv:
         sections.extend(
             [
                 f"Task family: bundled_shopping\nProgress: {self.current_session_index}/6",
+                self._render_transition_notice(),
                 page.observation.strip(),
                 _render_native_actions(page),
                 _render_context(self.active_context, self.session_trace),
@@ -268,6 +277,7 @@ class MemoryArenaWebShopEnv:
             "reward_components": [dict(item) for item in self.last_reward_components],
             "memory_ops": [item for item in self.last_tool_ops if item.get("op") in MEMORY_TOOL_OPS],
             "ltm_inventory_mode": self.ltm_inventory_mode,
+            "ltm_transition_notice_mode": self.ltm_transition_notice_mode,
             "ltm_inventory_count": len(self.long_term_memory),
             "ltm_inventory_key_max_chars": LTM_INVENTORY_KEY_MAX_CHARS,
             "ltm_inventory_key_format": "ascii_identifier",
@@ -296,6 +306,28 @@ class MemoryArenaWebShopEnv:
         if not self.long_term_memory:
             lines.append("<empty>")
         return "\n".join(lines)
+
+    def _render_transition_notice(self) -> str:
+        if (
+            self.ltm_transition_notice_mode != "state"
+            or self.current_session_index == 0
+            or self.session_trace
+            or not self.long_term_memory
+        ):
+            return ""
+        count = len(self.long_term_memory)
+        noun = "entry" if count == 1 else "entries"
+        verb = "remains" if count == 1 else "remain"
+        pronoun = "Its value is" if count == 1 else "Their values are"
+        return "\n".join(
+            [
+                "Session transition state:",
+                "- A purchase advanced the task to a new shopping session.",
+                "- Page state and short-term S*/C* context were cleared.",
+                f"- {count} long-term memory {noun} {verb} stored. "
+                f"{pronoun} hidden until RETRIEVE.",
+            ]
+        )
 
     def _step_native(self, parsed: ParsedAction) -> tuple[str, float, bool]:
         if self.native_session_token is None:
