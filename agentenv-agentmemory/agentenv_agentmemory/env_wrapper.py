@@ -18,7 +18,11 @@ from .memoryarena_dataset import (
     MemoryArenaDataset,
     load_memoryarena_dataset,
 )
-from .memoryarena_webshop_env import LTM_INVENTORY_MODES, MemoryArenaWebShopEnv
+from .memoryarena_webshop_env import (
+    LTM_INVENTORY_KEY_MAX_CHARS,
+    LTM_INVENTORY_MODES,
+    MemoryArenaWebShopEnv,
+)
 from .native_webshop_backend import MemoryArenaNativeWebShopBackend
 from .reward_hierarchy import (
     FIRST_VALID_ADD_BONUS,
@@ -197,6 +201,8 @@ class AgentMemoryWrapper:
             "annotation_gate_allowed_task_count": len(self.annotation_gate.allowed_task_ids),
             "reward_contract": dict(self.reward_contract),
             "ltm_inventory_mode": self.ltm_inventory_mode,
+            "ltm_inventory_key_max_chars": LTM_INVENTORY_KEY_MAX_CHARS,
+            "ltm_inventory_key_format": "ascii_identifier",
             "backend": self.backend.metadata(),
         }
 

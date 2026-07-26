@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from agentenv_agentmemory.memoryarena_dataset import (
@@ -561,6 +562,51 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
         )
         self.assertIn(authored_value, observation)
         self.assertEqual(info["memory_ops"][0]["retrieved_memory_ids"], ["mem_0000"])
+
+    def test_key_inventory_rejects_scratchpad_keys(self) -> None:
+        env, _ = self.make_env(ltm_inventory_mode="keys")
+
+        for key in (
+            "contains/slash",
+            "line1\nline2",
+            "x" * 25,
+            " leading",
+            "trailing ",
+        ):
+            with self.subTest(key=key):
+                action = f'ADD {json.dumps({"key": key, "value": "facts live here"})}'
+                observation, reward, done, _, info = env.step(action)
+                self.assertIn("Invalid action", observation)
+                self.assertLess(reward, 0.0)
+                self.assertFalse(done)
+                self.assertEqual(info["ltm_inventory_count"], 0)
+
+    def test_key_inventory_supports_complete_linked_memory_chain(self) -> None:
+        env, _ = self.make_env(ltm_inventory_mode="keys")
+
+        _, add_reward, _, _, add_info = env.step(
+            'ADD {"key":"product_1","value":"Alpha 7 compatibility facts"}'
+        )
+        source_memory_id = add_info["memory_ops"][0]["memory_id"]
+        _, first_buy_reward, first_done, _, first_buy_info = purchase(env, TARGETS[0])
+        retrieve_observation, retrieve_reward, _, _, retrieve_info = env.step(
+            'RETRIEVE {"query":"product_1","top_k":3}'
+        )
+        _, second_buy_reward, second_done, _, second_buy_info = purchase(env, TARGETS[1])
+
+        self.assertEqual(add_reward, FIRST_VALID_ADD_BONUS)
+        self.assertEqual(first_buy_reward, 1.0)
+        self.assertFalse(first_done)
+        self.assertTrue(first_buy_info["purchase_history"][0]["purchase_correct"])
+        self.assertEqual(retrieve_reward, FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS)
+        self.assertIn("Alpha 7 compatibility facts", retrieve_observation)
+        self.assertEqual(
+            retrieve_info["memory_ops"][0]["retrieved_memory_ids"],
+            [source_memory_id],
+        )
+        self.assertEqual(second_buy_reward, 1.0)
+        self.assertFalse(second_done)
+        self.assertEqual(second_buy_info["current_subtask_index"], 2)
 
     def test_key_inventory_does_not_gate_correct_purchase_on_memory_actions(self) -> None:
         env, _ = self.make_env(ltm_inventory_mode="keys")

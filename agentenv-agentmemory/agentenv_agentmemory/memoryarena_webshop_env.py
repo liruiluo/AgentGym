@@ -22,6 +22,11 @@ from .reward_hierarchy import (
 
 MEMORY_TOOL_OPS = {"ADD", "UPDATE", "DELETE", "RETRIEVE", "SUMMARY", "FILTER"}
 LTM_INVENTORY_MODES = ("hidden", "keys")
+LTM_INVENTORY_KEY_MAX_CHARS = 24
+LTM_INVENTORY_KEY_RE = re.compile(
+    rf"\A[A-Za-z0-9](?:[A-Za-z0-9 _-]{{0,{LTM_INVENTORY_KEY_MAX_CHARS - 2}}}"
+    r"[A-Za-z0-9])?\Z"
+)
 NATIVE_ACTION_RE = re.compile(r"\A(search|click)\[([^\[\]\r\n]+)\]\Z")
 MEMORY_ACTION_RE = re.compile(r"\A(ADD|UPDATE|DELETE|RETRIEVE|SUMMARY|FILTER)\s+(\{.*\})\Z", re.DOTALL)
 
@@ -264,6 +269,8 @@ class MemoryArenaWebShopEnv:
             "memory_ops": [item for item in self.last_tool_ops if item.get("op") in MEMORY_TOOL_OPS],
             "ltm_inventory_mode": self.ltm_inventory_mode,
             "ltm_inventory_count": len(self.long_term_memory),
+            "ltm_inventory_key_max_chars": LTM_INVENTORY_KEY_MAX_CHARS,
+            "ltm_inventory_key_format": "ascii_identifier",
             "memory_state_diff": self.last_memory_diff,
             "purchase_history": list(self.purchase_ledger),
             "session_trace": list(self.session_trace),
@@ -278,7 +285,9 @@ class MemoryArenaWebShopEnv:
         if self.ltm_inventory_mode == "hidden":
             return ""
         lines = [
-            "Long-term memory inventory (keys only); values remain hidden until RETRIEVE:"
+            "Long-term memory inventory (keys only); values remain hidden until RETRIEVE. "
+            f"Keys are lookup labels of at most {LTM_INVENTORY_KEY_MAX_CHARS} ASCII "
+            "letters, digits, spaces, underscores, or hyphens; memory facts belong in values:"
         ]
         lines.extend(
             f"- [{entry.memory_id}] {entry.key}"
@@ -436,7 +445,7 @@ class MemoryArenaWebShopEnv:
 
     def _memory_add(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         _require_exact_fields(payload, required={"key", "value"})
-        key = _require_text(payload, "key")
+        key = self._require_memory_key(payload)
         value = _require_text(payload, "value")
         memory_id = f"mem_{self.memory_id_counter:04d}"
         self.memory_id_counter += 1
@@ -450,7 +459,7 @@ class MemoryArenaWebShopEnv:
         entry = self._require_memory(_require_text(payload, "memory_id"))
         before = _memory_dict(entry)
         if "key" in payload:
-            entry.key = _require_text(payload, "key")
+            entry.key = self._require_memory_key(payload)
         entry.value = _require_text(payload, "value")
         entry.updated_step = self.step_count
         self.last_memory_diff["updated"].append({"before": before, "after": _memory_dict(entry)})
@@ -557,6 +566,18 @@ class MemoryArenaWebShopEnv:
             return self.long_term_memory[memory_id]
         except KeyError as exc:
             raise InvalidNativeAction(f"Unknown memory_id {memory_id!r}.") from exc
+
+    def _require_memory_key(self, payload: dict[str, Any]) -> str:
+        key = _require_text(payload, "key")
+        if self.ltm_inventory_mode == "keys" and LTM_INVENTORY_KEY_RE.fullmatch(key) is None:
+            raise InvalidNativeAction(
+                "In key-inventory mode, field 'key' must be a single ASCII lookup label "
+                f"of at most {LTM_INVENTORY_KEY_MAX_CHARS} characters using only letters, "
+                "digits, spaces, underscores, or hyphens, with no leading or trailing "
+                "separator. Store "
+                "memory facts in 'value'."
+            )
+        return key
 
     def _append_trace(self, action: str, result: str) -> None:
         self.session_trace.append(f"Action: {action}\nResult: {result}")
