@@ -21,6 +21,7 @@ from .reward_hierarchy import (
 
 
 MEMORY_TOOL_OPS = {"ADD", "UPDATE", "DELETE", "RETRIEVE", "SUMMARY", "FILTER"}
+LTM_INVENTORY_MODES = ("hidden", "keys")
 NATIVE_ACTION_RE = re.compile(r"\A(search|click)\[([^\[\]\r\n]+)\]\Z")
 MEMORY_ACTION_RE = re.compile(r"\A(ADD|UPDATE|DELETE|RETRIEVE|SUMMARY|FILTER)\s+(\{.*\})\Z", re.DOTALL)
 
@@ -57,12 +58,19 @@ class MemoryArenaWebShopEnv:
         env_uid: str | None = None,
         first_valid_add_reward: float = FIRST_VALID_ADD_BONUS,
         first_valid_later_session_retrieve_reward: float = FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
+        ltm_inventory_mode: str = "hidden",
     ) -> None:
         if not bundles:
             raise ValueError("MemoryArenaWebShopEnv requires at least one bundle.")
+        if ltm_inventory_mode not in LTM_INVENTORY_MODES:
+            raise ValueError(
+                "ltm_inventory_mode must be one of: "
+                + ", ".join(LTM_INVENTORY_MODES)
+            )
         self.bundles = tuple(bundles)
         self.backend = backend
         self.env_uid = env_uid or uuid.uuid4().hex[:12]
+        self.ltm_inventory_mode = ltm_inventory_mode
         self._reward_contract = build_memoryarena_reward_contract(
             first_valid_add_reward=first_valid_add_reward,
             first_valid_later_session_retrieve_reward=(
@@ -221,6 +229,7 @@ class MemoryArenaWebShopEnv:
                 page.observation.strip(),
                 _render_native_actions(page),
                 _render_context(self.active_context, self.session_trace),
+                self._render_ltm_inventory(),
                 _memory_action_contract(),
             ]
         )
@@ -253,6 +262,8 @@ class MemoryArenaWebShopEnv:
             "tool_ops": list(self.last_tool_ops),
             "reward_components": [dict(item) for item in self.last_reward_components],
             "memory_ops": [item for item in self.last_tool_ops if item.get("op") in MEMORY_TOOL_OPS],
+            "ltm_inventory_mode": self.ltm_inventory_mode,
+            "ltm_inventory_count": len(self.long_term_memory),
             "memory_state_diff": self.last_memory_diff,
             "purchase_history": list(self.purchase_ledger),
             "session_trace": list(self.session_trace),
@@ -262,6 +273,20 @@ class MemoryArenaWebShopEnv:
 
     def reward_contract(self) -> dict[str, Any]:
         return dict(self._reward_contract)
+
+    def _render_ltm_inventory(self) -> str:
+        if self.ltm_inventory_mode == "hidden":
+            return ""
+        lines = [
+            "Long-term memory inventory (keys only); values remain hidden until RETRIEVE:"
+        ]
+        lines.extend(
+            f"- [{entry.memory_id}] {entry.key}"
+            for entry in self.long_term_memory.values()
+        )
+        if not self.long_term_memory:
+            lines.append("<empty>")
+        return "\n".join(lines)
 
     def _step_native(self, parsed: ParsedAction) -> tuple[str, float, bool]:
         if self.native_session_token is None:

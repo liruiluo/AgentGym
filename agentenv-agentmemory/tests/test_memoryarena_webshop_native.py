@@ -177,6 +177,7 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
         budget_cents: int = 10_000,
         first_valid_add_reward: float = FIRST_VALID_ADD_BONUS,
         first_valid_later_session_retrieve_reward: float = FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
+        ltm_inventory_mode: str = "hidden",
     ):
         backend = backend or FakeNativeBackend()
         env = MemoryArenaWebShopEnv(
@@ -187,6 +188,7 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
             first_valid_later_session_retrieve_reward=(
                 first_valid_later_session_retrieve_reward
             ),
+            ltm_inventory_mode=ltm_inventory_mode,
         )
         env.reset()
         return env, backend
@@ -529,6 +531,50 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
         self.assertFalse(done)
         self.assertIn(authored, observation)
         self.assertEqual(info["memory_ops"][0]["retrieved_count"], 1)
+
+    def test_key_inventory_is_opt_in_and_never_exposes_memory_values(self) -> None:
+        hidden_env, _ = self.make_env()
+        hidden_observation, _ = hidden_env.reset()
+        self.assertNotIn("Long-term memory inventory", hidden_observation)
+
+        env, _ = self.make_env(ltm_inventory_mode="keys")
+        initial_observation, initial_info = env.reset()
+        self.assertIn("Long-term memory inventory (keys only)", initial_observation)
+        self.assertIn("<empty>", initial_observation)
+        self.assertEqual(initial_info["ltm_inventory_mode"], "keys")
+        self.assertEqual(initial_info["ltm_inventory_count"], 0)
+
+        authored_key = "prior-product-1"
+        authored_value = "Alpha 7 secret compatibility value"
+        env.step(
+            f'ADD {{"key":"{authored_key}","value":"{authored_value}"}}'
+        )
+        observation, _, done, _, info = purchase(env, TARGETS[0])
+
+        self.assertFalse(done)
+        self.assertIn(f"[mem_0000] {authored_key}", observation)
+        self.assertNotIn(authored_value, observation)
+        self.assertEqual(info["ltm_inventory_count"], 1)
+
+        observation, _, _, _, info = env.step(
+            f'RETRIEVE {{"query":"{authored_key}","top_k":3}}'
+        )
+        self.assertIn(authored_value, observation)
+        self.assertEqual(info["memory_ops"][0]["retrieved_memory_ids"], ["mem_0000"])
+
+    def test_key_inventory_does_not_gate_correct_purchase_on_memory_actions(self) -> None:
+        env, _ = self.make_env(ltm_inventory_mode="keys")
+
+        _, reward, done, _, info = purchase(env, TARGETS[0])
+
+        self.assertEqual(reward, 1.0)
+        self.assertFalse(done)
+        self.assertTrue(info["purchase_history"][0]["purchase_correct"])
+        self.assertEqual(info["current_subtask_index"], 1)
+
+    def test_rejects_unknown_ltm_inventory_mode(self) -> None:
+        with self.assertRaisesRegex(ValueError, "ltm_inventory_mode"):
+            self.make_env(ltm_inventory_mode="values")
 
     def test_full_six_purchase_chain_succeeds(self) -> None:
         env, backend = self.make_env()

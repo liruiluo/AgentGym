@@ -16,6 +16,7 @@ from .reward_hierarchy import (
     FIRST_VALID_ADD_BONUS,
     FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
 )
+from .memoryarena_webshop_env import LTM_INVENTORY_MODES
 
 
 NATIVE_SURFACE = "memoryarena_webshop_native_v1"
@@ -96,6 +97,11 @@ def launch() -> None:
     parser.add_argument("--memory-first-later-retrieve-reward", type=float)
     parser.add_argument("--memory-exact-repeat-reward", type=float, default=0.0)
     parser.add_argument("--invalid-action-reward", type=float, default=0.0)
+    parser.add_argument(
+        "--ltm-inventory-mode",
+        choices=LTM_INVENTORY_MODES,
+        default="hidden",
+    )
     args = parser.parse_args()
 
     configured = {
@@ -150,6 +156,7 @@ def launch() -> None:
                     if args.memory_first_later_retrieve_reward is None
                     else args.memory_first_later_retrieve_reward
                 ),
+                "AGENTMEMORY_LTM_INVENTORY_MODE": args.ltm_inventory_mode,
             }
         )
     elif args.surface in TRAVEL_SURFACES.values():

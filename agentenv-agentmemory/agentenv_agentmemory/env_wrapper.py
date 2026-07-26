@@ -18,7 +18,7 @@ from .memoryarena_dataset import (
     MemoryArenaDataset,
     load_memoryarena_dataset,
 )
-from .memoryarena_webshop_env import MemoryArenaWebShopEnv
+from .memoryarena_webshop_env import LTM_INVENTORY_MODES, MemoryArenaWebShopEnv
 from .native_webshop_backend import MemoryArenaNativeWebShopBackend
 from .reward_hierarchy import (
     FIRST_VALID_ADD_BONUS,
@@ -60,6 +60,11 @@ class AgentMemoryWrapper:
                 "AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD",
                 FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
             ),
+        )
+        self.ltm_inventory_mode = _env_choice(
+            "AGENTMEMORY_LTM_INVENTORY_MODE",
+            default="hidden",
+            choices=LTM_INVENTORY_MODES,
         )
 
         domain_data_path = _required_path("MEMORYARENA_WEBSHOP_DOMAIN_DATA_PATH")
@@ -111,6 +116,7 @@ class AgentMemoryWrapper:
                         "first_valid_later_session_retrieve_reward"
                     ]
                 ),
+                ltm_inventory_mode=self.ltm_inventory_mode,
             )
             observation, info = env.reset(data_idx=env_id)
             payload = {
@@ -190,6 +196,7 @@ class AgentMemoryWrapper:
             "annotation_gate_allowed_task_ids_sha256": self.annotation_gate.allowed_task_ids_sha256,
             "annotation_gate_allowed_task_count": len(self.annotation_gate.allowed_task_ids),
             "reward_contract": dict(self.reward_contract),
+            "ltm_inventory_mode": self.ltm_inventory_mode,
             "backend": self.backend.metadata(),
         }
 
@@ -296,6 +303,13 @@ def _env_nonnegative_float(key: str, default: float) -> float:
     if not math.isfinite(parsed) or parsed < 0.0:
         raise RuntimeError(f"{key} must be a finite, non-negative number.")
     return parsed
+
+
+def _env_choice(key: str, *, default: str, choices: tuple[str, ...]) -> str:
+    value = os.environ.get(key, default)
+    if value not in choices:
+        raise RuntimeError(f"{key} must be one of: {', '.join(choices)}.")
+    return value
 
 
 def _sha256_file(path: Path) -> str:

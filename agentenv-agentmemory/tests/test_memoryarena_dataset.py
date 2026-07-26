@@ -179,6 +179,7 @@ class MemoryArenaDatasetTests(unittest.TestCase):
             allowed_task_ids=("a", "b", "c"),
         )
         wrapper.reward_contract = {"contract": "fixture"}
+        wrapper.ltm_inventory_mode = "hidden"
         wrapper.backend = SimpleNamespace(metadata=lambda: {"backend": "fixture"})
 
         metadata = wrapper.metadata()
