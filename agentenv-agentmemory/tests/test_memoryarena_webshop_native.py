@@ -180,6 +180,7 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
         first_valid_later_session_retrieve_reward: float = FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
         ltm_inventory_mode: str = "hidden",
         ltm_transition_notice_mode: str = "none",
+        action_listing_mode: str = "separate",
     ):
         backend = backend or FakeNativeBackend()
         env = MemoryArenaWebShopEnv(
@@ -192,6 +193,7 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
             ),
             ltm_inventory_mode=ltm_inventory_mode,
             ltm_transition_notice_mode=ltm_transition_notice_mode,
+            action_listing_mode=action_listing_mode,
         )
         env.reset()
         return env, backend
@@ -565,6 +567,84 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
         self.assertIn(authored_value, observation)
         self.assertEqual(info["memory_ops"][0]["retrieved_memory_ids"], ["mem_0000"])
 
+    def test_unified_action_listing_keeps_native_and_memory_actions_together(self) -> None:
+        env, _ = self.make_env(action_listing_mode="unified")
+        observation = env.render_observation()
+
+        self.assertEqual(observation.count("Action formats:"), 1)
+        self.assertNotIn("Native WebShop actions currently available:", observation)
+        self.assertNotIn("Memory actions:", observation)
+        action_block = observation.split("Action formats:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("- search[keywords]", action_block)
+        self.assertIn('- ADD {"key": "...", "value": "..."}', action_block)
+        self.assertIn('- RETRIEVE {"query": "...", "top_k": 3}', action_block)
+        self.assertEqual(env.build_info()["action_listing_mode"], "unified")
+
+    def test_unified_action_listing_tracks_dynamic_native_clicks(self) -> None:
+        env, _ = self.make_env(action_listing_mode="unified")
+
+        search_observation, _, _, _, _ = env.step("search[item]")
+        search_actions = search_observation.split("Action formats:\n", 1)[1].split(
+            "\n\n", 1
+        )[0]
+        self.assertIn(f"- click[{TARGETS[0]}]", search_actions)
+        self.assertIn('- RETRIEVE {"query": "...", "top_k": 3}', search_actions)
+
+        product_observation, _, _, _, _ = env.step(f"click[{TARGETS[0]}]")
+        product_actions = product_observation.split("Action formats:\n", 1)[1].split(
+            "\n\n", 1
+        )[0]
+        self.assertIn("- click[Buy Now]", product_actions)
+        self.assertNotIn("- search[keywords]", product_actions)
+        self.assertIn('- ADD {"key": "...", "value": "..."}', product_actions)
+
+    def test_unified_listing_preserves_linked_memory_chain_semantics(self) -> None:
+        separate, _ = self.make_env(
+            ltm_inventory_mode="keys",
+            action_listing_mode="separate",
+        )
+        unified, _ = self.make_env(
+            ltm_inventory_mode="keys",
+            action_listing_mode="unified",
+        )
+        actions = (
+            'ADD {"key":"product_1","value":"Alpha 7 compatibility facts"}',
+            "search[item]",
+            f"click[{TARGETS[0]}]",
+            "click[Buy Now]",
+            'RETRIEVE {"query":"product_1","top_k":3}',
+            "search[item]",
+            f"click[{TARGETS[1]}]",
+            "click[Buy Now]",
+        )
+
+        rewards = []
+        for action in actions:
+            separate_result = separate.step(action)
+            unified_result = unified.step(action)
+            rewards.append(unified_result[1])
+            self.assertEqual(separate_result[1:4], unified_result[1:4])
+            separate_info = dict(separate_result[4])
+            unified_info = dict(unified_result[4])
+            separate_info.pop("action_listing_mode")
+            unified_info.pop("action_listing_mode")
+            self.assertEqual(separate_info, unified_info)
+
+        self.assertEqual(
+            rewards,
+            [
+                FIRST_VALID_ADD_BONUS,
+                0.0,
+                0.0,
+                1.0,
+                FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
+                0.0,
+                0.0,
+                1.0,
+            ],
+        )
+        self.assertEqual(unified.build_info()["current_subtask_index"], 2)
+
     def test_transition_notice_reports_state_only_on_first_later_session_turn(self) -> None:
         authored_value = "Alpha 7 secret compatibility value"
         env, _ = self.make_env(
@@ -658,6 +738,10 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
     def test_rejects_unknown_ltm_transition_notice_mode(self) -> None:
         with self.assertRaisesRegex(ValueError, "ltm_transition_notice_mode"):
             self.make_env(ltm_transition_notice_mode="instruction")
+
+    def test_rejects_unknown_action_listing_mode(self) -> None:
+        with self.assertRaisesRegex(ValueError, "action_listing_mode"):
+            self.make_env(action_listing_mode="ranked")
 
     def test_full_six_purchase_chain_succeeds(self) -> None:
         env, backend = self.make_env()

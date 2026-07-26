@@ -219,6 +219,48 @@ class DomainLaunchTest(unittest.TestCase):
 
         self.assertEqual(configured["AGENTMEMORY_MEMORY_PROMPT_MODE"], "neutral")
 
+    def test_legacy_webshop_action_listing_defaults_to_separate_and_allows_unified(self):
+        values = {
+            "raw-data": "/data/raw.jsonl",
+            "items-file": "/data/items.json",
+            "attributes-file": "/data/attrs.json",
+            "search-root": "/data/search",
+            "java-home": "/java",
+            "domain-data-path": "/data/domain.json",
+            "lucene-index-manifest": "/data/lucene.sha256",
+            "annotation-audit-summary": "/audit/summary.json",
+            "annotation-audit-chains": "/audit/chains.jsonl",
+            "annotation-manual-evidence": "/audit/manual.json",
+            "annotation-gate-manifest": "/manifest/gate.json",
+            "annotation-gate-manifest-sha256": "b" * 64,
+        }
+        arguments = [
+            "--surface",
+            NATIVE_SURFACE,
+            "--memoryarena-root",
+            "/memoryarena",
+            "--memoryarena-base-commit",
+            "a" * 40,
+            "--run-id",
+            "webshop-unified-actions-test",
+        ]
+        for key, value in values.items():
+            arguments.extend([f"--{key}", value])
+
+        default_configured, _ = self._launch(arguments)
+        unified_configured, _ = self._launch(
+            [*arguments, "--action-listing-mode", "unified"]
+        )
+
+        self.assertEqual(
+            default_configured["AGENTMEMORY_ACTION_LISTING_MODE"],
+            "separate",
+        )
+        self.assertEqual(
+            unified_configured["AGENTMEMORY_ACTION_LISTING_MODE"],
+            "unified",
+        )
+
     def test_legacy_webshop_reward_flags_bind_canonical_environment_names(self):
         values = {
             "raw-data": "/data/raw.jsonl",

@@ -23,6 +23,7 @@ from .reward_hierarchy import (
 MEMORY_TOOL_OPS = {"ADD", "UPDATE", "DELETE", "RETRIEVE", "SUMMARY", "FILTER"}
 LTM_INVENTORY_MODES = ("hidden", "keys")
 LTM_TRANSITION_NOTICE_MODES = ("none", "state")
+ACTION_LISTING_MODES = ("separate", "unified")
 LTM_INVENTORY_KEY_MAX_CHARS = 24
 LTM_INVENTORY_KEY_RE = re.compile(
     rf"\A[A-Za-z0-9](?:[A-Za-z0-9 _-]{{0,{LTM_INVENTORY_KEY_MAX_CHARS - 2}}}"
@@ -66,6 +67,7 @@ class MemoryArenaWebShopEnv:
         first_valid_later_session_retrieve_reward: float = FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
         ltm_inventory_mode: str = "hidden",
         ltm_transition_notice_mode: str = "none",
+        action_listing_mode: str = "separate",
     ) -> None:
         if not bundles:
             raise ValueError("MemoryArenaWebShopEnv requires at least one bundle.")
@@ -79,11 +81,17 @@ class MemoryArenaWebShopEnv:
                 "ltm_transition_notice_mode must be one of: "
                 + ", ".join(LTM_TRANSITION_NOTICE_MODES)
             )
+        if action_listing_mode not in ACTION_LISTING_MODES:
+            raise ValueError(
+                "action_listing_mode must be one of: "
+                + ", ".join(ACTION_LISTING_MODES)
+            )
         self.bundles = tuple(bundles)
         self.backend = backend
         self.env_uid = env_uid or uuid.uuid4().hex[:12]
         self.ltm_inventory_mode = ltm_inventory_mode
         self.ltm_transition_notice_mode = ltm_transition_notice_mode
+        self.action_listing_mode = action_listing_mode
         self._reward_contract = build_memoryarena_reward_contract(
             first_valid_add_reward=first_valid_add_reward,
             first_valid_later_session_retrieve_reward=(
@@ -236,15 +244,21 @@ class MemoryArenaWebShopEnv:
         sections: list[str] = []
         if prefix:
             sections.append(prefix.strip())
+        if self.action_listing_mode == "unified":
+            native_actions = _render_unified_actions(page)
+            memory_actions = ""
+        else:
+            native_actions = _render_native_actions(page)
+            memory_actions = _memory_action_contract()
         sections.extend(
             [
                 f"Task family: bundled_shopping\nProgress: {self.current_session_index}/6",
                 self._render_transition_notice(),
                 page.observation.strip(),
-                _render_native_actions(page),
+                native_actions,
                 _render_context(self.active_context, self.session_trace),
                 self._render_ltm_inventory(),
-                _memory_action_contract(),
+                memory_actions,
             ]
         )
         return "\n\n".join(section for section in sections if section)
@@ -278,6 +292,7 @@ class MemoryArenaWebShopEnv:
             "memory_ops": [item for item in self.last_tool_ops if item.get("op") in MEMORY_TOOL_OPS],
             "ltm_inventory_mode": self.ltm_inventory_mode,
             "ltm_transition_notice_mode": self.ltm_transition_notice_mode,
+            "action_listing_mode": self.action_listing_mode,
             "ltm_inventory_count": len(self.long_term_memory),
             "ltm_inventory_key_max_chars": LTM_INVENTORY_KEY_MAX_CHARS,
             "ltm_inventory_key_format": "ascii_identifier",
@@ -674,6 +689,15 @@ def _render_native_actions(page: NativePage) -> str:
     return "\n".join(lines)
 
 
+def _render_unified_actions(page: NativePage) -> str:
+    lines = ["Action formats:"]
+    if page.has_search_bar:
+        lines.append("- search[keywords]")
+    lines.extend(f"- click[{value}]" for value in page.clickables)
+    lines.extend(f"- {action}" for action in _memory_action_examples())
+    return "\n".join(lines)
+
+
 def _render_context(active: Sequence[str], trace: Sequence[str]) -> str:
     lines = ["Current-session trace:"]
     lines.extend(f"- S{index}: {item}" for index, item in enumerate(trace))
@@ -687,17 +711,18 @@ def _render_context(active: Sequence[str], trace: Sequence[str]) -> str:
 
 
 def _memory_action_contract() -> str:
-    return "\n".join(
-        [
-            "Memory actions:",
-            'ADD {"key": "...", "value": "..."}',
-            'UPDATE {"memory_id": "mem_0000", "value": "..."}',
-            'DELETE {"memory_id": "mem_0000"}',
-            'RETRIEVE {"query": "...", "top_k": 3}',
-            'SUMMARY {"text": "...", "source_ids": ["S0", "C0"]}',
-            'FILTER {"keep_ids": ["C0"], "scope": "active"}',
-        ]
-    )
+    return "\n".join(["Memory actions:", *_memory_action_examples()])
+
+
+def _memory_action_examples() -> list[str]:
+    return [
+        'ADD {"key": "...", "value": "..."}',
+        'UPDATE {"memory_id": "mem_0000", "value": "..."}',
+        'DELETE {"memory_id": "mem_0000"}',
+        'RETRIEVE {"query": "...", "top_k": 3}',
+        'SUMMARY {"text": "...", "source_ids": ["S0", "C0"]}',
+        'FILTER {"keep_ids": ["C0"], "scope": "active"}',
+    ]
 
 
 def _require_exact_fields(

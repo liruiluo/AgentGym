@@ -17,6 +17,7 @@ from .reward_hierarchy import (
     FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
 )
 from .memoryarena_webshop_env import (
+    ACTION_LISTING_MODES,
     LTM_INVENTORY_MODES,
     LTM_TRANSITION_NOTICE_MODES,
 )
@@ -116,6 +117,11 @@ def launch() -> None:
         choices=MEMORY_PROMPT_MODES,
         default="legacy",
     )
+    parser.add_argument(
+        "--action-listing-mode",
+        choices=ACTION_LISTING_MODES,
+        default="separate",
+    )
     args = parser.parse_args()
 
     configured = {
@@ -175,6 +181,7 @@ def launch() -> None:
                     args.ltm_transition_notice_mode
                 ),
                 "AGENTMEMORY_MEMORY_PROMPT_MODE": args.memory_prompt_mode,
+                "AGENTMEMORY_ACTION_LISTING_MODE": args.action_listing_mode,
             }
         )
     elif args.surface in TRAVEL_SURFACES.values():

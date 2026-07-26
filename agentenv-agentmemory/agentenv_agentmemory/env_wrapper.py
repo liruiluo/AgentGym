@@ -19,6 +19,7 @@ from .memoryarena_dataset import (
     load_memoryarena_dataset,
 )
 from .memoryarena_webshop_env import (
+    ACTION_LISTING_MODES,
     LTM_INVENTORY_KEY_MAX_CHARS,
     LTM_INVENTORY_MODES,
     LTM_TRANSITION_NOTICE_MODES,
@@ -77,6 +78,11 @@ class AgentMemoryWrapper:
             default="none",
             choices=LTM_TRANSITION_NOTICE_MODES,
         )
+        self.action_listing_mode = _env_choice(
+            "AGENTMEMORY_ACTION_LISTING_MODE",
+            default="separate",
+            choices=ACTION_LISTING_MODES,
+        )
         self.memory_prompt_mode = _env_choice(
             "AGENTMEMORY_MEMORY_PROMPT_MODE",
             default="legacy",
@@ -134,6 +140,7 @@ class AgentMemoryWrapper:
                 ),
                 ltm_inventory_mode=self.ltm_inventory_mode,
                 ltm_transition_notice_mode=self.ltm_transition_notice_mode,
+                action_listing_mode=self.action_listing_mode,
             )
             observation, info = env.reset(data_idx=env_id)
             payload = {
@@ -215,6 +222,7 @@ class AgentMemoryWrapper:
             "reward_contract": dict(self.reward_contract),
             "ltm_inventory_mode": self.ltm_inventory_mode,
             "ltm_transition_notice_mode": self.ltm_transition_notice_mode,
+            "action_listing_mode": self.action_listing_mode,
             "memory_prompt_mode": self.memory_prompt_mode,
             "ltm_inventory_key_max_chars": LTM_INVENTORY_KEY_MAX_CHARS,
             "ltm_inventory_key_format": "ascii_identifier",
