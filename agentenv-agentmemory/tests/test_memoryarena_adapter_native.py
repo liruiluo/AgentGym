@@ -130,6 +130,28 @@ class NativeAgentMemoryAdapterTests(unittest.TestCase):
             self.assertNotIn("at the start of every later", prompt.lower())
             self.assertNotIn("before committing the selected product", prompt.lower())
 
+        for action_format in ActionFormat:
+            neutral = AgentMemoryAdapter.conversation_start_for_mode(
+                action_format,
+                "neutral",
+            )[0]["value"]
+            neutral_horizon = AgentMemoryAdapter.conversation_start_for_mode(
+                action_format,
+                "neutral_horizon",
+            )[0]["value"]
+            self.assertEqual(
+                neutral_horizon,
+                neutral
+                + " This episode has six sequential shopping sessions. "
+                "Later-session compatibility constraints may refer to products "
+                "purchased in earlier sessions.",
+            )
+            self.assertNotIn("use ADD before click[Buy Now]", neutral_horizon)
+            self.assertNotIn(
+                "At the start of every later shopping session",
+                neutral_horizon,
+            )
+
         with self.assertRaisesRegex(ValueError, "memory_prompt_mode"):
             AgentMemoryAdapter.conversation_start_for_mode(
                 ActionFormat.REACT,

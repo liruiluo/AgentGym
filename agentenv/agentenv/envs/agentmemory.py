@@ -145,7 +145,11 @@ MEMORY_ACTION_RE = re.compile(
 )
 FORMAL_SCHEMA_V3 = "agentmemory_formal_step_v3"
 WEBSHOP_V2_SURFACE = "memoryarena_webshop_native_v1"
-MEMORY_PROMPT_MODES = ("legacy", "neutral")
+MEMORY_PROMPT_MODES = ("legacy", "neutral", "neutral_horizon")
+NEUTRAL_HORIZON_CONTEXT = (
+    "This episode has six sequential shopping sessions. Later-session compatibility "
+    "constraints may refer to products purchased in earlier sessions."
+)
 _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
 # In thinking mode the model reasons inside a <think>...</think> block before the
@@ -294,6 +298,19 @@ class AgentMemoryAdapter(BaseAdapter):
             ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
         ),
     }
+    neutral_horizon_conversation_start_dict = {
+        action_format: (
+            ConversationMessage(
+                {
+                    "from": "human",
+                    "loss": None,
+                    "value": prompt[0]["value"] + " " + NEUTRAL_HORIZON_CONTEXT,
+                }
+            ),
+            prompt[1],
+        )
+        for action_format, prompt in neutral_conversation_start_dict.items()
+    }
 
     @classmethod
     def conversation_start_for_mode(
@@ -303,13 +320,15 @@ class AgentMemoryAdapter(BaseAdapter):
     ) -> tuple[ConversationMessage, ConversationMessage]:
         if memory_prompt_mode not in MEMORY_PROMPT_MODES:
             raise ValueError(
-                "memory_prompt_mode must be 'legacy' or 'neutral'."
+                "memory_prompt_mode must be 'legacy', 'neutral', or "
+                "'neutral_horizon'."
             )
-        prompts = (
-            cls.neutral_conversation_start_dict
-            if memory_prompt_mode == "neutral"
-            else cls.conversation_start_dict
-        )
+        if memory_prompt_mode == "neutral_horizon":
+            prompts = cls.neutral_horizon_conversation_start_dict
+        elif memory_prompt_mode == "neutral":
+            prompts = cls.neutral_conversation_start_dict
+        else:
+            prompts = cls.conversation_start_dict
         return prompts[action_format]
 
     @staticmethod
