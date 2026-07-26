@@ -33,6 +33,7 @@ from .reward_hierarchy import (
 
 
 NATIVE_SURFACE = "memoryarena_webshop_native_v1"
+MEMORY_PROMPT_MODES = ("legacy", "neutral")
 FORBIDDEN_SURROGATE_ENV = {
     "AGENTMEMORY_CATALOG_INDEX_PATH",
     "AGENTMEMORY_SEARCH_TIMEOUT_MS",
@@ -75,6 +76,11 @@ class AgentMemoryWrapper:
             "AGENTMEMORY_LTM_TRANSITION_NOTICE_MODE",
             default="none",
             choices=LTM_TRANSITION_NOTICE_MODES,
+        )
+        self.memory_prompt_mode = _env_choice(
+            "AGENTMEMORY_MEMORY_PROMPT_MODE",
+            default="legacy",
+            choices=MEMORY_PROMPT_MODES,
         )
 
         domain_data_path = _required_path("MEMORYARENA_WEBSHOP_DOMAIN_DATA_PATH")
@@ -209,6 +215,7 @@ class AgentMemoryWrapper:
             "reward_contract": dict(self.reward_contract),
             "ltm_inventory_mode": self.ltm_inventory_mode,
             "ltm_transition_notice_mode": self.ltm_transition_notice_mode,
+            "memory_prompt_mode": self.memory_prompt_mode,
             "ltm_inventory_key_max_chars": LTM_INVENTORY_KEY_MAX_CHARS,
             "ltm_inventory_key_format": "ascii_identifier",
             "backend": self.backend.metadata(),

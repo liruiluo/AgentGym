@@ -147,6 +147,7 @@ class DomainLaunchTest(unittest.TestCase):
             str(FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS),
         )
         self.assertEqual(configured["AGENTMEMORY_LTM_INVENTORY_MODE"], "hidden")
+        self.assertEqual(configured["AGENTMEMORY_MEMORY_PROMPT_MODE"], "legacy")
         self.assertNotIn("AGENTMEMORY_FIRST_ADD_REWARD", configured)
         self.assertNotIn("AGENTMEMORY_TRAVEL_TASKS_PATH", configured)
 
@@ -183,6 +184,40 @@ class DomainLaunchTest(unittest.TestCase):
         configured, _ = self._launch(arguments)
 
         self.assertEqual(configured["AGENTMEMORY_LTM_INVENTORY_MODE"], "keys")
+
+    def test_legacy_webshop_neutral_prompt_requires_explicit_flag(self):
+        values = {
+            "raw-data": "/data/raw.jsonl",
+            "items-file": "/data/items.json",
+            "attributes-file": "/data/attrs.json",
+            "search-root": "/data/search",
+            "java-home": "/java",
+            "domain-data-path": "/data/domain.json",
+            "lucene-index-manifest": "/data/lucene.sha256",
+            "annotation-audit-summary": "/audit/summary.json",
+            "annotation-audit-chains": "/audit/chains.jsonl",
+            "annotation-manual-evidence": "/audit/manual.json",
+            "annotation-gate-manifest": "/manifest/gate.json",
+            "annotation-gate-manifest-sha256": "b" * 64,
+        }
+        arguments = [
+            "--surface",
+            NATIVE_SURFACE,
+            "--memoryarena-root",
+            "/memoryarena",
+            "--memoryarena-base-commit",
+            "a" * 40,
+            "--run-id",
+            "webshop-neutral-prompt-test",
+            "--memory-prompt-mode",
+            "neutral",
+        ]
+        for key, value in values.items():
+            arguments.extend([f"--{key}", value])
+
+        configured, _ = self._launch(arguments)
+
+        self.assertEqual(configured["AGENTMEMORY_MEMORY_PROMPT_MODE"], "neutral")
 
     def test_legacy_webshop_reward_flags_bind_canonical_environment_names(self):
         values = {

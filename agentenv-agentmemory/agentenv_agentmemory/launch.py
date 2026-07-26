@@ -20,6 +20,7 @@ from .memoryarena_webshop_env import (
     LTM_INVENTORY_MODES,
     LTM_TRANSITION_NOTICE_MODES,
 )
+from .env_wrapper import MEMORY_PROMPT_MODES
 
 
 NATIVE_SURFACE = "memoryarena_webshop_native_v1"
@@ -110,6 +111,11 @@ def launch() -> None:
         choices=LTM_TRANSITION_NOTICE_MODES,
         default="none",
     )
+    parser.add_argument(
+        "--memory-prompt-mode",
+        choices=MEMORY_PROMPT_MODES,
+        default="legacy",
+    )
     args = parser.parse_args()
 
     configured = {
@@ -168,6 +174,7 @@ def launch() -> None:
                 "AGENTMEMORY_LTM_TRANSITION_NOTICE_MODE": (
                     args.ltm_transition_notice_mode
                 ),
+                "AGENTMEMORY_MEMORY_PROMPT_MODE": args.memory_prompt_mode,
             }
         )
     elif args.surface in TRAVEL_SURFACES.values():

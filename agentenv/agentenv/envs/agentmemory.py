@@ -145,6 +145,7 @@ MEMORY_ACTION_RE = re.compile(
 )
 FORMAL_SCHEMA_V3 = "agentmemory_formal_step_v3"
 WEBSHOP_V2_SURFACE = "memoryarena_webshop_native_v1"
+MEMORY_PROMPT_MODES = ("legacy", "neutral")
 _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
 # In thinking mode the model reasons inside a <think>...</think> block before the
@@ -259,6 +260,57 @@ class AgentMemoryAdapter(BaseAdapter):
             ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
         ),
     }
+    neutral_conversation_start_dict = {
+        ActionFormat.REACT: (
+            ConversationMessage(
+                {
+                    "from": "human",
+                    "loss": None,
+                    "value": "You are operating in AgentMemoryGym on the original MemoryArena WebShop surface. Native shopping actions are search[keywords] and click[current clickable value]; click[Buy Now] commits the current product. ADD stores the provided key/value verbatim in hidden long-term memory. RETRIEVE matches its query against text previously stored with ADD and exposes matches as C* context. SUMMARY and FILTER operate only on visible S*/C* items. A committed purchase that advances the session clears the native page state and S*/C* context; long-term memory remains hidden until RETRIEVE. A purchase that fails verification ends the episode without revealing the verifier reason. Reply in exactly this format:\n\nThought:\nbrief reasoning\n\nAction:\n<exactly one native bracket action or uppercase memory-tool JSON action>",
+                }
+            ),
+            ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
+        ),
+        ActionFormat.FUNCTION_CALLING: (
+            ConversationMessage(
+                {
+                    "from": "human",
+                    "loss": None,
+                    "value": "You are operating in AgentMemoryGym on the original MemoryArena WebShop surface. Long-term memory persists across shopping sessions and is hidden unless retrieve exposes it. The available functions define the browser and memory interfaces. Invoke exactly one available function.\n\n"
+                    + format_function_call_prompt(AGENTMEMORY_FUNCTION_DESCRIPTION),
+                }
+            ),
+            ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
+        ),
+        ActionFormat.CODE_AS_ACTION: (
+            ConversationMessage(
+                {
+                    "from": "human",
+                    "loss": None,
+                    "value": "You are operating in AgentMemoryGym on the original MemoryArena WebShop surface. Long-term memory persists across shopping sessions and is hidden unless retrieve exposes it. The available functions define the browser and memory interfaces. Write Python code to call exactly one available function.\n\n"
+                    + format_code_as_action_prompt(AGENTMEMORY_FUNCTION_DESCRIPTION),
+                }
+            ),
+            ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
+        ),
+    }
+
+    @classmethod
+    def conversation_start_for_mode(
+        cls,
+        action_format: ActionFormat,
+        memory_prompt_mode: str,
+    ) -> tuple[ConversationMessage, ConversationMessage]:
+        if memory_prompt_mode not in MEMORY_PROMPT_MODES:
+            raise ValueError(
+                "memory_prompt_mode must be 'legacy' or 'neutral'."
+            )
+        prompts = (
+            cls.neutral_conversation_start_dict
+            if memory_prompt_mode == "neutral"
+            else cls.conversation_start_dict
+        )
+        return prompts[action_format]
 
     @staticmethod
     def parse_react(text: str) -> ActionWithTought:
@@ -359,6 +411,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self.contract_id = self.metadata.get("contract_id")
         self.contract_sha256 = self.metadata.get("contract_sha256")
         self.system_prompt_sha256 = self.metadata.get("system_prompt_sha256")
+        self.memory_prompt_mode: str | None = None
         self.is_v3 = self.formal_schema_version == FORMAL_SCHEMA_V3
         if self.is_v3:
             _validate_v3_metadata(self.metadata)
@@ -371,6 +424,14 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 "AgentMemoryGym client received an unsupported legacy surface without "
                 f"the v3 schema: {self.surface!r}"
             )
+        else:
+            memory_prompt_mode = self.metadata.get("memory_prompt_mode", "legacy")
+            if memory_prompt_mode not in MEMORY_PROMPT_MODES:
+                raise RuntimeError(
+                    "AgentMemoryGym WebShop metadata has unsupported "
+                    f"memory_prompt_mode: {memory_prompt_mode!r}"
+                )
+            self.memory_prompt_mode = memory_prompt_mode
         self.data_len = data_len if data_len is not None else int(self.metadata["task_count"])
         response = requests.post(f"{self.env_server_base}/create", timeout=self.timeout)
         if response.status_code != 200:
@@ -388,7 +449,10 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self.conversation_start = (
             build_v3_conversation_start(self.metadata)
             if self.is_v3
-            else self.adapter_cls.conversation_start_dict[self.action_format]
+            else self.adapter_cls.conversation_start_for_mode(
+                self.action_format,
+                self.memory_prompt_mode,
+            )
         )
 
     def __len__(self):
