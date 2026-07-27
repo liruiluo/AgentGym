@@ -152,6 +152,24 @@ class NativeAgentMemoryAdapterTests(unittest.TestCase):
                 neutral_horizon,
             )
 
+            responsibility = AgentMemoryAdapter.conversation_start_for_mode(
+                action_format,
+                "neutral_horizon_responsibility",
+            )[0]["value"]
+            responsibility_sentence = (
+                "Across shopping sessions, you are responsible for preserving and "
+                "accessing any facts needed for later decisions."
+            )
+            self.assertEqual(
+                responsibility,
+                neutral_horizon + " " + responsibility_sentence,
+            )
+            self.assertNotIn("use ADD before click[Buy Now]", responsibility)
+            self.assertNotIn(
+                "At the start of every later shopping session",
+                responsibility,
+            )
+
         with self.assertRaisesRegex(ValueError, "memory_prompt_mode"):
             AgentMemoryAdapter.conversation_start_for_mode(
                 ActionFormat.REACT,

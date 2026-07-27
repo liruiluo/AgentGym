@@ -34,7 +34,12 @@ from .reward_hierarchy import (
 
 
 NATIVE_SURFACE = "memoryarena_webshop_native_v1"
-MEMORY_PROMPT_MODES = ("legacy", "neutral", "neutral_horizon")
+MEMORY_PROMPT_MODES = (
+    "legacy",
+    "neutral",
+    "neutral_horizon",
+    "neutral_horizon_responsibility",
+)
 FORBIDDEN_SURROGATE_ENV = {
     "AGENTMEMORY_CATALOG_INDEX_PATH",
     "AGENTMEMORY_SEARCH_TIMEOUT_MS",

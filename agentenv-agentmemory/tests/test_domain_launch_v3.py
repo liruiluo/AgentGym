@@ -256,6 +256,43 @@ class DomainLaunchTest(unittest.TestCase):
             "neutral_horizon",
         )
 
+    def test_webshop_neutral_horizon_responsibility_prompt_is_explicit(self):
+        values = {
+            "raw-data": "/data/raw.jsonl",
+            "items-file": "/data/items.json",
+            "attributes-file": "/data/attrs.json",
+            "search-root": "/data/search",
+            "java-home": "/java",
+            "domain-data-path": "/data/domain.json",
+            "lucene-index-manifest": "/data/lucene.sha256",
+            "annotation-audit-summary": "/audit/summary.json",
+            "annotation-audit-chains": "/audit/chains.jsonl",
+            "annotation-manual-evidence": "/audit/manual.json",
+            "annotation-gate-manifest": "/manifest/gate.json",
+            "annotation-gate-manifest-sha256": "b" * 64,
+        }
+        arguments = [
+            "--surface",
+            NATIVE_SURFACE,
+            "--memoryarena-root",
+            "/memoryarena",
+            "--memoryarena-base-commit",
+            "a" * 40,
+            "--run-id",
+            "webshop-neutral-horizon-responsibility-prompt-test",
+            "--memory-prompt-mode",
+            "neutral_horizon_responsibility",
+        ]
+        for key, value in values.items():
+            arguments.extend([f"--{key}", value])
+
+        configured, _ = self._launch(arguments)
+
+        self.assertEqual(
+            configured["AGENTMEMORY_MEMORY_PROMPT_MODE"],
+            "neutral_horizon_responsibility",
+        )
+
     def test_legacy_webshop_action_listing_defaults_to_separate_and_allows_unified(self):
         values = {
             "raw-data": "/data/raw.jsonl",
