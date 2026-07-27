@@ -100,7 +100,7 @@ class NativeAgentMemoryAdapterTests(unittest.TestCase):
         self.assertIn("no key, schema, or memory content is prescribed", prompt)
         self.assertIn("no query is prescribed", prompt)
         self.assertIn("Wait for the ADD result", prompt)
-        self.assertIn("wait for the returned C* context", prompt)
+        self.assertIn("Wait for the returned C* context", prompt)
         self.assertIn(
             "Never put ADD and click[Buy Now], or RETRIEVE and a browser action, in the same reply",
             prompt,
