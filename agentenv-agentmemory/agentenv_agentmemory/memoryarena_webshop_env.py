@@ -715,7 +715,18 @@ def _render_native_actions(page: NativePage) -> str:
 
 
 def _render_unified_actions(page: NativePage) -> str:
-    lines = ["Action formats:"]
+    lines = [
+        "Action formats:",
+        (
+            "Use long-term memory for cross-session dependencies: after an "
+            "important purchase or fact, store it with ADD; in later sessions, "
+            "retrieve relevant stored facts with RETRIEVE before choosing based "
+            "on previous products. Take exactly one environment action per reply "
+            "and wait for the ADD/RETRIEVE result before the next action. No key, "
+            "schema, memory content, or query wording is prescribed; choose them "
+            "from the task context."
+        ),
+    ]
     if page.has_search_bar:
         lines.append("- search[keywords]")
     lines.extend(f"- click[{value}]" for value in page.clickables)
