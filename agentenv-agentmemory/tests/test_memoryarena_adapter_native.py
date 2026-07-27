@@ -92,6 +92,26 @@ class NativeAgentMemoryAdapterTests(unittest.TestCase):
         self.assertNotIn(" BUY ", prompt)
         self.assertNotIn("GROUND", prompt)
 
+    def test_memory_workflow_separates_tool_and_browser_turns(self) -> None:
+        prompt = AgentMemoryAdapter.conversation_start_dict[ActionFormat.REACT][0]["value"]
+        self.assertIn("Memory workflow uses separate environment turns", prompt)
+        self.assertIn("Choose the key and value yourself", prompt)
+        self.assertIn("Choose the query yourself", prompt)
+        self.assertIn("no key, schema, or memory content is prescribed", prompt)
+        self.assertIn("no query is prescribed", prompt)
+        self.assertIn("Wait for the ADD result", prompt)
+        self.assertIn("wait for the returned C* context", prompt)
+        self.assertIn(
+            "Never put ADD and click[Buy Now], or RETRIEVE and a browser action, in the same reply",
+            prompt,
+        )
+        self.assertNotIn("preserve the selected product identity", prompt)
+        self.assertNotIn("visible compatibility-relevant attributes", prompt)
+        self.assertIn(
+            "does not reject an otherwise correct purchase when ADD was skipped",
+            prompt,
+        )
+
     def test_client_sends_unparsed_action_to_environment_for_authoritative_rejection(self) -> None:
         class RejectingAdapter:
             @staticmethod

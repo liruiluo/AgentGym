@@ -154,6 +154,30 @@ _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 # only the text after the final </think> is the action to execute.
 _THINK_CLOSE_RE = re.compile(r"</think\s*>", flags=re.IGNORECASE)
 
+MEMORY_WORKFLOW_REACT = (
+    "Memory workflow uses separate environment turns because each reply may contain exactly "
+    "one executable action. Before committing a selected product, first reply with only one "
+    "ADD action. Choose the key and value yourself based on what you decide should persist; "
+    "no key, schema, or memory content is prescribed. Wait for the ADD result, then use "
+    "click[Buy Now] as the only action in a later reply. At the start of each later shopping "
+    "session, first reply with only one RETRIEVE action. Choose the query yourself based on "
+    "what you decide to recall; no query is prescribed. Wait for the returned C* context, "
+    "then search or click in a later reply. Never put ADD and click[Buy Now], or RETRIEVE and "
+    "a browser action, in the same reply. The environment does not perform memory actions for "
+    "you and does not reject an otherwise correct purchase when ADD was skipped. "
+)
+
+MEMORY_WORKFLOW_FUNCTION = (
+    "Memory operations and browser operations use separate environment turns because each "
+    "reply invokes exactly one function. Before committing a selected product, invoke only "
+    "add. Choose the key and value yourself based on what you decide should persist; no key, "
+    "schema, or memory content is prescribed. Wait for its result before invoking click in a "
+    "later turn. At the start of each later shopping session, invoke only retrieve. Choose the "
+    "query yourself based on what you decide to recall; no query is prescribed. Wait for the "
+    "retrieved context before invoking search or click in a later turn. The environment does "
+    "not enforce add-before-buy. "
+)
+
 
 def build_v3_conversation_start(
     metadata: Mapping[str, Any],
@@ -231,7 +255,9 @@ class AgentMemoryAdapter(BaseAdapter):
                 {
                     "from": "human",
                     "loss": None,
-                    "value": "You are operating in AgentMemoryGym on the original MemoryArena WebShop surface. Native shopping actions are search[keywords] and click[current clickable value]; click[Buy Now] commits the current product. ADD stores the provided key/value verbatim in hidden long-term memory. RETRIEVE matches its query against text previously stored with ADD and exposes matches as C* context. SUMMARY and FILTER operate only on visible S*/C* items. A committed purchase that advances the session clears the native page state and S*/C* context; long-term memory remains hidden until RETRIEVE. Once you have selected the current product, use ADD before click[Buy Now] to save one concise memory containing its identity and visible compatibility-relevant attributes. At the start of every later shopping session, use RETRIEVE to expose the relevant prior-purchase memories before choosing a compatible product. The environment does not perform these memory actions for you and does not reject an otherwise correct purchase when ADD was skipped. A purchase that fails verification ends the episode without revealing the verifier reason. Reply in exactly this format:\n\nThought:\nbrief reasoning\n\nAction:\n<exactly one native bracket action or uppercase memory-tool JSON action>",
+                    "value": "You are operating in AgentMemoryGym on the original MemoryArena WebShop surface. Native shopping actions are search[keywords] and click[current clickable value]; click[Buy Now] commits the current product. ADD stores the provided key/value verbatim in hidden long-term memory. RETRIEVE matches its query against text previously stored with ADD and exposes matches as C* context. SUMMARY and FILTER operate only on visible S*/C* items. A committed purchase that advances the session clears the native page state and S*/C* context; long-term memory remains hidden until RETRIEVE. "
+                    + MEMORY_WORKFLOW_REACT
+                    + "A purchase that fails verification ends the episode without revealing the verifier reason. Reply in exactly this format:\n\nThought:\nbrief reasoning\n\nAction:\n<exactly one native bracket action or uppercase memory-tool JSON action>",
                 }
             ),
             ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
@@ -241,7 +267,9 @@ class AgentMemoryAdapter(BaseAdapter):
                 {
                     "from": "human",
                     "loss": None,
-                    "value": "You are operating in AgentMemoryGym on the original MemoryArena WebShop surface. Long-term memory is hidden unless you retrieve it. Before committing the selected product, use add to save its identity and visible compatibility-relevant attributes; at the start of every later shopping session, use retrieve to expose the relevant prior-purchase memories before choosing. The environment does not enforce add-before-buy. Invoke exactly one available function.\n\n"
+                    "value": "You are operating in AgentMemoryGym on the original MemoryArena WebShop surface. Long-term memory is hidden unless you retrieve it. "
+                    + MEMORY_WORKFLOW_FUNCTION
+                    + "Invoke exactly one available function.\n\n"
                     + format_function_call_prompt(AGENTMEMORY_FUNCTION_DESCRIPTION),
                 }
             ),
@@ -252,7 +280,9 @@ class AgentMemoryAdapter(BaseAdapter):
                 {
                     "from": "human",
                     "loss": None,
-                    "value": "You are operating in AgentMemoryGym on the original MemoryArena WebShop surface. Long-term memory is hidden unless you retrieve it. Before committing the selected product, use add to save its identity and visible compatibility-relevant attributes; at the start of every later shopping session, use retrieve to expose the relevant prior-purchase memories before choosing. The environment does not enforce add-before-buy. Write Python code to call exactly one available function.\n\n"
+                    "value": "You are operating in AgentMemoryGym on the original MemoryArena WebShop surface. Long-term memory is hidden unless you retrieve it. "
+                    + MEMORY_WORKFLOW_FUNCTION
+                    + "Write Python code to call exactly one available function.\n\n"
                     + format_code_as_action_prompt(AGENTMEMORY_FUNCTION_DESCRIPTION),
                 }
             ),
