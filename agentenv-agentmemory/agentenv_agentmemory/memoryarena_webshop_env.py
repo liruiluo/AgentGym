@@ -736,7 +736,21 @@ def _render_context(active: Sequence[str], trace: Sequence[str]) -> str:
 
 
 def _memory_action_contract() -> str:
-    return "\n".join(["Memory actions:", *_memory_action_examples()])
+    return "\n".join(
+        [
+            "Memory actions:",
+            (
+                "Use long-term memory for cross-session dependencies: after an "
+                "important purchase or fact, store it with ADD; in later sessions, "
+                "retrieve relevant stored facts with RETRIEVE before choosing based "
+                "on previous products. Take exactly one environment action per reply "
+                "and wait for the ADD/RETRIEVE result before the next action. No key, "
+                "schema, memory content, or query wording is prescribed; choose them "
+                "from the task context."
+            ),
+            *_memory_action_examples(),
+        ]
+    )
 
 
 def _memory_action_examples() -> list[str]:
