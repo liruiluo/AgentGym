@@ -524,13 +524,39 @@ class MemoryArenaWebShopEnv:
         return f"Deleted memory {entry.memory_id}.", {"op": "DELETE", "memory_id": entry.memory_id, "key": entry.key}
 
     def _memory_retrieve(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        _require_exact_fields(payload, required={"query"}, optional={"top_k"})
-        query = _require_text(payload, "query")
-        top_k = payload.get("top_k", 3)
-        if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 20:
-            raise InvalidNativeAction("RETRIEVE top_k must be an integer from 1 to 20.")
-        ranked = rank_memory_entries_bm25(query, list(self.long_term_memory.values()), top_k=top_k)
-        entries = [entry for entry, score in ranked if score > 0]
+        has_query = "query" in payload
+        has_memory_id = "memory_id" in payload
+        if has_query == has_memory_id:
+            raise InvalidNativeAction(
+                "RETRIEVE expects exactly one of query or memory_id."
+            )
+
+        lookup: dict[str, Any]
+        if has_memory_id:
+            _require_exact_fields(payload, required={"memory_id"})
+            memory_id = _require_text(payload, "memory_id")
+            entries = [self._require_memory(memory_id)]
+            lookup = {
+                "lookup_mode": "memory_id",
+                "memory_id": memory_id,
+            }
+        else:
+            _require_exact_fields(payload, required={"query"}, optional={"top_k"})
+            query = _require_text(payload, "query")
+            top_k = payload.get("top_k", 3)
+            if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 20:
+                raise InvalidNativeAction("RETRIEVE top_k must be an integer from 1 to 20.")
+            ranked = rank_memory_entries_bm25(
+                query,
+                list(self.long_term_memory.values()),
+                top_k=top_k,
+            )
+            entries = [entry for entry, score in ranked if score > 0]
+            lookup = {
+                "lookup_mode": "query",
+                "query": query,
+                "top_k": top_k,
+            }
         for entry in entries:
             entry.access_count += 1
         self.active_context = [_render_memory(entry) for entry in entries]
@@ -542,8 +568,7 @@ class MemoryArenaWebShopEnv:
             message = "No relevant memory retrieved. Long-term memory is empty."
         return message, {
             "op": "RETRIEVE",
-            "query": query,
-            "top_k": top_k,
+            **lookup,
             "retrieved_memory_ids": [entry.memory_id for entry in entries],
             "retrieved_count": len(entries),
         }
@@ -720,6 +745,7 @@ def _memory_action_examples() -> list[str]:
         'UPDATE {"memory_id": "mem_0000", "value": "..."}',
         'DELETE {"memory_id": "mem_0000"}',
         'RETRIEVE {"query": "...", "top_k": 3}',
+        'RETRIEVE {"memory_id": "mem_0000"}',
         'SUMMARY {"text": "...", "source_ids": ["S0", "C0"]}',
         'FILTER {"keep_ids": ["C0"], "scope": "active"}',
     ]

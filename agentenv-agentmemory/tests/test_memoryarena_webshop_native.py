@@ -537,6 +537,57 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
         self.assertIn(authored, observation)
         self.assertEqual(info["memory_ops"][0]["retrieved_count"], 1)
 
+    def test_retrieve_by_memory_id_reads_exactly_the_requested_entry(self) -> None:
+        env, _ = self.make_env(ltm_inventory_mode="keys")
+        first_value = "Alpha 7 exact compatibility facts"
+        second_value = "Alpha 8 different compatibility facts"
+        _, _, _, _, first_info = env.step(
+            f'ADD {{"key":"prior-one","value":"{first_value}"}}'
+        )
+        _, _, _, _, second_info = env.step(
+            f'ADD {{"key":"prior-two","value":"{second_value}"}}'
+        )
+        first_id = first_info["memory_ops"][0]["memory_id"]
+        second_id = second_info["memory_ops"][0]["memory_id"]
+        purchase(env, TARGETS[0])
+
+        observation, reward, done, _, info = env.step(
+            f'RETRIEVE {{"memory_id":"{second_id}"}}'
+        )
+
+        self.assertEqual(reward, FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS)
+        self.assertFalse(done)
+        self.assertNotIn(first_value, observation)
+        self.assertIn(second_value, observation)
+        event = info["memory_ops"][0]
+        self.assertEqual(event["lookup_mode"], "memory_id")
+        self.assertEqual(event["memory_id"], second_id)
+        self.assertEqual(event["retrieved_memory_ids"], [second_id])
+        self.assertNotIn(first_id, event["retrieved_memory_ids"])
+        self.assertNotIn("query", event)
+        self.assertNotIn("top_k", event)
+
+    def test_retrieve_lookup_fields_are_mutually_exclusive_and_fail_closed(self) -> None:
+        env, _ = self.make_env(ltm_inventory_mode="keys")
+        env.step('ADD {"key":"prior","value":"Alpha 7 facts"}')
+        invalid_payloads = (
+            {},
+            {"query": "Alpha", "memory_id": "mem_0000"},
+            {"memory_id": "mem_0000", "top_k": 3},
+            {"memory_id": "mem_9999"},
+        )
+
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                observation, reward, done, _, info = env.step(
+                    f"RETRIEVE {json.dumps(payload)}"
+                )
+                self.assertIn("Invalid action", observation)
+                self.assertLess(reward, 0.0)
+                self.assertFalse(done)
+                self.assertEqual(env.active_context, [])
+                self.assertEqual(info["memory_ops"], [])
+
     def test_key_inventory_is_opt_in_and_never_exposes_memory_values(self) -> None:
         hidden_env, _ = self.make_env()
         hidden_observation, _ = hidden_env.reset()
@@ -578,6 +629,7 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
         self.assertIn("- search[keywords]", action_block)
         self.assertIn('- ADD {"key": "...", "value": "..."}', action_block)
         self.assertIn('- RETRIEVE {"query": "...", "top_k": 3}', action_block)
+        self.assertIn('- RETRIEVE {"memory_id": "mem_0000"}', action_block)
         self.assertEqual(env.build_info()["action_listing_mode"], "unified")
 
     def test_unified_action_listing_tracks_dynamic_native_clicks(self) -> None:
@@ -589,6 +641,7 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
         )[0]
         self.assertIn(f"- click[{TARGETS[0]}]", search_actions)
         self.assertIn('- RETRIEVE {"query": "...", "top_k": 3}', search_actions)
+        self.assertIn('- RETRIEVE {"memory_id": "mem_0000"}', search_actions)
 
         product_observation, _, _, _, _ = env.step(f"click[{TARGETS[0]}]")
         product_actions = product_observation.split("Action formats:\n", 1)[1].split(
