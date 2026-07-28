@@ -20,6 +20,11 @@ from .memoryarena_dataset import (
 )
 from .memoryarena_webshop_env import MemoryArenaWebShopEnv
 from .native_webshop_backend import MemoryArenaNativeWebShopBackend
+from .presentation_randomization import (
+    PRESENTATION_RANDOMIZATION_MODES,
+    PRESENTATION_RANDOMIZATION_NONE,
+    presentation_config_manifest,
+)
 from .reward_hierarchy import (
     FIRST_VALID_ADD_BONUS,
     FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
@@ -60,6 +65,19 @@ class AgentMemoryWrapper:
                 "AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD",
                 FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
             ),
+        )
+        self.presentation_randomization_mode = _env_choice(
+            "AGENTMEMORY_PRESENTATION_RANDOMIZATION",
+            PRESENTATION_RANDOMIZATION_NONE,
+            PRESENTATION_RANDOMIZATION_MODES,
+        )
+        self.presentation_seed = _env_int(
+            "AGENTMEMORY_PRESENTATION_SEED",
+            0,
+        )
+        self.presentation_randomization = presentation_config_manifest(
+            mode=self.presentation_randomization_mode,
+            base_seed=self.presentation_seed,
         )
 
         domain_data_path = _required_path("MEMORYARENA_WEBSHOP_DOMAIN_DATA_PATH")
@@ -110,6 +128,10 @@ class AgentMemoryWrapper:
                         "first_valid_later_session_retrieve_reward"
                     ]
                 ),
+                presentation_randomization_mode=(
+                    self.presentation_randomization_mode
+                ),
+                presentation_seed=self.presentation_seed,
             )
             observation, info = env.reset(data_idx=env_id)
             payload = {
@@ -189,6 +211,7 @@ class AgentMemoryWrapper:
             "annotation_gate_allowed_task_ids_sha256": self.annotation_gate.allowed_task_ids_sha256,
             "annotation_gate_allowed_task_count": len(self.annotation_gate.allowed_task_ids),
             "reward_contract": dict(self.reward_contract),
+            "presentation_randomization": dict(self.presentation_randomization),
             "backend": self.backend.metadata(),
         }
 
@@ -284,6 +307,19 @@ def _env_int(key: str, default: int) -> int:
         return int(value)
     except ValueError as exc:
         raise RuntimeError(f"{key} must be an integer.") from exc
+
+
+def _env_choice(
+    key: str,
+    default: str,
+    choices: tuple[str, ...],
+) -> str:
+    value = os.environ.get(key, default)
+    if value not in choices:
+        raise RuntimeError(
+            f"{key} must be one of {choices}; observed {value!r}."
+        )
+    return value
 
 
 def _env_nonnegative_float(key: str, default: float) -> float:

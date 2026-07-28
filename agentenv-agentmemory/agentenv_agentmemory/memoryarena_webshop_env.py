@@ -10,6 +10,11 @@ from .formal_native_contract import build_reward_components, infer_raw_action_op
 from .memoryarena_dataset import MemoryArenaBundle
 from .memory_state import MemoryEntry, rank_memory_entries_bm25
 from .native_webshop_backend import NativePage, NativeWebShopBackend
+from .presentation_randomization import (
+    PRESENTATION_RANDOMIZATION_NONE,
+    PresentationVariant,
+    build_presentation_variant,
+)
 from .reward_hierarchy import (
     EXACT_REPEAT_ACTION_PENALTY,
     FIRST_VALID_ADD_BONUS,
@@ -57,6 +62,8 @@ class MemoryArenaWebShopEnv:
         env_uid: str | None = None,
         first_valid_add_reward: float = FIRST_VALID_ADD_BONUS,
         first_valid_later_session_retrieve_reward: float = FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
+        presentation_randomization_mode: str = PRESENTATION_RANDOMIZATION_NONE,
+        presentation_seed: int = 0,
     ) -> None:
         if not bundles:
             raise ValueError("MemoryArenaWebShopEnv requires at least one bundle.")
@@ -75,6 +82,9 @@ class MemoryArenaWebShopEnv:
         self.first_valid_later_session_retrieve_reward = float(
             self._reward_contract["first_valid_later_session_retrieve_reward"]
         )
+        self.presentation_randomization_mode = presentation_randomization_mode
+        self.presentation_seed = presentation_seed
+        self.presentation_variant: PresentationVariant | None = None
         self.episode_counter = 0
         self.bundle: MemoryArenaBundle | None = None
         self.data_idx = 0
@@ -97,13 +107,20 @@ class MemoryArenaWebShopEnv:
         self.rewarded_memory_ops_this_session: set[str] = set()
 
     def reset(self, seed: int | None = None, data_idx: int = 0):
-        del seed
         self._close_native_session()
         self.data_idx = int(data_idx)
         self.bundle = self.bundles[self.data_idx % len(self.bundles)]
         if len(self.bundle.questions) != 6 or len(self.bundle.target_asins) != 6:
             raise ValueError(f"Bundle {self.bundle.task_id!r} is not a six-session chain.")
         self.episode_counter += 1
+        presentation_seed = self.presentation_seed if seed is None else seed
+        self.presentation_variant = build_presentation_variant(
+            self.bundle,
+            mode=self.presentation_randomization_mode,
+            base_seed=presentation_seed,
+            env_uid=self.env_uid,
+            episode_counter=self.episode_counter,
+        )
         self.current_session_index = 0
         self.step_count = 0
         self.spent_cents = 0
@@ -120,7 +137,7 @@ class MemoryArenaWebShopEnv:
         self._reset_session_reward_state()
         self.native_page = self.backend.open_session(
             self._new_native_session_token(),
-            self.bundle.questions[0],
+            self.presentation_variant.questions[0],
         )
         return self.render_observation(), self.build_info()
 
@@ -236,14 +253,20 @@ class MemoryArenaWebShopEnv:
 
     def build_info(self) -> dict[str, Any]:
         bundle = self._require_bundle()
+        presentation_variant = self._require_presentation_variant()
         phase_count = len(bundle.questions)
         subtask_count = len(bundle.target_asins)
         return {
             "task_id": bundle.task_id,
             "task_family": "bundled_shopping",
             "split": bundle.split,
-            "source": "memoryarena_original_webshop",
+            "source": (
+                "memoryarena_original_webshop"
+                if presentation_variant.mode == PRESENTATION_RANDOMIZATION_NONE
+                else "memoryarena_derived_presentation"
+            ),
             "surface": self.surface,
+            "presentation_variant": presentation_variant.as_info(),
             "progress_score": self.current_session_index / float(phase_count),
             "episode_success": self.status == "success",
             "status": self.status,
@@ -389,7 +412,7 @@ class MemoryArenaWebShopEnv:
 
         self.native_page = self.backend.open_session(
             self._new_native_session_token(),
-            bundle.questions[self.current_session_index],
+            self._require_presentation_variant().questions[self.current_session_index],
         )
         return self.render_observation("Purchase recorded. The next shopping session is ready."), 1.0, False
 
@@ -555,6 +578,11 @@ class MemoryArenaWebShopEnv:
         if self.bundle is None:
             raise RuntimeError("Environment must be reset before use.")
         return self.bundle
+
+    def _require_presentation_variant(self) -> PresentationVariant:
+        if self.presentation_variant is None:
+            raise RuntimeError("Environment must be reset before use.")
+        return self.presentation_variant
 
     def _require_page(self) -> NativePage:
         if self.native_page is None:

@@ -7,6 +7,10 @@ from concurrent.futures import ThreadPoolExecutor
 from agentenv_agentmemory.memoryarena_dataset import load_memoryarena_dataset
 from agentenv_agentmemory.memoryarena_webshop_env import MemoryArenaWebShopEnv
 from agentenv_agentmemory.native_webshop_backend import MemoryArenaNativeWebShopBackend
+from agentenv_agentmemory.presentation_randomization import (
+    PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_V1,
+    split_candidate_block,
+)
 
 
 LIVE = os.environ.get("AGENTMEMORY_RUN_NATIVE_LIVE_TESTS") == "1"
@@ -50,7 +54,10 @@ class NativeMemoryArenaLiveTests(unittest.TestCase):
         token = "live_price_parity"
         page = self.backend.open_session(token, bundle.questions[0])
         try:
-            page = self.backend.step(token, f"search[{_argument(self.backend.product_title(asin))}]")
+            page = self.backend.step(
+                token,
+                f"search[{_argument(self.backend.product_title(asin))}]",
+            )
             page = _open_asin(self.backend, token, page, asin)
             product_page = page.observation
             done_page = self.backend.step(token, "click[Buy Now]")
@@ -78,6 +85,56 @@ class NativeMemoryArenaLiveTests(unittest.TestCase):
             self.assertTrue(done)
             self.assertTrue(info["episode_success"])
             self.assertNotIn("reward=", observation)
+        finally:
+            env.close()
+
+    def test_candidate_order_randomization_preserves_six_purchase_oracle(self) -> None:
+        bundle = self.dataset.get("baking_item_0")
+        env = MemoryArenaWebShopEnv(
+            bundles=[bundle],
+            backend=self.backend,
+            env_uid="live_candidate_order",
+            presentation_randomization_mode=(
+                PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_V1
+            ),
+            presentation_seed=20260728,
+        )
+        try:
+            _, reset_info = env.reset()
+            variant = env.presentation_variant
+            self.assertIsNotNone(variant)
+            self.assertEqual(
+                reset_info["presentation_variant"]["mode"],
+                PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_V1,
+            )
+            self.assertTrue(
+                any(
+                    rendered != source
+                    for rendered, source in zip(variant.questions, bundle.questions)
+                )
+            )
+            for source, rendered in zip(bundle.questions, variant.questions):
+                source_block = split_candidate_block(source)
+                rendered_block = split_candidate_block(rendered)
+                self.assertEqual(source_block.prefix, rendered_block.prefix)
+                self.assertEqual(source_block.suffix, rendered_block.suffix)
+                self.assertEqual(
+                    source_block.option_endings,
+                    rendered_block.option_endings,
+                )
+                self.assertCountEqual(
+                    source_block.option_lines,
+                    rendered_block.option_lines,
+                )
+
+            for index, asin in enumerate(bundle.target_asins):
+                env.step(f"search[{_argument(self.backend.product_title(asin))}]")
+                _open_env_asin(env, asin)
+                _, reward, done, _, info = env.step("click[Buy Now]")
+                self.assertTrue(info["tool_ops"][0]["purchase_correct"], info)
+                self.assertEqual(2.0 if index == 5 else 1.0, reward)
+            self.assertTrue(done)
+            self.assertTrue(info["episode_success"])
         finally:
             env.close()
 

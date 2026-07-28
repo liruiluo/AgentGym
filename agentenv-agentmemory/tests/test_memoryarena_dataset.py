@@ -179,6 +179,10 @@ class MemoryArenaDatasetTests(unittest.TestCase):
             allowed_task_ids=("a", "b", "c"),
         )
         wrapper.reward_contract = {"contract": "fixture"}
+        wrapper.presentation_randomization = {
+            "schema": "memoryarena_presentation_variant_v1",
+            "mode": "none",
+        }
         wrapper.backend = SimpleNamespace(metadata=lambda: {"backend": "fixture"})
 
         metadata = wrapper.metadata()
@@ -189,6 +193,7 @@ class MemoryArenaDatasetTests(unittest.TestCase):
         self.assertEqual(metadata["dataset_provenance"], provenance.as_manifest())
         self.assertEqual(metadata["dataset_provenance"]["bundle_count"], 150)
         self.assertEqual(metadata["dataset_provenance"]["session_count"], 900)
+        self.assertEqual(metadata["presentation_randomization"]["mode"], "none")
 
     def test_preserves_question_instruction_candidate_context_and_answer(self) -> None:
         records = [make_record(0)]

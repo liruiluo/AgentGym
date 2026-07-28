@@ -12,6 +12,10 @@ from .domains import (
     V3_SURFACES,
 )
 from .domains.browsecomp import BROWSECOMP_FROZEN_EMBEDDING_MODEL
+from .presentation_randomization import (
+    PRESENTATION_RANDOMIZATION_MODES,
+    PRESENTATION_RANDOMIZATION_NONE,
+)
 from .reward_hierarchy import (
     FIRST_VALID_ADD_BONUS,
     FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
@@ -49,6 +53,12 @@ def launch() -> None:
         "--split", choices=["train", "dev", "test", "all"], default="train"
     )
     parser.add_argument("--price-seed", type=int, default=233)
+    parser.add_argument(
+        "--presentation-randomization",
+        choices=PRESENTATION_RANDOMIZATION_MODES,
+        default=PRESENTATION_RANDOMIZATION_NONE,
+    )
+    parser.add_argument("--presentation-seed", type=int, default=0)
     parser.add_argument(
         "--annotation-gate-mode",
         choices=ANNOTATION_GATE_MODES,
@@ -135,6 +145,10 @@ def launch() -> None:
                 "AGENTMEMORY_ANNOTATION_MANUAL_EVIDENCE": args.annotation_manual_evidence,
                 "AGENTMEMORY_SPLIT": args.split,
                 "AGENTMEMORY_WEBSHOP_PRICE_SEED": str(args.price_seed),
+                "AGENTMEMORY_PRESENTATION_RANDOMIZATION": (
+                    args.presentation_randomization
+                ),
+                "AGENTMEMORY_PRESENTATION_SEED": str(args.presentation_seed),
                 "AGENTMEMORY_ANNOTATION_GATE_MODE": args.annotation_gate_mode,
                 "AGENTMEMORY_ANNOTATION_GATE_MANIFEST": args.annotation_gate_manifest,
                 "AGENTMEMORY_ANNOTATION_GATE_MANIFEST_SHA256": (
