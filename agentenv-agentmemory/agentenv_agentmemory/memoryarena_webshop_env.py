@@ -75,6 +75,7 @@ class MemoryArenaWebShopEnv:
         action_listing_mode: str = "separate",
         presentation_randomization_mode: str = PRESENTATION_RANDOMIZATION_NONE,
         presentation_seed: int = 0,
+        presentation_variant_index: int | None = None,
     ) -> None:
         if not bundles:
             raise ValueError("MemoryArenaWebShopEnv requires at least one bundle.")
@@ -101,6 +102,7 @@ class MemoryArenaWebShopEnv:
         self.action_listing_mode = action_listing_mode
         self.presentation_randomization_mode = presentation_randomization_mode
         self.presentation_seed = presentation_seed
+        self.presentation_variant_index = presentation_variant_index
         self.presentation_variant: PresentationVariant | None = None
         self._reward_contract = build_memoryarena_reward_contract(
             first_valid_add_reward=first_valid_add_reward,
@@ -149,6 +151,7 @@ class MemoryArenaWebShopEnv:
             base_seed=presentation_seed,
             env_uid=self.env_uid,
             episode_counter=self.episode_counter,
+            variant_index=self.presentation_variant_index,
         )
         self.current_session_index = 0
         self.step_count = 0

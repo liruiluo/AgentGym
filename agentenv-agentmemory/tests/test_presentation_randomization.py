@@ -11,11 +11,13 @@ from agentenv_agentmemory.memoryarena_webshop_env import MemoryArenaWebShopEnv
 from agentenv_agentmemory.native_webshop_backend import NativePage
 from agentenv_agentmemory.presentation_randomization import (
     PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_V1,
+    PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_UNIQUE_V2,
     PRESENTATION_RANDOMIZATION_NONE,
     PresentationRandomizationError,
     build_presentation_variant,
     reorder_candidate_options,
     split_candidate_block,
+    unique_bundle_permutation_ranks,
 )
 
 
@@ -24,10 +26,14 @@ OPTIONS = (
     "Beta product with exact title",
     "Gamma product with exact title",
 )
+FIVE_OPTIONS = OPTIONS + (
+    "Delta product with exact title",
+    "Epsilon product with exact title",
+)
 TARGETS = tuple(f"B0000000{index:02d}" for index in range(1, 7))
 
 
-def make_question(step_index: int) -> str:
+def make_question(step_index: int, options: tuple[str, ...] = OPTIONS) -> str:
     return (
         "You are an intelligent Shopping Agent operating in a webshop.\n\n"
         "*** GLOBAL RULES ***\n"
@@ -37,12 +43,17 @@ def make_question(step_index: int) -> str:
         + f"Product {step_index}:\n"
         + f"**Goal:** Select product {step_index}.\n"
         + "**Available Options:**\n"
-        + "".join(f"- {option}\n" for option in OPTIONS)
+        + "".join(f"- {option}\n" for option in options)
     )
 
 
-def make_bundle() -> MemoryArenaBundle:
-    questions = tuple(make_question(index) for index in range(1, 7))
+def make_bundle_with_options(
+    options_by_session: tuple[tuple[str, ...], ...],
+) -> MemoryArenaBundle:
+    questions = tuple(
+        make_question(index, options_by_session[index - 1])
+        for index in range(1, 7)
+    )
     sessions = tuple(
         MemoryArenaSession(
             session_index=index,
@@ -50,9 +61,11 @@ def make_bundle() -> MemoryArenaBundle:
             instruction=f"Instruction {index + 1}",
             candidate_context=(
                 "**Available Options:**\n"
-                + "".join(f"- {option}\n" for option in OPTIONS)
+                + "".join(
+                    f"- {option}\n" for option in options_by_session[index]
+                )
             ),
-            candidate_options=OPTIONS,
+            candidate_options=options_by_session[index],
             raw_target_asin=TARGETS[index],
             target_asin=TARGETS[index],
             answer_attributes=(f"attribute-{index}",),
@@ -82,6 +95,14 @@ def make_bundle() -> MemoryArenaBundle:
         category="fixture",
         answer_attributes=tuple(session.answer_attributes for session in sessions),
     )
+
+
+def make_bundle() -> MemoryArenaBundle:
+    return make_bundle_with_options((OPTIONS,) * 6)
+
+
+def make_unique_bundle() -> MemoryArenaBundle:
+    return make_bundle_with_options((OPTIONS,) + (FIVE_OPTIONS,) * 5)
 
 
 class RecordingBackend:
@@ -166,6 +187,80 @@ class PresentationRandomizationTests(unittest.TestCase):
             "frozen_upstream_target_asins_unchanged",
         )
 
+    def test_unique_v2_keeps_eight_full_variants_distinct(self) -> None:
+        bundle = make_unique_bundle()
+        variants = [
+            build_presentation_variant(
+                bundle,
+                mode=PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_UNIQUE_V2,
+                base_seed=20260728,
+                env_uid=f"env{index}",
+                episode_counter=1,
+                variant_index=index,
+            )
+            for index in range(8)
+        ]
+
+        full_variants = {
+            variant.candidate_permutations for variant in variants
+        }
+        self.assertEqual(len(full_variants), 8)
+        self.assertEqual(
+            len({variant.candidate_permutations[0] for variant in variants}),
+            6,
+        )
+        for session_index in range(1, 6):
+            self.assertEqual(
+                len(
+                    {
+                        variant.candidate_permutations[session_index]
+                        for variant in variants
+                    }
+                ),
+                8,
+            )
+        self.assertEqual(bundle.target_asins, TARGETS)
+        self.assertEqual(
+            variants[7].as_info()["variant_index"],
+            7,
+        )
+
+    def test_unique_v2_first_120_variants_cover_later_sessions_without_replacement(self) -> None:
+        rank_tuples = [
+            unique_bundle_permutation_ranks(
+                option_counts=(3, 5, 5, 5, 5, 5),
+                variant_index=index,
+            )
+            for index in range(120)
+        ]
+
+        self.assertEqual(len(set(rank_tuples)), 120)
+        self.assertEqual(len({ranks[0] for ranks in rank_tuples}), 6)
+        for session_index in range(1, 6):
+            self.assertEqual(
+                len({ranks[session_index] for ranks in rank_tuples}),
+                120,
+            )
+
+    def test_unique_v2_rejects_missing_index_or_wrong_option_pattern(self) -> None:
+        with self.assertRaisesRegex(PresentationRandomizationError, "variant_index"):
+            build_presentation_variant(
+                make_unique_bundle(),
+                mode=PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_UNIQUE_V2,
+                base_seed=1,
+                env_uid="env0",
+                episode_counter=1,
+            )
+        with self.assertRaisesRegex(PresentationRandomizationError, "option pattern"):
+            build_presentation_variant(
+                make_bundle(),
+                mode=PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_UNIQUE_V2,
+                base_seed=1,
+                env_uid="env0",
+                episode_counter=1,
+                variant_index=0,
+            )
+
     def test_episode_identity_changes_and_original_mode_is_byte_exact(self) -> None:
         bundle = make_bundle()
         original = build_presentation_variant(
@@ -211,6 +306,28 @@ class PresentationRandomizationTests(unittest.TestCase):
         )
         self.assertFalse(any("target" in key for key in info["presentation_variant"]))
         self.assertNotIn(TARGETS[0], str(info["presentation_variant"]))
+
+    def test_environment_passes_explicit_unique_variant_index(self) -> None:
+        bundle = make_unique_bundle()
+        backend = RecordingBackend()
+        env = MemoryArenaWebShopEnv(
+            bundles=[bundle],
+            backend=backend,
+            env_uid="env7",
+            presentation_randomization_mode=(
+                PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_UNIQUE_V2
+            ),
+            presentation_seed=20260728,
+            presentation_variant_index=7,
+        )
+
+        _, info = env.reset()
+
+        self.assertEqual(info["presentation_variant"]["variant_index"], 7)
+        self.assertEqual(
+            info["presentation_variant"]["mode"],
+            PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_UNIQUE_V2,
+        )
 
     def test_rejects_non_permutation_or_non_terminal_candidate_rows(self) -> None:
         with self.assertRaisesRegex(PresentationRandomizationError, "each index"):

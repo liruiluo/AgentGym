@@ -153,6 +153,7 @@ class AgentMemoryWrapper:
                 bundles=self.tasks,
                 backend=self.backend,
                 env_uid=f"env{env_id}",
+                presentation_variant_index=env_id // len(self.tasks),
                 first_valid_add_reward=float(
                     self.reward_contract["first_valid_add_reward"]
                 ),

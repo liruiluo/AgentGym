@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
+import math
 import re
 from dataclasses import dataclass
 from typing import Any, Sequence
@@ -11,12 +13,20 @@ from .memoryarena_dataset import MemoryArenaBundle
 
 PRESENTATION_RANDOMIZATION_NONE = "none"
 PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_V1 = "candidate_order_v1"
+PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_UNIQUE_V2 = (
+    "candidate_order_unique_v2"
+)
 PRESENTATION_RANDOMIZATION_MODES = (
     PRESENTATION_RANDOMIZATION_NONE,
     PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_V1,
+    PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_UNIQUE_V2,
 )
 PRESENTATION_VARIANT_SCHEMA = "memoryarena_presentation_variant_v1"
 PRESENTATION_LABEL_CONTRACT = "frozen_upstream_target_asins_unchanged"
+UNIQUE_V2_OPTION_COUNTS = (3, 5, 5, 5, 5, 5)
+UNIQUE_V2_PERMUTATION_RADICES = tuple(
+    math.factorial(option_count) for option_count in UNIQUE_V2_OPTION_COUNTS
+)
 
 _CANDIDATE_MARKER = "**Available Options:**"
 _OPTION_PATTERN = re.compile(r"^\s*-\s+(?P<title>\S(?:.*\S)?)\s*$")
@@ -41,6 +51,7 @@ class PresentationVariant:
     base_seed: int
     env_uid: str
     episode_counter: int
+    variant_index: int | None
     task_id: str
     questions: tuple[str, ...]
     candidate_permutations: tuple[tuple[int, ...], ...]
@@ -56,6 +67,7 @@ class PresentationVariant:
             "base_seed": self.base_seed,
             "env_uid": self.env_uid,
             "episode_counter": self.episode_counter,
+            "variant_index": self.variant_index,
             "task_id": self.task_id,
             "candidate_permutations": [
                 list(permutation) for permutation in self.candidate_permutations
@@ -75,6 +87,7 @@ def build_presentation_variant(
     base_seed: int,
     env_uid: str,
     episode_counter: int,
+    variant_index: int | None = None,
 ) -> PresentationVariant:
     if mode not in PRESENTATION_RANDOMIZATION_MODES:
         raise PresentationRandomizationError(
@@ -89,9 +102,34 @@ def build_presentation_variant(
         raise PresentationRandomizationError("episode_counter must be an integer.")
     if episode_counter < 1:
         raise PresentationRandomizationError("episode_counter must be positive.")
+    if variant_index is not None and (
+        isinstance(variant_index, bool)
+        or not isinstance(variant_index, int)
+        or variant_index < 0
+    ):
+        raise PresentationRandomizationError(
+            "variant_index must be a non-negative integer or None."
+        )
+    if (
+        mode == PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_UNIQUE_V2
+        and variant_index is None
+    ):
+        raise PresentationRandomizationError(
+            "candidate_order_unique_v2 requires an explicit variant_index."
+        )
     if len(bundle.questions) != len(bundle.sessions):
         raise PresentationRandomizationError(
             f"Bundle {bundle.task_id!r} has misaligned questions and sessions."
+        )
+
+    option_counts = tuple(
+        len(session.candidate_options) for session in bundle.sessions
+    )
+    unique_ranks: tuple[int, ...] | None = None
+    if mode == PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_UNIQUE_V2:
+        unique_ranks = unique_bundle_permutation_ranks(
+            option_counts=option_counts,
+            variant_index=variant_index,
         )
 
     questions: list[str] = []
@@ -114,15 +152,27 @@ def build_presentation_variant(
                     f"Bundle {bundle.task_id!r} session {session_index + 1} "
                     "question options disagree with the parsed frozen session."
                 )
-            permutation = stable_candidate_permutation(
-                base_seed=base_seed,
-                env_uid=env_uid,
-                episode_counter=episode_counter,
-                task_id=bundle.task_id,
-                source_row_id=bundle.source_row_id,
-                session_index=session_index,
-                option_titles=block.option_titles,
-            )
+            if mode == PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_V1:
+                permutation = stable_candidate_permutation(
+                    base_seed=base_seed,
+                    env_uid=env_uid,
+                    episode_counter=episode_counter,
+                    task_id=bundle.task_id,
+                    source_row_id=bundle.source_row_id,
+                    session_index=session_index,
+                    option_titles=block.option_titles,
+                )
+            else:
+                if unique_ranks is None:
+                    raise AssertionError("unique permutation ranks are unavailable")
+                permutation = stable_unique_candidate_permutation(
+                    base_seed=base_seed,
+                    task_id=bundle.task_id,
+                    source_row_id=bundle.source_row_id,
+                    session_index=session_index,
+                    option_titles=block.option_titles,
+                    permutation_rank=unique_ranks[session_index],
+                )
             rendered = reorder_candidate_options(question, permutation)
             rendered_block = split_candidate_block(rendered)
             if sorted(rendered_block.option_lines) != sorted(block.option_lines):
@@ -152,6 +202,7 @@ def build_presentation_variant(
         "source_row_id": bundle.source_row_id,
         "raw_dataset_sha256": bundle.provenance.raw_dataset_sha256,
         "candidate_permutations": [list(value) for value in permutations],
+        "variant_index": variant_index,
         "source_question_sha256s": list(source_hashes),
         "rendered_question_sha256s": list(rendered_hashes),
         "label_contract": PRESENTATION_LABEL_CONTRACT,
@@ -163,6 +214,7 @@ def build_presentation_variant(
             "base_seed": base_seed,
             "env_uid": env_uid,
             "episode_counter": episode_counter,
+            "variant_index": variant_index,
         }
     )
     return PresentationVariant(
@@ -170,6 +222,7 @@ def build_presentation_variant(
         base_seed=base_seed,
         env_uid=env_uid,
         episode_counter=episode_counter,
+        variant_index=variant_index,
         task_id=bundle.task_id,
         questions=tuple(questions),
         candidate_permutations=tuple(permutations),
@@ -208,6 +261,103 @@ def stable_candidate_permutation(
         score = hashlib.sha256(_canonical_json(payload)).digest()
         scores.append((score, option_index))
     return tuple(index for _, index in sorted(scores))
+
+
+def unique_bundle_permutation_ranks(
+    *,
+    option_counts: Sequence[int],
+    variant_index: int | None,
+) -> tuple[int, ...]:
+    """Map a variant index to a unique six-session permutation tuple.
+
+    MemoryArena has one 3-option session followed by five 5-option sessions.
+    The triangular mixed-radix mapping is bijective over the complete bundle
+    presentation space. For the first 120 variants, session 1 covers its six
+    orders evenly while every later session uses a distinct order.
+    """
+
+    normalized_counts = tuple(option_counts)
+    if normalized_counts != UNIQUE_V2_OPTION_COUNTS:
+        raise PresentationRandomizationError(
+            "candidate_order_unique_v2 requires the audited MemoryArena option "
+            f"pattern {UNIQUE_V2_OPTION_COUNTS}; observed {normalized_counts}."
+        )
+    if (
+        isinstance(variant_index, bool)
+        or not isinstance(variant_index, int)
+        or variant_index < 0
+    ):
+        raise PresentationRandomizationError(
+            "variant_index must be a non-negative integer."
+        )
+
+    space_size = math.prod(UNIQUE_V2_PERMUTATION_RADICES)
+    if variant_index >= space_size:
+        raise PresentationRandomizationError(
+            f"variant_index {variant_index} exceeds the unique bundle space "
+            f"of {space_size}."
+        )
+
+    remaining = variant_index
+    raw_ranks: list[int] = []
+    for radix in UNIQUE_V2_PERMUTATION_RADICES:
+        raw_ranks.append(remaining % radix)
+        remaining //= radix
+    if remaining:
+        raise AssertionError("mixed-radix decomposition left a remainder")
+
+    first_rank = raw_ranks[0]
+    second_rank = (
+        raw_ranks[1]
+        + (UNIQUE_V2_PERMUTATION_RADICES[1] // UNIQUE_V2_PERMUTATION_RADICES[0])
+        * first_rank
+    ) % UNIQUE_V2_PERMUTATION_RADICES[1]
+    ranks = [first_rank, second_rank]
+    for raw_rank, multiplier, radix in zip(
+        raw_ranks[2:],
+        (1, 7, 11, 13),
+        UNIQUE_V2_PERMUTATION_RADICES[2:],
+    ):
+        ranks.append((raw_rank + multiplier * second_rank) % radix)
+    return tuple(ranks)
+
+
+def stable_unique_candidate_permutation(
+    *,
+    base_seed: int,
+    task_id: str,
+    source_row_id: int,
+    session_index: int,
+    option_titles: Sequence[str],
+    permutation_rank: int,
+) -> tuple[int, ...]:
+    """Select one seeded permutation by rank without replacement."""
+
+    permutations = tuple(itertools.permutations(range(len(option_titles))))
+    if (
+        isinstance(permutation_rank, bool)
+        or not isinstance(permutation_rank, int)
+        or permutation_rank < 0
+        or permutation_rank >= len(permutations)
+    ):
+        raise PresentationRandomizationError(
+            f"permutation_rank must be in [0, {len(permutations)}); "
+            f"observed {permutation_rank!r}."
+        )
+    scored: list[tuple[bytes, tuple[int, ...]]] = []
+    for permutation in permutations:
+        payload = {
+            "schema": "memoryarena_candidate_order_unique_v2",
+            "base_seed": base_seed,
+            "task_id": task_id,
+            "source_row_id": source_row_id,
+            "session_index": session_index,
+            "option_titles": list(option_titles),
+            "permutation": list(permutation),
+        }
+        score = hashlib.sha256(_canonical_json(payload)).digest()
+        scored.append((score, permutation))
+    return sorted(scored)[permutation_rank][1]
 
 
 def reorder_candidate_options(question: str, permutation: Sequence[int]) -> str:
@@ -292,6 +442,13 @@ def presentation_config_manifest(*, mode: str, base_seed: int) -> dict[str, Any]
         "changes_prices": False,
         "changes_reward": False,
         "changes_candidate_text": False,
+        "variant_schedule": (
+            "without_replacement_bundle_v2"
+            if mode == PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_UNIQUE_V2
+            else "independent_hash_v1"
+            if mode == PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_V1
+            else "identity"
+        ),
     }
 
 
@@ -315,9 +472,12 @@ def _sha256_json(value: Any) -> str:
 __all__ = [
     "PRESENTATION_LABEL_CONTRACT",
     "PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_V1",
+    "PRESENTATION_RANDOMIZATION_CANDIDATE_ORDER_UNIQUE_V2",
     "PRESENTATION_RANDOMIZATION_MODES",
     "PRESENTATION_RANDOMIZATION_NONE",
     "PRESENTATION_VARIANT_SCHEMA",
+    "UNIQUE_V2_OPTION_COUNTS",
+    "UNIQUE_V2_PERMUTATION_RADICES",
     "CandidateBlock",
     "PresentationRandomizationError",
     "PresentationVariant",
@@ -326,4 +486,6 @@ __all__ = [
     "reorder_candidate_options",
     "split_candidate_block",
     "stable_candidate_permutation",
+    "stable_unique_candidate_permutation",
+    "unique_bundle_permutation_ranks",
 ]

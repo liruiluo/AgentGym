@@ -12,6 +12,10 @@ derived-data generator is implemented.
 - `verify_candidate_order_randomization.py`: proof-carrying validation for the
   first presentation-only variant. It verifies that every answer, candidate
   line, and non-candidate byte remains frozen while only option order changes.
+- `verify_candidate_order_unique_v2.py`: validates the replacement schedule.
+  It additionally requires every six-session variant of a parent bundle to be
+  unique and reports per-session coverage separately. The first session has
+  only `3! = 6` orders; sessions 2--6 each have `5! = 120` orders.
 
 Run the 5.2 GB catalog scan on `cpu9n`, not on a training pod. Inputs must be
 pinned by SHA256. Generated reports and copied datasets belong under the
@@ -44,4 +48,16 @@ PYTHONPATH=AgentGym/agentenv-agentmemory \
 python AgentGym/agentenv-agentmemory/scripts/audits/dataset_randomization/verify_candidate_order_randomization.py \
   --raw-data /path/to/raw_memoryarena_bundled_shopping_data.jsonl \
   --base-seed 20260728 --replicas 8 --output /path/to/audit.json
+```
+
+`candidate_order_unique_v2` supersedes the independent-hash schedule for new
+experiments. For the first eight variants, session 1 exhausts all six orders
+before reusing two, sessions 2--6 each use eight distinct orders, and all eight
+complete six-session permutation tuples are distinct. Audit it with:
+
+```bash
+PYTHONPATH=AgentGym/agentenv-agentmemory \
+python AgentGym/agentenv-agentmemory/scripts/audits/dataset_randomization/verify_candidate_order_unique_v2.py \
+  --raw-data /path/to/raw_memoryarena_bundled_shopping_data.jsonl \
+  --base-seed 20260728 --replicas 8 --output /path/to/unique-v2-audit.json
 ```
