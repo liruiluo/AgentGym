@@ -780,6 +780,7 @@ def main() -> None:
         },
         "label_evidence": {
             "canonical_whole_chain_summary": {
+                "scope": "AMG stricter derived-data audit; not an upstream MemoryArena label verdict",
                 "chain_status_counts": chain_summary["chain_status_counts"],
                 "step_status_counts": chain_summary["step_status_counts"],
                 "check_status_counts": chain_summary["check_status_counts"],
@@ -807,6 +808,7 @@ def main() -> None:
             "used_domain_chain_counts": dict(sorted(used_chain_counts.items())),
             "unused_domain_chain_ids": sorted(domain_chain_ids - set(used_chain_counts)),
             "budget_replay": {
+                "scope": "AMG strict-budget replay; discrepancies are not confirmed upstream label failures",
                 "pass_bundle_count": len(budget_passes),
                 "fail_bundle_count": len(budget_failures),
                 "failures": [
@@ -854,7 +856,7 @@ def main() -> None:
         "",
         "## Scope",
         "",
-        "This is a read-only structural and leakage audit. Provisional lexical mappings are used only for shortcut diagnostics and never promoted to annotation proof.",
+        "This is a read-only structural and leakage audit. MemoryArena publishes these 150 rows as a test set; the train/dev/test split below is AMG's row-position development split. Provisional lexical mappings are used only for shortcut diagnostics and never promoted to annotation proof.",
         "",
         "## Core shape",
         "",
@@ -865,7 +867,7 @@ def main() -> None:
         f"- Option-count distribution: {report['raw_schema']['option_count']}.",
         f"- Normalized global preambles: {report['template_reuse']['normalized_preamble_count']}; semantic instruction templates: {report['template_reuse']['semantic_instruction_template_count']}.",
         "",
-        "## Split leakage",
+        "## AMG row-position split overlap",
         "",
         f"- Dev target ASINs seen in train: {split_overlap['target_asin']['train_dev_shared_unique']} unique ({split_overlap['target_asin']['dev_unique_seen_in_train_fraction']:.1%}).",
         f"- Test target ASINs seen in train: {split_overlap['target_asin']['train_test_shared_unique']} unique ({split_overlap['target_asin']['test_unique_seen_in_train_fraction']:.1%}).",
@@ -884,7 +886,7 @@ def main() -> None:
         "",
         "## Label evidence boundary",
         "",
-        f"- Canonical whole-chain verdicts: {label['canonical_whole_chain_summary']['chain_status_counts']}; proven-correct chains: {label['canonical_whole_chain_summary']['proven_correct_chain_count']}.",
+        f"- AMG stricter whole-chain audit statuses: {label['canonical_whole_chain_summary']['chain_status_counts']}; proven under that stricter audit: {label['canonical_whole_chain_summary']['proven_correct_chain_count']}. These are not upstream MemoryArena label verdicts.",
         f"- Candidate records carrying an ASIN: {label['whole_candidate_resolution_asin_present_count']}/{label['visible_candidate_count']}; only {label['whole_non_target_candidate_resolution_asin_present_count']} are non-target slots. Target-slot ASIN attachment is conditional on provisional alignment and is not mapping proof.",
         f"- Strict target alignment: {label['canonical_whole_chain_summary']['check_status_counts']['target_alignment']}.",
         "- The older semantic audit can produce compatibility/ranking failures from fuzzy candidate-title resolution; the canonical audit refuses to turn those fuzzy mappings into formal ranking proof.",
@@ -898,7 +900,7 @@ def main() -> None:
         "",
         "## Immediate implication",
         "",
-        "Option shuffling and wording perturbations can reduce surface-position cues, but they cannot remove product/chain memorization. The current raw split is row-disjoint but not product-, option-, template-, or dependency-disjoint. A useful expansion therefore needs explicit candidate-ASIN sidecars, a symbolic six-step oracle, grouped splitting, and paired counterfactual chains whose dependent observation is identical before RETRIEVE while the hidden prior and correct BUY flip.",
+        "Option shuffling and wording perturbations can reduce surface-position cues, but they cannot remove product/chain memorization. The current AMG row-position split is row-disjoint but not product-, option-, template-, or dependency-disjoint. A useful expansion therefore needs explicit candidate-ASIN sidecars, a symbolic six-step oracle, grouped splitting, and paired counterfactual chains whose dependent observation is identical before RETRIEVE while the hidden prior and correct BUY flip.",
         "",
     ]
     args.output_md.write_text("\n".join(lines), encoding="utf-8")
