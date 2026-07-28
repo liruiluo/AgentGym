@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from agentenv_agentmemory.memoryarena_dataset import (
@@ -177,6 +178,9 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
         budget_cents: int = 10_000,
         first_valid_add_reward: float = FIRST_VALID_ADD_BONUS,
         first_valid_later_session_retrieve_reward: float = FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
+        ltm_inventory_mode: str = "hidden",
+        ltm_transition_notice_mode: str = "none",
+        action_listing_mode: str = "separate",
     ):
         backend = backend or FakeNativeBackend()
         env = MemoryArenaWebShopEnv(
@@ -187,6 +191,9 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
             first_valid_later_session_retrieve_reward=(
                 first_valid_later_session_retrieve_reward
             ),
+            ltm_inventory_mode=ltm_inventory_mode,
+            ltm_transition_notice_mode=ltm_transition_notice_mode,
+            action_listing_mode=action_listing_mode,
         )
         env.reset()
         return env, backend
@@ -529,6 +536,265 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
         self.assertFalse(done)
         self.assertIn(authored, observation)
         self.assertEqual(info["memory_ops"][0]["retrieved_count"], 1)
+
+    def test_retrieve_by_memory_id_reads_exactly_the_requested_entry(self) -> None:
+        env, _ = self.make_env(ltm_inventory_mode="keys")
+        first_value = "Alpha 7 exact compatibility facts"
+        second_value = "Alpha 8 different compatibility facts"
+        _, _, _, _, first_info = env.step(
+            f'ADD {{"key":"prior-one","value":"{first_value}"}}'
+        )
+        _, _, _, _, second_info = env.step(
+            f'ADD {{"key":"prior-two","value":"{second_value}"}}'
+        )
+        first_id = first_info["memory_ops"][0]["memory_id"]
+        second_id = second_info["memory_ops"][0]["memory_id"]
+        purchase(env, TARGETS[0])
+
+        observation, reward, done, _, info = env.step(
+            f'RETRIEVE {{"memory_id":"{second_id}"}}'
+        )
+
+        self.assertEqual(reward, FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS)
+        self.assertFalse(done)
+        self.assertNotIn(first_value, observation)
+        self.assertIn(second_value, observation)
+        event = info["memory_ops"][0]
+        self.assertEqual(event["lookup_mode"], "memory_id")
+        self.assertEqual(event["memory_id"], second_id)
+        self.assertEqual(event["retrieved_memory_ids"], [second_id])
+        self.assertNotIn(first_id, event["retrieved_memory_ids"])
+        self.assertNotIn("query", event)
+        self.assertNotIn("top_k", event)
+
+    def test_retrieve_lookup_fields_are_mutually_exclusive_and_fail_closed(self) -> None:
+        env, _ = self.make_env(ltm_inventory_mode="keys")
+        env.step('ADD {"key":"prior","value":"Alpha 7 facts"}')
+        invalid_payloads = (
+            {},
+            {"query": "Alpha", "memory_id": "mem_0000"},
+            {"memory_id": "mem_0000", "top_k": 3},
+            {"memory_id": "mem_9999"},
+        )
+
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                observation, reward, done, _, info = env.step(
+                    f"RETRIEVE {json.dumps(payload)}"
+                )
+                self.assertIn("Invalid action", observation)
+                self.assertLess(reward, 0.0)
+                self.assertFalse(done)
+                self.assertEqual(env.active_context, [])
+                self.assertEqual(info["memory_ops"], [])
+
+    def test_key_inventory_is_opt_in_and_never_exposes_memory_values(self) -> None:
+        hidden_env, _ = self.make_env()
+        hidden_observation, _ = hidden_env.reset()
+        self.assertNotIn("Long-term memory inventory", hidden_observation)
+
+        env, _ = self.make_env(ltm_inventory_mode="keys")
+        initial_observation, initial_info = env.reset()
+        self.assertIn("Long-term memory inventory (keys only)", initial_observation)
+        self.assertIn("<empty>", initial_observation)
+        self.assertEqual(initial_info["ltm_inventory_mode"], "keys")
+        self.assertEqual(initial_info["ltm_inventory_count"], 0)
+
+        authored_key = "prior-product-1"
+        authored_value = "Alpha 7 secret compatibility value"
+        env.step(
+            f'ADD {{"key":"{authored_key}","value":"{authored_value}"}}'
+        )
+        observation, _, done, _, info = purchase(env, TARGETS[0])
+
+        self.assertFalse(done)
+        self.assertIn(f"[mem_0000] {authored_key}", observation)
+        self.assertNotIn(authored_value, observation)
+        self.assertEqual(info["ltm_inventory_count"], 1)
+
+        observation, _, _, _, info = env.step(
+            f'RETRIEVE {{"query":"{authored_key}","top_k":3}}'
+        )
+        self.assertIn(authored_value, observation)
+        self.assertEqual(info["memory_ops"][0]["retrieved_memory_ids"], ["mem_0000"])
+
+    def test_unified_action_listing_keeps_native_and_memory_actions_together(self) -> None:
+        env, _ = self.make_env(action_listing_mode="unified")
+        observation = env.render_observation()
+
+        self.assertEqual(observation.count("Action formats:"), 1)
+        self.assertNotIn("Native WebShop actions currently available:", observation)
+        self.assertNotIn("Memory actions:", observation)
+        action_block = observation.split("Action formats:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("- search[keywords]", action_block)
+        self.assertIn('- ADD {"key": "...", "value": "..."}', action_block)
+        self.assertIn('- RETRIEVE {"query": "...", "top_k": 3}', action_block)
+        self.assertIn('- RETRIEVE {"memory_id": "mem_0000"}', action_block)
+        self.assertEqual(env.build_info()["action_listing_mode"], "unified")
+
+    def test_unified_action_listing_tracks_dynamic_native_clicks(self) -> None:
+        env, _ = self.make_env(action_listing_mode="unified")
+
+        search_observation, _, _, _, _ = env.step("search[item]")
+        search_actions = search_observation.split("Action formats:\n", 1)[1].split(
+            "\n\n", 1
+        )[0]
+        self.assertIn(f"- click[{TARGETS[0]}]", search_actions)
+        self.assertIn('- RETRIEVE {"query": "...", "top_k": 3}', search_actions)
+        self.assertIn('- RETRIEVE {"memory_id": "mem_0000"}', search_actions)
+
+        product_observation, _, _, _, _ = env.step(f"click[{TARGETS[0]}]")
+        product_actions = product_observation.split("Action formats:\n", 1)[1].split(
+            "\n\n", 1
+        )[0]
+        self.assertIn("- click[Buy Now]", product_actions)
+        self.assertNotIn("- search[keywords]", product_actions)
+        self.assertIn('- ADD {"key": "...", "value": "..."}', product_actions)
+
+    def test_unified_listing_preserves_linked_memory_chain_semantics(self) -> None:
+        separate, _ = self.make_env(
+            ltm_inventory_mode="keys",
+            action_listing_mode="separate",
+        )
+        unified, _ = self.make_env(
+            ltm_inventory_mode="keys",
+            action_listing_mode="unified",
+        )
+        actions = (
+            'ADD {"key":"product_1","value":"Alpha 7 compatibility facts"}',
+            "search[item]",
+            f"click[{TARGETS[0]}]",
+            "click[Buy Now]",
+            'RETRIEVE {"query":"product_1","top_k":3}',
+            "search[item]",
+            f"click[{TARGETS[1]}]",
+            "click[Buy Now]",
+        )
+
+        rewards = []
+        for action in actions:
+            separate_result = separate.step(action)
+            unified_result = unified.step(action)
+            rewards.append(unified_result[1])
+            self.assertEqual(separate_result[1:4], unified_result[1:4])
+            separate_info = dict(separate_result[4])
+            unified_info = dict(unified_result[4])
+            separate_info.pop("action_listing_mode")
+            unified_info.pop("action_listing_mode")
+            self.assertEqual(separate_info, unified_info)
+
+        self.assertEqual(
+            rewards,
+            [
+                FIRST_VALID_ADD_BONUS,
+                0.0,
+                0.0,
+                1.0,
+                FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
+                0.0,
+                0.0,
+                1.0,
+            ],
+        )
+        self.assertEqual(unified.build_info()["current_subtask_index"], 2)
+
+    def test_transition_notice_reports_state_only_on_first_later_session_turn(self) -> None:
+        authored_value = "Alpha 7 secret compatibility value"
+        env, _ = self.make_env(
+            ltm_inventory_mode="keys",
+            ltm_transition_notice_mode="state",
+        )
+        env.step(
+            f'ADD {{"key":"product_1","value":"{authored_value}"}}'
+        )
+
+        observation, _, done, _, info = purchase(env, TARGETS[0])
+
+        self.assertFalse(done)
+        self.assertIn("Session transition state:", observation)
+        self.assertIn("1 long-term memory entry remains stored", observation)
+        self.assertIn("Its value is hidden until RETRIEVE", observation)
+        self.assertNotIn(authored_value, observation)
+        self.assertEqual(info["ltm_transition_notice_mode"], "state")
+
+        observation, _, _, _, _ = env.step("search[item]")
+        self.assertNotIn("Session transition state:", observation)
+
+    def test_transition_notice_is_opt_in(self) -> None:
+        env, _ = self.make_env(ltm_inventory_mode="keys")
+        env.step('ADD {"key":"product_1","value":"Alpha 7 facts"}')
+
+        observation, _, _, _, info = purchase(env, TARGETS[0])
+
+        self.assertNotIn("Session transition state:", observation)
+        self.assertEqual(info["ltm_transition_notice_mode"], "none")
+
+    def test_key_inventory_rejects_scratchpad_keys(self) -> None:
+        env, _ = self.make_env(ltm_inventory_mode="keys")
+
+        for key in (
+            "contains/slash",
+            "line1\nline2",
+            "x" * 25,
+            " leading",
+            "trailing ",
+        ):
+            with self.subTest(key=key):
+                action = f'ADD {json.dumps({"key": key, "value": "facts live here"})}'
+                observation, reward, done, _, info = env.step(action)
+                self.assertIn("Invalid action", observation)
+                self.assertLess(reward, 0.0)
+                self.assertFalse(done)
+                self.assertEqual(info["ltm_inventory_count"], 0)
+
+    def test_key_inventory_supports_complete_linked_memory_chain(self) -> None:
+        env, _ = self.make_env(ltm_inventory_mode="keys")
+
+        _, add_reward, _, _, add_info = env.step(
+            'ADD {"key":"product_1","value":"Alpha 7 compatibility facts"}'
+        )
+        source_memory_id = add_info["memory_ops"][0]["memory_id"]
+        _, first_buy_reward, first_done, _, first_buy_info = purchase(env, TARGETS[0])
+        retrieve_observation, retrieve_reward, _, _, retrieve_info = env.step(
+            'RETRIEVE {"query":"product_1","top_k":3}'
+        )
+        _, second_buy_reward, second_done, _, second_buy_info = purchase(env, TARGETS[1])
+
+        self.assertEqual(add_reward, FIRST_VALID_ADD_BONUS)
+        self.assertEqual(first_buy_reward, 1.0)
+        self.assertFalse(first_done)
+        self.assertTrue(first_buy_info["purchase_history"][0]["purchase_correct"])
+        self.assertEqual(retrieve_reward, FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS)
+        self.assertIn("Alpha 7 compatibility facts", retrieve_observation)
+        self.assertEqual(
+            retrieve_info["memory_ops"][0]["retrieved_memory_ids"],
+            [source_memory_id],
+        )
+        self.assertEqual(second_buy_reward, 1.0)
+        self.assertFalse(second_done)
+        self.assertEqual(second_buy_info["current_subtask_index"], 2)
+
+    def test_key_inventory_does_not_gate_correct_purchase_on_memory_actions(self) -> None:
+        env, _ = self.make_env(ltm_inventory_mode="keys")
+
+        _, reward, done, _, info = purchase(env, TARGETS[0])
+
+        self.assertEqual(reward, 1.0)
+        self.assertFalse(done)
+        self.assertTrue(info["purchase_history"][0]["purchase_correct"])
+        self.assertEqual(info["current_subtask_index"], 1)
+
+    def test_rejects_unknown_ltm_inventory_mode(self) -> None:
+        with self.assertRaisesRegex(ValueError, "ltm_inventory_mode"):
+            self.make_env(ltm_inventory_mode="values")
+
+    def test_rejects_unknown_ltm_transition_notice_mode(self) -> None:
+        with self.assertRaisesRegex(ValueError, "ltm_transition_notice_mode"):
+            self.make_env(ltm_transition_notice_mode="instruction")
+
+    def test_rejects_unknown_action_listing_mode(self) -> None:
+        with self.assertRaisesRegex(ValueError, "action_listing_mode"):
+            self.make_env(action_listing_mode="ranked")
 
     def test_full_six_purchase_chain_succeeds(self) -> None:
         env, backend = self.make_env()

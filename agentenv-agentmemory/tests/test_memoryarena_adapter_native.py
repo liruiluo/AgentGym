@@ -92,6 +92,90 @@ class NativeAgentMemoryAdapterTests(unittest.TestCase):
         self.assertNotIn(" BUY ", prompt)
         self.assertNotIn("GROUND", prompt)
 
+    def test_neutral_prompt_keeps_interfaces_without_memory_timing_sop(self) -> None:
+        legacy = AgentMemoryAdapter.conversation_start_for_mode(
+            ActionFormat.REACT,
+            "legacy",
+        )[0]["value"]
+        neutral = AgentMemoryAdapter.conversation_start_for_mode(
+            ActionFormat.REACT,
+            "neutral",
+        )[0]["value"]
+
+        for fragment in (
+            "search[keywords]",
+            "click[Buy Now]",
+            "ADD stores the provided key/value verbatim",
+            "RETRIEVE matches its query against text previously stored with ADD",
+            "long-term memory remains hidden until RETRIEVE",
+            "Thought:",
+            "Action:",
+        ):
+            self.assertIn(fragment, neutral)
+        for fragment in (
+            "use ADD before click[Buy Now]",
+            "At the start of every later shopping session",
+            "before choosing a compatible product",
+        ):
+            self.assertIn(fragment, legacy)
+            self.assertNotIn(fragment, neutral)
+
+    def test_neutral_prompt_covers_all_action_formats_and_validates_mode(self) -> None:
+        for action_format in ActionFormat:
+            prompt = AgentMemoryAdapter.conversation_start_for_mode(
+                action_format,
+                "neutral",
+            )[0]["value"]
+            self.assertIn("original MemoryArena WebShop surface", prompt)
+            self.assertNotIn("at the start of every later", prompt.lower())
+            self.assertNotIn("before committing the selected product", prompt.lower())
+
+        for action_format in ActionFormat:
+            neutral = AgentMemoryAdapter.conversation_start_for_mode(
+                action_format,
+                "neutral",
+            )[0]["value"]
+            neutral_horizon = AgentMemoryAdapter.conversation_start_for_mode(
+                action_format,
+                "neutral_horizon",
+            )[0]["value"]
+            self.assertEqual(
+                neutral_horizon,
+                neutral
+                + " This episode has six sequential shopping sessions. "
+                "Later-session compatibility constraints may refer to products "
+                "purchased in earlier sessions.",
+            )
+            self.assertNotIn("use ADD before click[Buy Now]", neutral_horizon)
+            self.assertNotIn(
+                "At the start of every later shopping session",
+                neutral_horizon,
+            )
+
+            responsibility = AgentMemoryAdapter.conversation_start_for_mode(
+                action_format,
+                "neutral_horizon_responsibility",
+            )[0]["value"]
+            responsibility_sentence = (
+                "Across shopping sessions, you are responsible for preserving and "
+                "accessing any facts needed for later decisions."
+            )
+            self.assertEqual(
+                responsibility,
+                neutral_horizon + " " + responsibility_sentence,
+            )
+            self.assertNotIn("use ADD before click[Buy Now]", responsibility)
+            self.assertNotIn(
+                "At the start of every later shopping session",
+                responsibility,
+            )
+
+        with self.assertRaisesRegex(ValueError, "memory_prompt_mode"):
+            AgentMemoryAdapter.conversation_start_for_mode(
+                ActionFormat.REACT,
+                "instruction",
+            )
+
     def test_client_sends_unparsed_action_to_environment_for_authoritative_rejection(self) -> None:
         class RejectingAdapter:
             @staticmethod

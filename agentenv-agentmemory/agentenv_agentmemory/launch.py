@@ -20,6 +20,12 @@ from .reward_hierarchy import (
     FIRST_VALID_ADD_BONUS,
     FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
 )
+from .memoryarena_webshop_env import (
+    ACTION_LISTING_MODES,
+    LTM_INVENTORY_MODES,
+    LTM_TRANSITION_NOTICE_MODES,
+)
+from .env_wrapper import MEMORY_PROMPT_MODES
 
 
 NATIVE_SURFACE = "memoryarena_webshop_native_v1"
@@ -106,6 +112,26 @@ def launch() -> None:
     parser.add_argument("--memory-first-later-retrieve-reward", type=float)
     parser.add_argument("--memory-exact-repeat-reward", type=float, default=0.0)
     parser.add_argument("--invalid-action-reward", type=float, default=0.0)
+    parser.add_argument(
+        "--ltm-inventory-mode",
+        choices=LTM_INVENTORY_MODES,
+        default="hidden",
+    )
+    parser.add_argument(
+        "--ltm-transition-notice-mode",
+        choices=LTM_TRANSITION_NOTICE_MODES,
+        default="none",
+    )
+    parser.add_argument(
+        "--memory-prompt-mode",
+        choices=MEMORY_PROMPT_MODES,
+        default="legacy",
+    )
+    parser.add_argument(
+        "--action-listing-mode",
+        choices=ACTION_LISTING_MODES,
+        default="separate",
+    )
     args = parser.parse_args()
 
     configured = {
@@ -164,6 +190,12 @@ def launch() -> None:
                     if args.memory_first_later_retrieve_reward is None
                     else args.memory_first_later_retrieve_reward
                 ),
+                "AGENTMEMORY_LTM_INVENTORY_MODE": args.ltm_inventory_mode,
+                "AGENTMEMORY_LTM_TRANSITION_NOTICE_MODE": (
+                    args.ltm_transition_notice_mode
+                ),
+                "AGENTMEMORY_MEMORY_PROMPT_MODE": args.memory_prompt_mode,
+                "AGENTMEMORY_ACTION_LISTING_MODE": args.action_listing_mode,
             }
         )
     elif args.surface in TRAVEL_SURFACES.values():

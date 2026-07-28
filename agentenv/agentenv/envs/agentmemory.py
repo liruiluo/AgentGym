@@ -145,6 +145,20 @@ MEMORY_ACTION_RE = re.compile(
 )
 FORMAL_SCHEMA_V3 = "agentmemory_formal_step_v3"
 WEBSHOP_V2_SURFACE = "memoryarena_webshop_native_v1"
+MEMORY_PROMPT_MODES = (
+    "legacy",
+    "neutral",
+    "neutral_horizon",
+    "neutral_horizon_responsibility",
+)
+NEUTRAL_HORIZON_CONTEXT = (
+    "This episode has six sequential shopping sessions. Later-session compatibility "
+    "constraints may refer to products purchased in earlier sessions."
+)
+CROSS_SESSION_MEMORY_RESPONSIBILITY = (
+    "Across shopping sessions, you are responsible for preserving and accessing any "
+    "facts needed for later decisions."
+)
 _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
 # In thinking mode the model reasons inside a <think>...</think> block before the
@@ -259,6 +273,90 @@ class AgentMemoryAdapter(BaseAdapter):
             ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
         ),
     }
+    neutral_conversation_start_dict = {
+        ActionFormat.REACT: (
+            ConversationMessage(
+                {
+                    "from": "human",
+                    "loss": None,
+                    "value": "You are operating in AgentMemoryGym on the original MemoryArena WebShop surface. Native shopping actions are search[keywords] and click[current clickable value]; click[Buy Now] commits the current product. ADD stores the provided key/value verbatim in hidden long-term memory. RETRIEVE matches its query against text previously stored with ADD and exposes matches as C* context. SUMMARY and FILTER operate only on visible S*/C* items. A committed purchase that advances the session clears the native page state and S*/C* context; long-term memory remains hidden until RETRIEVE. A purchase that fails verification ends the episode without revealing the verifier reason. Reply in exactly this format:\n\nThought:\nbrief reasoning\n\nAction:\n<exactly one native bracket action or uppercase memory-tool JSON action>",
+                }
+            ),
+            ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
+        ),
+        ActionFormat.FUNCTION_CALLING: (
+            ConversationMessage(
+                {
+                    "from": "human",
+                    "loss": None,
+                    "value": "You are operating in AgentMemoryGym on the original MemoryArena WebShop surface. Long-term memory persists across shopping sessions and is hidden unless retrieve exposes it. The available functions define the browser and memory interfaces. Invoke exactly one available function.\n\n"
+                    + format_function_call_prompt(AGENTMEMORY_FUNCTION_DESCRIPTION),
+                }
+            ),
+            ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
+        ),
+        ActionFormat.CODE_AS_ACTION: (
+            ConversationMessage(
+                {
+                    "from": "human",
+                    "loss": None,
+                    "value": "You are operating in AgentMemoryGym on the original MemoryArena WebShop surface. Long-term memory persists across shopping sessions and is hidden unless retrieve exposes it. The available functions define the browser and memory interfaces. Write Python code to call exactly one available function.\n\n"
+                    + format_code_as_action_prompt(AGENTMEMORY_FUNCTION_DESCRIPTION),
+                }
+            ),
+            ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
+        ),
+    }
+    neutral_horizon_conversation_start_dict = {
+        action_format: (
+            ConversationMessage(
+                {
+                    "from": "human",
+                    "loss": None,
+                    "value": prompt[0]["value"] + " " + NEUTRAL_HORIZON_CONTEXT,
+                }
+            ),
+            prompt[1],
+        )
+        for action_format, prompt in neutral_conversation_start_dict.items()
+    }
+    neutral_horizon_responsibility_conversation_start_dict = {
+        action_format: (
+            ConversationMessage(
+                {
+                    "from": "human",
+                    "loss": None,
+                    "value": prompt[0]["value"]
+                    + " "
+                    + CROSS_SESSION_MEMORY_RESPONSIBILITY,
+                }
+            ),
+            prompt[1],
+        )
+        for action_format, prompt in neutral_horizon_conversation_start_dict.items()
+    }
+
+    @classmethod
+    def conversation_start_for_mode(
+        cls,
+        action_format: ActionFormat,
+        memory_prompt_mode: str,
+    ) -> tuple[ConversationMessage, ConversationMessage]:
+        if memory_prompt_mode not in MEMORY_PROMPT_MODES:
+            raise ValueError(
+                "memory_prompt_mode must be one of: "
+                + ", ".join(MEMORY_PROMPT_MODES)
+                + "."
+            )
+        if memory_prompt_mode == "neutral_horizon_responsibility":
+            prompts = cls.neutral_horizon_responsibility_conversation_start_dict
+        elif memory_prompt_mode == "neutral_horizon":
+            prompts = cls.neutral_horizon_conversation_start_dict
+        elif memory_prompt_mode == "neutral":
+            prompts = cls.neutral_conversation_start_dict
+        else:
+            prompts = cls.conversation_start_dict
+        return prompts[action_format]
 
     @staticmethod
     def parse_react(text: str) -> ActionWithTought:
@@ -359,6 +457,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self.contract_id = self.metadata.get("contract_id")
         self.contract_sha256 = self.metadata.get("contract_sha256")
         self.system_prompt_sha256 = self.metadata.get("system_prompt_sha256")
+        self.memory_prompt_mode: str | None = None
         self.is_v3 = self.formal_schema_version == FORMAL_SCHEMA_V3
         if self.is_v3:
             _validate_v3_metadata(self.metadata)
@@ -371,6 +470,14 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 "AgentMemoryGym client received an unsupported legacy surface without "
                 f"the v3 schema: {self.surface!r}"
             )
+        else:
+            memory_prompt_mode = self.metadata.get("memory_prompt_mode", "legacy")
+            if memory_prompt_mode not in MEMORY_PROMPT_MODES:
+                raise RuntimeError(
+                    "AgentMemoryGym WebShop metadata has unsupported "
+                    f"memory_prompt_mode: {memory_prompt_mode!r}"
+                )
+            self.memory_prompt_mode = memory_prompt_mode
         self.data_len = data_len if data_len is not None else int(self.metadata["task_count"])
         response = requests.post(f"{self.env_server_base}/create", timeout=self.timeout)
         if response.status_code != 200:
@@ -384,10 +491,14 @@ class AgentMemoryEnvClient(BaseEnvClient):
             "env_info": created.get("info", {}),
             "metadata": self.metadata,
         }
+        self.last_action_submission: dict[str, str] | None = None
         self.conversation_start = (
             build_v3_conversation_start(self.metadata)
             if self.is_v3
-            else self.adapter_cls.conversation_start_dict[self.action_format]
+            else self.adapter_cls.conversation_start_for_mode(
+                self.action_format,
+                self.memory_prompt_mode,
+            )
         )
 
     def __len__(self):
@@ -411,6 +522,8 @@ class AgentMemoryEnvClient(BaseEnvClient):
         return self.info["observation"]
 
     def step(self, action: str) -> StepOutput:
+        raw_policy_output = action
+        parser_status = "server_native_v3"
         if action.endswith("</s>"):
             action = action[:-4]
         if self.is_v3:
@@ -423,12 +536,20 @@ class AgentMemoryEnvClient(BaseEnvClient):
                     action,
                     self.action_format,
                 )
+                parser_status = "adapter_parsed"
             except Exception:
                 # WebShop remains server-authoritative for invalid sampled text.
                 parsed_action = action
+                parser_status = "raw_fallback"
             if not isinstance(parsed_action, str) or not parsed_action.strip():
                 parsed_action = action
+                parser_status = "raw_fallback"
         response = self.post("step", {"action": parsed_action})
+        self.last_action_submission = {
+            "raw_policy_output": raw_policy_output,
+            "submitted_action": parsed_action,
+            "parser_status": parser_status,
+        }
         self.info = {
             "observation": response["observation"],
             "reward": response["reward"],
@@ -448,6 +569,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
 
     def reset(self, idx: int = 0) -> dict[str, Any]:
         response = self.post("reset", {"data_idx": idx})
+        self.last_action_submission = None
         self.info = {
             "observation": response["observation"],
             "reward": response["reward"],

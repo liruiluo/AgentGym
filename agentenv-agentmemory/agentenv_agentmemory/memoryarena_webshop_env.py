@@ -26,6 +26,14 @@ from .reward_hierarchy import (
 
 
 MEMORY_TOOL_OPS = {"ADD", "UPDATE", "DELETE", "RETRIEVE", "SUMMARY", "FILTER"}
+LTM_INVENTORY_MODES = ("hidden", "keys")
+LTM_TRANSITION_NOTICE_MODES = ("none", "state")
+ACTION_LISTING_MODES = ("separate", "unified")
+LTM_INVENTORY_KEY_MAX_CHARS = 24
+LTM_INVENTORY_KEY_RE = re.compile(
+    rf"\A[A-Za-z0-9](?:[A-Za-z0-9 _-]{{0,{LTM_INVENTORY_KEY_MAX_CHARS - 2}}}"
+    r"[A-Za-z0-9])?\Z"
+)
 NATIVE_ACTION_RE = re.compile(r"\A(search|click)\[([^\[\]\r\n]+)\]\Z")
 MEMORY_ACTION_RE = re.compile(r"\A(ADD|UPDATE|DELETE|RETRIEVE|SUMMARY|FILTER)\s+(\{.*\})\Z", re.DOTALL)
 
@@ -62,14 +70,38 @@ class MemoryArenaWebShopEnv:
         env_uid: str | None = None,
         first_valid_add_reward: float = FIRST_VALID_ADD_BONUS,
         first_valid_later_session_retrieve_reward: float = FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
+        ltm_inventory_mode: str = "hidden",
+        ltm_transition_notice_mode: str = "none",
+        action_listing_mode: str = "separate",
         presentation_randomization_mode: str = PRESENTATION_RANDOMIZATION_NONE,
         presentation_seed: int = 0,
     ) -> None:
         if not bundles:
             raise ValueError("MemoryArenaWebShopEnv requires at least one bundle.")
+        if ltm_inventory_mode not in LTM_INVENTORY_MODES:
+            raise ValueError(
+                "ltm_inventory_mode must be one of: "
+                + ", ".join(LTM_INVENTORY_MODES)
+            )
+        if ltm_transition_notice_mode not in LTM_TRANSITION_NOTICE_MODES:
+            raise ValueError(
+                "ltm_transition_notice_mode must be one of: "
+                + ", ".join(LTM_TRANSITION_NOTICE_MODES)
+            )
+        if action_listing_mode not in ACTION_LISTING_MODES:
+            raise ValueError(
+                "action_listing_mode must be one of: "
+                + ", ".join(ACTION_LISTING_MODES)
+            )
         self.bundles = tuple(bundles)
         self.backend = backend
         self.env_uid = env_uid or uuid.uuid4().hex[:12]
+        self.ltm_inventory_mode = ltm_inventory_mode
+        self.ltm_transition_notice_mode = ltm_transition_notice_mode
+        self.action_listing_mode = action_listing_mode
+        self.presentation_randomization_mode = presentation_randomization_mode
+        self.presentation_seed = presentation_seed
+        self.presentation_variant: PresentationVariant | None = None
         self._reward_contract = build_memoryarena_reward_contract(
             first_valid_add_reward=first_valid_add_reward,
             first_valid_later_session_retrieve_reward=(
@@ -82,9 +114,6 @@ class MemoryArenaWebShopEnv:
         self.first_valid_later_session_retrieve_reward = float(
             self._reward_contract["first_valid_later_session_retrieve_reward"]
         )
-        self.presentation_randomization_mode = presentation_randomization_mode
-        self.presentation_seed = presentation_seed
-        self.presentation_variant: PresentationVariant | None = None
         self.episode_counter = 0
         self.bundle: MemoryArenaBundle | None = None
         self.data_idx = 0
@@ -232,13 +261,21 @@ class MemoryArenaWebShopEnv:
         sections: list[str] = []
         if prefix:
             sections.append(prefix.strip())
+        if self.action_listing_mode == "unified":
+            native_actions = _render_unified_actions(page)
+            memory_actions = ""
+        else:
+            native_actions = _render_native_actions(page)
+            memory_actions = _memory_action_contract()
         sections.extend(
             [
                 f"Task family: bundled_shopping\nProgress: {self.current_session_index}/6",
+                self._render_transition_notice(),
                 page.observation.strip(),
-                _render_native_actions(page),
+                native_actions,
                 _render_context(self.active_context, self.session_trace),
-                _memory_action_contract(),
+                self._render_ltm_inventory(),
+                memory_actions,
             ]
         )
         return "\n\n".join(section for section in sections if section)
@@ -276,6 +313,12 @@ class MemoryArenaWebShopEnv:
             "tool_ops": list(self.last_tool_ops),
             "reward_components": [dict(item) for item in self.last_reward_components],
             "memory_ops": [item for item in self.last_tool_ops if item.get("op") in MEMORY_TOOL_OPS],
+            "ltm_inventory_mode": self.ltm_inventory_mode,
+            "ltm_transition_notice_mode": self.ltm_transition_notice_mode,
+            "action_listing_mode": self.action_listing_mode,
+            "ltm_inventory_count": len(self.long_term_memory),
+            "ltm_inventory_key_max_chars": LTM_INVENTORY_KEY_MAX_CHARS,
+            "ltm_inventory_key_format": "ascii_identifier",
             "memory_state_diff": self.last_memory_diff,
             "purchase_history": list(self.purchase_ledger),
             "session_trace": list(self.session_trace),
@@ -285,6 +328,44 @@ class MemoryArenaWebShopEnv:
 
     def reward_contract(self) -> dict[str, Any]:
         return dict(self._reward_contract)
+
+    def _render_ltm_inventory(self) -> str:
+        if self.ltm_inventory_mode == "hidden":
+            return ""
+        lines = [
+            "Long-term memory inventory (keys only); values remain hidden until RETRIEVE. "
+            f"Keys are lookup labels of at most {LTM_INVENTORY_KEY_MAX_CHARS} ASCII "
+            "letters, digits, spaces, underscores, or hyphens; memory facts belong in values:"
+        ]
+        lines.extend(
+            f"- [{entry.memory_id}] {entry.key}"
+            for entry in self.long_term_memory.values()
+        )
+        if not self.long_term_memory:
+            lines.append("<empty>")
+        return "\n".join(lines)
+
+    def _render_transition_notice(self) -> str:
+        if (
+            self.ltm_transition_notice_mode != "state"
+            or self.current_session_index == 0
+            or self.session_trace
+            or not self.long_term_memory
+        ):
+            return ""
+        count = len(self.long_term_memory)
+        noun = "entry" if count == 1 else "entries"
+        verb = "remains" if count == 1 else "remain"
+        pronoun = "Its value is" if count == 1 else "Their values are"
+        return "\n".join(
+            [
+                "Session transition state:",
+                "- A purchase advanced the task to a new shopping session.",
+                "- Page state and short-term S*/C* context were cleared.",
+                f"- {count} long-term memory {noun} {verb} stored. "
+                f"{pronoun} hidden until RETRIEVE.",
+            ]
+        )
 
     def _step_native(self, parsed: ParsedAction) -> tuple[str, float, bool]:
         if self.native_session_token is None:
@@ -434,7 +515,7 @@ class MemoryArenaWebShopEnv:
 
     def _memory_add(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         _require_exact_fields(payload, required={"key", "value"})
-        key = _require_text(payload, "key")
+        key = self._require_memory_key(payload)
         value = _require_text(payload, "value")
         memory_id = f"mem_{self.memory_id_counter:04d}"
         self.memory_id_counter += 1
@@ -448,7 +529,7 @@ class MemoryArenaWebShopEnv:
         entry = self._require_memory(_require_text(payload, "memory_id"))
         before = _memory_dict(entry)
         if "key" in payload:
-            entry.key = _require_text(payload, "key")
+            entry.key = self._require_memory_key(payload)
         entry.value = _require_text(payload, "value")
         entry.updated_step = self.step_count
         self.last_memory_diff["updated"].append({"before": before, "after": _memory_dict(entry)})
@@ -466,13 +547,39 @@ class MemoryArenaWebShopEnv:
         return f"Deleted memory {entry.memory_id}.", {"op": "DELETE", "memory_id": entry.memory_id, "key": entry.key}
 
     def _memory_retrieve(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        _require_exact_fields(payload, required={"query"}, optional={"top_k"})
-        query = _require_text(payload, "query")
-        top_k = payload.get("top_k", 3)
-        if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 20:
-            raise InvalidNativeAction("RETRIEVE top_k must be an integer from 1 to 20.")
-        ranked = rank_memory_entries_bm25(query, list(self.long_term_memory.values()), top_k=top_k)
-        entries = [entry for entry, score in ranked if score > 0]
+        has_query = "query" in payload
+        has_memory_id = "memory_id" in payload
+        if has_query == has_memory_id:
+            raise InvalidNativeAction(
+                "RETRIEVE expects exactly one of query or memory_id."
+            )
+
+        lookup: dict[str, Any]
+        if has_memory_id:
+            _require_exact_fields(payload, required={"memory_id"})
+            memory_id = _require_text(payload, "memory_id")
+            entries = [self._require_memory(memory_id)]
+            lookup = {
+                "lookup_mode": "memory_id",
+                "memory_id": memory_id,
+            }
+        else:
+            _require_exact_fields(payload, required={"query"}, optional={"top_k"})
+            query = _require_text(payload, "query")
+            top_k = payload.get("top_k", 3)
+            if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 20:
+                raise InvalidNativeAction("RETRIEVE top_k must be an integer from 1 to 20.")
+            ranked = rank_memory_entries_bm25(
+                query,
+                list(self.long_term_memory.values()),
+                top_k=top_k,
+            )
+            entries = [entry for entry, score in ranked if score > 0]
+            lookup = {
+                "lookup_mode": "query",
+                "query": query,
+                "top_k": top_k,
+            }
         for entry in entries:
             entry.access_count += 1
         self.active_context = [_render_memory(entry) for entry in entries]
@@ -484,8 +591,7 @@ class MemoryArenaWebShopEnv:
             message = "No relevant memory retrieved. Long-term memory is empty."
         return message, {
             "op": "RETRIEVE",
-            "query": query,
-            "top_k": top_k,
+            **lookup,
             "retrieved_memory_ids": [entry.memory_id for entry in entries],
             "retrieved_count": len(entries),
         }
@@ -556,6 +662,18 @@ class MemoryArenaWebShopEnv:
         except KeyError as exc:
             raise InvalidNativeAction(f"Unknown memory_id {memory_id!r}.") from exc
 
+    def _require_memory_key(self, payload: dict[str, Any]) -> str:
+        key = _require_text(payload, "key")
+        if self.ltm_inventory_mode == "keys" and LTM_INVENTORY_KEY_RE.fullmatch(key) is None:
+            raise InvalidNativeAction(
+                "In key-inventory mode, field 'key' must be a single ASCII lookup label "
+                f"of at most {LTM_INVENTORY_KEY_MAX_CHARS} characters using only letters, "
+                "digits, spaces, underscores, or hyphens, with no leading or trailing "
+                "separator. Store "
+                "memory facts in 'value'."
+            )
+        return key
+
     def _append_trace(self, action: str, result: str) -> None:
         self.session_trace.append(f"Action: {action}\nResult: {result}")
 
@@ -624,6 +742,26 @@ def _render_native_actions(page: NativePage) -> str:
     return "\n".join(lines)
 
 
+def _render_unified_actions(page: NativePage) -> str:
+    lines = [
+        "Action formats:",
+        (
+            "Use long-term memory for cross-session dependencies: after an "
+            "important purchase or fact, store it with ADD; in later sessions, "
+            "retrieve relevant stored facts with RETRIEVE before choosing based "
+            "on previous products. Take exactly one environment action per reply "
+            "and wait for the ADD/RETRIEVE result before the next action. No key, "
+            "schema, memory content, or query wording is prescribed; choose them "
+            "from the task context."
+        ),
+    ]
+    if page.has_search_bar:
+        lines.append("- search[keywords]")
+    lines.extend(f"- click[{value}]" for value in page.clickables)
+    lines.extend(f"- {action}" for action in _memory_action_examples())
+    return "\n".join(lines)
+
+
 def _render_context(active: Sequence[str], trace: Sequence[str]) -> str:
     lines = ["Current-session trace:"]
     lines.extend(f"- S{index}: {item}" for index, item in enumerate(trace))
@@ -640,14 +778,30 @@ def _memory_action_contract() -> str:
     return "\n".join(
         [
             "Memory actions:",
-            'ADD {"key": "...", "value": "..."}',
-            'UPDATE {"memory_id": "mem_0000", "value": "..."}',
-            'DELETE {"memory_id": "mem_0000"}',
-            'RETRIEVE {"query": "...", "top_k": 3}',
-            'SUMMARY {"text": "...", "source_ids": ["S0", "C0"]}',
-            'FILTER {"keep_ids": ["C0"], "scope": "active"}',
+            (
+                "Use long-term memory for cross-session dependencies: after an "
+                "important purchase or fact, store it with ADD; in later sessions, "
+                "retrieve relevant stored facts with RETRIEVE before choosing based "
+                "on previous products. Take exactly one environment action per reply "
+                "and wait for the ADD/RETRIEVE result before the next action. No key, "
+                "schema, memory content, or query wording is prescribed; choose them "
+                "from the task context."
+            ),
+            *_memory_action_examples(),
         ]
     )
+
+
+def _memory_action_examples() -> list[str]:
+    return [
+        'ADD {"key": "...", "value": "..."}',
+        'UPDATE {"memory_id": "mem_0000", "value": "..."}',
+        'DELETE {"memory_id": "mem_0000"}',
+        'RETRIEVE {"query": "...", "top_k": 3}',
+        'RETRIEVE {"memory_id": "mem_0000"}',
+        'SUMMARY {"text": "...", "source_ids": ["S0", "C0"]}',
+        'FILTER {"keep_ids": ["C0"], "scope": "active"}',
+    ]
 
 
 def _require_exact_fields(

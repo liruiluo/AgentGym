@@ -18,7 +18,13 @@ from .memoryarena_dataset import (
     MemoryArenaDataset,
     load_memoryarena_dataset,
 )
-from .memoryarena_webshop_env import MemoryArenaWebShopEnv
+from .memoryarena_webshop_env import (
+    ACTION_LISTING_MODES,
+    LTM_INVENTORY_KEY_MAX_CHARS,
+    LTM_INVENTORY_MODES,
+    LTM_TRANSITION_NOTICE_MODES,
+    MemoryArenaWebShopEnv,
+)
 from .native_webshop_backend import MemoryArenaNativeWebShopBackend
 from .presentation_randomization import (
     PRESENTATION_RANDOMIZATION_MODES,
@@ -33,6 +39,12 @@ from .reward_hierarchy import (
 
 
 NATIVE_SURFACE = "memoryarena_webshop_native_v1"
+MEMORY_PROMPT_MODES = (
+    "legacy",
+    "neutral",
+    "neutral_horizon",
+    "neutral_horizon_responsibility",
+)
 FORBIDDEN_SURROGATE_ENV = {
     "AGENTMEMORY_CATALOG_INDEX_PATH",
     "AGENTMEMORY_SEARCH_TIMEOUT_MS",
@@ -66,10 +78,30 @@ class AgentMemoryWrapper:
                 FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS,
             ),
         )
+        self.ltm_inventory_mode = _env_choice(
+            "AGENTMEMORY_LTM_INVENTORY_MODE",
+            default="hidden",
+            choices=LTM_INVENTORY_MODES,
+        )
+        self.ltm_transition_notice_mode = _env_choice(
+            "AGENTMEMORY_LTM_TRANSITION_NOTICE_MODE",
+            default="none",
+            choices=LTM_TRANSITION_NOTICE_MODES,
+        )
+        self.action_listing_mode = _env_choice(
+            "AGENTMEMORY_ACTION_LISTING_MODE",
+            default="separate",
+            choices=ACTION_LISTING_MODES,
+        )
+        self.memory_prompt_mode = _env_choice(
+            "AGENTMEMORY_MEMORY_PROMPT_MODE",
+            default="legacy",
+            choices=MEMORY_PROMPT_MODES,
+        )
         self.presentation_randomization_mode = _env_choice(
             "AGENTMEMORY_PRESENTATION_RANDOMIZATION",
-            PRESENTATION_RANDOMIZATION_NONE,
-            PRESENTATION_RANDOMIZATION_MODES,
+            default=PRESENTATION_RANDOMIZATION_NONE,
+            choices=PRESENTATION_RANDOMIZATION_MODES,
         )
         self.presentation_seed = _env_int(
             "AGENTMEMORY_PRESENTATION_SEED",
@@ -93,6 +125,7 @@ class AgentMemoryWrapper:
             attributes_file=_required_path("MEMORYARENA_WEBSHOP_ATTR_FILE"),
             search_root=_required_path("MEMORYARENA_WEBSHOP_SEARCH_ROOT"),
             java_home=_required_path("MEMORYARENA_WEBSHOP_JAVA_HOME"),
+            expected_memoryarena_commit=_required_env("MEMORYARENA_BASE_COMMIT"),
             price_seed=_env_int("AGENTMEMORY_WEBSHOP_PRICE_SEED", 233),
         )
         self.dataset = load_memoryarena_dataset(
@@ -128,6 +161,9 @@ class AgentMemoryWrapper:
                         "first_valid_later_session_retrieve_reward"
                     ]
                 ),
+                ltm_inventory_mode=self.ltm_inventory_mode,
+                ltm_transition_notice_mode=self.ltm_transition_notice_mode,
+                action_listing_mode=self.action_listing_mode,
                 presentation_randomization_mode=(
                     self.presentation_randomization_mode
                 ),
@@ -211,7 +247,13 @@ class AgentMemoryWrapper:
             "annotation_gate_allowed_task_ids_sha256": self.annotation_gate.allowed_task_ids_sha256,
             "annotation_gate_allowed_task_count": len(self.annotation_gate.allowed_task_ids),
             "reward_contract": dict(self.reward_contract),
+            "ltm_inventory_mode": self.ltm_inventory_mode,
+            "ltm_transition_notice_mode": self.ltm_transition_notice_mode,
+            "action_listing_mode": self.action_listing_mode,
+            "memory_prompt_mode": self.memory_prompt_mode,
             "presentation_randomization": dict(self.presentation_randomization),
+            "ltm_inventory_key_max_chars": LTM_INVENTORY_KEY_MAX_CHARS,
+            "ltm_inventory_key_format": "ascii_identifier",
             "backend": self.backend.metadata(),
         }
 
@@ -309,19 +351,6 @@ def _env_int(key: str, default: int) -> int:
         raise RuntimeError(f"{key} must be an integer.") from exc
 
 
-def _env_choice(
-    key: str,
-    default: str,
-    choices: tuple[str, ...],
-) -> str:
-    value = os.environ.get(key, default)
-    if value not in choices:
-        raise RuntimeError(
-            f"{key} must be one of {choices}; observed {value!r}."
-        )
-    return value
-
-
 def _env_nonnegative_float(key: str, default: float) -> float:
     value = os.environ.get(key)
     try:
@@ -331,6 +360,13 @@ def _env_nonnegative_float(key: str, default: float) -> float:
     if not math.isfinite(parsed) or parsed < 0.0:
         raise RuntimeError(f"{key} must be a finite, non-negative number.")
     return parsed
+
+
+def _env_choice(key: str, *, default: str, choices: tuple[str, ...]) -> str:
+    value = os.environ.get(key, default)
+    if value not in choices:
+        raise RuntimeError(f"{key} must be one of: {', '.join(choices)}.")
+    return value
 
 
 def _sha256_file(path: Path) -> str:

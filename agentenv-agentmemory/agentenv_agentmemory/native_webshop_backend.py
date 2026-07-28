@@ -6,12 +6,19 @@ import importlib
 import json
 import os
 import random
+import subprocess
 import sys
 import threading
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Collection, Protocol
+
+
+FROZEN_MEMORYARENA_COMMIT = "6cd9de14b71915e39ac742a20dc33785e14b6aab"
+NATIVE_WEBSHOP_UPSTREAM_SCOPE = (
+    "env/env_systems/web_shopping_env/runtime"
+)
 
 
 @dataclass(frozen=True)
@@ -78,6 +85,7 @@ class MemoryArenaNativeWebShopBackend:
         attributes_file: str | Path,
         search_root: str | Path,
         java_home: str | Path,
+        expected_memoryarena_commit: str = FROZEN_MEMORYARENA_COMMIT,
         price_seed: int = 233,
         limit_goals: int = 1,
     ) -> None:
@@ -87,6 +95,7 @@ class MemoryArenaNativeWebShopBackend:
         self.search_root = Path(search_root).expanduser().resolve()
         self.java_home = Path(java_home).expanduser().resolve()
         self.jvm_path = self.java_home / "lib" / "jvm" / "lib" / "server" / "libjvm.so"
+        self.expected_memoryarena_commit = str(expected_memoryarena_commit)
         self.price_seed = int(price_seed)
         self.limit_goals = int(limit_goals)
         if self.limit_goals < 1:
@@ -98,12 +107,17 @@ class MemoryArenaNativeWebShopBackend:
         self._locks: dict[str, threading.RLock] = {}
         self._lifecycle_lock = threading.RLock()
         self._price_table_sha256: str | None = None
+        self._upstream_provenance: dict[str, Any] | None = None
 
     def start(self) -> None:
         with self._lifecycle_lock:
             if self._server is not None:
                 return
             self._validate_paths()
+            self._upstream_provenance = attest_native_webshop_upstream(
+                self.memoryarena_root,
+                expected_commit=self.expected_memoryarena_commit,
+            )
             self._configure_runtime_paths()
             root_text = str(self.memoryarena_root)
             if root_text not in sys.path:
@@ -137,16 +151,13 @@ class MemoryArenaNativeWebShopBackend:
             random_state = random.getstate()
             random.seed(self.price_seed)
             try:
-                server = module.SimServer(
+                server = _build_external_task_server(
+                    module,
                     base_url="http://127.0.0.1:3000",
                     file_path=str(self.items_file),
-                    filter_goals=None,
-                    limit_goals=self.limit_goals,
                     num_products=None,
                     human_goals=0,
                     show_attrs=False,
-                    external_instructions=True,
-                    external_reward=True,
                 )
             finally:
                 random.setstate(random_state)
@@ -249,6 +260,7 @@ class MemoryArenaNativeWebShopBackend:
             "price_seed": self.price_seed,
             "product_count": len(self._server.product_item_dict),
             "price_table_sha256": self.price_table_sha256(),
+            "upstream_provenance": dict(self._upstream_provenance or {}),
         }
 
     def price_table_sha256(self) -> str:
@@ -363,3 +375,193 @@ def _validate_session_token(value: str) -> str:
     if any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for char in value):
         raise ValueError("session_token may contain only ASCII letters, digits, '-' and '_'.")
     return value
+
+
+def attest_native_webshop_upstream(
+    memoryarena_root: str | Path,
+    *,
+    expected_commit: str = FROZEN_MEMORYARENA_COMMIT,
+) -> dict[str, Any]:
+    """Require the imported WebShop runtime to match the pinned upstream tree."""
+
+    root = Path(memoryarena_root).expanduser().resolve()
+    if not (root / ".git").exists():
+        raise RuntimeError(f"MemoryArena root is not a git worktree: {root}")
+    commit = _git(root, "rev-parse", "HEAD").strip()
+    if commit != expected_commit:
+        raise RuntimeError(
+            "MemoryArena commit mismatch for native WebShop: "
+            f"expected {expected_commit}, observed {commit}"
+        )
+    status = _git(
+        root,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--",
+        NATIVE_WEBSHOP_UPSTREAM_SCOPE,
+    )
+    if status.strip():
+        raise RuntimeError(
+            "MemoryArena native WebShop source is not pristine at the pinned commit:\n"
+            + status.rstrip()
+        )
+
+    tracked_files = tuple(
+        line
+        for line in _git(
+            root,
+            "ls-tree",
+            "-r",
+            "--name-only",
+            commit,
+            "--",
+            NATIVE_WEBSHOP_UPSTREAM_SCOPE,
+        ).splitlines()
+        if line
+    )
+    if not tracked_files:
+        raise RuntimeError("Pinned MemoryArena commit has no native WebShop runtime files.")
+    tracked_python = {path for path in tracked_files if path.endswith(".py")}
+    runtime_root = root / NATIVE_WEBSHOP_UPSTREAM_SCOPE
+    filesystem_python = {
+        path.relative_to(root).as_posix()
+        for path in runtime_root.rglob("*.py")
+        if "__pycache__" not in path.parts
+    }
+    if filesystem_python != tracked_python:
+        raise RuntimeError(
+            "MemoryArena native WebShop Python source set is not pristine: "
+            f"untracked={sorted(filesystem_python - tracked_python)} "
+            f"missing={sorted(tracked_python - filesystem_python)}"
+        )
+
+    files_sha256 = {}
+    for relative_path in tracked_files:
+        path = root / relative_path
+        if not path.is_file():
+            raise RuntimeError(f"Missing MemoryArena native WebShop file: {path}")
+        files_sha256[relative_path] = _sha256_file(path)
+    digest = hashlib.sha256(
+        json.dumps(
+            files_sha256,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "mode": "pinned_pristine_upstream",
+        "memoryarena_commit": commit,
+        "source_scope": NATIVE_WEBSHOP_UPSTREAM_SCOPE,
+        "source_file_count": len(files_sha256),
+        "source_bundle_sha256": digest,
+    }
+
+
+def _build_external_task_server(
+    module: Any,
+    *,
+    base_url: str,
+    file_path: str,
+    num_products: int | None,
+    human_goals: int,
+    show_attrs: bool,
+) -> Any:
+    """Use the native browser/search engine with AMG-owned tasks and rewards."""
+
+    class ExternalTaskSimServer(module.SimServer):
+        def __init__(self) -> None:
+            self.base_url = base_url
+            (
+                self.all_products,
+                self.product_item_dict,
+                self.product_prices,
+                _,
+            ) = module.load_products(
+                filepath=file_path,
+                num_products=num_products,
+                human_goals=human_goals,
+            )
+            if not self.all_products:
+                raise RuntimeError("MemoryArena WebShop catalog is empty.")
+            self.search_engine = module.init_search_engine(num_products=num_products)
+            product = self.all_products[0]
+            self.goals = [_external_bootstrap_goal(product)]
+            self.show_attrs = show_attrs
+            self.weights = [1.0]
+            self.cum_weights = [0.0, 1.0]
+            self.user_sessions = {}
+            self.search_time = 0.0
+            self.render_time = 0.0
+            self.sample_time = 0.0
+            self.assigned_instruction_text = None
+
+        def done(self, session_id, **kwargs):
+            session = self.user_sessions[session_id]
+            session["actions"]["purchase"] += 1
+            session["done"] = True
+            session["reward"] = 0.0
+            session["verbose_info"] = {}
+            url = (
+                f"{self.base_url}/done/{session_id}/"
+                f"{session['asin']}/{session['options']}"
+            )
+            html = module.map_action_to_html(
+                f"click[{module.END_BUTTON}]",
+                session_id=session_id,
+                reward=0.0,
+                asin=session["asin"],
+                options=session["options"],
+                instruction_text=session["goal"]["instruction_text"],
+            )
+            return html, url, 0.0
+
+    return ExternalTaskSimServer()
+
+
+def _external_bootstrap_goal(product: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "asin": str(product["asin"]),
+        "category": str(product.get("category", "")),
+        "query": str(product.get("query", "")),
+        "name": str(product.get("name") or product.get("Title") or ""),
+        "product_category": str(product.get("product_category", "")),
+        "instruction_text": "",
+        "attributes": [],
+        "price_upper": 0.0,
+        "goal_options": {},
+        "weight": 1.0,
+    }
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _git(root: Path, *args: str) -> str:
+    command = [
+        "git",
+        "-c",
+        f"safe.directory={root}",
+        "-C",
+        str(root),
+        *args,
+    ]
+    try:
+        return subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        stderr = getattr(exc, "stderr", "") or ""
+        raise RuntimeError(
+            f"Cannot attest MemoryArena native WebShop source at {root}: "
+            f"{stderr.strip()}"
+        ) from exc
