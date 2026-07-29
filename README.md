@@ -6,6 +6,9 @@
 
 ## 🔔 News
 
+- 🎉 [2025-09-10] You can develop your custom environment to AgentGym and perform RL on it! The tutorial is [here](https://github.com/WooooDyy/AgentGym/blob/main/docs/tutorials/en/05-2nd-Development.md).
+- 🍺 [2025-09-10] Our paper is released on arXiv: [AgentGym-RL: Training LLM Agents for Long-Horizon Decision Making through Multi-Turn Reinforcement Learning](https://arxiv.org/abs/2509.08755).
+- 🚀 [2025-09-10] AgentGym-RL Framework released! We introduce the reinforcement learning (RL) version of AgentGym, enabling agents to learn directly from interactive environments: [AgentGym-RL](https://github.com/WooooDyy/AgentGym-RL).
 - 👀 [2025/09/03] AgentGym now provides an interactive frontend for visualization. Researchers can replay and inspect full trajectories, step through agent decision-making, and analyze model behaviors more easily.
 - 🔧 [2025/09/03] We updated several environments to improve stability and robustness, with better support for large-scale parallel execution (e.g., parallel runs in WebArena). **Try it for RL!**
 - 🥳 [2024/06/07] Our paper is released on arXiv: [AgentGym: Evolving Large Language Model-based Agents across Diverse Environments](https://arxiv.org/abs/2406.04151) !
@@ -152,6 +155,18 @@ Depending on which environments you want to use, `cd` into the corresponding `ag
 - zhxi22@m.fudan.edu.cn
 
 ## 🔖 Citation
+
+```
+@misc{xi2025agentgymrltrainingllmagents,
+      title={AgentGym-RL: Training LLM Agents for Long-Horizon Decision Making through Multi-Turn Reinforcement Learning}, 
+      author={Zhiheng Xi and Jixuan Huang and Chenyang Liao and Baodai Huang and Honglin Guo and Jiaqi Liu and Rui Zheng and Junjie Ye and Jiazheng Zhang and Wenxiang Chen and Wei He and Yiwen Ding and Guanyu Li and Zehui Chen and Zhengyin Du and Xuesong Yao and Yufei Xu and Jiecao Chen and Tao Gui and Zuxuan Wu and Qi Zhang and Xuanjing Huang and Yu-Gang Jiang},
+      year={2025},
+      eprint={2509.08755},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2509.08755}, 
+}
+```
 
 ```
 @misc{xi2024agentgym,

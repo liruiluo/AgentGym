@@ -11,10 +11,10 @@
 cd agentenv-webshop
 
 # WebShop 依赖特殊的 Python、PyTorch、Faiss 和 Java 版本，为避免冲突，请创建一个新的 Conda 环境。
-conda create -n webshop -f environment.yml
+conda env create -f environment.yml -n webshop
 
 # 创建环境后，请激活这个环境。
-conda activate -n webshop
+conda activate  webshop
 
 # 然后，运行 setup.sh 配置 WebShop 的运行环境。
 bash ./setup.sh
