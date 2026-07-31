@@ -224,15 +224,16 @@ audit verdicts as passed.
 First certify a balanced product pool against the exact native catalog,
 attribute file, price table, and every Lucene index byte:
 
-Certification keeps the policy-facing identity natural: each candidate is
-shown by its complete native product title, while its ASIN remains hidden until
-the normal WebShop `click[ASIN]` result action. Native search uses a deterministic
-three-or-more-word contiguous phrase copied from that visible title, retains the
-certified natural attribute (for example, `leather` or `vanilla`), and excludes
-characters unsafe for `search[...]`. This supports long or bracketed catalog
-titles without inventing a synthetic product ID. Candidates must pass native
-first-page search, product-page open, and exact purchase-receipt checks before
-they are assigned evenly and ASIN-disjointly to train, dev, and test.
+Certification keeps the policy-facing request natural: the task prompt does not
+state the correct target ASIN. Native WebShop search results still expose every
+candidate ASIN as the ordinary `click[ASIN]` navigation handle. Native search
+uses a deterministic three-or-more-word contiguous phrase copied from that
+visible title, retains the certified natural attribute (for example, `leather`
+or `vanilla`), and excludes characters unsafe for `search[...]`. This supports
+long or bracketed catalog titles without inventing a synthetic product ID.
+Candidates must pass native first-page search, product-page open, and exact
+purchase-receipt checks before they are assigned evenly and ASIN-disjointly to
+train, dev, and test.
 
 ```bash
 python AgentGym/agentenv-agentmemory/scripts/audits/certify_procedural_memory_product_pool.py \
