@@ -17,7 +17,7 @@ from .schema import (
 from .scenarios import scenario_by_id
 
 
-VERIFIER_VERSION = "exhaustive_approved_shortlist_chain_v3"
+VERIFIER_VERSION = "exhaustive_approved_shortlist_chain_v4"
 
 
 @dataclass(frozen=True)
@@ -89,9 +89,11 @@ class OrbitProof:
                 "answer_domain": (
                     "current_phase_approved_titles_resolved_by_hidden_asin_receipt"
                 ),
-                "approved_candidate_titles_policy_visible": True,
-                "approved_candidate_asins_policy_visible": False,
-                "asin_policy_visible": False,
+                "approved_candidate_titles_in_task_prompt": True,
+                "approved_candidate_asins_in_task_prompt": False,
+                "target_asin_in_task_prompt": False,
+                "native_search_result_asin_handles_visible": True,
+                "native_click_action_uses_asin_handle": True,
                 "native_purchase_receipt_asin_verification": True,
                 "out_of_shortlist_purchase_is_legal": False,
                 "global_catalog_attribute_uniqueness_required": False,

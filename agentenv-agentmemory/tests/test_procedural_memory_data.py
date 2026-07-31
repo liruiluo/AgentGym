@@ -498,9 +498,11 @@ class ProceduralNaturalChainTests(unittest.TestCase):
             verification["answer_domain"],
             "current_phase_approved_titles_resolved_by_hidden_asin_receipt",
         )
-        self.assertTrue(verification["approved_candidate_titles_policy_visible"])
-        self.assertFalse(verification["approved_candidate_asins_policy_visible"])
-        self.assertFalse(verification["asin_policy_visible"])
+        self.assertTrue(verification["approved_candidate_titles_in_task_prompt"])
+        self.assertFalse(verification["approved_candidate_asins_in_task_prompt"])
+        self.assertFalse(verification["target_asin_in_task_prompt"])
+        self.assertTrue(verification["native_search_result_asin_handles_visible"])
+        self.assertTrue(verification["native_click_action_uses_asin_handle"])
         self.assertTrue(verification["native_purchase_receipt_asin_verification"])
         self.assertFalse(verification["out_of_shortlist_purchase_is_legal"])
         self.assertFalse(verification["global_catalog_attribute_uniqueness_required"])
@@ -755,7 +757,13 @@ class ProductPoolAndRuntimeTests(unittest.TestCase):
         self.assertEqual(len(pool.products), 6 * 2 * 3)
         self.assertTrue(audit["verification"]["category_and_attribute_from_native_record"])
         self.assertFalse(
-            audit["verification"]["approved_shortlist_asins_policy_visible"]
+            audit["verification"]["approved_shortlist_asins_in_task_prompt"]
+        )
+        self.assertTrue(
+            audit["verification"]["native_search_result_asin_handles_visible"]
+        )
+        self.assertTrue(
+            audit["verification"]["native_click_action_uses_asin_handle"]
         )
         self.assertTrue(audit["verification"]["native_title_globally_unique"])
         self.assertEqual(
@@ -1127,17 +1135,20 @@ class ProductPoolAndRuntimeTests(unittest.TestCase):
                 "current_phase_two_approved_listings",
             )
             self.assertEqual(
-                info["policy_visible_product_identity"],
+                info["task_prompt_product_identity"],
                 "complete_native_title",
             )
-            self.assertFalse(info["asin_policy_visible"])
+            self.assertFalse(info["target_asin_in_task_prompt"])
+            self.assertTrue(info["native_search_result_asin_handles_visible"])
+            self.assertTrue(info["native_click_action_uses_asin_handle"])
             self.assertTrue(info["purchase_receipt_asin_verification"])
             self.assertFalse(info["global_catalog_attribute_uniqueness_claimed"])
             self.assertTrue(
                 info["global_catalog_normalized_title_uniqueness_claimed"]
             )
 
-            env.step(f"search[{outside.title}]")
+            search_observation, _, _, _, _ = env.step(f"search[{outside.title}]")
+            self.assertIn(f"click[{outside.asin}]", search_observation)
             env.step(f"click[{outside.asin}]")
             terminal, reward, done, _, terminal_info = env.step("click[Buy Now]")
             self.assertTrue(done)

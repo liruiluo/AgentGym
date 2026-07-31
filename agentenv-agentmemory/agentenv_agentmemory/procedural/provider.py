@@ -141,7 +141,7 @@ class VerifiedProceduralBundleProvider:
 
     def metadata(self) -> dict[str, object]:
         return {
-            "schema": "agentmemory_verified_natural_chain_provider_v3",
+            "schema": "agentmemory_verified_natural_chain_provider_v4",
             "split": self.split,
             "provider_mode": self.mode,
             "task_count": self.task_count,
@@ -159,8 +159,10 @@ class VerifiedProceduralBundleProvider:
             "product_pool_sha256": self.generator.pool.semantic_sha256,
             "products_per_attribute_cell": self.generator.pool.products_per_cell,
             "candidate_count_per_phase": 2,
-            "policy_visible_product_identity": "complete_native_title",
-            "asin_policy_visible": False,
+            "task_prompt_product_identity": "complete_native_title",
+            "target_asin_in_task_prompt": False,
+            "native_search_result_asin_handles_visible": True,
+            "native_click_action_uses_asin_handle": True,
             "purchase_receipt_asin_verification": True,
             "catalog_wide_normalized_title_uniqueness": True,
             "phase_count_per_task": 6,

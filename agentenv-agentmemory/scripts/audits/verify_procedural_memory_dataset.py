@@ -128,7 +128,7 @@ def main() -> None:
     if not used_asins <= split_pool_asins:
         raise ProceduralMemoryDataError("generated window used a product from another split.")
     manifest = {
-        "schema": "agentmemory_verified_natural_attribute_dataset_window_v2",
+        "schema": "agentmemory_verified_natural_attribute_dataset_window_v3",
         "product_pool": {
             "file_sha256": pool_file_sha256,
             "semantic_sha256": pool.semantic_sha256,
@@ -168,8 +168,10 @@ def main() -> None:
         "verification": {
             "verifier_version": VERIFIER_VERSION,
             "candidate_count_per_phase": 2,
-            "policy_visible_product_identity": "complete_native_title",
-            "asin_policy_visible": False,
+            "task_prompt_product_identity": "complete_native_title",
+            "target_asin_in_task_prompt": False,
+            "native_search_result_asin_handles_visible": True,
+            "native_click_action_uses_asin_handle": True,
             "purchase_receipt_asin_verification": True,
             "catalog_wide_normalized_title_uniqueness": True,
             "phase_count_per_task": 6,

@@ -236,7 +236,7 @@ def _validate_procedural_metadata(metadata: Mapping[str, Any]) -> None:
     provider = metadata.get("provider")
     if not isinstance(provider, Mapping):
         raise RuntimeError("Procedural AgentMemoryGym metadata requires provider")
-    if provider.get("schema") != "agentmemory_verified_natural_chain_provider_v3":
+    if provider.get("schema") != "agentmemory_verified_natural_chain_provider_v4":
         raise RuntimeError("Procedural AgentMemoryGym provider schema is unsupported")
     if provider.get("candidate_count_per_phase") != 2:
         raise RuntimeError("Procedural AgentMemoryGym requires two candidates per phase")
@@ -246,6 +246,22 @@ def _validate_procedural_metadata(metadata: Mapping[str, Any]) -> None:
         raise RuntimeError("Procedural AgentMemoryGym must not require human review")
     if provider.get("llm_judge_required") is not False:
         raise RuntimeError("Procedural AgentMemoryGym must not require an LLM judge")
+    if provider.get("task_prompt_product_identity") != "complete_native_title":
+        raise RuntimeError(
+            "Procedural AgentMemoryGym task prompt product identity is invalid"
+        )
+    if provider.get("target_asin_in_task_prompt") is not False:
+        raise RuntimeError(
+            "Procedural AgentMemoryGym task prompt must not reveal the target ASIN"
+        )
+    if provider.get("native_search_result_asin_handles_visible") is not True:
+        raise RuntimeError(
+            "Procedural AgentMemoryGym must preserve native search-result ASIN handles"
+        )
+    if provider.get("native_click_action_uses_asin_handle") is not True:
+        raise RuntimeError(
+            "Procedural AgentMemoryGym must preserve native click[ASIN] actions"
+        )
     provider_mode = provider.get("provider_mode")
     if provider_mode not in {"fixed_window", "reseeded_stream"}:
         raise RuntimeError("Procedural AgentMemoryGym provider mode is unsupported")

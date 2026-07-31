@@ -25,7 +25,7 @@ from .scenarios import (
 )
 
 
-CERTIFIER_VERSION = "native_natural_attribute_rules_v4"
+CERTIFIER_VERSION = "native_natural_attribute_rules_v5"
 _ASIN_RE = re.compile(r"^[A-Z0-9]{10}$")
 _QUERY_WORD_RE = re.compile(r"\b[\w][\w'&+./-]*\b", flags=re.UNICODE)
 _QUERY_SEPARATOR_RE = re.compile(r"\s+(?:[-\u2013\u2014|])\s+|[,;:]")
@@ -339,8 +339,10 @@ def _build_audit(
             "natural_attribute_values_per_slot": 2,
             "candidate_count_per_phase": 2,
             "approved_shortlist_uses_exact_asins_internally": True,
-            "approved_shortlist_asins_policy_visible": False,
-            "policy_visible_product_identity": "complete_native_title",
+            "approved_shortlist_asins_in_task_prompt": False,
+            "task_prompt_product_identity": "complete_native_title",
+            "native_search_result_asin_handles_visible": True,
+            "native_click_action_uses_asin_handle": True,
             "native_title_normalization": "unicode_nfkc_whitespace_casefold_v1",
             "native_title_catalog_match_count_required": 1,
             "native_title_globally_unique": True,
@@ -724,7 +726,9 @@ def _config_dict(config: NativeCertificationConfig) -> dict[str, Any]:
         "classification_source": (
             "native category plus unambiguous natural attribute evidence in title"
         ),
-        "policy_visible_product_identity": "complete native title, ASIN hidden",
+        "task_prompt_product_identity": (
+            "complete native title; target ASIN omitted from task prompt"
+        ),
         "search_query_source": (
             "safe contiguous natural phrase copied from the policy-visible title and "
             "containing its certified attribute evidence"
