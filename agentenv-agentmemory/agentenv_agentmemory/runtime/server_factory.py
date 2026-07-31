@@ -16,6 +16,8 @@ from ..domains import (
     TravelPlannerFactory,
 )
 from ..env_wrapper import AgentMemoryWrapper, NATIVE_SURFACE
+from ..procedural_webshop_env import PROCEDURAL_SURFACE
+from ..procedural_wrapper import ProceduralAgentMemoryWrapper
 from ..domains.browsecomp import (
     BROWSECOMP_BM25_INTEGRATION_BACKEND,
     BROWSECOMP_DENSE_BACKEND,
@@ -35,6 +37,8 @@ def build_server():
     surface = _required_env("AGENTMEMORY_SURFACE")
     if surface == NATIVE_SURFACE:
         return AgentMemoryWrapper()
+    if surface == PROCEDURAL_SURFACE:
+        return ProceduralAgentMemoryWrapper()
 
     factory = build_domain_registry().build(surface)
     first_add = _env_float("AGENTMEMORY_FIRST_ADD_REWARD", 0.0)

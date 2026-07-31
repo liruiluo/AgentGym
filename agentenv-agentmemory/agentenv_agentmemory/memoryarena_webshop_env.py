@@ -129,7 +129,7 @@ class MemoryArenaWebShopEnv:
         del seed
         self._close_native_session()
         self.data_idx = int(data_idx)
-        self.bundle = self.bundles[self.data_idx % len(self.bundles)]
+        self.bundle = self._bundle_for_data_idx(self.data_idx)
         if len(self.bundle.questions) != 6 or len(self.bundle.target_asins) != 6:
             raise ValueError(f"Bundle {self.bundle.task_id!r} is not a six-session chain.")
         self.episode_counter += 1
@@ -152,6 +152,9 @@ class MemoryArenaWebShopEnv:
             self.bundle.questions[0],
         )
         return self.render_observation(), self.build_info()
+
+    def _bundle_for_data_idx(self, data_idx: int) -> MemoryArenaBundle:
+        return self.bundles[data_idx % len(self.bundles)]
 
     def step(self, action: str):
         if self.done:

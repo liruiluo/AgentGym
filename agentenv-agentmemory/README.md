@@ -4,12 +4,13 @@ AgentMemoryGym integrates all four MemoryArena environment families behind one
 HTTP/runtime contract and adds the same policy-facing memory tools without
 exposing private answers. MemoryArena Formal Reasoning contains separate Math
 and Physics data domains. Search, Travel, and both Formal data domains expose
-separate paper-evaluation and fail-fast contracts, so AMG exposes nine runnable
-surfaces:
+separate paper-evaluation and fail-fast contracts. AMG keeps those nine frozen
+MemoryArena surfaces and adds one non-paper procedural training surface:
 
-| MemoryArena family | AMG surface |
+| Source / contract | AMG surface |
 | --- | --- |
 | Web Shopping | `memoryarena_webshop_native_v1` |
+| Programmatic memory training | `agentmemory_webshop_procedural_natural_chain_train_v1` |
 | Travel Planner / fail-fast | `memoryarena_travel_planner_failfast_one_action_v3` |
 | Travel Planner / paper eval | `memoryarena_travel_planner_paper_eval_one_action_v3` |
 | Web Search / public221 paper eval | `memoryarena_progressive_search_paper_eval_public221_one_action_v3` |
@@ -25,6 +26,32 @@ forms its all-task average over Shopping, Travel, Search, Math, and Physics.
 Only each domain's `paper_eval` contract contributes paper-style metrics;
 fail-fast surfaces are named training variants.
 
+The procedural surface isolates cross-session memory with a binary natural-
+attribute chain. Each of six phases names an approved shortlist of exactly two
+certified native products by their complete real catalog titles; the policy never
+receives an ASIN in the task text. One product represents each of that phase's
+two natural attribute values. The model searches the complete visible title,
+opens the matching native result, and the rule verifier uses the hidden ASIN in
+the purchase receipt. Certification scans the whole frozen catalog and keeps a
+title only when Unicode-normalized, whitespace-normalized, case-folded matching
+resolves to exactly one ASIN. Only the two displayed listings are eligible for
+the current order. A same-colored or same-material product elsewhere in the
+million-product catalog is not an approved substitute. Attribute uniqueness is
+deliberately shortlist-scoped; only the complete visible title is catalog-wide
+unique.
+
+The first phase states a starting natural attribute. Each later phase provides
+an independently generated two-row customer pairing table and requires the
+attribute of the product actually bought in the immediately preceding session.
+A paired task changes only the first request, keeps every later observation and
+candidate order byte-identical, and flips all six correct ASINs. Any phase with
+more or fewer than two approved candidates is rejected. The verifier enumerates
+all `2^6=64` in-shortlist purchase paths per task, proves exactly one legal path,
+and checks that the budget excludes none of them. Runtime rejects every
+out-of-shortlist purchase, including another catalog item with the same natural
+attribute, without revealing the answer. This surface requires neither human
+review nor an LLM judge and is never paper-eligible.
+
 The Web Shopping action surface is:
 
 ```text
@@ -38,10 +65,12 @@ SUMMARY {"text": "...", "source_ids": ["S0", "C0"]}
 FILTER {"keep_ids": ["C0"], "scope": "active"}
 ```
 
-Shopping remains native WebShop: search results expose real ASINs, product and
-option pages are navigated with `click[...]`, and only `click[Buy Now]` commits
-a purchase. There is no formal synthetic `SEARCH`, `BUY`, `ANSWER`, or
-`GROUND` action.
+Shopping remains native WebShop: the task text shows natural product cards, the
+model searches their complete titles, and native results expose clickable
+listing identifiers as part of ordinary navigation. Product and option pages
+are navigated with `click[...]`, and only `click[Buy Now]` commits a purchase.
+The purchase receipt's ASIN is an internal verifier key, not a customer request.
+There is no formal synthetic `SEARCH`, `BUY`, `ANSWER`, or `GROUND` action.
 
 ## Runtime contract
 
@@ -189,6 +218,82 @@ the manifest while allowing `pass`, `unknown`, `fail`, and
 `semantic_ambiguity` chains. Use it only when the run contract explicitly
 treats the upstream annotations as authoritative; it does not relabel those
 audit verdicts as passed.
+
+## Programmatic memory training
+
+First certify a balanced product pool against the exact native catalog,
+attribute file, price table, and every Lucene index byte:
+
+Certification keeps the policy-facing identity natural: each candidate is
+shown by its complete native product title, while its ASIN remains hidden until
+the normal WebShop `click[ASIN]` result action. Native search uses a deterministic
+three-or-more-word contiguous phrase copied from that visible title, retains the
+certified natural attribute (for example, `leather` or `vanilla`), and excludes
+characters unsafe for `search[...]`. This supports long or bracketed catalog
+titles without inventing a synthetic product ID. Candidates must pass native
+first-page search, product-page open, and exact purchase-receipt checks before
+they are assigned evenly and ASIN-disjointly to train, dev, and test.
+
+```bash
+python AgentGym/agentenv-agentmemory/scripts/audits/certify_procedural_memory_product_pool.py \
+  --memoryarena-root /path/to/frozen/MemoryArena \
+  --items-file /path/to/items_shuffle.json \
+  --attributes-file /path/to/items_ins_v2.json \
+  --search-root /path/to/search_engine \
+  --java-home /path/to/java-home \
+  --lucene-index-manifest /path/to/original_lucene_index_files.sha256 \
+  --expected-items-sha256 <sha256> \
+  --expected-attributes-sha256 <sha256> \
+  --expected-lucene-manifest-sha256 <sha256> \
+  --expected-price-table-sha256 <sha256> \
+  --output-pool /path/to/certified_pool_v3.json \
+  --output-audit /path/to/certified_pool_v3.audit.json
+```
+
+Verify any finite task window before training. This example generates 10,000
+tasks and machine-checks 640,000 complete purchase paths:
+
+```bash
+python AgentGym/agentenv-agentmemory/scripts/audits/verify_procedural_memory_dataset.py \
+  --product-pool /path/to/certified_pool_v3.json \
+  --product-pool-sha256 <pool-file-sha256> \
+  --split train \
+  --generator-seed 233 \
+  --task-count 10000 \
+  --output-manifest /path/to/train_10000.audit.json
+```
+
+The training server generates the verified stream on demand and refuses an
+odd task count, an unpinned pool, or `split=all`. A training seed enumerates
+the generator's complete collision-free semantic period before the stream
+derives another seed. With the certified 4-product-per-cell pool, that gives
+343,597,383,680 nonrepeating tasks before the first reseed; the deterministic
+stream remains unbounded after that point, but does not claim semantic
+uniqueness across complete seed epochs:
+
+```bash
+PYTHONPATH=AgentGym/agentenv-agentmemory:AgentGym/agentenv \
+/path/to/python -m agentenv_agentmemory.launch \
+  --surface agentmemory_webshop_procedural_natural_chain_train_v1 \
+  --memoryarena-root /path/to/frozen/MemoryArena \
+  --memoryarena-base-commit 6cd9de14b71915e39ac742a20dc33785e14b6aab \
+  --items-file /path/to/items_shuffle.json \
+  --attributes-file /path/to/items_ins_v2.json \
+  --search-root /path/to/search_engine \
+  --java-home /path/to/java-home \
+  --lucene-index-manifest /path/to/original_lucene_index_files.sha256 \
+  --procedural-product-pool /path/to/certified_pool_v3.json \
+  --procedural-product-pool-sha256 <pool-file-sha256> \
+  --procedural-task-count 10000 \
+  --procedural-generator-seed 233 \
+  --split train \
+  --run-id <run-id> \
+  --port 8000
+```
+
+Run `scripts/smoke/smoke_procedural_memory_webshop_native.py` with the same
+pinned native inputs to exercise all six real search, product-page, purchase,
+`ADD`, and later-session `RETRIEVE` transitions.
 
 ## Other environment launches
 

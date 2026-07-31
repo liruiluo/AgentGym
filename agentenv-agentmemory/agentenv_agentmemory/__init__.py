@@ -1,4 +1,5 @@
 from .memoryarena_webshop_env import MemoryArenaWebShopEnv
+from .procedural_webshop_env import ProceduralMemoryWebShopEnv
 
 
 def launch() -> None:
@@ -7,4 +8,4 @@ def launch() -> None:
     run_launch()
 
 
-__all__ = ["MemoryArenaWebShopEnv", "launch"]
+__all__ = ["MemoryArenaWebShopEnv", "ProceduralMemoryWebShopEnv", "launch"]

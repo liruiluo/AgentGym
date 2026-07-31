@@ -145,6 +145,9 @@ MEMORY_ACTION_RE = re.compile(
 )
 FORMAL_SCHEMA_V3 = "agentmemory_formal_step_v3"
 WEBSHOP_V2_SURFACE = "memoryarena_webshop_native_v1"
+PROCEDURAL_WEBSHOP_SURFACE = (
+    "agentmemory_webshop_procedural_natural_chain_train_v1"
+)
 MEMORY_PROMPT_MODES = (
     "legacy",
     "neutral",
@@ -223,6 +226,147 @@ def _validate_v3_metadata(metadata: Mapping[str, Any]) -> None:
             "AgentMemoryGym v3 system_prompt must contain every native action form"
         )
     build_v3_conversation_start(metadata)
+
+
+def _validate_procedural_metadata(metadata: Mapping[str, Any]) -> None:
+    if metadata.get("source") != "agentmemory_programmatic_generator":
+        raise RuntimeError("Procedural AgentMemoryGym source metadata is invalid")
+    if metadata.get("paper_eligible") is not False:
+        raise RuntimeError("Procedural AgentMemoryGym must not be paper-eligible")
+    provider = metadata.get("provider")
+    if not isinstance(provider, Mapping):
+        raise RuntimeError("Procedural AgentMemoryGym metadata requires provider")
+    if provider.get("schema") != "agentmemory_verified_natural_chain_provider_v3":
+        raise RuntimeError("Procedural AgentMemoryGym provider schema is unsupported")
+    if provider.get("candidate_count_per_phase") != 2:
+        raise RuntimeError("Procedural AgentMemoryGym requires two candidates per phase")
+    if provider.get("phase_count_per_task") != 6:
+        raise RuntimeError("Procedural AgentMemoryGym requires six phases per task")
+    if provider.get("human_review_required") is not False:
+        raise RuntimeError("Procedural AgentMemoryGym must not require human review")
+    if provider.get("llm_judge_required") is not False:
+        raise RuntimeError("Procedural AgentMemoryGym must not require an LLM judge")
+    provider_mode = provider.get("provider_mode")
+    if provider_mode not in {"fixed_window", "reseeded_stream"}:
+        raise RuntimeError("Procedural AgentMemoryGym provider mode is unsupported")
+    task_count = metadata.get("task_count")
+    if (
+        isinstance(task_count, bool)
+        or not isinstance(task_count, int)
+        or task_count <= 0
+        or task_count % 2
+        or provider.get("task_count") != task_count
+    ):
+        raise RuntimeError("Procedural AgentMemoryGym task_count metadata is invalid")
+    if metadata.get("provider_mode") != provider_mode:
+        raise RuntimeError("Procedural AgentMemoryGym provider mode metadata disagrees")
+    accepted_index_domain = provider.get("accepted_index_domain")
+    if metadata.get("accepted_index_domain") != accepted_index_domain:
+        raise RuntimeError(
+            "Procedural AgentMemoryGym accepted index domain metadata disagrees"
+        )
+    semantic_period_orbits = provider.get("semantic_period_orbits")
+    semantic_period_tasks = provider.get("semantic_period_tasks")
+    if (
+        isinstance(semantic_period_orbits, bool)
+        or not isinstance(semantic_period_orbits, int)
+        or semantic_period_orbits <= 0
+        or isinstance(semantic_period_tasks, bool)
+        or not isinstance(semantic_period_tasks, int)
+        or semantic_period_tasks != semantic_period_orbits * 2
+    ):
+        raise RuntimeError(
+            "Procedural AgentMemoryGym semantic period metadata is invalid"
+        )
+    stream = provider.get("reseeded_stream")
+    if provider_mode == "reseeded_stream":
+        if accepted_index_domain != "all_nonnegative_integers":
+            raise RuntimeError(
+                "Procedural AgentMemoryGym stream must accept all non-negative indices"
+            )
+        if not isinstance(stream, Mapping):
+            raise RuntimeError(
+                "Procedural AgentMemoryGym stream metadata is missing"
+            )
+        expected_stream_values = {
+            "tasks_per_seed_epoch": semantic_period_tasks,
+            "orbits_per_seed_epoch": semantic_period_orbits,
+            "counterfactual_pair_never_crosses_seed_epoch": True,
+            "seed_epoch_zero_uses_base_seed": True,
+            "collision_free_within_complete_seed_epoch": True,
+            "semantic_uniqueness_guaranteed_through_task_index": (
+                semantic_period_tasks - 1
+            ),
+            "cross_seed_epoch_semantic_uniqueness_guaranteed": False,
+        }
+        if any(stream.get(key) != value for key, value in expected_stream_values.items()):
+            raise RuntimeError(
+                "Procedural AgentMemoryGym stream epoch metadata is inconsistent"
+            )
+    elif stream is not None:
+        raise RuntimeError(
+            "Procedural AgentMemoryGym fixed windows must not expose stream metadata"
+        )
+
+
+def build_procedural_conversation_start(
+    action_format: ActionFormat,
+    memory_prompt_mode: str,
+) -> tuple[ConversationMessage, ConversationMessage]:
+    if memory_prompt_mode not in MEMORY_PROMPT_MODES:
+        raise ValueError(
+            "memory_prompt_mode must be one of: "
+            + ", ".join(MEMORY_PROMPT_MODES)
+            + "."
+        )
+    interface = (
+        "You are operating a programmatically generated AgentMemoryGym WebShop "
+        "training task with six separate shopping sessions. Native shopping "
+        "actions are search[keywords] and click[current clickable value]; "
+        "click[Buy Now] commits the current product. A successful purchase clears "
+        "the native page and short-term S*/C* context before the next session. "
+        "ADD stores the provided key/value verbatim in hidden long-term memory. "
+        "RETRIEVE exposes matching stored memories as C* context. SUMMARY and "
+        "FILTER operate only on visible S*/C* items. Long-term memory persists "
+        "between sessions but remains hidden until RETRIEVE. A failed purchase "
+        "ends the episode without revealing the expected answer."
+    )
+    if memory_prompt_mode in {"neutral_horizon", "neutral_horizon_responsibility"}:
+        interface += " " + NEUTRAL_HORIZON_CONTEXT
+    if memory_prompt_mode == "neutral_horizon_responsibility":
+        interface += " " + CROSS_SESSION_MEMORY_RESPONSIBILITY
+    if memory_prompt_mode == "legacy":
+        interface += (
+            " Preserve and retrieve any visible product attribute that a later "
+            "customer rule needs; the environment does not perform memory actions "
+            "for you and does not require a particular key or schema."
+        )
+
+    if action_format is ActionFormat.REACT:
+        prompt = (
+            interface
+            + " Reply in exactly this format:\n\nThought:\nbrief reasoning\n\n"
+            "Action:\n<exactly one native bracket action or uppercase "
+            "memory-tool JSON action>"
+        )
+    elif action_format is ActionFormat.FUNCTION_CALLING:
+        prompt = (
+            interface
+            + " Invoke exactly one available function.\n\n"
+            + format_function_call_prompt(AGENTMEMORY_FUNCTION_DESCRIPTION)
+        )
+    elif action_format is ActionFormat.CODE_AS_ACTION:
+        prompt = (
+            interface
+            + " Write Python code to call exactly one available function.\n\n"
+            + format_code_as_action_prompt(AGENTMEMORY_FUNCTION_DESCRIPTION)
+        )
+    else:  # pragma: no cover - ActionFormat is closed over the three modes above.
+        raise ValueError(f"Unsupported AgentMemoryGym action format: {action_format}")
+    return (
+        ConversationMessage({"from": "human", "loss": None, "value": prompt}),
+        ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
+    )
 
 
 def strip_think_prefix(text: str) -> str:
@@ -459,12 +603,22 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self.system_prompt_sha256 = self.metadata.get("system_prompt_sha256")
         self.memory_prompt_mode: str | None = None
         self.is_v3 = self.formal_schema_version == FORMAL_SCHEMA_V3
+        self.is_procedural = self.surface == PROCEDURAL_WEBSHOP_SURFACE
         if self.is_v3:
             _validate_v3_metadata(self.metadata)
             if self.action_format is not ActionFormat.REACT:
                 raise RuntimeError(
                     "AgentMemoryGym v3 domains currently require action_format='react'"
                 )
+        elif self.is_procedural:
+            _validate_procedural_metadata(self.metadata)
+            memory_prompt_mode = self.metadata.get("memory_prompt_mode", "legacy")
+            if memory_prompt_mode not in MEMORY_PROMPT_MODES:
+                raise RuntimeError(
+                    "AgentMemoryGym procedural metadata has unsupported "
+                    f"memory_prompt_mode: {memory_prompt_mode!r}"
+                )
+            self.memory_prompt_mode = memory_prompt_mode
         elif self.surface != WEBSHOP_V2_SURFACE:
             raise RuntimeError(
                 "AgentMemoryGym client received an unsupported legacy surface without "
@@ -495,6 +649,11 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self.conversation_start = (
             build_v3_conversation_start(self.metadata)
             if self.is_v3
+            else build_procedural_conversation_start(
+                self.action_format,
+                self.memory_prompt_mode,
+            )
+            if self.is_procedural
             else self.adapter_cls.conversation_start_for_mode(
                 self.action_format,
                 self.memory_prompt_mode,

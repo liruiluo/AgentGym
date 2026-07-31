@@ -58,6 +58,15 @@ class NativeWebShopBackend(Protocol):
     def product_title(self, asin: str) -> str:
         ...
 
+    def product_record(self, asin: str) -> dict[str, Any]:
+        ...
+
+    def product_price_cents(self, asin: str) -> int:
+        ...
+
+    def product_record_sha256(self, asin: str) -> str:
+        ...
+
     def metadata(self) -> dict[str, Any]:
         ...
 
@@ -244,6 +253,52 @@ class MemoryArenaNativeWebShopBackend:
         except KeyError as exc:
             raise KeyError(f"Unknown native WebShop ASIN: {normalized}") from exc
         return str(product["Title"])
+
+    def product_record(self, asin: str) -> dict[str, Any]:
+        """Return the frozen catalog fields used for rule classification."""
+
+        self.start()
+        if self._server is None:
+            raise RuntimeError("MemoryArena native backend failed to start.")
+        normalized = str(asin).upper()
+        try:
+            product = self._server.product_item_dict[normalized]
+        except KeyError as exc:
+            raise KeyError(f"Unknown native WebShop ASIN: {normalized}") from exc
+        return {
+            key: copy.deepcopy(product.get(key))
+            for key in ("Title", "category", "query", "product_category")
+        }
+
+    def product_price_cents(self, asin: str) -> int:
+        self.start()
+        if self._server is None:
+            raise RuntimeError("MemoryArena native backend failed to start.")
+        normalized = str(asin).upper()
+        try:
+            price = self._server.product_prices[normalized]
+        except KeyError as exc:
+            raise KeyError(f"Unknown native WebShop ASIN: {normalized}") from exc
+        return _price_to_cents(price)
+
+    def product_record_sha256(self, asin: str) -> str:
+        """Hash the exact normalized product record used by the native runtime."""
+
+        self.start()
+        if self._server is None:
+            raise RuntimeError("MemoryArena native backend failed to start.")
+        normalized = str(asin).upper()
+        try:
+            product = self._server.product_item_dict[normalized]
+        except KeyError as exc:
+            raise KeyError(f"Unknown native WebShop ASIN: {normalized}") from exc
+        payload = json.dumps(
+            product,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
 
     def metadata(self) -> dict[str, Any]:
         self.start()

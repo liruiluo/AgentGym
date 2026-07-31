@@ -22,6 +22,12 @@ from .memoryarena_webshop_env import (
     LTM_TRANSITION_NOTICE_MODES,
 )
 from .env_wrapper import MEMORY_PROMPT_MODES
+from .procedural import (
+    PROVIDER_MODE_FIXED_WINDOW,
+    PROVIDER_MODE_RESEEDED_STREAM,
+    PROVIDER_MODES,
+)
+from .procedural_webshop_env import PROCEDURAL_SURFACE
 
 
 NATIVE_SURFACE = "memoryarena_webshop_native_v1"
@@ -35,7 +41,7 @@ def launch() -> None:
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument(
         "--surface",
-        choices=[NATIVE_SURFACE, *V3_SURFACES],
+        choices=[NATIVE_SURFACE, PROCEDURAL_SURFACE, *V3_SURFACES],
         required=True,
     )
     parser.add_argument("--memoryarena-root", required=True)
@@ -62,6 +68,15 @@ def launch() -> None:
     )
     parser.add_argument("--annotation-gate-manifest")
     parser.add_argument("--annotation-gate-manifest-sha256")
+    parser.add_argument("--procedural-product-pool")
+    parser.add_argument("--procedural-product-pool-sha256")
+    parser.add_argument("--procedural-task-count", type=int)
+    parser.add_argument("--procedural-generator-seed", type=int)
+    parser.add_argument(
+        "--procedural-provider-mode",
+        choices=PROVIDER_MODES,
+    )
+    parser.add_argument("--procedural-start-orbit", type=int, default=0)
     parser.add_argument("--travel-tasks-path")
     parser.add_argument("--travel-database-path")
     parser.add_argument("--formal-reasoning-tasks-path")
@@ -166,6 +181,84 @@ def launch() -> None:
                 "AGENTMEMORY_ANNOTATION_GATE_MANIFEST_SHA256": (
                     args.annotation_gate_manifest_sha256
                 ),
+                "AGENTMEMORY_FIRST_VALID_ADD_REWARD": str(
+                    FIRST_VALID_ADD_BONUS
+                    if args.memory_first_add_reward is None
+                    else args.memory_first_add_reward
+                ),
+                "AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD": str(
+                    FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS
+                    if args.memory_first_later_retrieve_reward is None
+                    else args.memory_first_later_retrieve_reward
+                ),
+                "AGENTMEMORY_LTM_INVENTORY_MODE": args.ltm_inventory_mode,
+                "AGENTMEMORY_LTM_TRANSITION_NOTICE_MODE": (
+                    args.ltm_transition_notice_mode
+                ),
+                "AGENTMEMORY_MEMORY_PROMPT_MODE": args.memory_prompt_mode,
+                "AGENTMEMORY_ACTION_LISTING_MODE": args.action_listing_mode,
+            }
+        )
+    elif args.surface == PROCEDURAL_SURFACE:
+        _require_args(
+            parser,
+            args,
+            "items_file",
+            "attributes_file",
+            "search_root",
+            "java_home",
+            "lucene_index_manifest",
+            "procedural_product_pool",
+            "procedural_product_pool_sha256",
+            "procedural_task_count",
+        )
+        if args.procedural_generator_seed is None:
+            parser.error("surface requires: --procedural-generator-seed")
+        if args.split == "all":
+            parser.error("procedural data requires one explicit split")
+        if args.procedural_task_count <= 0 or args.procedural_task_count % 2:
+            parser.error("--procedural-task-count must be a positive even integer")
+        provider_mode = args.procedural_provider_mode or (
+            PROVIDER_MODE_RESEEDED_STREAM
+            if args.split == "train"
+            else PROVIDER_MODE_FIXED_WINDOW
+        )
+        if args.procedural_start_orbit < 0:
+            parser.error("--procedural-start-orbit must be non-negative")
+        if provider_mode == PROVIDER_MODE_RESEEDED_STREAM:
+            if args.split != "train":
+                parser.error(
+                    "--procedural-provider-mode reseeded_stream is training-only"
+                )
+            if args.procedural_start_orbit != 0:
+                parser.error(
+                    "reseeded_stream requires --procedural-start-orbit 0"
+                )
+        configured.update(
+            {
+                "MEMORYARENA_WEBSHOP_ITEMS_FILE": args.items_file,
+                "MEMORYARENA_WEBSHOP_ATTR_FILE": args.attributes_file,
+                "MEMORYARENA_WEBSHOP_SEARCH_ROOT": args.search_root,
+                "MEMORYARENA_WEBSHOP_JAVA_HOME": args.java_home,
+                "MEMORYARENA_LUCENE_INDEX_MANIFEST": args.lucene_index_manifest,
+                "AGENTMEMORY_PROCEDURAL_PRODUCT_POOL": (
+                    args.procedural_product_pool
+                ),
+                "AGENTMEMORY_PROCEDURAL_PRODUCT_POOL_SHA256": (
+                    args.procedural_product_pool_sha256
+                ),
+                "AGENTMEMORY_PROCEDURAL_TASK_COUNT": str(
+                    args.procedural_task_count
+                ),
+                "AGENTMEMORY_PROCEDURAL_GENERATOR_SEED": str(
+                    args.procedural_generator_seed
+                ),
+                "AGENTMEMORY_PROCEDURAL_PROVIDER_MODE": provider_mode,
+                "AGENTMEMORY_PROCEDURAL_START_ORBIT": str(
+                    args.procedural_start_orbit
+                ),
+                "AGENTMEMORY_SPLIT": args.split,
+                "AGENTMEMORY_WEBSHOP_PRICE_SEED": str(args.price_seed),
                 "AGENTMEMORY_FIRST_VALID_ADD_REWARD": str(
                     FIRST_VALID_ADD_BONUS
                     if args.memory_first_add_reward is None

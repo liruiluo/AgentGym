@@ -13,6 +13,7 @@ from agentenv_agentmemory.domains import (
     TRAVEL_SURFACES,
 )
 from agentenv_agentmemory.env_wrapper import NATIVE_SURFACE
+from agentenv_agentmemory.procedural_webshop_env import PROCEDURAL_SURFACE
 from agentenv_agentmemory.launch import launch
 from agentenv_agentmemory.reward_hierarchy import (
     FIRST_VALID_ADD_BONUS,
@@ -36,6 +37,39 @@ class DomainLaunchTest(unittest.TestCase):
             launch()
             configured = dict(os.environ)
         return configured, uvicorn.run
+
+    @staticmethod
+    def _procedural_arguments(*, split="train"):
+        return [
+            "--surface",
+            PROCEDURAL_SURFACE,
+            "--memoryarena-root",
+            "/memoryarena",
+            "--memoryarena-base-commit",
+            "a" * 40,
+            "--run-id",
+            f"procedural-webshop-{split}-test",
+            "--items-file",
+            "/data/items.json",
+            "--attributes-file",
+            "/data/attrs.json",
+            "--search-root",
+            "/data/search",
+            "--java-home",
+            "/java",
+            "--lucene-index-manifest",
+            "/data/lucene.sha256",
+            "--procedural-product-pool",
+            "/data/certified-pool.json",
+            "--procedural-product-pool-sha256",
+            "b" * 64,
+            "--procedural-task-count",
+            "10000",
+            "--procedural-generator-seed",
+            "0",
+            "--split",
+            split,
+        ]
 
     def test_travel_launches_bind_both_explicit_surfaces_reward_neutrally(self):
         for contract_mode, surface in TRAVEL_SURFACES.items():
@@ -150,6 +184,133 @@ class DomainLaunchTest(unittest.TestCase):
         self.assertEqual(configured["AGENTMEMORY_MEMORY_PROMPT_MODE"], "legacy")
         self.assertNotIn("AGENTMEMORY_FIRST_ADD_REWARD", configured)
         self.assertNotIn("AGENTMEMORY_TRAVEL_TASKS_PATH", configured)
+
+    def test_procedural_webshop_binds_only_machine_verified_training_inputs(self):
+        arguments = [
+            "--surface",
+            PROCEDURAL_SURFACE,
+            "--memoryarena-root",
+            "/memoryarena",
+            "--memoryarena-base-commit",
+            "a" * 40,
+            "--run-id",
+            "procedural-webshop-test",
+            "--items-file",
+            "/data/items.json",
+            "--attributes-file",
+            "/data/attrs.json",
+            "--search-root",
+            "/data/search",
+            "--java-home",
+            "/java",
+            "--lucene-index-manifest",
+            "/data/lucene.sha256",
+            "--procedural-product-pool",
+            "/data/certified-pool.json",
+            "--procedural-product-pool-sha256",
+            "b" * 64,
+            "--procedural-task-count",
+            "10000",
+            "--procedural-generator-seed",
+            "0",
+        ]
+
+        configured, _ = self._launch(arguments)
+
+        self.assertEqual(configured["AGENTMEMORY_SURFACE"], PROCEDURAL_SURFACE)
+        self.assertEqual(configured["AGENTMEMORY_PROCEDURAL_TASK_COUNT"], "10000")
+        self.assertEqual(configured["AGENTMEMORY_PROCEDURAL_GENERATOR_SEED"], "0")
+        self.assertEqual(configured["AGENTMEMORY_SPLIT"], "train")
+        self.assertNotIn("AGENTMEMORY_MEMORYARENA_RAW_PATH", configured)
+        self.assertNotIn("AGENTMEMORY_ANNOTATION_GATE_MANIFEST", configured)
+        self.assertNotIn("AGENTMEMORY_ANNOTATION_MANUAL_EVIDENCE", configured)
+
+    def test_procedural_webshop_rejects_odd_task_count(self):
+        uvicorn = types.ModuleType("uvicorn")
+        uvicorn.run = Mock()
+        arguments = [
+            "agentmemory",
+            "--surface",
+            PROCEDURAL_SURFACE,
+            "--memoryarena-root",
+            "/memoryarena",
+            "--memoryarena-base-commit",
+            "a" * 40,
+            "--run-id",
+            "procedural-webshop-test",
+            "--items-file",
+            "/data/items.json",
+            "--attributes-file",
+            "/data/attrs.json",
+            "--search-root",
+            "/data/search",
+            "--java-home",
+            "/java",
+            "--lucene-index-manifest",
+            "/data/lucene.sha256",
+            "--procedural-product-pool",
+            "/data/certified-pool.json",
+            "--procedural-product-pool-sha256",
+            "b" * 64,
+            "--procedural-task-count",
+            "9999",
+            "--procedural-generator-seed",
+            "59",
+        ]
+        with (
+            patch.dict(sys.modules, {"uvicorn": uvicorn}),
+            patch.object(sys, "argv", arguments),
+            patch.dict(os.environ, {}, clear=True),
+            self.assertRaises(SystemExit),
+        ):
+            launch()
+        uvicorn.run.assert_not_called()
+
+    def test_procedural_provider_defaults_are_stream_for_train_and_fixed_for_eval(
+        self,
+    ):
+        expected_modes = {
+            "train": "reseeded_stream",
+            "dev": "fixed_window",
+            "test": "fixed_window",
+        }
+        for split, expected_mode in expected_modes.items():
+            with self.subTest(split=split):
+                configured, _ = self._launch(
+                    self._procedural_arguments(split=split)
+                )
+                self.assertEqual(
+                    configured["AGENTMEMORY_PROCEDURAL_PROVIDER_MODE"],
+                    expected_mode,
+                )
+                self.assertEqual(configured["AGENTMEMORY_SPLIT"], split)
+
+    def test_procedural_launch_rejects_invalid_stream_boundaries(self):
+        invalid_suffixes = (
+            (
+                "dev_stream",
+                ["--split", "dev", "--procedural-provider-mode", "reseeded_stream"],
+            ),
+            (
+                "stream_start_orbit",
+                ["--procedural-start-orbit", "1"],
+            ),
+            (
+                "negative_start_orbit",
+                ["--procedural-provider-mode", "fixed_window", "--procedural-start-orbit", "-1"],
+            ),
+        )
+        base = self._procedural_arguments()
+        # Each case owns its split arguments so argparse never receives two split flags.
+        base_without_split = base[:-2]
+        for name, suffix in invalid_suffixes:
+            arguments = (
+                base_without_split + suffix
+                if name == "dev_stream"
+                else base + suffix
+            )
+            with self.subTest(case=name), self.assertRaises(SystemExit):
+                self._launch(arguments)
 
     def test_legacy_webshop_key_inventory_requires_explicit_flag(self):
         values = {
