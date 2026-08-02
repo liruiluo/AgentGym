@@ -384,6 +384,21 @@ class LatentPreferenceProviderAndPoolIoTests(unittest.TestCase):
             provider.metadata()["accepted_index_domain"],
             "all_nonnegative_integers",
         )
+        self.assertEqual(
+            provider.metadata()["reseeded_stream"],
+            {
+                "tasks_per_seed_epoch": provider.seed_epoch_task_count,
+                "orbits_per_seed_epoch": provider.seed_epoch_orbit_count,
+                "counterfactual_pair_never_crosses_seed_epoch": True,
+                "seed_epoch_zero_uses_base_seed": True,
+                "later_seed_epoch_derivation": "sha256_v1",
+                "collision_free_within_complete_seed_epoch": True,
+                "semantic_uniqueness_guaranteed_through_task_index": (
+                    provider.seed_epoch_task_count - 1
+                ),
+                "cross_seed_epoch_semantic_uniqueness_guaranteed": False,
+            },
+        )
 
     def test_pool_manifest_requires_exact_file_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

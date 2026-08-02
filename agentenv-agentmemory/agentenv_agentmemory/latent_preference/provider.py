@@ -192,6 +192,9 @@ class VerifiedLatentPreferenceBundleProvider:
                     "seed_epoch_zero_uses_base_seed": True,
                     "later_seed_epoch_derivation": "sha256_v1",
                     "collision_free_within_complete_seed_epoch": True,
+                    "semantic_uniqueness_guaranteed_through_task_index": (
+                        self.seed_epoch_task_count - 1
+                    ),
                     "cross_seed_epoch_semantic_uniqueness_guaranteed": False,
                 }
                 if self.mode == PROVIDER_MODE_RESEEDED_STREAM
