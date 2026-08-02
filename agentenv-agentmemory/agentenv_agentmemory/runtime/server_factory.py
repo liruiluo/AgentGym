@@ -16,6 +16,8 @@ from ..domains import (
     TravelPlannerFactory,
 )
 from ..env_wrapper import AgentMemoryWrapper, NATIVE_SURFACE
+from ..latent_preference_webshop_env import LATENT_PREFERENCE_SURFACE
+from ..latent_preference_wrapper import LatentPreferenceAgentMemoryWrapper
 from ..procedural_webshop_env import PROCEDURAL_SURFACE
 from ..procedural_wrapper import ProceduralAgentMemoryWrapper
 from ..domains.browsecomp import (
@@ -39,6 +41,8 @@ def build_server():
         return AgentMemoryWrapper()
     if surface == PROCEDURAL_SURFACE:
         return ProceduralAgentMemoryWrapper()
+    if surface == LATENT_PREFERENCE_SURFACE:
+        return LatentPreferenceAgentMemoryWrapper()
 
     factory = build_domain_registry().build(surface)
     first_add = _env_float("AGENTMEMORY_FIRST_ADD_REWARD", 0.0)

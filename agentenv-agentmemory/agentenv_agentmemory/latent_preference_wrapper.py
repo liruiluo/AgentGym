@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+from .latent_preference import (
+    PROVIDER_MODE_FIXED_WINDOW,
+    PROVIDER_MODES,
+    LatentPreferenceGenerator,
+    VerifiedLatentPreferenceBundleProvider,
+    attest_latent_preference_runtime_inputs,
+    load_preference_product_pool,
+)
+from .latent_preference_webshop_env import (
+    LATENT_PREFERENCE_SURFACE,
+    LatentPreferenceWebShopEnv,
+)
+from .procedural_wrapper import (
+    ProceduralAgentMemoryWrapper,
+    _env_choice,
+    _env_int,
+    _required_env,
+    _required_file,
+    _required_int,
+)
+
+
+class LatentPreferenceAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
+    """AgentGym HTTP wrapper for verified hidden-preference training."""
+
+    surface = LATENT_PREFERENCE_SURFACE
+    environment_type = LatentPreferenceWebShopEnv
+
+    def __init__(self) -> None:
+        self._initialize_native_training_runtime(
+            forbidden_env_keys=(
+                "AGENTMEMORY_MEMORYARENA_RAW_PATH",
+                "AGENTMEMORY_ANNOTATION_GATE_MANIFEST",
+                "AGENTMEMORY_ANNOTATION_MANUAL_EVIDENCE",
+                "AGENTMEMORY_PROCEDURAL_PRODUCT_POOL",
+                "AGENTMEMORY_PROCEDURAL_PRODUCT_POOL_SHA256",
+            )
+        )
+        pool = load_preference_product_pool(
+            _required_file("AGENTMEMORY_LATENT_PREFERENCE_PRODUCT_POOL"),
+            expected_file_sha256=_required_env(
+                "AGENTMEMORY_LATENT_PREFERENCE_PRODUCT_POOL_SHA256"
+            ),
+        )
+        attest_latent_preference_runtime_inputs(
+            pool,
+            self.backend,
+            items_file=self.items_file,
+            attributes_file=self.attributes_file,
+            search_root=self.search_root,
+            lucene_manifest=self.lucene_manifest,
+        )
+        self.provider = VerifiedLatentPreferenceBundleProvider(
+            generator=LatentPreferenceGenerator(
+                pool=pool,
+                seed=_required_int(
+                    "AGENTMEMORY_LATENT_PREFERENCE_GENERATOR_SEED"
+                ),
+            ),
+            split=_required_env("AGENTMEMORY_SPLIT"),
+            task_count=_required_int("AGENTMEMORY_LATENT_PREFERENCE_TASK_COUNT"),
+            mode=_env_choice(
+                "AGENTMEMORY_LATENT_PREFERENCE_PROVIDER_MODE",
+                default=PROVIDER_MODE_FIXED_WINDOW,
+                choices=PROVIDER_MODES,
+            ),
+            start_orbit=_env_int(
+                "AGENTMEMORY_LATENT_PREFERENCE_START_ORBIT",
+                0,
+            ),
+        )
+        self._initialize_wrapper_state()

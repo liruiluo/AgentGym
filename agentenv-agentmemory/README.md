@@ -296,6 +296,108 @@ Run `scripts/smoke/smoke_procedural_memory_webshop_native.py` with the same
 pinned native inputs to exercise all six real search, product-page, purchase,
 `ADD`, and later-session `RETRIEVE` transitions.
 
+## Programmatic latent user preferences
+
+The latent-preference surface models a returning customer whose confirmed
+choices reveal one natural preference. Products, titles, prices, and ASINs come
+from the frozen MemoryArena WebShop catalog. The generated parts are the user,
+six-purchase history, candidate pairing, preference branch, and candidate order.
+The current recipes cover black/gray color, gluten-free/organic dietary profile,
+chocolate/vanilla flavor, and floral/geometric pattern across four product
+categories per recipe.
+
+Every phase has two approved listings. One, two, or three initial purchases are
+explicitly confirmed as preference evidence; one confirmation establishes a
+provisional current preference, while repeated confirmations vary evidence
+strength. Later prompts name the preference axis but hide its value. For every
+orbit, a counterfactual task keeps every later prompt and candidate order
+identical, reverses the confirmed history, and flips every later target. Thus a
+policy using only the current product page is at chance across the pair. The
+unique-answer claim is deliberately scoped to the two approved listings, not
+every catalog item.
+
+Build the rule candidates directly from the pinned frozen catalog. This step is
+deterministic and uses no human labels or model judge:
+
+```bash
+python AgentGym/agentenv-agentmemory/scripts/audits/build_latent_preference_candidates.py \
+  --items-file /path/to/items_shuffle.json \
+  --catalog-sha256 <items-file-sha256> \
+  --output-candidates /path/to/latent_preference_candidates.jsonl \
+  --output-report /path/to/latent_preference_candidates.audit.json
+```
+
+The native certifier then rejects ambiguous/multi-value titles, missing title
+evidence for the product category, catalog-wide duplicate titles, reused ASINs,
+and any candidate that fails native first-page search, exact item-page opening,
+or purchase-receipt ASIN/price verification. Failed candidates are removed from
+the matching graph and replaced automatically:
+
+```bash
+python AgentGym/agentenv-agentmemory/scripts/audits/certify_latent_preference_product_pool.py \
+  --memoryarena-root /path/to/frozen/MemoryArena \
+  --items-file /path/to/items_shuffle.json \
+  --attributes-file /path/to/items_ins_v2.json \
+  --search-root /path/to/search_engine \
+  --java-home /path/to/java-home \
+  --lucene-index-manifest /path/to/original_lucene_index_files.sha256 \
+  --candidate-artifact /path/to/latent_preference_candidates.jsonl \
+  --expected-candidate-artifact-sha256 <candidate-sha256> \
+  --expected-items-sha256 <items-file-sha256> \
+  --expected-attributes-sha256 <attributes-file-sha256> \
+  --expected-lucene-manifest-sha256 <lucene-manifest-sha256> \
+  --expected-price-table-sha256 <price-table-sha256> \
+  --output-pool /path/to/certified_latent_preference_pool_v2.json \
+  --output-audit /path/to/certified_latent_preference_pool_v2.audit.json
+```
+
+Each task is independently reconstructed from visible history. The verifier
+enumerates all `2^6 = 64` purchase vectors, requires exactly one legal vector,
+checks that all vectors fit the budget, and proves the counterfactual later
+observations are identical while their targets flip. A 10,000-task window
+therefore checks 640,000 complete vectors:
+
+```bash
+python AgentGym/agentenv-agentmemory/scripts/audits/verify_latent_preference_dataset.py \
+  --product-pool /path/to/certified_latent_preference_pool_v2.json \
+  --product-pool-sha256 <pool-file-sha256> \
+  --split train \
+  --generator-seed 233 \
+  --task-count 10000 \
+  --output-manifest /path/to/latent_preference_train_10000.audit.json
+```
+
+With two certified products per attribute cell, one seed has 393,216 distinct
+tasks in its complete semantic period, or 6,144 if candidate-order differences
+are ignored. The reseeded training provider accepts every nonnegative absolute
+index and is operationally unbounded; it does not claim that different complete
+seed epochs can never repeat the same semantics. Dev and test use fixed bounded
+windows.
+
+```bash
+PYTHONPATH=AgentGym/agentenv-agentmemory:AgentGym/agentenv \
+/path/to/python -m agentenv_agentmemory.launch \
+  --surface agentmemory_webshop_latent_preference_train_v1 \
+  --memoryarena-root /path/to/frozen/MemoryArena \
+  --memoryarena-base-commit 6cd9de14b71915e39ac742a20dc33785e14b6aab \
+  --items-file /path/to/items_shuffle.json \
+  --attributes-file /path/to/items_ins_v2.json \
+  --search-root /path/to/search_engine \
+  --java-home /path/to/java-home \
+  --lucene-index-manifest /path/to/original_lucene_index_files.sha256 \
+  --latent-preference-product-pool /path/to/certified_latent_preference_pool_v2.json \
+  --latent-preference-product-pool-sha256 <pool-file-sha256> \
+  --latent-preference-task-count 10000 \
+  --latent-preference-generator-seed 233 \
+  --split train \
+  --run-id <run-id> \
+  --port 8000
+```
+
+Run `scripts/smoke/smoke_latent_preference_webshop_native.py` with the same
+pinned inputs to execute paired tasks through real `search`, `click[ASIN]`,
+`Buy Now`, `ADD`, and later-session `RETRIEVE` transitions.
+
 ## Other environment launches
 
 Every v3 launch also requires the frozen MemoryArena checkout and its exact

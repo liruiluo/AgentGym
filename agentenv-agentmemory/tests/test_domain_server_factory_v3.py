@@ -17,6 +17,9 @@ from agentenv_agentmemory.domains import (
     TRAVEL_SURFACES,
 )
 from agentenv_agentmemory.env_wrapper import NATIVE_SURFACE
+from agentenv_agentmemory.latent_preference_webshop_env import (
+    LATENT_PREFERENCE_SURFACE,
+)
 from agentenv_agentmemory.procedural_webshop_env import PROCEDURAL_SURFACE
 from agentenv_agentmemory.domains.formal_reasoning import FROZEN_MEMORYARENA_COMMIT
 from agentenv_agentmemory.domains.browsecomp import (
@@ -61,6 +64,23 @@ class DomainServerFactoryTest(unittest.TestCase):
             patch.object(
                 server_factory,
                 "ProceduralAgentMemoryWrapper",
+                return_value=sentinel,
+            ) as wrapper,
+        ):
+            self.assertIs(server_factory.build_server(), sentinel)
+        wrapper.assert_called_once_with()
+
+    def test_latent_preference_uses_separate_wrapper(self):
+        sentinel = object()
+        with (
+            patch.dict(
+                os.environ,
+                {"AGENTMEMORY_SURFACE": LATENT_PREFERENCE_SURFACE},
+                clear=True,
+            ),
+            patch.object(
+                server_factory,
+                "LatentPreferenceAgentMemoryWrapper",
                 return_value=sentinel,
             ) as wrapper,
         ):
