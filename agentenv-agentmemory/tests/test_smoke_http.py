@@ -137,6 +137,9 @@ class SmokeHttpTest(unittest.TestCase):
             self.assertEqual(transport.active_count, 1)
         self.assertEqual(transport.active_count, 0)
         self.assertIn(("POST", "/reset", {"id": 4, "data_idx": 23}), transport.calls)
+        self.assertEqual(client.request_trace[0]["path"], "/metadata")
+        self.assertEqual(client.request_trace[-1]["path"], "/metadata")
+        self.assertEqual(client.request_trace[1]["response"], {"id": 4, "observation": "bootstrap"})
 
     def test_clean_reset_rejects_ltm_or_trace_residue(self):
         leaked = clean_reset_payload()

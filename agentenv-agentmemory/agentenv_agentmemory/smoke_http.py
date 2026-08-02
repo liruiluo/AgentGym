@@ -50,6 +50,7 @@ class AgentMemorySmokeHttpClient:
             raise ValueError("base_url must be an HTTP(S) URL")
         self.timeout = float(timeout)
         self._request_json = request_json or _request_json
+        self.request_trace: list[dict[str, Any]] = []
 
     def metadata(self) -> dict[str, Any]:
         payload = self._call("GET", "/metadata")
@@ -82,12 +83,21 @@ class AgentMemorySmokeHttpClient:
         path: str,
         body: dict[str, Any] | None = None,
     ) -> Any:
-        return self._request_json(
+        response = self._request_json(
             method,
             self.base_url + path,
             body,
             self.timeout,
         )
+        self.request_trace.append(
+            {
+                "method": method,
+                "path": path,
+                "request": body,
+                "response": response,
+            }
+        )
+        return response
 
 
 class AgentMemorySmokeSession:

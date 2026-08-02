@@ -61,6 +61,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sessions", type=int, default=6)
     parser.add_argument("--price-seed", type=int, default=233)
     parser.add_argument("--expected-runtime-source-id")
+    parser.add_argument(
+        "--evidence-json",
+        type=Path,
+        help="Write metadata and the complete HTTP request/response trace.",
+    )
     return parser.parse_args()
 
 
@@ -135,13 +140,15 @@ def main() -> None:
         minimum_task_count=max(data_indices) + 1,
         start_orbit=args.start_orbit,
     )
-    fingerprint = validate_smoke_service(client.metadata(), expected)
+    initial_metadata = client.metadata()
+    fingerprint = validate_smoke_service(initial_metadata, expected)
     print(
         "AGENTMEMORY_RESIDENT_SMOKE_SERVICE_OK "
         f"surface={args.surface} fingerprint={fingerprint} "
         f"tasks={len(data_indices)} cold_start_already_paid=true"
     )
 
+    completed_tasks = []
     for data_index in data_indices:
         with client.open(data_index) as env:
             if args.surface == LATENT_SURFACE:
@@ -177,12 +184,50 @@ def main() -> None:
                 "AGENTMEMORY_RESIDENT_SMOKE_TASK_OK "
                 f"surface={args.surface} data_index={data_index} orbit_or_scenario={orbit_id}"
             )
+            completed_tasks.append(
+                {
+                    "data_index": data_index,
+                    "orbit_or_scenario": orbit_id,
+                }
+            )
 
     print(
         "AGENTMEMORY_RESIDENT_SMOKE_BATCH_OK "
         f"surface={args.surface} tasks={len(data_indices)} "
         f"data_indices={','.join(map(str, data_indices))}"
     )
+
+    if args.evidence_json is not None:
+        final_metadata = client.metadata()
+        final_active_count = final_metadata.get("active_environment_count")
+        if final_active_count != 0:
+            raise SmokeHttpError(
+                "resident smoke evidence captured with active environments: "
+                f"{final_active_count!r}"
+            )
+        evidence = {
+            "schema": "agentmemory_resident_smoke_evidence_v1",
+            "server_url": args.server_url,
+            "surface": args.surface,
+            "runtime_source_id": runtime_source_id,
+            "service_fingerprint_sha256": fingerprint,
+            "data_indices": data_indices,
+            "sessions": args.sessions,
+            "completed_tasks": completed_tasks,
+            "initial_metadata": initial_metadata,
+            "final_metadata": final_metadata,
+            "validation": {
+                "all_semantic_checks_passed": True,
+                "active_environment_count_final": final_active_count,
+                "cold_start_already_paid": True,
+            },
+            "http_trace": client.request_trace,
+        }
+        args.evidence_json.parent.mkdir(parents=True, exist_ok=True)
+        args.evidence_json.write_text(
+            json.dumps(evidence, ensure_ascii=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
 
 def _run_latent_task(
