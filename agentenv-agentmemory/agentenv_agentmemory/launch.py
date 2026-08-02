@@ -28,6 +28,12 @@ from .latent_preference import (
     PROVIDER_MODES as LATENT_PROVIDER_MODES,
 )
 from .latent_preference_webshop_env import LATENT_PREFERENCE_SURFACE
+from .recency_override import (
+    PROVIDER_MODE_FIXED_WINDOW as RECENCY_PROVIDER_MODE_FIXED_WINDOW,
+    PROVIDER_MODE_RESEEDED_STREAM as RECENCY_PROVIDER_MODE_RESEEDED_STREAM,
+    PROVIDER_MODES as RECENCY_PROVIDER_MODES,
+)
+from .recency_override_webshop_env import RECENCY_OVERRIDE_SURFACE
 from .procedural import (
     PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM,
@@ -52,6 +58,7 @@ def launch() -> None:
             NATIVE_SURFACE,
             PROCEDURAL_SURFACE,
             LATENT_PREFERENCE_SURFACE,
+            RECENCY_OVERRIDE_SURFACE,
             *V3_SURFACES,
         ],
         required=True,
@@ -104,6 +111,15 @@ def launch() -> None:
         choices=LATENT_PROVIDER_MODES,
     )
     parser.add_argument("--latent-preference-start-orbit", type=int, default=0)
+    parser.add_argument("--recency-override-product-pool")
+    parser.add_argument("--recency-override-product-pool-sha256")
+    parser.add_argument("--recency-override-task-count", type=int)
+    parser.add_argument("--recency-override-generator-seed", type=int)
+    parser.add_argument(
+        "--recency-override-provider-mode",
+        choices=RECENCY_PROVIDER_MODES,
+    )
+    parser.add_argument("--recency-override-start-orbit", type=int, default=0)
     parser.add_argument("--travel-tasks-path")
     parser.add_argument("--travel-database-path")
     parser.add_argument("--formal-reasoning-tasks-path")
@@ -169,10 +185,10 @@ def launch() -> None:
     if args.service_role == "smoke" and not args.runtime_source_id:
         parser.error("--service-role smoke requires --runtime-source-id")
 
-    if args.surface == LATENT_PREFERENCE_SURFACE:
+    if args.surface in {LATENT_PREFERENCE_SURFACE, RECENCY_OVERRIDE_SURFACE}:
         if args.memory_prompt_mode != LATENT_PREFERENCE_PROMPT_MODE:
             parser.error(
-                "the latent-preference surface requires "
+                "this programmatic preference surface requires "
                 f"--memory-prompt-mode {LATENT_PREFERENCE_PROMPT_MODE}"
             )
     elif args.memory_prompt_mode == LATENT_PREFERENCE_PROMPT_MODE:
@@ -385,6 +401,92 @@ def launch() -> None:
                 "AGENTMEMORY_LATENT_PREFERENCE_PROVIDER_MODE": provider_mode,
                 "AGENTMEMORY_LATENT_PREFERENCE_START_ORBIT": str(
                     args.latent_preference_start_orbit
+                ),
+                "AGENTMEMORY_SPLIT": args.split,
+                "AGENTMEMORY_WEBSHOP_PRICE_SEED": str(args.price_seed),
+                "AGENTMEMORY_FIRST_VALID_ADD_REWARD": str(
+                    FIRST_VALID_ADD_BONUS
+                    if args.memory_first_add_reward is None
+                    else args.memory_first_add_reward
+                ),
+                "AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD": str(
+                    FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS
+                    if args.memory_first_later_retrieve_reward is None
+                    else args.memory_first_later_retrieve_reward
+                ),
+                "AGENTMEMORY_LTM_INVENTORY_MODE": args.ltm_inventory_mode,
+                "AGENTMEMORY_LTM_TRANSITION_NOTICE_MODE": (
+                    args.ltm_transition_notice_mode
+                ),
+                "AGENTMEMORY_MEMORY_PROMPT_MODE": args.memory_prompt_mode,
+                "AGENTMEMORY_ACTION_LISTING_MODE": args.action_listing_mode,
+            }
+        )
+    elif args.surface == RECENCY_OVERRIDE_SURFACE:
+        _require_args(
+            parser,
+            args,
+            "items_file",
+            "attributes_file",
+            "search_root",
+            "java_home",
+            "lucene_index_manifest",
+            "recency_override_product_pool",
+            "recency_override_product_pool_sha256",
+            "recency_override_task_count",
+        )
+        if args.recency_override_generator_seed is None:
+            parser.error("surface requires --recency-override-generator-seed")
+        if args.split == "all":
+            parser.error("recency-override data requires one explicit split")
+        if (
+            args.recency_override_task_count <= 0
+            or args.recency_override_task_count % 2
+        ):
+            parser.error(
+                "--recency-override-task-count must be a positive even integer"
+            )
+        provider_mode = args.recency_override_provider_mode or (
+            RECENCY_PROVIDER_MODE_RESEEDED_STREAM
+            if args.split == "train"
+            else RECENCY_PROVIDER_MODE_FIXED_WINDOW
+        )
+        if args.recency_override_start_orbit < 0:
+            parser.error(
+                "--recency-override-start-orbit must be non-negative"
+            )
+        if provider_mode == RECENCY_PROVIDER_MODE_RESEEDED_STREAM:
+            if args.split != "train":
+                parser.error(
+                    "--recency-override-provider-mode reseeded_stream is "
+                    "training-only"
+                )
+            if args.recency_override_start_orbit != 0:
+                parser.error(
+                    "reseeded_stream requires --recency-override-start-orbit 0"
+                )
+        configured.update(
+            {
+                "MEMORYARENA_WEBSHOP_ITEMS_FILE": args.items_file,
+                "MEMORYARENA_WEBSHOP_ATTR_FILE": args.attributes_file,
+                "MEMORYARENA_WEBSHOP_SEARCH_ROOT": args.search_root,
+                "MEMORYARENA_WEBSHOP_JAVA_HOME": args.java_home,
+                "MEMORYARENA_LUCENE_INDEX_MANIFEST": args.lucene_index_manifest,
+                "AGENTMEMORY_RECENCY_OVERRIDE_PRODUCT_POOL": (
+                    args.recency_override_product_pool
+                ),
+                "AGENTMEMORY_RECENCY_OVERRIDE_PRODUCT_POOL_SHA256": (
+                    args.recency_override_product_pool_sha256
+                ),
+                "AGENTMEMORY_RECENCY_OVERRIDE_TASK_COUNT": str(
+                    args.recency_override_task_count
+                ),
+                "AGENTMEMORY_RECENCY_OVERRIDE_GENERATOR_SEED": str(
+                    args.recency_override_generator_seed
+                ),
+                "AGENTMEMORY_RECENCY_OVERRIDE_PROVIDER_MODE": provider_mode,
+                "AGENTMEMORY_RECENCY_OVERRIDE_START_ORBIT": str(
+                    args.recency_override_start_orbit
                 ),
                 "AGENTMEMORY_SPLIT": args.split,
                 "AGENTMEMORY_WEBSHOP_PRICE_SEED": str(args.price_seed),

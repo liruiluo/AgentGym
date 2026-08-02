@@ -20,6 +20,8 @@ from ..latent_preference_webshop_env import LATENT_PREFERENCE_SURFACE
 from ..latent_preference_wrapper import LatentPreferenceAgentMemoryWrapper
 from ..procedural_webshop_env import PROCEDURAL_SURFACE
 from ..procedural_wrapper import ProceduralAgentMemoryWrapper
+from ..recency_override_webshop_env import RECENCY_OVERRIDE_SURFACE
+from ..recency_override_wrapper import RecencyOverrideAgentMemoryWrapper
 from ..domains.browsecomp import (
     BROWSECOMP_BM25_INTEGRATION_BACKEND,
     BROWSECOMP_DENSE_BACKEND,
@@ -43,6 +45,8 @@ def build_server():
         return ProceduralAgentMemoryWrapper()
     if surface == LATENT_PREFERENCE_SURFACE:
         return LatentPreferenceAgentMemoryWrapper()
+    if surface == RECENCY_OVERRIDE_SURFACE:
+        return RecencyOverrideAgentMemoryWrapper()
 
     factory = build_domain_registry().build(surface)
     first_add = _env_float("AGENTMEMORY_FIRST_ADD_REWARD", 0.0)
