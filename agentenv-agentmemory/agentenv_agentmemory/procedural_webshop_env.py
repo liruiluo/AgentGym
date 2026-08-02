@@ -39,7 +39,9 @@ class ProceduralMemoryWebShopEnv(MemoryArenaWebShopEnv):
         info.pop("purchase_history", None)
         if any(item.get("op") == "BUY" for item in self.last_tool_ops):
             info["session_trace"] = []
-        info["tool_ops"] = [_public_tool_op(item) for item in info["tool_ops"]]
+        info["tool_ops"] = [
+            _sanitized_evidence_tool_op(item) for item in info["tool_ops"]
+        ]
         info["memory_ops"] = [
             item
             for item in info["tool_ops"]
@@ -67,14 +69,16 @@ class ProceduralMemoryWebShopEnv(MemoryArenaWebShopEnv):
         return info
 
 
-def _public_tool_op(event: dict[str, Any]) -> dict[str, Any]:
-    """Remove purchase state that could replace cross-session memory."""
+def _sanitized_evidence_tool_op(event: dict[str, Any]) -> dict[str, Any]:
+    """Keep formal transition evidence while removing private purchase identity."""
 
     if event.get("op") != "BUY":
         return dict(event)
     allowed = {
         "op",
+        "raw_action",
         "committed",
+        "purchase_correct",
         "terminal",
         "session_advanced",
         "step",

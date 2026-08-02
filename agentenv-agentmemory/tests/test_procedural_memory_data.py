@@ -1035,7 +1035,7 @@ class ProductPoolAndRuntimeTests(unittest.TestCase):
                     lucene_manifest=manifest,
                 )
 
-    def test_env_info_cannot_replace_memory_and_wrong_buy_has_no_answer_feedback(self) -> None:
+    def test_buy_info_keeps_formal_evidence_without_visible_answer_feedback(self) -> None:
         pool, records, prices = make_fixture_pool(1)
         generator = NaturalAttributeChainGenerator(pool=pool, seed=233)
         provider = VerifiedProceduralBundleProvider(
@@ -1068,14 +1068,20 @@ class ProductPoolAndRuntimeTests(unittest.TestCase):
             title = backend.product_title(target)
             env.step(f"search[{title}]")
             env.step(f"click[{target}]")
-            _, reward, done, _, info = env.step("click[Buy Now]")
+            observation, reward, done, _, info = env.step("click[Buy Now]")
             self.assertEqual(reward, 1.0)
             self.assertFalse(done)
             info_json = json.dumps(info, sort_keys=True)
             self.assertNotIn(target, info_json)
             self.assertNotIn("actual_asin", info_json)
-            self.assertNotIn("purchase_correct", info_json)
+            self.assertTrue(info["tool_ops"][0]["purchase_correct"])
+            self.assertEqual(info["tool_ops"][0]["raw_action"], "click[Buy Now]")
+            self.assertTrue(info["tool_ops"][0]["committed"])
+            self.assertTrue(info["tool_ops"][0]["session_advanced"])
+            self.assertFalse(info["tool_ops"][0]["terminal"])
             self.assertNotIn("purchase_history", info)
+            self.assertNotIn("purchase_correct", observation)
+            self.assertNotIn(target, observation)
 
             env.reset(data_idx=0)
             wrong = next(
@@ -1092,7 +1098,14 @@ class ProductPoolAndRuntimeTests(unittest.TestCase):
             wrong_json = json.dumps(wrong_info, sort_keys=True)
             self.assertNotIn(target, wrong_json)
             self.assertNotIn(wrong, wrong_json)
-            self.assertNotIn("purchase_correct", wrong_json)
+            self.assertFalse(wrong_info["tool_ops"][0]["purchase_correct"])
+            self.assertEqual(
+                wrong_info["tool_ops"][0]["raw_action"], "click[Buy Now]"
+            )
+            self.assertTrue(wrong_info["tool_ops"][0]["committed"])
+            self.assertFalse(wrong_info["tool_ops"][0]["session_advanced"])
+            self.assertTrue(wrong_info["tool_ops"][0]["terminal"])
+            self.assertNotIn("purchase_correct", observation)
         finally:
             env.close()
 
