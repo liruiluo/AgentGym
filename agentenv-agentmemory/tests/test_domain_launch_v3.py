@@ -103,6 +103,8 @@ class DomainLaunchTest(unittest.TestCase):
             "10000",
             "--latent-preference-generator-seed",
             "233",
+            "--memory-prompt-mode",
+            "latent_preference_sop",
             "--split",
             split,
         ]
@@ -318,12 +320,31 @@ class DomainLaunchTest(unittest.TestCase):
             "233",
         )
         self.assertEqual(
+            configured["AGENTMEMORY_MEMORY_PROMPT_MODE"],
+            "latent_preference_sop",
+        )
+        self.assertEqual(
             configured["AGENTMEMORY_LATENT_PREFERENCE_PROVIDER_MODE"],
             "reseeded_stream",
         )
         self.assertNotIn("AGENTMEMORY_PROCEDURAL_PRODUCT_POOL", configured)
         self.assertNotIn("AGENTMEMORY_MEMORYARENA_RAW_PATH", configured)
         self.assertNotIn("AGENTMEMORY_ANNOTATION_GATE_MANIFEST", configured)
+
+    def test_latent_preference_rejects_generic_memory_prompt_mode(self):
+        arguments = self._latent_preference_arguments()
+        mode_index = arguments.index("--memory-prompt-mode") + 1
+        arguments[mode_index] = "legacy"
+        uvicorn = types.ModuleType("uvicorn")
+        uvicorn.run = Mock()
+        with (
+            patch.dict(sys.modules, {"uvicorn": uvicorn}),
+            patch.object(sys, "argv", ["agentmemory", *arguments]),
+            patch.dict(os.environ, {}, clear=True),
+            self.assertRaises(SystemExit),
+        ):
+            launch()
+        uvicorn.run.assert_not_called()
 
     def test_latent_preference_eval_defaults_to_fixed_window(self):
         configured, _ = self._launch(

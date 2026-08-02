@@ -148,11 +148,19 @@ WEBSHOP_V2_SURFACE = "memoryarena_webshop_native_v1"
 PROCEDURAL_WEBSHOP_SURFACE = (
     "agentmemory_webshop_procedural_natural_chain_train_v1"
 )
+LATENT_PREFERENCE_WEBSHOP_SURFACE = (
+    "agentmemory_webshop_latent_preference_train_v1"
+)
+PROGRAMMATIC_WEBSHOP_SURFACES = frozenset(
+    {PROCEDURAL_WEBSHOP_SURFACE, LATENT_PREFERENCE_WEBSHOP_SURFACE}
+)
+LATENT_PREFERENCE_PROMPT_MODE = "latent_preference_sop"
 MEMORY_PROMPT_MODES = (
     "legacy",
     "neutral",
     "neutral_horizon",
     "neutral_horizon_responsibility",
+    LATENT_PREFERENCE_PROMPT_MODE,
 )
 NEUTRAL_HORIZON_CONTEXT = (
     "This episode has six sequential shopping sessions. Later-session compatibility "
@@ -161,6 +169,22 @@ NEUTRAL_HORIZON_CONTEXT = (
 CROSS_SESSION_MEMORY_RESPONSIBILITY = (
     "Across shopping sessions, you are responsible for preserving and accessing any "
     "facts needed for later decisions."
+)
+LATENT_PREFERENCE_SOP = (
+    "Each early evidence session may show which approved listing a customer "
+    "confirmed. Treat each confirmed choice as preference evidence. Preserve the "
+    "confirmed listing and its visible distinguishing attributes. After a confirmed "
+    "choice is visible, use ADD before click[Buy Now] to store that evidence or "
+    "create a customer-profile memory containing the customer, preference axis, and "
+    "inferred value. When a customer-profile memory already exists, first retrieve "
+    "its exact memory_id and use UPDATE to incorporate additional evidence without "
+    "discarding prior support. Do not assume a fixed number of examples is always "
+    "sufficient; infer a preference only when the visible confirmed choices support "
+    "it. At the start of every later shopping session, use RETRIEVE to expose the "
+    "relevant confirmed-choice evidence or customer profile. In later application "
+    "sessions, apply the retrieved preference when choosing between approved "
+    "listings. The environment does not perform these memory actions for you, and it "
+    "does not reject an otherwise correct purchase when ADD was skipped."
 )
 _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
@@ -228,7 +252,11 @@ def _validate_v3_metadata(metadata: Mapping[str, Any]) -> None:
     build_v3_conversation_start(metadata)
 
 
-def _validate_procedural_metadata(metadata: Mapping[str, Any]) -> None:
+def _validate_programmatic_metadata(
+    metadata: Mapping[str, Any],
+    *,
+    provider_schema: str,
+) -> Mapping[str, Any]:
     if metadata.get("source") != "agentmemory_programmatic_generator":
         raise RuntimeError("Procedural AgentMemoryGym source metadata is invalid")
     if metadata.get("paper_eligible") is not False:
@@ -236,8 +264,8 @@ def _validate_procedural_metadata(metadata: Mapping[str, Any]) -> None:
     provider = metadata.get("provider")
     if not isinstance(provider, Mapping):
         raise RuntimeError("Procedural AgentMemoryGym metadata requires provider")
-    if provider.get("schema") != "agentmemory_verified_natural_chain_provider_v4":
-        raise RuntimeError("Procedural AgentMemoryGym provider schema is unsupported")
+    if provider.get("schema") != provider_schema:
+        raise RuntimeError("Programmatic AgentMemoryGym provider schema is unsupported")
     if provider.get("candidate_count_per_phase") != 2:
         raise RuntimeError("Procedural AgentMemoryGym requires two candidates per phase")
     if provider.get("phase_count_per_task") != 6:
@@ -323,6 +351,39 @@ def _validate_procedural_metadata(metadata: Mapping[str, Any]) -> None:
         raise RuntimeError(
             "Procedural AgentMemoryGym fixed windows must not expose stream metadata"
         )
+    return provider
+
+
+def _validate_procedural_metadata(metadata: Mapping[str, Any]) -> None:
+    _validate_programmatic_metadata(
+        metadata,
+        provider_schema="agentmemory_verified_natural_chain_provider_v4",
+    )
+
+
+def _validate_latent_preference_metadata(metadata: Mapping[str, Any]) -> None:
+    provider = _validate_programmatic_metadata(
+        metadata,
+        provider_schema="agentmemory_verified_latent_preference_provider_v1",
+    )
+    expected = {
+        "supporting_evidence_counts": [1, 2, 3],
+        "resolution_step": 1,
+        "preference_hypothesis": "one_value_on_one_natural_attribute_axis",
+        "counterfactual_pairing": True,
+        "application_observation_identity": True,
+        "application_target_flip": True,
+        "purchase_receipt_asin_verification": True,
+    }
+    mismatches = [
+        key for key, expected_value in expected.items()
+        if provider.get(key) != expected_value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "Latent-preference AgentMemoryGym provider metadata is inconsistent: "
+            + ", ".join(mismatches)
+        )
 
 
 def build_procedural_conversation_start(
@@ -351,7 +412,9 @@ def build_procedural_conversation_start(
         interface += " " + NEUTRAL_HORIZON_CONTEXT
     if memory_prompt_mode == "neutral_horizon_responsibility":
         interface += " " + CROSS_SESSION_MEMORY_RESPONSIBILITY
-    if memory_prompt_mode == "legacy":
+    if memory_prompt_mode == LATENT_PREFERENCE_PROMPT_MODE:
+        interface += " " + LATENT_PREFERENCE_SOP
+    elif memory_prompt_mode == "legacy":
         interface += (
             " Preserve and retrieve any visible product attribute that a later "
             "customer rule needs; the environment does not perform memory actions "
@@ -619,7 +682,10 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self.system_prompt_sha256 = self.metadata.get("system_prompt_sha256")
         self.memory_prompt_mode: str | None = None
         self.is_v3 = self.formal_schema_version == FORMAL_SCHEMA_V3
-        self.is_procedural = self.surface == PROCEDURAL_WEBSHOP_SURFACE
+        self.is_procedural = self.surface in PROGRAMMATIC_WEBSHOP_SURFACES
+        self.is_latent_preference = (
+            self.surface == LATENT_PREFERENCE_WEBSHOP_SURFACE
+        )
         if self.is_v3:
             _validate_v3_metadata(self.metadata)
             if self.action_format is not ActionFormat.REACT:
@@ -627,12 +693,30 @@ class AgentMemoryEnvClient(BaseEnvClient):
                     "AgentMemoryGym v3 domains currently require action_format='react'"
                 )
         elif self.is_procedural:
-            _validate_procedural_metadata(self.metadata)
+            if self.is_latent_preference:
+                _validate_latent_preference_metadata(self.metadata)
+            else:
+                _validate_procedural_metadata(self.metadata)
             memory_prompt_mode = self.metadata.get("memory_prompt_mode", "legacy")
             if memory_prompt_mode not in MEMORY_PROMPT_MODES:
                 raise RuntimeError(
                     "AgentMemoryGym procedural metadata has unsupported "
                     f"memory_prompt_mode: {memory_prompt_mode!r}"
+                )
+            if self.is_latent_preference and (
+                memory_prompt_mode != LATENT_PREFERENCE_PROMPT_MODE
+            ):
+                raise RuntimeError(
+                    "AgentMemoryGym latent-preference surface requires "
+                    f"memory_prompt_mode={LATENT_PREFERENCE_PROMPT_MODE!r}"
+                )
+            if (
+                not self.is_latent_preference
+                and memory_prompt_mode == LATENT_PREFERENCE_PROMPT_MODE
+            ):
+                raise RuntimeError(
+                    "AgentMemoryGym natural-chain surface cannot use the "
+                    "latent_preference_sop prompt"
                 )
             self.memory_prompt_mode = memory_prompt_mode
         elif self.surface != WEBSHOP_V2_SURFACE:

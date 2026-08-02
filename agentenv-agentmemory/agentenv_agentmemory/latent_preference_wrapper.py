@@ -20,6 +20,7 @@ from .procedural_wrapper import (
     _required_file,
     _required_int,
 )
+from .env_wrapper import LATENT_PREFERENCE_PROMPT_MODE
 
 
 class LatentPreferenceAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
@@ -38,6 +39,11 @@ class LatentPreferenceAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
                 "AGENTMEMORY_PROCEDURAL_PRODUCT_POOL_SHA256",
             )
         )
+        if self.memory_prompt_mode != LATENT_PREFERENCE_PROMPT_MODE:
+            raise RuntimeError(
+                "The latent-preference surface requires "
+                f"memory_prompt_mode={LATENT_PREFERENCE_PROMPT_MODE!r}."
+            )
         pool = load_preference_product_pool(
             _required_file("AGENTMEMORY_LATENT_PREFERENCE_PRODUCT_POOL"),
             expected_file_sha256=_required_env(

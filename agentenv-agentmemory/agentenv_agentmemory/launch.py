@@ -21,7 +21,7 @@ from .memoryarena_webshop_env import (
     LTM_INVENTORY_MODES,
     LTM_TRANSITION_NOTICE_MODES,
 )
-from .env_wrapper import MEMORY_PROMPT_MODES
+from .env_wrapper import LATENT_PREFERENCE_PROMPT_MODE, MEMORY_PROMPT_MODES
 from .latent_preference import (
     PROVIDER_MODE_FIXED_WINDOW as LATENT_PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM as LATENT_PROVIDER_MODE_RESEEDED_STREAM,
@@ -158,6 +158,18 @@ def launch() -> None:
         default="separate",
     )
     args = parser.parse_args()
+
+    if args.surface == LATENT_PREFERENCE_SURFACE:
+        if args.memory_prompt_mode != LATENT_PREFERENCE_PROMPT_MODE:
+            parser.error(
+                "the latent-preference surface requires "
+                f"--memory-prompt-mode {LATENT_PREFERENCE_PROMPT_MODE}"
+            )
+    elif args.memory_prompt_mode == LATENT_PREFERENCE_PROMPT_MODE:
+        parser.error(
+            "--memory-prompt-mode latent_preference_sop is only valid for the "
+            "latent-preference surface"
+        )
 
     configured = {
         "AGENTMEMORY_SURFACE": args.surface,
