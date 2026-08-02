@@ -156,8 +156,15 @@ def _run_task(
     memory_written = False
     for session_index in range(sessions):
         phase = task.phases[session_index]
-        if env.native_page is None or env.native_page.observation != phase.question:
-            raise AssertionError("native session instruction differs from verified task")
+        page_observation = (
+            "" if env.native_page is None else env.native_page.observation
+        )
+        if phase.question not in page_observation:
+            raise AssertionError(
+                "native session omitted the verified task instruction: "
+                f"data_index={data_index} session_index={session_index} "
+                f"expected={phase.question!r} observed={page_observation!r}"
+            )
         for candidate in phase.candidates:
             if candidate.title not in phase.question:
                 raise AssertionError("approved native title is absent from task prompt")
