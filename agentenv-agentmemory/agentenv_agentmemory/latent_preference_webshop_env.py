@@ -5,6 +5,7 @@ from typing import Any
 from .latent_preference import VerifiedLatentPreferenceBundleProvider
 from .memoryarena_webshop_env import MemoryArenaWebShopEnv
 from .native_webshop_backend import NativeWebShopBackend
+from .procedural_webshop_env import _sanitized_evidence_tool_op
 
 
 LATENT_PREFERENCE_SURFACE = "agentmemory_webshop_latent_preference_train_v1"
@@ -39,7 +40,9 @@ class LatentPreferenceWebShopEnv(MemoryArenaWebShopEnv):
         info.pop("purchase_history", None)
         if any(item.get("op") == "BUY" for item in self.last_tool_ops):
             info["session_trace"] = []
-        info["tool_ops"] = [_public_tool_op(item) for item in info["tool_ops"]]
+        info["tool_ops"] = [
+            _sanitized_evidence_tool_op(item) for item in info["tool_ops"]
+        ]
         info["memory_ops"] = [
             item
             for item in info["tool_ops"]
@@ -75,17 +78,3 @@ class LatentPreferenceWebShopEnv(MemoryArenaWebShopEnv):
             }
         )
         return info
-
-
-def _public_tool_op(event: dict[str, Any]) -> dict[str, Any]:
-    if event.get("op") != "BUY":
-        return dict(event)
-    allowed = {
-        "op",
-        "committed",
-        "terminal",
-        "session_advanced",
-        "step",
-        "session_index",
-    }
-    return {key: value for key, value in event.items() if key in allowed}

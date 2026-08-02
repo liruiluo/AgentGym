@@ -346,18 +346,61 @@ class LatentPreferenceCertifierTests(unittest.TestCase):
                 product = pool.product_by_asin(target_asin)
                 env.step(f"search[{product.search_query}]")
                 env.step(f"click[{target_asin}]")
-                _, reward, done, _, purchase_info = env.step("click[Buy Now]")
+                observation, reward, done, _, purchase_info = env.step(
+                    "click[Buy Now]"
+                )
                 self.assertEqual(reward, 1.0)
                 self.assertFalse(done)
+                self.assertNotIn("actual_asin", json.dumps(purchase_info))
+                self.assertNotIn("purchase_correct", observation)
+                self.assertNotIn(target_asin, observation)
+                self.assertEqual(
+                    purchase_info["tool_ops"],
+                    [
+                        {
+                            "op": "BUY",
+                            "raw_action": "click[Buy Now]",
+                            "committed": True,
+                            "purchase_correct": True,
+                            "terminal": False,
+                            "session_advanced": True,
+                            "step": 3,
+                            "session_index": 0,
+                        }
+                    ],
+                )
+
+                env.reset(data_idx=0)
+                first_phase = provider.generator.generate_orbit(
+                    0, split="train"
+                ).tasks[0].phases[0]
+                wrong_asin = next(
+                    candidate.asin
+                    for candidate in first_phase.candidates
+                    if candidate.asin != target_asin
+                )
+                wrong_product = pool.product_by_asin(wrong_asin)
+                env.step(f"search[{wrong_product.search_query}]")
+                env.step(f"click[{wrong_asin}]")
+                observation, reward, done, _, purchase_info = env.step(
+                    "click[Buy Now]"
+                )
+                self.assertEqual(reward, -0.01)
+                self.assertTrue(done)
+                self.assertNotIn("purchase_correct", observation)
+                self.assertNotIn(target_asin, observation)
+                self.assertNotIn(wrong_asin, observation)
                 self.assertNotIn("actual_asin", json.dumps(purchase_info))
                 self.assertEqual(
                     purchase_info["tool_ops"],
                     [
                         {
                             "op": "BUY",
+                            "raw_action": "click[Buy Now]",
                             "committed": True,
-                            "terminal": False,
-                            "session_advanced": True,
+                            "purchase_correct": False,
+                            "terminal": True,
+                            "session_advanced": False,
                             "step": 3,
                             "session_index": 0,
                         }
