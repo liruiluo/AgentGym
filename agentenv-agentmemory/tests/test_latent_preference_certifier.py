@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from agentenv_agentmemory.latent_preference import (
@@ -255,6 +256,70 @@ def _config() -> NativePreferenceCertificationConfig:
 
 
 class LatentPreferenceCertifierTests(unittest.TestCase):
+    def test_runtime_attestation_accepts_pinned_v2_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            items = root / "items.json"
+            attributes = root / "attributes.json"
+            items.write_bytes(b"catalog\n")
+            attributes.write_bytes(b"attributes\n")
+            search_root = root / "search"
+            index = search_root / "indexes-full" / "segment"
+            index.parent.mkdir(parents=True)
+            index.write_bytes(b"lucene\n")
+            manifest = root / "lucene.sha256"
+            manifest.write_text(
+                f"{hashlib.sha256(index.read_bytes()).hexdigest()}  segment\n",
+                encoding="utf-8",
+            )
+            candidates, backend = _write_fixture(root, candidates_per_cell=6)
+            pool, _ = certify_native_preference_product_pool(
+                backend,
+                candidate_artifact=candidates,
+                expected_candidate_artifact_sha256=file_sha256(candidates),
+                catalog_sha256=hashlib.sha256(items.read_bytes()).hexdigest(),
+                attributes_sha256=hashlib.sha256(attributes.read_bytes()).hexdigest(),
+                lucene_index_sha256=hashlib.sha256(
+                    manifest.read_bytes()
+                ).hexdigest(),
+                config=_config(),
+            )
+            v2_pool = replace(
+                pool,
+                certifier_version="native_latent_preference_rules_v2",
+                rules_sha256=(
+                    "1f2aae6b207ae6d2a8c19fd2f621acfb"
+                    "cc96f342cf05cd30471efbf45f73a10d"
+                ),
+            )
+
+            attest_latent_preference_runtime_inputs(
+                v2_pool,
+                backend,
+                items_file=items,
+                attributes_file=attributes,
+                search_root=search_root,
+                lucene_manifest=manifest,
+            )
+            with self.assertRaisesRegex(RuntimeError, "preference rules"):
+                attest_latent_preference_runtime_inputs(
+                    replace(v2_pool, rules_sha256="0" * 64),
+                    backend,
+                    items_file=items,
+                    attributes_file=attributes,
+                    search_root=search_root,
+                    lucene_manifest=manifest,
+                )
+            with self.assertRaisesRegex(RuntimeError, "unsupported certifier"):
+                attest_latent_preference_runtime_inputs(
+                    replace(v2_pool, certifier_version="unreviewed_rules_v1"),
+                    backend,
+                    items_file=items,
+                    attributes_file=attributes,
+                    search_root=search_root,
+                    lucene_manifest=manifest,
+                )
+
     def test_runtime_attestation_rechecks_every_pinned_native_input(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

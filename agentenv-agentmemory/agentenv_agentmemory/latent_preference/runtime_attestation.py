@@ -8,6 +8,16 @@ from .certifier import CERTIFIER_VERSION, PREFERENCE_RULES_SHA256
 from .schema import PreferenceProductPool
 
 
+TRUSTED_CERTIFIER_RULES_SHA256 = {
+    # First fully native-certified 192-product pool used by the v1 surface.
+    "native_latent_preference_rules_v2": (
+        "1f2aae6b207ae6d2a8c19fd2f621acfb"
+        "cc96f342cf05cd30471efbf45f73a10d"
+    ),
+    CERTIFIER_VERSION: PREFERENCE_RULES_SHA256,
+}
+
+
 def attest_latent_preference_runtime_inputs(
     pool: PreferenceProductPool,
     backend: NativeWebShopBackend,
@@ -19,14 +29,17 @@ def attest_latent_preference_runtime_inputs(
 ) -> None:
     """Fail closed if runtime inputs differ from the certified native pool."""
 
-    if pool.certifier_version != CERTIFIER_VERSION:
+    expected_rules_sha256 = TRUSTED_CERTIFIER_RULES_SHA256.get(
+        pool.certifier_version
+    )
+    if expected_rules_sha256 is None:
         raise RuntimeError(
-            "Certified latent-preference pool used a different certifier: "
-            f"expected {CERTIFIER_VERSION}, observed {pool.certifier_version}."
+            "Certified latent-preference pool used an unsupported certifier: "
+            f"observed {pool.certifier_version}."
         )
     _require_equal_hash(
         "preference rules",
-        expected=PREFERENCE_RULES_SHA256,
+        expected=expected_rules_sha256,
         observed=pool.rules_sha256,
     )
     backend_metadata = backend.metadata()
