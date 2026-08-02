@@ -22,7 +22,6 @@ from agentenv_agentmemory.procedural import (
 from agentenv_agentmemory.recency_override import (
     RecencyOverrideGenerator,
     VerifiedRecencyOverrideBundleProvider,
-    load_preference_product_pool,
 )
 from agentenv_agentmemory.smoke_http import (
     AgentMemorySmokeHttpClient,
