@@ -16,6 +16,7 @@ from .procedural_wrapper import (
     ProceduralAgentMemoryWrapper,
     _env_choice,
     _env_int,
+    _programmatic_runtime_inputs,
     _required_env,
     _required_file,
     _required_int,
@@ -47,6 +48,12 @@ class LatentPreferenceAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
         pool = load_preference_product_pool(
             _required_file("AGENTMEMORY_LATENT_PREFERENCE_PRODUCT_POOL"),
             expected_file_sha256=_required_env(
+                "AGENTMEMORY_LATENT_PREFERENCE_PRODUCT_POOL_SHA256"
+            ),
+        )
+        self.runtime_inputs = _programmatic_runtime_inputs(
+            pool,
+            product_pool_file_sha256=_required_env(
                 "AGENTMEMORY_LATENT_PREFERENCE_PRODUCT_POOL_SHA256"
             ),
         )

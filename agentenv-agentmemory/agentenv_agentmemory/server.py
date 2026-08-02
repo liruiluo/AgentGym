@@ -2,6 +2,7 @@ from fastapi import FastAPI
 
 from .model import CloseRequestBody, ResetRequestBody, StepRequestBody
 from .runtime.server_factory import build_server
+from .service_identity import decorate_service_metadata
 
 
 server = build_server()
@@ -16,7 +17,7 @@ def hello() -> str:
 
 @app.get("/metadata")
 def metadata():
-    return server.metadata()
+    return decorate_service_metadata(server.metadata())
 
 
 @app.post("/create")

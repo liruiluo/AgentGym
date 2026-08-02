@@ -236,6 +236,7 @@ class AgentMemoryWrapper:
             "ltm_transition_notice_mode": self.ltm_transition_notice_mode,
             "action_listing_mode": self.action_listing_mode,
             "memory_prompt_mode": self.memory_prompt_mode,
+            "active_environment_count": len(getattr(self, "envs", {})),
             "ltm_inventory_key_max_chars": LTM_INVENTORY_KEY_MAX_CHARS,
             "ltm_inventory_key_format": "ascii_identifier",
             "backend": self.backend.metadata(),

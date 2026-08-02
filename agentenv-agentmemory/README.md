@@ -389,6 +389,7 @@ PYTHONPATH=AgentGym/agentenv-agentmemory:AgentGym/agentenv \
   --latent-preference-product-pool-sha256 <pool-file-sha256> \
   --latent-preference-task-count 10000 \
   --latent-preference-generator-seed 233 \
+  --memory-prompt-mode latent_preference_sop \
   --split train \
   --run-id <run-id> \
   --port 8000
@@ -397,6 +398,53 @@ PYTHONPATH=AgentGym/agentenv-agentmemory:AgentGym/agentenv \
 Run `scripts/smoke/smoke_latent_preference_webshop_native.py` with the same
 pinned inputs to execute paired tasks through real `search`, `click[ASIN]`,
 `Buy Now`, `ADD`, and later-session `RETRIEVE` transitions.
+
+## Resident native smoke server
+
+The direct native smoke scripts load the 5.48 GB catalog, construct roughly
+1.18 million product records, and initialize the JVM/Lucene searcher in their
+own Python process. Use them for a one-off authoritative check. During an
+iteration loop, launch a dedicated HTTP smoke server once and keep it resident.
+Do not share this server or its port with a formal PPO run.
+
+Start either programmatic surface with its normal pinned arguments plus:
+
+```bash
+--service-role smoke \
+--runtime-source-id "$(git -C AgentGym rev-parse HEAD)" \
+--procedural-provider-mode fixed_window \
+--memory-first-add-reward 0 \
+--memory-first-later-retrieve-reward 0
+```
+
+For the latent-preference surface, use
+`--latent-preference-provider-mode fixed_window` instead. Keep the process
+alive after `/metadata` becomes ready. Its metadata contains a SHA256 identity
+over the runtime source, MemoryArena provenance, provider and product-pool
+inputs, catalog/attribute/Lucene hashes, price seed/table, reward contract, and
+prompt mode.
+
+Run repeated machine-solved checks without loading the catalog again:
+
+```bash
+PYTHONPATH=AgentGym/agentenv-agentmemory:AgentGym/agentenv \
+/path/to/python \
+  AgentGym/agentenv-agentmemory/scripts/smoke/smoke_programmatic_webshop_http.py \
+  --server-url http://127.0.0.1:8000 \
+  --surface agentmemory_webshop_latent_preference_train_v1 \
+  --memoryarena-base-commit 6cd9de14b71915e39ac742a20dc33785e14b6aab \
+  --product-pool /path/to/certified_latent_preference_pool_v2.json \
+  --product-pool-sha256 <pool-file-sha256> \
+  --generator-seed 233 \
+  --data-index 0 --data-index 1
+```
+
+The client refuses a stale service identity. Every task gets a new HTTP
+environment and native session; reset must report zero progress, zero LTM,
+empty trace/tool state, and an empty memory diff. `/close` must restore the
+server's prior active-environment count. Search results still expose native
+ASIN handles, while task prompts and sanitized BUY receipts remain free of the
+private target ASIN.
 
 ## Other environment launches
 

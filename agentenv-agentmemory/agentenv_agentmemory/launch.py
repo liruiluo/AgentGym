@@ -34,6 +34,7 @@ from .procedural import (
     PROVIDER_MODES,
 )
 from .procedural_webshop_env import PROCEDURAL_SURFACE
+from .service_identity import SERVICE_ROLES
 
 
 NATIVE_SURFACE = "memoryarena_webshop_native_v1"
@@ -68,6 +69,12 @@ def launch() -> None:
     parser.add_argument("--annotation-manual-evidence")
     parser.add_argument("--memoryarena-base-commit", required=True)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument(
+        "--service-role",
+        choices=SERVICE_ROLES,
+        default="formal",
+    )
+    parser.add_argument("--runtime-source-id")
     parser.add_argument(
         "--split", choices=["train", "dev", "test", "all"], default="train"
     )
@@ -159,6 +166,9 @@ def launch() -> None:
     )
     args = parser.parse_args()
 
+    if args.service_role == "smoke" and not args.runtime_source_id:
+        parser.error("--service-role smoke requires --runtime-source-id")
+
     if args.surface == LATENT_PREFERENCE_SURFACE:
         if args.memory_prompt_mode != LATENT_PREFERENCE_PROMPT_MODE:
             parser.error(
@@ -176,7 +186,10 @@ def launch() -> None:
         "MEMORYARENA_ROOT": args.memoryarena_root,
         "MEMORYARENA_BASE_COMMIT": args.memoryarena_base_commit,
         "AGENTMEMORY_RUN_ID": args.run_id,
+        "AGENTMEMORY_SERVICE_ROLE": args.service_role,
     }
+    if args.runtime_source_id:
+        configured["AGENTMEMORY_RUNTIME_SOURCE_ID"] = args.runtime_source_id
     if args.surface == NATIVE_SURFACE:
         _require_args(
             parser,

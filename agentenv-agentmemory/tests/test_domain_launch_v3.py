@@ -223,6 +223,28 @@ class DomainLaunchTest(unittest.TestCase):
         self.assertNotIn("AGENTMEMORY_FIRST_ADD_REWARD", configured)
         self.assertNotIn("AGENTMEMORY_TRAVEL_TASKS_PATH", configured)
 
+    def test_smoke_service_requires_and_exports_runtime_source_identity(self):
+        with self.assertRaises(SystemExit):
+            self._launch(
+                [
+                    *self._latent_preference_arguments(),
+                    "--service-role",
+                    "smoke",
+                ]
+            )
+
+        configured, _ = self._launch(
+            [
+                *self._latent_preference_arguments(),
+                "--service-role",
+                "smoke",
+                "--runtime-source-id",
+                "a" * 40,
+            ]
+        )
+        self.assertEqual(configured["AGENTMEMORY_SERVICE_ROLE"], "smoke")
+        self.assertEqual(configured["AGENTMEMORY_RUNTIME_SOURCE_ID"], "a" * 40)
+
     def test_procedural_webshop_binds_only_machine_verified_training_inputs(self):
         arguments = [
             "--surface",

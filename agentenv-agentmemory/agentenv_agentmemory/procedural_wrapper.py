@@ -60,6 +60,12 @@ class ProceduralAgentMemoryWrapper:
                 "AGENTMEMORY_PROCEDURAL_PRODUCT_POOL_SHA256"
             ),
         )
+        self.runtime_inputs = _programmatic_runtime_inputs(
+            pool,
+            product_pool_file_sha256=_required_env(
+                "AGENTMEMORY_PROCEDURAL_PRODUCT_POOL_SHA256"
+            ),
+        )
         attest_procedural_runtime_inputs(
             pool,
             self.backend,
@@ -257,6 +263,8 @@ class ProceduralAgentMemoryWrapper:
             "ltm_transition_notice_mode": self.ltm_transition_notice_mode,
             "action_listing_mode": self.action_listing_mode,
             "memory_prompt_mode": self.memory_prompt_mode,
+            "runtime_inputs": dict(getattr(self, "runtime_inputs", {})),
+            "active_environment_count": len(getattr(self, "envs", {})),
             "ltm_inventory_key_max_chars": LTM_INVENTORY_KEY_MAX_CHARS,
             "ltm_inventory_key_format": "ascii_identifier",
             "backend": self.backend.metadata(),
@@ -337,6 +345,21 @@ def _require_equal_hash(name: str, *, expected: str, observed: str) -> None:
         raise RuntimeError(
             f"Certified {name} SHA256 mismatch: expected {expected}, observed {observed}."
         )
+
+
+def _programmatic_runtime_inputs(
+    pool,
+    *,
+    product_pool_file_sha256: str,
+) -> dict[str, str]:
+    return {
+        "product_pool_file_sha256": product_pool_file_sha256,
+        "product_pool_semantic_sha256": pool.semantic_sha256,
+        "catalog_sha256": pool.catalog_sha256,
+        "attributes_sha256": pool.attributes_sha256,
+        "lucene_manifest_sha256": pool.lucene_index_sha256,
+        "price_table_sha256": pool.price_table_sha256,
+    }
 
 
 def attest_procedural_runtime_inputs(
