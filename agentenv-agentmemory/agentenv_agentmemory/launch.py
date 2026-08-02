@@ -22,6 +22,12 @@ from .memoryarena_webshop_env import (
     LTM_TRANSITION_NOTICE_MODES,
 )
 from .env_wrapper import MEMORY_PROMPT_MODES
+from .latent_preference import (
+    PROVIDER_MODE_FIXED_WINDOW as LATENT_PROVIDER_MODE_FIXED_WINDOW,
+    PROVIDER_MODE_RESEEDED_STREAM as LATENT_PROVIDER_MODE_RESEEDED_STREAM,
+    PROVIDER_MODES as LATENT_PROVIDER_MODES,
+)
+from .latent_preference_webshop_env import LATENT_PREFERENCE_SURFACE
 from .procedural import (
     PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM,
@@ -41,7 +47,12 @@ def launch() -> None:
     parser.add_argument("--host", type=str, default="0.0.0.0")
     parser.add_argument(
         "--surface",
-        choices=[NATIVE_SURFACE, PROCEDURAL_SURFACE, *V3_SURFACES],
+        choices=[
+            NATIVE_SURFACE,
+            PROCEDURAL_SURFACE,
+            LATENT_PREFERENCE_SURFACE,
+            *V3_SURFACES,
+        ],
         required=True,
     )
     parser.add_argument("--memoryarena-root", required=True)
@@ -77,6 +88,15 @@ def launch() -> None:
         choices=PROVIDER_MODES,
     )
     parser.add_argument("--procedural-start-orbit", type=int, default=0)
+    parser.add_argument("--latent-preference-product-pool")
+    parser.add_argument("--latent-preference-product-pool-sha256")
+    parser.add_argument("--latent-preference-task-count", type=int)
+    parser.add_argument("--latent-preference-generator-seed", type=int)
+    parser.add_argument(
+        "--latent-preference-provider-mode",
+        choices=LATENT_PROVIDER_MODES,
+    )
+    parser.add_argument("--latent-preference-start-orbit", type=int, default=0)
     parser.add_argument("--travel-tasks-path")
     parser.add_argument("--travel-database-path")
     parser.add_argument("--formal-reasoning-tasks-path")
@@ -256,6 +276,90 @@ def launch() -> None:
                 "AGENTMEMORY_PROCEDURAL_PROVIDER_MODE": provider_mode,
                 "AGENTMEMORY_PROCEDURAL_START_ORBIT": str(
                     args.procedural_start_orbit
+                ),
+                "AGENTMEMORY_SPLIT": args.split,
+                "AGENTMEMORY_WEBSHOP_PRICE_SEED": str(args.price_seed),
+                "AGENTMEMORY_FIRST_VALID_ADD_REWARD": str(
+                    FIRST_VALID_ADD_BONUS
+                    if args.memory_first_add_reward is None
+                    else args.memory_first_add_reward
+                ),
+                "AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD": str(
+                    FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS
+                    if args.memory_first_later_retrieve_reward is None
+                    else args.memory_first_later_retrieve_reward
+                ),
+                "AGENTMEMORY_LTM_INVENTORY_MODE": args.ltm_inventory_mode,
+                "AGENTMEMORY_LTM_TRANSITION_NOTICE_MODE": (
+                    args.ltm_transition_notice_mode
+                ),
+                "AGENTMEMORY_MEMORY_PROMPT_MODE": args.memory_prompt_mode,
+                "AGENTMEMORY_ACTION_LISTING_MODE": args.action_listing_mode,
+            }
+        )
+    elif args.surface == LATENT_PREFERENCE_SURFACE:
+        _require_args(
+            parser,
+            args,
+            "items_file",
+            "attributes_file",
+            "search_root",
+            "java_home",
+            "lucene_index_manifest",
+            "latent_preference_product_pool",
+            "latent_preference_product_pool_sha256",
+            "latent_preference_task_count",
+        )
+        if args.latent_preference_generator_seed is None:
+            parser.error("surface requires: --latent-preference-generator-seed")
+        if args.split == "all":
+            parser.error("latent-preference data requires one explicit split")
+        if (
+            args.latent_preference_task_count <= 0
+            or args.latent_preference_task_count % 2
+        ):
+            parser.error(
+                "--latent-preference-task-count must be a positive even integer"
+            )
+        provider_mode = args.latent_preference_provider_mode or (
+            LATENT_PROVIDER_MODE_RESEEDED_STREAM
+            if args.split == "train"
+            else LATENT_PROVIDER_MODE_FIXED_WINDOW
+        )
+        if args.latent_preference_start_orbit < 0:
+            parser.error("--latent-preference-start-orbit must be non-negative")
+        if provider_mode == LATENT_PROVIDER_MODE_RESEEDED_STREAM:
+            if args.split != "train":
+                parser.error(
+                    "--latent-preference-provider-mode reseeded_stream is "
+                    "training-only"
+                )
+            if args.latent_preference_start_orbit != 0:
+                parser.error(
+                    "reseeded_stream requires --latent-preference-start-orbit 0"
+                )
+        configured.update(
+            {
+                "MEMORYARENA_WEBSHOP_ITEMS_FILE": args.items_file,
+                "MEMORYARENA_WEBSHOP_ATTR_FILE": args.attributes_file,
+                "MEMORYARENA_WEBSHOP_SEARCH_ROOT": args.search_root,
+                "MEMORYARENA_WEBSHOP_JAVA_HOME": args.java_home,
+                "MEMORYARENA_LUCENE_INDEX_MANIFEST": args.lucene_index_manifest,
+                "AGENTMEMORY_LATENT_PREFERENCE_PRODUCT_POOL": (
+                    args.latent_preference_product_pool
+                ),
+                "AGENTMEMORY_LATENT_PREFERENCE_PRODUCT_POOL_SHA256": (
+                    args.latent_preference_product_pool_sha256
+                ),
+                "AGENTMEMORY_LATENT_PREFERENCE_TASK_COUNT": str(
+                    args.latent_preference_task_count
+                ),
+                "AGENTMEMORY_LATENT_PREFERENCE_GENERATOR_SEED": str(
+                    args.latent_preference_generator_seed
+                ),
+                "AGENTMEMORY_LATENT_PREFERENCE_PROVIDER_MODE": provider_mode,
+                "AGENTMEMORY_LATENT_PREFERENCE_START_ORBIT": str(
+                    args.latent_preference_start_orbit
                 ),
                 "AGENTMEMORY_SPLIT": args.split,
                 "AGENTMEMORY_WEBSHOP_PRICE_SEED": str(args.price_seed),

@@ -13,6 +13,9 @@ from agentenv_agentmemory.domains import (
     TRAVEL_SURFACES,
 )
 from agentenv_agentmemory.env_wrapper import NATIVE_SURFACE
+from agentenv_agentmemory.latent_preference_webshop_env import (
+    LATENT_PREFERENCE_SURFACE,
+)
 from agentenv_agentmemory.procedural_webshop_env import PROCEDURAL_SURFACE
 from agentenv_agentmemory.launch import launch
 from agentenv_agentmemory.reward_hierarchy import (
@@ -67,6 +70,39 @@ class DomainLaunchTest(unittest.TestCase):
             "10000",
             "--procedural-generator-seed",
             "0",
+            "--split",
+            split,
+        ]
+
+    @staticmethod
+    def _latent_preference_arguments(*, split="train"):
+        return [
+            "--surface",
+            LATENT_PREFERENCE_SURFACE,
+            "--memoryarena-root",
+            "/memoryarena",
+            "--memoryarena-base-commit",
+            "a" * 40,
+            "--run-id",
+            f"latent-preference-{split}-test",
+            "--items-file",
+            "/data/items.json",
+            "--attributes-file",
+            "/data/attrs.json",
+            "--search-root",
+            "/data/search",
+            "--java-home",
+            "/java",
+            "--lucene-index-manifest",
+            "/data/lucene.sha256",
+            "--latent-preference-product-pool",
+            "/data/certified-latent-pool.json",
+            "--latent-preference-product-pool-sha256",
+            "c" * 64,
+            "--latent-preference-task-count",
+            "10000",
+            "--latent-preference-generator-seed",
+            "233",
             "--split",
             split,
         ]
@@ -260,6 +296,54 @@ class DomainLaunchTest(unittest.TestCase):
         with (
             patch.dict(sys.modules, {"uvicorn": uvicorn}),
             patch.object(sys, "argv", arguments),
+            patch.dict(os.environ, {}, clear=True),
+            self.assertRaises(SystemExit),
+        ):
+            launch()
+        uvicorn.run.assert_not_called()
+
+    def test_latent_preference_binds_only_verified_programmatic_inputs(self):
+        configured, _ = self._launch(self._latent_preference_arguments())
+
+        self.assertEqual(
+            configured["AGENTMEMORY_SURFACE"],
+            LATENT_PREFERENCE_SURFACE,
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_LATENT_PREFERENCE_TASK_COUNT"],
+            "10000",
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_LATENT_PREFERENCE_GENERATOR_SEED"],
+            "233",
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_LATENT_PREFERENCE_PROVIDER_MODE"],
+            "reseeded_stream",
+        )
+        self.assertNotIn("AGENTMEMORY_PROCEDURAL_PRODUCT_POOL", configured)
+        self.assertNotIn("AGENTMEMORY_MEMORYARENA_RAW_PATH", configured)
+        self.assertNotIn("AGENTMEMORY_ANNOTATION_GATE_MANIFEST", configured)
+
+    def test_latent_preference_eval_defaults_to_fixed_window(self):
+        configured, _ = self._launch(
+            self._latent_preference_arguments(split="dev")
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_LATENT_PREFERENCE_PROVIDER_MODE"],
+            "fixed_window",
+        )
+        self.assertEqual(configured["AGENTMEMORY_SPLIT"], "dev")
+
+    def test_latent_preference_rejects_odd_task_count(self):
+        arguments = self._latent_preference_arguments()
+        count_index = arguments.index("--latent-preference-task-count") + 1
+        arguments[count_index] = "9999"
+        uvicorn = types.ModuleType("uvicorn")
+        uvicorn.run = Mock()
+        with (
+            patch.dict(sys.modules, {"uvicorn": uvicorn}),
+            patch.object(sys, "argv", ["agentmemory", *arguments]),
             patch.dict(os.environ, {}, clear=True),
             self.assertRaises(SystemExit),
         ):

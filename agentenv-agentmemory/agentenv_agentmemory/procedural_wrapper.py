@@ -11,6 +11,7 @@ from .memoryarena_webshop_env import (
     LTM_INVENTORY_KEY_MAX_CHARS,
     LTM_INVENTORY_MODES,
     LTM_TRANSITION_NOTICE_MODES,
+    MemoryArenaWebShopEnv,
 )
 from .native_webshop_backend import (
     MemoryArenaNativeWebShopBackend,
@@ -38,23 +39,66 @@ from .reward_hierarchy import (
 class ProceduralAgentMemoryWrapper:
     """AgentGym HTTP wrapper for machine-verified procedural memory training."""
 
+    surface = PROCEDURAL_SURFACE
+    environment_type = ProceduralMemoryWebShopEnv
+
     def __init__(self) -> None:
-        if os.environ.get("AGENTMEMORY_SURFACE") != PROCEDURAL_SURFACE:
-            raise RuntimeError(
-                f"AGENTMEMORY_SURFACE must be explicitly set to {PROCEDURAL_SURFACE!r}."
-            )
-        forbidden = sorted(
-            key
-            for key in (
+        self._initialize_native_training_runtime(
+            forbidden_env_keys=(
                 "AGENTMEMORY_MEMORYARENA_RAW_PATH",
                 "AGENTMEMORY_ANNOTATION_GATE_MANIFEST",
                 "AGENTMEMORY_ANNOTATION_MANUAL_EVIDENCE",
             )
+        )
+        pool = load_certified_product_pool(
+            _required_file("AGENTMEMORY_PROCEDURAL_PRODUCT_POOL"),
+            expected_file_sha256=_required_env(
+                "AGENTMEMORY_PROCEDURAL_PRODUCT_POOL_SHA256"
+            ),
+        )
+        attest_procedural_runtime_inputs(
+            pool,
+            self.backend,
+            items_file=self.items_file,
+            attributes_file=self.attributes_file,
+            search_root=self.search_root,
+            lucene_manifest=self.lucene_manifest,
+        )
+
+        self.provider = VerifiedProceduralBundleProvider(
+            generator=NaturalAttributeChainGenerator(
+                pool=pool,
+                seed=_required_int("AGENTMEMORY_PROCEDURAL_GENERATOR_SEED"),
+            ),
+            split=_required_env("AGENTMEMORY_SPLIT"),
+            task_count=_required_int("AGENTMEMORY_PROCEDURAL_TASK_COUNT"),
+            mode=_env_choice(
+                "AGENTMEMORY_PROCEDURAL_PROVIDER_MODE",
+                default=PROVIDER_MODE_FIXED_WINDOW,
+                choices=PROVIDER_MODES,
+            ),
+            start_orbit=_env_int("AGENTMEMORY_PROCEDURAL_START_ORBIT", 0),
+        )
+        self._initialize_wrapper_state()
+
+    def _initialize_native_training_runtime(
+        self,
+        *,
+        forbidden_env_keys: tuple[str, ...],
+    ) -> None:
+        if os.environ.get("AGENTMEMORY_SURFACE") != self.surface:
+            raise RuntimeError(
+                f"AGENTMEMORY_SURFACE must be explicitly set to {self.surface!r}."
+            )
+        forbidden = sorted(
+            key
+            for key in forbidden_env_keys
             if os.environ.get(key)
         )
         if forbidden:
             raise RuntimeError(
-                "Procedural training refuses frozen-evaluation or manual-gate inputs: "
+                "Programmatic training refuses frozen-evaluation or manual-gate "
+                "inputs: "
                 + ", ".join(forbidden)
             )
 
@@ -89,50 +133,23 @@ class ProceduralAgentMemoryWrapper:
             choices=MEMORY_PROMPT_MODES,
         )
 
-        items_file = _required_file("MEMORYARENA_WEBSHOP_ITEMS_FILE")
-        attributes_file = _required_file("MEMORYARENA_WEBSHOP_ATTR_FILE")
-        search_root = _required_directory("MEMORYARENA_WEBSHOP_SEARCH_ROOT")
-        lucene_manifest = _required_file("MEMORYARENA_LUCENE_INDEX_MANIFEST")
+        self.items_file = _required_file("MEMORYARENA_WEBSHOP_ITEMS_FILE")
+        self.attributes_file = _required_file("MEMORYARENA_WEBSHOP_ATTR_FILE")
+        self.search_root = _required_directory("MEMORYARENA_WEBSHOP_SEARCH_ROOT")
+        self.lucene_manifest = _required_file("MEMORYARENA_LUCENE_INDEX_MANIFEST")
         self.backend = MemoryArenaNativeWebShopBackend(
             memoryarena_root=_required_directory("MEMORYARENA_ROOT"),
-            items_file=items_file,
-            attributes_file=attributes_file,
-            search_root=search_root,
+            items_file=self.items_file,
+            attributes_file=self.attributes_file,
+            search_root=self.search_root,
             java_home=_required_directory("MEMORYARENA_WEBSHOP_JAVA_HOME"),
             expected_memoryarena_commit=_required_env("MEMORYARENA_BASE_COMMIT"),
             price_seed=_env_int("AGENTMEMORY_WEBSHOP_PRICE_SEED", 233),
         )
-        pool = load_certified_product_pool(
-            _required_file("AGENTMEMORY_PROCEDURAL_PRODUCT_POOL"),
-            expected_file_sha256=_required_env(
-                "AGENTMEMORY_PROCEDURAL_PRODUCT_POOL_SHA256"
-            ),
-        )
-        attest_procedural_runtime_inputs(
-            pool,
-            self.backend,
-            items_file=items_file,
-            attributes_file=attributes_file,
-            search_root=search_root,
-            lucene_manifest=lucene_manifest,
-        )
 
-        self.provider = VerifiedProceduralBundleProvider(
-            generator=NaturalAttributeChainGenerator(
-                pool=pool,
-                seed=_required_int("AGENTMEMORY_PROCEDURAL_GENERATOR_SEED"),
-            ),
-            split=_required_env("AGENTMEMORY_SPLIT"),
-            task_count=_required_int("AGENTMEMORY_PROCEDURAL_TASK_COUNT"),
-            mode=_env_choice(
-                "AGENTMEMORY_PROCEDURAL_PROVIDER_MODE",
-                default=PROVIDER_MODE_FIXED_WINDOW,
-                choices=PROVIDER_MODES,
-            ),
-            start_orbit=_env_int("AGENTMEMORY_PROCEDURAL_START_ORBIT", 0),
-        )
+    def _initialize_wrapper_state(self) -> None:
         self.max_id = 0
-        self.envs: dict[int, ProceduralMemoryWebShopEnv] = {}
+        self.envs: dict[int, MemoryArenaWebShopEnv] = {}
         self.info: dict[int, dict[str, Any]] = {}
         self.env_locks: dict[int, threading.RLock] = {}
         self.lock = threading.RLock()
@@ -141,7 +158,7 @@ class ProceduralAgentMemoryWrapper:
         with self.lock:
             env_id = self.max_id
             self.max_id += 1
-            env = ProceduralMemoryWebShopEnv(
+            env = self.environment_type(
                 provider=self.provider,
                 backend=self.backend,
                 env_uid=f"env{env_id}",
@@ -224,7 +241,7 @@ class ProceduralAgentMemoryWrapper:
     def metadata(self) -> dict[str, Any]:
         provider_metadata = self.provider.metadata()
         return {
-            "surface": PROCEDURAL_SURFACE,
+            "surface": self.surface,
             "source": "agentmemory_programmatic_generator",
             "paper_eligible": False,
             "task_count": self.provider.task_count,
@@ -241,7 +258,7 @@ class ProceduralAgentMemoryWrapper:
             "backend": self.backend.metadata(),
         }
 
-    def require_env(self, env_id: int) -> ProceduralMemoryWebShopEnv:
+    def require_env(self, env_id: int) -> MemoryArenaWebShopEnv:
         try:
             return self.envs[env_id]
         except KeyError as exc:

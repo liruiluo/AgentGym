@@ -1,4 +1,5 @@
 from .memoryarena_webshop_env import MemoryArenaWebShopEnv
+from .latent_preference_webshop_env import LatentPreferenceWebShopEnv
 from .procedural_webshop_env import ProceduralMemoryWebShopEnv
 
 
@@ -8,4 +9,9 @@ def launch() -> None:
     run_launch()
 
 
-__all__ = ["MemoryArenaWebShopEnv", "ProceduralMemoryWebShopEnv", "launch"]
+__all__ = [
+    "LatentPreferenceWebShopEnv",
+    "MemoryArenaWebShopEnv",
+    "ProceduralMemoryWebShopEnv",
+    "launch",
+]
