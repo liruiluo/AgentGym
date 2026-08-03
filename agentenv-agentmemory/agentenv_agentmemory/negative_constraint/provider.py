@@ -36,7 +36,13 @@ class VerifiedNegativeConstraintBundleProvider:
         mode: str = PROVIDER_MODE_FIXED_WINDOW,
         start_orbit: int = 0,
         cache_orbits: int = 128,
+        allow_rules_only: bool = False,
     ) -> None:
+        if not generator.pool.native_certified and not allow_rules_only:
+            raise NegativeConstraintDataError(
+                "negative-constraint provider refuses a rules-only pool; "
+                "allow_rules_only is test-only."
+            )
         if split not in SPLITS:
             raise NegativeConstraintDataError("invalid provider split.")
         if (
@@ -128,6 +134,7 @@ class VerifiedNegativeConstraintBundleProvider:
         return self._verified_orbit(data_idx // TASKS_PER_ORBIT)[1]
 
     def metadata(self) -> dict[str, object]:
+        pool = self.generator.pool
         return {
             "schema": "agentmemory_verified_negative_constraint_provider_v1",
             "split": self.split,
@@ -153,9 +160,12 @@ class VerifiedNegativeConstraintBundleProvider:
             "distinct_values_per_phase": 3,
             "counterfactual_branches": 3,
             "retrieve_policy": "query_top1",
-            "rules_only": True,
-            "native_certified": False,
-            "training_ready": False,
+            "rules_only": not pool.native_certified,
+            "native_certified": pool.native_certified,
+            "training_ready": pool.native_certified,
+            "native_certificate_count": len(pool.native_certificates),
+            "certifier_version": pool.certifier_version,
+            "source_manifest_sha256": pool.source_manifest_sha256,
             "seed_epoch_orbit_count": self.seed_epoch_orbit_count,
             "seed_epoch_task_count": self.seed_epoch_task_count,
         }

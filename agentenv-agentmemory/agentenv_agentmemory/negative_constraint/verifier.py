@@ -41,6 +41,8 @@ class NegativeConstraintOrbitProof:
     certified_source_candidate_checks: int
     unique_candidate_checks: int
     top1_retrieval_min_score: float
+    native_certified: bool
+    native_certificate_checks: int
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -78,6 +80,7 @@ class NegativeConstraintOrbitProof:
                 "candidate_count_per_phase": 3,
                 "distinct_attribute_values_per_phase": 3,
                 "same_asin_or_title_reuse_within_task": False,
+                "native_certificate_checks": self.native_certificate_checks,
             },
             "retrieval_checks": {
                 "policy": "query_top1",
@@ -86,10 +89,10 @@ class NegativeConstraintOrbitProof:
             },
             "verification": {
                 "rules_generated_from_frozen_webshop_catalog": True,
-                "native_search_certified": False,
-                "native_open_certified": False,
-                "native_purchase_certified": False,
-                "training_ready": False,
+                "native_search_certified": self.native_certified,
+                "native_open_certified": self.native_certified,
+                "native_purchase_certified": self.native_certified,
+                "training_ready": self.native_certified,
                 "phase_count_per_task": 6,
                 "three_way_counterfactual": True,
                 "unique_legal_purchase_vector_per_branch": True,
@@ -183,6 +186,7 @@ def verify_negative_constraint_orbit(
     pool_by_asin = {item.asin: item for item in pool.candidates}
     source_candidate_checks = 0
     unique_candidate_checks = 0
+    native_certificate_checks = 0
     top1_scores: list[float] = []
     solution_counts: list[int] = []
     solution_vectors: list[tuple[int, ...]] = []
@@ -209,6 +213,13 @@ def verify_negative_constraint_orbit(
                         "negative phase candidate is absent from the frozen rules pool."
                     )
                 source_candidate_checks += 1
+                if pool.native_certified:
+                    certificate = pool.certificate_for(candidate.asin)
+                    if certificate.source_row_sha256 != candidate.source_row_sha256:
+                        raise NegativeConstraintDataError(
+                            "negative native certificate source row mismatch."
+                        )
+                    native_certificate_checks += 1
                 if candidate.asin in phase.question:
                     raise NegativeConstraintDataError(
                         "negative question leaks a candidate ASIN."
@@ -285,4 +296,6 @@ def verify_negative_constraint_orbit(
         certified_source_candidate_checks=source_candidate_checks,
         unique_candidate_checks=unique_candidate_checks,
         top1_retrieval_min_score=min(top1_scores),
+        native_certified=pool.native_certified,
+        native_certificate_checks=native_certificate_checks,
     )

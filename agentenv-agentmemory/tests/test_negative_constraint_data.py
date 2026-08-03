@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
 from dataclasses import replace
+from pathlib import Path
+from unittest.mock import patch
 
 from agentenv_agentmemory.latent_preference.schema import (
     canonical_sha256,
@@ -16,8 +23,16 @@ from agentenv_agentmemory.negative_constraint import (
     NegativeConstraintGenerator,
     NegativeConstraintProductPool,
     NegativeConstraintRecipe,
+    NativeNegativeConstraintCertificationConfig,
+    NativeNegativeConstraintPoolCertificationError,
     VerifiedNegativeConstraintBundleProvider,
+    certify_native_negative_constraint_product_pool,
+    load_negative_constraint_native_product_pool,
     verify_negative_constraint_orbit,
+    write_negative_constraint_product_pool_manifest,
+)
+from agentenv_agentmemory.negative_constraint.runtime_attestation import (
+    attest_negative_constraint_runtime_inputs,
 )
 from agentenv_agentmemory.negative_constraint_webshop_env import (
     NegativeConstraintWebShopEnv,
@@ -212,6 +227,7 @@ class NegativeConstraintProviderTests(unittest.TestCase):
             task_count=9,
             start_orbit=3,
             cache_orbits=2,
+            allow_rules_only=True,
         )
         bundles = tuple(provider.get(index) for index in range(3))
         self.assertEqual(len({bundle.orbit_id for bundle in bundles}), 1)
@@ -226,6 +242,7 @@ class NegativeConstraintProviderTests(unittest.TestCase):
             split="train",
             task_count=3,
             mode=PROVIDER_MODE_RESEEDED_STREAM,
+            allow_rules_only=True,
         )
         initial = provider.get(0)
         next_epoch = provider.get(provider.seed_epoch_task_count)
@@ -311,6 +328,346 @@ class _FakeNegativeNativeBackend:
         return {"surface": self.surface}
 
 
+class _FakeNegativeCertificationBackend:
+    surface = "memoryarena_webshop_native_v1"
+
+    def __init__(self, pool: NegativeConstraintProductPool) -> None:
+        self.records = {
+            candidate.asin: {
+                "Title": candidate.title,
+                "category": [candidate.category_id],
+                "query": candidate.category_display_name,
+                "product_category": candidate.product_category,
+                "price_cents": 1_000 + index,
+            }
+            for index, candidate in enumerate(pool.candidates)
+        }
+        self.sessions: dict[str, dict[str, object]] = {}
+        self.unsearchable_asins: set[str] = set()
+
+    def metadata(self) -> dict[str, object]:
+        return {
+            "surface": self.surface,
+            "price_seed": 233,
+            "product_count": len(self.records),
+            "price_table_sha256": canonical_sha256(
+                [
+                    [asin, self.product_price_cents(asin)]
+                    for asin in sorted(self.records)
+                ]
+            ),
+            "upstream_provenance": {"commit": "f" * 40},
+        }
+
+    def active_session_count(self) -> int:
+        return len(self.sessions)
+
+    def product_asins(self):
+        return self.records.keys()
+
+    def has_product(self, asin: str) -> bool:
+        return asin.upper() in self.records
+
+    def product_title(self, asin: str) -> str:
+        return str(self.records[asin.upper()]["Title"])
+
+    def product_record(self, asin: str) -> dict[str, object]:
+        record = self.records[asin.upper()]
+        return {
+            key: record.get(key)
+            for key in ("Title", "category", "query", "product_category")
+        }
+
+    def product_price_cents(self, asin: str) -> int:
+        return int(self.records[asin.upper()]["price_cents"])
+
+    def product_record_sha256(self, asin: str) -> str:
+        return canonical_sha256(self.records[asin.upper()])
+
+    def open_session(self, session_token: str, instruction: str) -> NativePage:
+        self.sessions[session_token] = {"asin": None, "search_results": ()}
+        return NativePage(
+            observation=instruction,
+            url=f"http://fixture/search/{session_token}",
+            has_search_bar=True,
+            clickables=(),
+        )
+
+    def step(self, session_token: str, action: str) -> NativePage:
+        session = self.sessions[session_token]
+        if action.startswith("search[") and action.endswith("]"):
+            query = normalize_native_title(action[7:-1])
+            results = tuple(
+                asin
+                for asin, record in sorted(self.records.items())
+                if asin not in self.unsearchable_asins
+                and query in normalize_native_title(str(record["Title"]))
+            )
+            session["search_results"] = results
+            return NativePage(
+                observation="\n".join(results),
+                url=f"http://fixture/search/{session_token}",
+                has_search_bar=True,
+                clickables=results,
+            )
+        if action.startswith("click[") and action.endswith("]"):
+            argument = action[6:-1]
+            if argument.casefold() == "buy now":
+                asin = str(session["asin"])
+                return NativePage(
+                    observation=f"Purchased {asin}",
+                    url=f"http://fixture/done/{asin}",
+                    has_search_bar=False,
+                    clickables=(),
+                    purchase=NativePurchase(
+                        asin=asin,
+                        price_cents=self.product_price_cents(asin),
+                        selected_options={},
+                    ),
+                )
+            asin = argument.upper()
+            if asin not in session["search_results"]:
+                raise ValueError(f"ASIN {asin} was not in the search results")
+            session["asin"] = asin
+            return NativePage(
+                observation=self.product_title(asin),
+                url=f"http://fixture/item/{asin}",
+                has_search_bar=True,
+                clickables=("Buy Now",),
+            )
+        raise ValueError(action)
+
+    def close_session(self, session_token: str) -> None:
+        self.sessions.pop(session_token, None)
+
+    def close(self) -> None:
+        self.sessions.clear()
+
+
+class NegativeConstraintNativeCertificationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.rules_pool = make_negative_fixture_pool()
+        self.backend = _FakeNegativeCertificationBackend(self.rules_pool)
+
+    def _certify(self):
+        return certify_native_negative_constraint_product_pool(
+            self.backend,
+            rules_pool=self.rules_pool,
+            catalog_sha256="1" * 64,
+            attributes_sha256="2" * 64,
+            lucene_index_sha256="3" * 64,
+            expected_memoryarena_commit="f" * 40,
+            config=NativeNegativeConstraintCertificationConfig(
+                pool_id="fixture_negative_constraint_native_v2"
+            ),
+        )
+
+    def test_rules_only_provider_is_explicitly_test_only(self) -> None:
+        with self.assertRaisesRegex(NegativeConstraintDataError, "rules-only"):
+            VerifiedNegativeConstraintBundleProvider(
+                generator=NegativeConstraintGenerator(
+                    pool=self.rules_pool,
+                    seed=233,
+                ),
+                split="train",
+                task_count=3,
+            )
+
+    def test_certifies_round_trips_and_enables_training(self) -> None:
+        pool, audit = self._certify()
+        self.assertTrue(pool.native_certified)
+        self.assertEqual(
+            len(pool.native_certificates),
+            len(self.rules_pool.candidates),
+        )
+        self.assertEqual(audit["status"], "certified")
+        self.assertTrue(audit["verification"]["training_ready"])
+        self.assertEqual(self.backend.active_session_count(), 0)
+
+        generator = NegativeConstraintGenerator(pool=pool, seed=233)
+        provider = VerifiedNegativeConstraintBundleProvider(
+            generator=generator,
+            split="train",
+            task_count=3,
+        )
+        self.assertTrue(provider.metadata()["training_ready"])
+        proof = verify_negative_constraint_orbit(
+            generator.generate_orbit(0, split="train"),
+            pool=pool,
+        )
+        self.assertTrue(proof.payload()["verification"]["training_ready"])
+        self.assertGreater(proof.native_certificate_checks, 0)
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "negative-pool.json"
+            digest = write_negative_constraint_product_pool_manifest(pool, path)
+            loaded = load_negative_constraint_native_product_pool(
+                path,
+                expected_file_sha256=digest,
+            )
+        self.assertEqual(pool.semantic_manifest(), loaded.semantic_manifest())
+
+    def test_native_pool_rejects_non_boolean_certification_flag(self) -> None:
+        pool, _ = self._certify()
+        with self.assertRaisesRegex(NegativeConstraintDataError, "must be a boolean"):
+            replace(pool, native_certified=1)
+
+    def test_native_pool_rejects_missing_certifier_version(self) -> None:
+        pool, _ = self._certify()
+        with self.assertRaisesRegex(NegativeConstraintDataError, "must be a string"):
+            replace(pool, certifier_version=None)
+
+    def test_native_pool_rejects_duplicate_certificate(self) -> None:
+        pool, _ = self._certify()
+        duplicated = tuple(
+            sorted(
+                (*pool.native_certificates, pool.native_certificates[0]),
+                key=lambda certificate: certificate.asin,
+            )
+        )
+        with self.assertRaisesRegex(NegativeConstraintDataError, "exactly once"):
+            replace(pool, native_certificates=duplicated)
+
+    def test_unsearchable_selected_product_fails_closed_and_cleans_session(self) -> None:
+        failed_asin = min(self.backend.records)
+        self.backend.unsearchable_asins.add(failed_asin)
+        with self.assertRaises(NativeNegativeConstraintPoolCertificationError) as caught:
+            self._certify()
+        self.assertEqual(caught.exception.audit["status"], "failed")
+        self.assertEqual(
+            caught.exception.audit["failed_product_asin"],
+            failed_asin,
+        )
+        self.assertEqual(self.backend.active_session_count(), 0)
+
+    def test_manifest_nested_field_tamper_is_rejected(self) -> None:
+        pool, _ = self._certify()
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "negative-pool.json"
+            write_negative_constraint_product_pool_manifest(pool, path)
+            payload = json.loads(path.read_bytes())
+            del payload["native_certificates"][0]["purchase_receipt_sha256"]
+            data = json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8") + b"\n"
+            path.write_bytes(data)
+            digest = hashlib.sha256(data).hexdigest()
+            with self.assertRaisesRegex(
+                NegativeConstraintDataError,
+                "certificate fields mismatch",
+            ):
+                load_negative_constraint_native_product_pool(
+                    path,
+                    expected_file_sha256=digest,
+                )
+
+    def test_dataset_manifest_is_byte_deterministic(self) -> None:
+        pool, _ = self._certify()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pool_path = root / "negative-pool.json"
+            pool_sha256 = write_negative_constraint_product_pool_manifest(
+                pool,
+                pool_path,
+            )
+            first = root / "manifest-one.json"
+            second = root / "manifest-two.json"
+            package_root = Path(__file__).resolve().parents[1]
+            script = (
+                package_root
+                / "scripts"
+                / "audits"
+                / "verify_negative_constraint_dataset.py"
+            )
+            environment = dict(os.environ)
+            environment["PYTHONPATH"] = str(package_root)
+            command = [
+                sys.executable,
+                str(script),
+                "--product-pool",
+                str(pool_path),
+                "--product-pool-sha256",
+                pool_sha256,
+                "--split",
+                "train",
+                "--generator-seed",
+                "233",
+                "--task-count",
+                "6",
+            ]
+            subprocess.run(
+                [*command, "--output-manifest", str(first)],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+            digest = hashlib.sha256(first.read_bytes()).hexdigest()
+            replay = subprocess.run(
+                [
+                    *command,
+                    "--output-manifest",
+                    str(second),
+                    "--expected-manifest-sha256",
+                    digest,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+            self.assertEqual(first.read_bytes(), second.read_bytes())
+            self.assertIn("tasks=6", replay.stdout)
+
+    def test_runtime_attestation_detects_price_tamper(self) -> None:
+        pool, _ = self._certify()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            items = root / "items.json"
+            attributes = root / "attributes.json"
+            lucene = root / "lucene.sha256"
+            for path in (items, attributes, lucene):
+                path.write_text("fixture", encoding="utf-8")
+
+            def frozen_hash(path):
+                if Path(path) == items:
+                    return pool.catalog_sha256
+                if Path(path) == attributes:
+                    return pool.attributes_sha256
+                if Path(path) == lucene:
+                    return pool.lucene_index_sha256
+                raise AssertionError(path)
+
+            with patch(
+                "agentenv_agentmemory.negative_constraint.runtime_attestation.file_sha256",
+                side_effect=frozen_hash,
+            ), patch(
+                "agentenv_agentmemory.negative_constraint.runtime_attestation.verify_lucene_index_manifest",
+                return_value=1,
+            ):
+                attest_negative_constraint_runtime_inputs(
+                    pool,
+                    self.backend,
+                    items_file=items,
+                    attributes_file=attributes,
+                    search_root=root,
+                    lucene_manifest=lucene,
+                )
+                asin = pool.candidates[0].asin
+                self.backend.records[asin]["price_cents"] = 999_999
+                with self.assertRaisesRegex(RuntimeError, "price table"):
+                    attest_negative_constraint_runtime_inputs(
+                        pool,
+                        self.backend,
+                        items_file=items,
+                        attributes_file=attributes,
+                        search_root=root,
+                        lucene_manifest=lucene,
+                    )
+
+
 class NegativeConstraintRuntimeTests(unittest.TestCase):
     def _make_env(self, data_idx: int = 0):
         pool = make_negative_fixture_pool()
@@ -320,6 +677,7 @@ class NegativeConstraintRuntimeTests(unittest.TestCase):
             generator=generator,
             split="train",
             task_count=3,
+            allow_rules_only=True,
         )
         backend = _FakeNegativeNativeBackend(task)
         env = NegativeConstraintWebShopEnv(
@@ -328,6 +686,7 @@ class NegativeConstraintRuntimeTests(unittest.TestCase):
             env_uid=f"negative-{data_idx}",
             first_valid_add_reward=0.0,
             first_valid_later_session_retrieve_reward=0.0,
+            allow_rules_only=True,
         )
         observation, info = env.reset(data_idx=data_idx)
         return env, backend, task, observation, info
@@ -413,6 +772,7 @@ class NegativeConstraintRuntimeTests(unittest.TestCase):
             generator=generator,
             split="train",
             task_count=3,
+            allow_rules_only=True,
         )
         backend = _FakeNegativeNativeBackend(task)
         with self.assertRaises(ValueError):
@@ -420,12 +780,14 @@ class NegativeConstraintRuntimeTests(unittest.TestCase):
                 provider=provider,
                 backend=backend,
                 ltm_inventory_mode="keys",
+                allow_rules_only=True,
             )
         with self.assertRaises(ValueError):
             NegativeConstraintWebShopEnv(
                 provider=provider,
                 backend=backend,
                 retrieve_policy="standard",
+                allow_rules_only=True,
             )
 
 

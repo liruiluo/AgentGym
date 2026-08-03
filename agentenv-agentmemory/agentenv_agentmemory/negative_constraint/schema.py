@@ -15,6 +15,7 @@ SPLITS = ("train", "dev", "test")
 TASK_SCHEMA = "agentmemory_negative_constraint_task_v1"
 ORBIT_SCHEMA = "agentmemory_negative_constraint_counterfactual_orbit_v1"
 POOL_SCHEMA = "agentmemory_negative_constraint_rules_pool_v1"
+NATIVE_POOL_SCHEMA = "agentmemory_negative_constraint_native_product_pool_v2"
 PROOF_SCHEMA = "agentmemory_negative_constraint_proof_v1"
 
 
@@ -187,6 +188,122 @@ class NegativeConstraintCandidate:
 
 
 @dataclass(frozen=True)
+class NegativeConstraintNativeCertificate:
+    asin: str
+    source_row_sha256: str
+    price_cents: int
+    search_query: str
+    search_rank: int
+    search_result_asins: tuple[str, ...]
+    opened_url: str
+    catalog_record_sha256: str
+    purchase_receipt_sha256: str
+    native_title_catalog_match_count: int = 1
+    native_title_globally_unique: bool = True
+    native_search_verified: bool = True
+    native_open_verified: bool = True
+    native_purchase_verified: bool = True
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.asin, str)
+            or len(self.asin) != 10
+            or not self.asin.isalnum()
+            or self.asin != self.asin.upper()
+        ):
+            raise NegativeConstraintDataError("invalid native certificate ASIN.")
+        require_sha256(self.source_row_sha256, field="certificate source row SHA256")
+        if (
+            isinstance(self.price_cents, bool)
+            or not isinstance(self.price_cents, int)
+            or self.price_cents <= 0
+        ):
+            raise NegativeConstraintDataError(
+                "native certificate price must be positive cents."
+            )
+        _require_line(self.search_query, field="native certificate search query")
+        if any(char in self.search_query for char in "[]\r\n"):
+            raise NegativeConstraintDataError(
+                "native certificate search query contains unsafe action syntax."
+            )
+        if (
+            isinstance(self.search_rank, bool)
+            or not isinstance(self.search_rank, int)
+            or not 1 <= self.search_rank <= 10
+        ):
+            raise NegativeConstraintDataError(
+                "native certificate search rank must be in [1, 10]."
+            )
+        if not self.search_result_asins or self.search_rank > len(
+            self.search_result_asins
+        ):
+            raise NegativeConstraintDataError(
+                "native certificate search results do not cover the target rank."
+            )
+        for result_asin in self.search_result_asins:
+            if (
+                not isinstance(result_asin, str)
+                or len(result_asin) != 10
+                or not result_asin.isalnum()
+                or result_asin != result_asin.upper()
+            ):
+                raise NegativeConstraintDataError(
+                    "native certificate contains an invalid search-result ASIN."
+                )
+        if self.search_result_asins[self.search_rank - 1] != self.asin:
+            raise NegativeConstraintDataError(
+                "native certificate target disagrees with its recorded search rank."
+            )
+        _require_line(self.opened_url, field="native certificate opened URL")
+        if self.asin.casefold() not in self.opened_url.casefold():
+            raise NegativeConstraintDataError(
+                "native certificate opened URL does not identify its ASIN."
+            )
+        require_sha256(
+            self.catalog_record_sha256,
+            field="native certificate catalog record SHA256",
+        )
+        require_sha256(
+            self.purchase_receipt_sha256,
+            field="native certificate purchase receipt SHA256",
+        )
+        if self.native_title_catalog_match_count != 1:
+            raise NegativeConstraintDataError(
+                "native certificate title must map to exactly one catalog ASIN."
+            )
+        flags = (
+            self.native_title_globally_unique,
+            self.native_search_verified,
+            self.native_open_verified,
+            self.native_purchase_verified,
+        )
+        if any(value is not True for value in flags):
+            raise NegativeConstraintDataError(
+                "native certificate verification flags must all be true."
+            )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "asin": self.asin,
+            "source_row_sha256": self.source_row_sha256,
+            "price_cents": self.price_cents,
+            "search_query": self.search_query,
+            "search_rank": self.search_rank,
+            "search_result_asins": list(self.search_result_asins),
+            "opened_url": self.opened_url,
+            "catalog_record_sha256": self.catalog_record_sha256,
+            "purchase_receipt_sha256": self.purchase_receipt_sha256,
+            "native_title_catalog_match_count": (
+                self.native_title_catalog_match_count
+            ),
+            "native_title_globally_unique": self.native_title_globally_unique,
+            "native_search_verified": self.native_search_verified,
+            "native_open_verified": self.native_open_verified,
+            "native_purchase_verified": self.native_purchase_verified,
+        }
+
+
+@dataclass(frozen=True)
 class NegativeConstraintProductPool:
     pool_id: str
     products_per_cell: int
@@ -196,6 +313,16 @@ class NegativeConstraintProductPool:
     split_policy: str
     selection_policy: str
     native_certified: bool = False
+    certifier_version: str | None = None
+    memoryarena_commit: str | None = None
+    catalog_sha256: str | None = None
+    attributes_sha256: str | None = None
+    price_table_sha256: str | None = None
+    lucene_index_sha256: str | None = None
+    source_manifest_sha256: str | None = None
+    rules_pool_sha256: str | None = None
+    price_seed: int | None = None
+    native_certificates: tuple[NegativeConstraintNativeCertificate, ...] = ()
 
     def __post_init__(self) -> None:
         require_id(self.pool_id, field="negative pool_id")
@@ -285,10 +412,76 @@ class NegativeConstraintProductPool:
         )
         require_id(self.split_policy, field="negative split policy")
         require_id(self.selection_policy, field="negative selection policy")
-        if self.native_certified is not False:
+        certification_fields = (
+            self.certifier_version,
+            self.memoryarena_commit,
+            self.catalog_sha256,
+            self.attributes_sha256,
+            self.price_table_sha256,
+            self.lucene_index_sha256,
+            self.source_manifest_sha256,
+            self.rules_pool_sha256,
+            self.price_seed,
+        )
+        if not isinstance(self.native_certified, bool):
             raise NegativeConstraintDataError(
-                "rules pool v1 must not claim native certification."
+                "negative pool native_certified must be a boolean."
             )
+        if not self.native_certified:
+            if any(value is not None for value in certification_fields) or (
+                self.native_certificates
+            ):
+                raise NegativeConstraintDataError(
+                    "rules-only pool cannot carry native certification fields."
+                )
+            return
+
+        if not isinstance(self.certifier_version, str):
+            raise NegativeConstraintDataError(
+                "native pool certifier version must be a string."
+            )
+        require_id(self.certifier_version, field="negative certifier version")
+        if (
+            not isinstance(self.memoryarena_commit, str)
+            or len(self.memoryarena_commit) != 40
+            or any(char not in "0123456789abcdef" for char in self.memoryarena_commit)
+        ):
+            raise NegativeConstraintDataError(
+                "native pool requires a full lowercase MemoryArena commit."
+            )
+        for field, value in (
+            ("catalog SHA256", self.catalog_sha256),
+            ("attributes SHA256", self.attributes_sha256),
+            ("price table SHA256", self.price_table_sha256),
+            ("Lucene index SHA256", self.lucene_index_sha256),
+            ("source manifest SHA256", self.source_manifest_sha256),
+            ("rules pool SHA256", self.rules_pool_sha256),
+        ):
+            require_sha256(str(value), field=field)
+        if isinstance(self.price_seed, bool) or not isinstance(self.price_seed, int):
+            raise NegativeConstraintDataError(
+                "native pool price seed must be an integer."
+            )
+        certificate_order = tuple(item.asin for item in self.native_certificates)
+        if certificate_order != tuple(sorted(certificate_order)):
+            raise NegativeConstraintDataError(
+                "native certificates must use canonical ASIN order."
+            )
+        if (
+            len(certificate_order) != len(asins)
+            or len(certificate_order) != len(set(certificate_order))
+            or set(certificate_order) != set(asins)
+        ):
+            raise NegativeConstraintDataError(
+                "native certificates must cover every selected ASIN exactly once."
+            )
+        candidate_by_asin = {item.asin: item for item in self.candidates}
+        for certificate in self.native_certificates:
+            candidate = candidate_by_asin[certificate.asin]
+            if certificate.source_row_sha256 != candidate.source_row_sha256:
+                raise NegativeConstraintDataError(
+                    "native certificate source row disagrees with its candidate."
+                )
 
     @property
     def semantic_sha256(self) -> str:
@@ -322,8 +515,14 @@ class NegativeConstraintProductPool:
             )
         return matches
 
+    def certificate_for(self, asin: str) -> NegativeConstraintNativeCertificate:
+        for certificate in self.native_certificates:
+            if certificate.asin == asin:
+                return certificate
+        raise KeyError(asin)
+
     def semantic_manifest(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema": POOL_SCHEMA,
             "pool_id": self.pool_id,
             "products_per_cell": self.products_per_cell,
@@ -336,6 +535,26 @@ class NegativeConstraintProductPool:
                 "native_certified": self.native_certified,
             },
         }
+        if not self.native_certified:
+            return payload
+        payload["schema"] = NATIVE_POOL_SCHEMA
+        payload["native_certificates"] = [
+            item.as_dict() for item in self.native_certificates
+        ]
+        payload["provenance"].update(
+            {
+                "certifier_version": self.certifier_version,
+                "memoryarena_commit": self.memoryarena_commit,
+                "catalog_sha256": self.catalog_sha256,
+                "attributes_sha256": self.attributes_sha256,
+                "price_table_sha256": self.price_table_sha256,
+                "lucene_index_sha256": self.lucene_index_sha256,
+                "source_manifest_sha256": self.source_manifest_sha256,
+                "rules_pool_sha256": self.rules_pool_sha256,
+                "price_seed": self.price_seed,
+            }
+        )
+        return payload
 
 
 @dataclass(frozen=True)

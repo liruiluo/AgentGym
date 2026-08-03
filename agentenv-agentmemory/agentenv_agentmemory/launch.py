@@ -64,6 +64,13 @@ from .selective_memory_use import (
     TASKS_PER_ORBIT as SELECTIVE_TASKS_PER_ORBIT,
 )
 from .selective_memory_use_webshop_env import SELECTIVE_MEMORY_USE_SURFACE
+from .negative_constraint import (
+    PROVIDER_MODE_FIXED_WINDOW as NEGATIVE_PROVIDER_MODE_FIXED_WINDOW,
+    PROVIDER_MODE_RESEEDED_STREAM as NEGATIVE_PROVIDER_MODE_RESEEDED_STREAM,
+    PROVIDER_MODES as NEGATIVE_PROVIDER_MODES,
+    TASKS_PER_ORBIT as NEGATIVE_TASKS_PER_ORBIT,
+)
+from .negative_constraint_webshop_env import NEGATIVE_CONSTRAINT_SURFACE
 from .procedural import (
     PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM,
@@ -93,6 +100,7 @@ def launch() -> None:
             COMPOSITIONAL_RECALL_SURFACE,
             INTENT_CLARIFICATION_SURFACE,
             SELECTIVE_MEMORY_USE_SURFACE,
+            NEGATIVE_CONSTRAINT_SURFACE,
             *V3_SURFACES,
         ],
         required=True,
@@ -190,6 +198,15 @@ def launch() -> None:
         choices=SELECTIVE_PROVIDER_MODES,
     )
     parser.add_argument("--selective-memory-use-start-orbit", type=int, default=0)
+    parser.add_argument("--negative-constraint-product-pool")
+    parser.add_argument("--negative-constraint-product-pool-sha256")
+    parser.add_argument("--negative-constraint-task-count", type=int)
+    parser.add_argument("--negative-constraint-generator-seed", type=int)
+    parser.add_argument(
+        "--negative-constraint-provider-mode",
+        choices=NEGATIVE_PROVIDER_MODES,
+    )
+    parser.add_argument("--negative-constraint-start-orbit", type=int, default=0)
     parser.add_argument("--travel-tasks-path")
     parser.add_argument("--travel-database-path")
     parser.add_argument("--formal-reasoning-tasks-path")
@@ -261,6 +278,7 @@ def launch() -> None:
         DISTRACTOR_ROBUSTNESS_SURFACE,
         COMPOSITIONAL_RECALL_SURFACE,
         INTENT_CLARIFICATION_SURFACE,
+        NEGATIVE_CONSTRAINT_SURFACE,
     }
     if args.surface == SELECTIVE_MEMORY_USE_SURFACE:
         if args.memory_prompt_mode != SELECTIVE_MEMORY_PROMPT_MODE:
@@ -641,6 +659,18 @@ def launch() -> None:
                 fixed_window_mode=SELECTIVE_PROVIDER_MODE_FIXED_WINDOW,
                 reseeded_stream_mode=SELECTIVE_PROVIDER_MODE_RESEEDED_STREAM,
                 zero_memory_rewards=True,
+            )
+        )
+    elif args.surface == NEGATIVE_CONSTRAINT_SURFACE:
+        configured.update(
+            _configure_programmatic_memory_surface(
+                parser,
+                args,
+                cli_prefix="negative_constraint",
+                env_prefix="AGENTMEMORY_NEGATIVE_CONSTRAINT",
+                tasks_per_orbit=NEGATIVE_TASKS_PER_ORBIT,
+                fixed_window_mode=NEGATIVE_PROVIDER_MODE_FIXED_WINDOW,
+                reseeded_stream_mode=NEGATIVE_PROVIDER_MODE_RESEEDED_STREAM,
             )
         )
     elif args.surface in TRAVEL_SURFACES.values():

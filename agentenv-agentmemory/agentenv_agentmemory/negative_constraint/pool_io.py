@@ -11,9 +11,11 @@ from ..latent_preference.schema import (
     require_sha256,
 )
 from .schema import (
+    NATIVE_POOL_SCHEMA,
     SPLITS,
     NegativeConstraintCandidate,
     NegativeConstraintDataError,
+    NegativeConstraintNativeCertificate,
     NegativeConstraintProductPool,
     NegativeConstraintRecipe,
 )
@@ -267,6 +269,234 @@ def load_negative_constraint_product_pool(
         split_policy=SPLIT_POLICY,
         selection_policy=SELECTION_POLICY,
         native_certified=False,
+    )
+
+
+def load_negative_constraint_native_product_pool(
+    path: str | Path,
+    *,
+    expected_file_sha256: str,
+) -> NegativeConstraintProductPool:
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.is_file():
+        raise NegativeConstraintDataError(
+            f"certified negative product pool is not a file: {resolved}"
+        )
+    require_sha256(expected_file_sha256, field="expected native pool file SHA256")
+    payload_bytes = resolved.read_bytes()
+    observed_sha256 = hashlib.sha256(payload_bytes).hexdigest()
+    if observed_sha256 != expected_file_sha256:
+        raise NegativeConstraintDataError(
+            "certified negative product pool SHA256 mismatch: "
+            f"expected {expected_file_sha256}, observed {observed_sha256}."
+        )
+    try:
+        payload = json.loads(payload_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise NegativeConstraintDataError(
+            "certified negative product pool is not valid UTF-8 JSON."
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise NegativeConstraintDataError(
+            "certified negative product pool must be an object."
+        )
+    required = {
+        "schema",
+        "pool_id",
+        "products_per_cell",
+        "recipes",
+        "candidates",
+        "native_certificates",
+        "provenance",
+    }
+    if set(payload) != required:
+        raise NegativeConstraintDataError(
+            "certified negative product pool fields mismatch: "
+            f"missing={sorted(required - set(payload))} "
+            f"extra={sorted(set(payload) - required)}."
+        )
+    if payload["schema"] != NATIVE_POOL_SCHEMA:
+        raise NegativeConstraintDataError(
+            f"unsupported certified negative pool schema {payload['schema']!r}."
+        )
+    recipes = payload["recipes"]
+    candidates = payload["candidates"]
+    certificates = payload["native_certificates"]
+    provenance = payload["provenance"]
+    if not all(isinstance(value, list) for value in (recipes, candidates, certificates)):
+        raise NegativeConstraintDataError(
+            "negative recipes, candidates, and certificates must be lists."
+        )
+    provenance_fields = {
+        "candidate_artifact_sha256",
+        "split_policy",
+        "selection_policy",
+        "native_certified",
+        "certifier_version",
+        "memoryarena_commit",
+        "catalog_sha256",
+        "attributes_sha256",
+        "price_table_sha256",
+        "lucene_index_sha256",
+        "source_manifest_sha256",
+        "rules_pool_sha256",
+        "price_seed",
+    }
+    if not isinstance(provenance, Mapping) or set(provenance) != provenance_fields:
+        raise NegativeConstraintDataError(
+            "certified negative product pool provenance fields mismatch."
+        )
+    if provenance["native_certified"] is not True:
+        raise NegativeConstraintDataError(
+            "certified negative product pool must declare native_certified=true."
+        )
+    try:
+        return NegativeConstraintProductPool(
+            pool_id=payload["pool_id"],
+            products_per_cell=payload["products_per_cell"],
+            recipes=tuple(_recipe_from_dict(item) for item in recipes),
+            candidates=tuple(_candidate_from_dict(item) for item in candidates),
+            candidate_artifact_sha256=provenance["candidate_artifact_sha256"],
+            split_policy=provenance["split_policy"],
+            selection_policy=provenance["selection_policy"],
+            native_certified=True,
+            certifier_version=provenance["certifier_version"],
+            memoryarena_commit=provenance["memoryarena_commit"],
+            catalog_sha256=provenance["catalog_sha256"],
+            attributes_sha256=provenance["attributes_sha256"],
+            price_table_sha256=provenance["price_table_sha256"],
+            lucene_index_sha256=provenance["lucene_index_sha256"],
+            source_manifest_sha256=provenance["source_manifest_sha256"],
+            rules_pool_sha256=provenance["rules_pool_sha256"],
+            price_seed=provenance["price_seed"],
+            native_certificates=tuple(
+                _certificate_from_dict(item) for item in certificates
+            ),
+        )
+    except (KeyError, TypeError) as exc:
+        raise NegativeConstraintDataError(
+            "certified negative product pool contains malformed nested fields."
+        ) from exc
+
+
+def write_negative_constraint_product_pool_manifest(
+    pool: NegativeConstraintProductPool,
+    path: str | Path,
+) -> str:
+    resolved = Path(path).expanduser().resolve()
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(
+        pool.semantic_manifest(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8") + b"\n"
+    resolved.write_bytes(data)
+    return hashlib.sha256(data).hexdigest()
+
+
+def _recipe_from_dict(value: Any) -> NegativeConstraintRecipe:
+    if not isinstance(value, Mapping):
+        raise NegativeConstraintDataError("negative recipe must be an object.")
+    required = {
+        "recipe_id",
+        "axis",
+        "axis_display_name",
+        "values",
+        "value_display_names",
+        "categories",
+        "category_display_names",
+    }
+    if set(value) != required:
+        raise NegativeConstraintDataError("negative recipe fields mismatch.")
+    return NegativeConstraintRecipe(
+        recipe_id=value["recipe_id"],
+        axis=value["axis"],
+        axis_display_name=value["axis_display_name"],
+        values=tuple(value["values"]),
+        value_display_names=tuple(value["value_display_names"]),
+        categories=tuple(value["categories"]),
+        category_display_names=tuple(value["category_display_names"]),
+    )
+
+
+def _candidate_from_dict(value: Any) -> NegativeConstraintCandidate:
+    if not isinstance(value, Mapping):
+        raise NegativeConstraintDataError("negative candidate must be an object.")
+    required = {
+        "asin",
+        "title",
+        "normalized_title",
+        "product_category",
+        "category_id",
+        "category_display_name",
+        "axis",
+        "attribute_value",
+        "attribute_display_name",
+        "title_evidence",
+        "split",
+        "source_classification_sha256",
+        "source_row_sha256",
+    }
+    if set(value) != required:
+        raise NegativeConstraintDataError("negative candidate fields mismatch.")
+    return NegativeConstraintCandidate(
+        asin=value["asin"],
+        title=value["title"],
+        normalized_title=value["normalized_title"],
+        product_category=value["product_category"],
+        category_id=value["category_id"],
+        category_display_name=value["category_display_name"],
+        axis=value["axis"],
+        attribute_value=value["attribute_value"],
+        attribute_display_name=value["attribute_display_name"],
+        title_evidence=tuple(value["title_evidence"]),
+        split=value["split"],
+        source_classification_sha256=value["source_classification_sha256"],
+        source_row_sha256=value["source_row_sha256"],
+    )
+
+
+def _certificate_from_dict(value: Any) -> NegativeConstraintNativeCertificate:
+    if not isinstance(value, Mapping):
+        raise NegativeConstraintDataError(
+            "negative native certificate must be an object."
+        )
+    required = {
+        "asin",
+        "source_row_sha256",
+        "price_cents",
+        "search_query",
+        "search_rank",
+        "search_result_asins",
+        "opened_url",
+        "catalog_record_sha256",
+        "purchase_receipt_sha256",
+        "native_title_catalog_match_count",
+        "native_title_globally_unique",
+        "native_search_verified",
+        "native_open_verified",
+        "native_purchase_verified",
+    }
+    if set(value) != required:
+        raise NegativeConstraintDataError(
+            "negative native certificate fields mismatch."
+        )
+    return NegativeConstraintNativeCertificate(
+        asin=value["asin"],
+        source_row_sha256=value["source_row_sha256"],
+        price_cents=value["price_cents"],
+        search_query=value["search_query"],
+        search_rank=value["search_rank"],
+        search_result_asins=tuple(value["search_result_asins"]),
+        opened_url=value["opened_url"],
+        catalog_record_sha256=value["catalog_record_sha256"],
+        purchase_receipt_sha256=value["purchase_receipt_sha256"],
+        native_title_catalog_match_count=value["native_title_catalog_match_count"],
+        native_title_globally_unique=value["native_title_globally_unique"],
+        native_search_verified=value["native_search_verified"],
+        native_open_verified=value["native_open_verified"],
+        native_purchase_verified=value["native_purchase_verified"],
     )
 
 

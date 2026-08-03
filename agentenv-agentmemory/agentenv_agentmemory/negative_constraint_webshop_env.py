@@ -9,7 +9,7 @@ from .procedural_webshop_env import _sanitized_evidence_tool_op
 
 
 NEGATIVE_CONSTRAINT_SURFACE = (
-    "agentmemory_webshop_negative_constraint_rules_gate_v1"
+    "agentmemory_webshop_negative_constraint_top1_train_v1"
 )
 
 
@@ -23,9 +23,14 @@ class NegativeConstraintWebShopEnv(MemoryArenaWebShopEnv):
         *,
         provider: VerifiedNegativeConstraintBundleProvider,
         backend: NativeWebShopBackend,
+        allow_rules_only: bool = False,
         **kwargs: Any,
     ) -> None:
         self.provider = provider
+        if not provider.generator.pool.native_certified and not allow_rules_only:
+            raise ValueError(
+                "negative-constraint runtime refuses a rules-only product pool."
+            )
         if kwargs.setdefault("ltm_inventory_mode", "hidden") != "hidden":
             raise ValueError("negative constraint requires hidden LTM inventory.")
         if kwargs.setdefault("retrieve_policy", "query_top1") != "query_top1":
@@ -38,6 +43,7 @@ class NegativeConstraintWebShopEnv(MemoryArenaWebShopEnv):
     def build_info(self) -> dict[str, Any]:
         info = super().build_info()
         bundle = self._require_bundle()
+        native_certified = self.provider.generator.pool.native_certified
         info.pop("task_id", None)
         info.pop("purchase_history", None)
         if any(item.get("op") == "BUY" for item in self.last_tool_ops):
@@ -67,9 +73,9 @@ class NegativeConstraintWebShopEnv(MemoryArenaWebShopEnv):
                 "native_search_result_asin_handles_visible": True,
                 "native_click_action_uses_asin_handle": True,
                 "purchase_receipt_asin_verification": True,
-                "rules_only": True,
-                "native_certified": False,
-                "training_ready": False,
+                "rules_only": not native_certified,
+                "native_certified": native_certified,
+                "training_ready": native_certified,
                 "paper_eligible": False,
             }
         )

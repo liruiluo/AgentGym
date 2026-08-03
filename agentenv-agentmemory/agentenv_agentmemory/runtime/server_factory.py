@@ -30,6 +30,8 @@ from ..recency_override_webshop_env import RECENCY_OVERRIDE_SURFACE
 from ..recency_override_wrapper import RecencyOverrideAgentMemoryWrapper
 from ..selective_memory_use_webshop_env import SELECTIVE_MEMORY_USE_SURFACE
 from ..selective_memory_use_wrapper import SelectiveMemoryUseAgentMemoryWrapper
+from ..negative_constraint_webshop_env import NEGATIVE_CONSTRAINT_SURFACE
+from ..negative_constraint_wrapper import NegativeConstraintAgentMemoryWrapper
 from ..domains.browsecomp import (
     BROWSECOMP_BM25_INTEGRATION_BACKEND,
     BROWSECOMP_DENSE_BACKEND,
@@ -63,6 +65,8 @@ def build_server():
         return IntentClarificationAgentMemoryWrapper()
     if surface == SELECTIVE_MEMORY_USE_SURFACE:
         return SelectiveMemoryUseAgentMemoryWrapper()
+    if surface == NEGATIVE_CONSTRAINT_SURFACE:
+        return NegativeConstraintAgentMemoryWrapper()
 
     factory = build_domain_registry().build(surface)
     first_add = _env_float("AGENTMEMORY_FIRST_ADD_REWARD", 0.0)
