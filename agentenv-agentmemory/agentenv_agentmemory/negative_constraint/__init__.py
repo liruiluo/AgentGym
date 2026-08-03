@@ -17,6 +17,7 @@ from .certifier import (
     NativeNegativeConstraintCertificationConfig,
     NativeNegativeConstraintPoolCertificationError,
     certify_native_negative_constraint_product_pool,
+    certify_native_negative_constraint_product_pool_with_reselection,
     source_manifest_for_pool,
 )
 from .provider import (
@@ -66,6 +67,7 @@ __all__ = [
     "NativeNegativeConstraintPoolCertificationError",
     "VerifiedNegativeConstraintBundleProvider",
     "certify_native_negative_constraint_product_pool",
+    "certify_native_negative_constraint_product_pool_with_reselection",
     "load_negative_constraint_native_product_pool",
     "load_negative_constraint_product_pool",
     "source_manifest_for_pool",

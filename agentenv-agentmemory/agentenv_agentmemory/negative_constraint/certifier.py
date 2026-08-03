@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Mapping
 
 from ..latent_preference.schema import (
@@ -13,6 +14,7 @@ from ..native_webshop_backend import (
     FROZEN_MEMORYARENA_COMMIT,
     NativeWebShopBackend,
 )
+from .pool_io import load_negative_constraint_product_pool
 from .schema import (
     NegativeConstraintCandidate,
     NegativeConstraintDataError,
@@ -21,15 +23,33 @@ from .schema import (
 )
 
 
-CERTIFIER_VERSION = "negative_constraint_native_v1"
-CERTIFICATION_AUDIT_SCHEMA = "agentmemory_negative_constraint_certification_v1"
-SOURCE_MANIFEST_SCHEMA = "agentmemory_negative_constraint_source_manifest_v1"
+CERTIFIER_VERSION = "negative_constraint_native_v2"
+CERTIFICATION_AUDIT_SCHEMA = "agentmemory_negative_constraint_certification_v2"
+SOURCE_MANIFEST_SCHEMA = "agentmemory_negative_constraint_source_manifest_v2"
 
 _ASIN_RE = re.compile(r"^[A-Z0-9]{10}$")
 _QUERY_WORD_RE = re.compile(r"\b[\w][\w'&+./-]*\b", flags=re.UNICODE)
 _QUERY_SEPARATOR_RE = re.compile(r"\s+(?:[-\u2013\u2014|])\s+|[,;:]")
 _QUERY_EDGE_CHARS = " \t,.;:|/\\-\u2013\u2014(){}"
 _QUERY_UNSAFE_CHARS = "[]\r\n"
+
+_CANDIDATE_LOCAL_REJECTION_REASONS = frozenset(
+    {
+        "nonunique_native_normalized_title",
+        "native_title_mismatch",
+        "native_product_category_mismatch",
+        "native_title_api_mismatch",
+        "nonpositive_native_price",
+        "no_safe_title_derived_search_query",
+        "native_search_rank_exceeds_limit",
+        "target_absent_from_all_title_derived_first_pages",
+        "native_open_url_asin_mismatch",
+        "native_buy_now_missing",
+        "native_purchase_receipt_missing",
+        "native_purchase_asin_mismatch",
+        "native_purchase_price_mismatch",
+    }
+)
 
 
 class NativeNegativeConstraintPoolCertificationError(NegativeConstraintDataError):
@@ -56,6 +76,131 @@ class NativeNegativeConstraintCertificationConfig:
             raise NegativeConstraintDataError(
                 "invalid native negative search-query length bounds."
             )
+
+
+def certify_native_negative_constraint_product_pool_with_reselection(
+    backend: NativeWebShopBackend,
+    *,
+    candidate_artifact: str | Path,
+    expected_candidate_artifact_sha256: str,
+    catalog_sha256: str,
+    attributes_sha256: str,
+    lucene_index_sha256: str,
+    expected_memoryarena_commit: str = FROZEN_MEMORYARENA_COMMIT,
+    config: NativeNegativeConstraintCertificationConfig | None = None,
+) -> tuple[NegativeConstraintProductPool, dict[str, Any]]:
+    """Rebuild the rules pool after candidate-local native rejections.
+
+    Every rebuild uses the same frozen cell ordering and excludes the rejected
+    ASIN globally. This keeps each replacement in the original cell/split and
+    preserves the pool-wide ASIN/title uniqueness constraints.
+    """
+
+    config = config or NativeNegativeConstraintCertificationConfig()
+    blocked_asins: set[str] = set()
+    selection_rejections: list[dict[str, Any]] = []
+    while True:
+        rules_pool = load_negative_constraint_product_pool(
+            candidate_artifact,
+            expected_file_sha256=expected_candidate_artifact_sha256,
+            blocked_asins=blocked_asins,
+        )
+        try:
+            pool, audit = certify_native_negative_constraint_product_pool(
+                backend,
+                rules_pool=rules_pool,
+                catalog_sha256=catalog_sha256,
+                attributes_sha256=attributes_sha256,
+                lucene_index_sha256=lucene_index_sha256,
+                expected_memoryarena_commit=expected_memoryarena_commit,
+                config=config,
+            )
+        except NativeNegativeConstraintPoolCertificationError as exc:
+            rejected = next(
+                (
+                    probe
+                    for probe in reversed(exc.audit.get("probes", []))
+                    if probe.get("status") == "rejected"
+                ),
+                None,
+            )
+            reason = (
+                str(rejected.get("rejection_reason") or "")
+                if isinstance(rejected, Mapping)
+                else ""
+            )
+            asin = (
+                str(rejected.get("asin") or "")
+                if isinstance(rejected, Mapping)
+                else ""
+            )
+            if (
+                reason not in _CANDIDATE_LOCAL_REJECTION_REASONS
+                or not asin
+                or asin in blocked_asins
+            ):
+                exc.audit["selection"] = _selection_audit(
+                    rules_pool=rules_pool,
+                    blocked_asins=blocked_asins,
+                    rejections=selection_rejections,
+                    retryable_failure=False,
+                )
+                raise
+            if backend.active_session_count() != 0:
+                exc.audit["selection"] = _selection_audit(
+                    rules_pool=rules_pool,
+                    blocked_asins=blocked_asins,
+                    rejections=selection_rejections,
+                    retryable_failure=False,
+                )
+                raise
+            selection_rejections.append(
+                {
+                    key: rejected[key]
+                    for key in (
+                        "asin",
+                        "cell",
+                        "source_row_sha256",
+                        "rejection_reason",
+                        "source_title",
+                        "native_title",
+                        "source_product_category",
+                        "native_product_category",
+                        "matching_asins",
+                        "search_attempts",
+                    )
+                    if key in rejected
+                }
+                | {"rejected_rules_pool_sha256": rules_pool.semantic_sha256}
+            )
+            blocked_asins.add(asin)
+            continue
+
+        audit["selection"] = _selection_audit(
+            rules_pool=rules_pool,
+            blocked_asins=blocked_asins,
+            rejections=selection_rejections,
+            retryable_failure=None,
+        )
+        audit["verification"]["deterministic_same_cell_split_reselection"] = True
+        return pool, audit
+
+
+def _selection_audit(
+    *,
+    rules_pool: NegativeConstraintProductPool,
+    blocked_asins: set[str],
+    rejections: list[dict[str, Any]],
+    retryable_failure: bool | None,
+) -> dict[str, Any]:
+    return {
+        "selection_policy": rules_pool.selection_policy,
+        "rebuild_count": len(rejections),
+        "blocked_candidate_asins": sorted(blocked_asins),
+        "candidate_rejections": list(rejections),
+        "final_rules_pool_sha256": rules_pool.semantic_sha256,
+        "retryable_failure": retryable_failure,
+    }
 
 
 def source_manifest_for_pool(pool: NegativeConstraintProductPool) -> dict[str, Any]:
@@ -282,12 +427,27 @@ def _audit_native_candidate(
                 matching_asins=sorted(title_matches),
             )
         record = backend.product_record(candidate.asin)
-        if str(record.get("Title") or "") != candidate.title:
-            return reject("native_title_mismatch")
-        if str(record.get("product_category") or "") != candidate.product_category:
-            return reject("native_product_category_mismatch")
-        if backend.product_title(candidate.asin) != candidate.title:
-            return reject("native_title_api_mismatch")
+        native_title = str(record.get("Title") or "")
+        if native_title != candidate.title:
+            return reject(
+                "native_title_mismatch",
+                source_title=candidate.title,
+                native_title=native_title,
+            )
+        native_product_category = str(record.get("product_category") or "")
+        if native_product_category != candidate.product_category:
+            return reject(
+                "native_product_category_mismatch",
+                source_product_category=candidate.product_category,
+                native_product_category=native_product_category,
+            )
+        native_api_title = backend.product_title(candidate.asin)
+        if native_api_title != candidate.title:
+            return reject(
+                "native_title_api_mismatch",
+                source_title=candidate.title,
+                native_title=native_api_title,
+            )
         price_cents = backend.product_price_cents(candidate.asin)
         if price_cents <= 0:
             return reject("nonpositive_native_price")

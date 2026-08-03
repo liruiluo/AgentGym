@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import AbstractSet, Any, Mapping
 
 from ..latent_preference.schema import (
     canonical_sha256,
@@ -24,7 +24,7 @@ from .schema import (
 SOURCE_SCHEMA = "agentmemory_latent_preference_rule_candidate_v2"
 POOL_ID = "memoryarena_negative_constraint_rules_v1"
 SPLIT_POLICY = "asin_hash_80_10_10_v1"
-SELECTION_POLICY = "global_unique_cell_hash_first2_v1"
+SELECTION_POLICY = "global_unique_cell_hash_first2_native_reselect_v2"
 SOURCE_ROW_KEYS = {
     "schema",
     "asin",
@@ -104,6 +104,7 @@ def load_negative_constraint_product_pool(
     path: str | Path,
     *,
     expected_file_sha256: str,
+    blocked_asins: AbstractSet[str] = frozenset(),
 ) -> NegativeConstraintProductPool:
     candidate_path = Path(path)
     if not candidate_path.is_file():
@@ -117,6 +118,14 @@ def load_negative_constraint_product_pool(
             "negative candidate artifact SHA256 mismatch: "
             f"expected {expected_file_sha256}, observed {observed_file_sha256}"
         )
+    if any(
+        not isinstance(asin, str) or not asin or asin != asin.upper()
+        for asin in blocked_asins
+    ):
+        raise NegativeConstraintDataError(
+            "blocked negative candidate ASINs must be non-empty uppercase text."
+        )
+    blocked_asins = frozenset(blocked_asins)
 
     recipes_by_axis = {item.axis: item for item in NEGATIVE_CONSTRAINT_RECIPES}
     selected_cells = {
@@ -193,6 +202,8 @@ def load_negative_constraint_product_pool(
                 source_classification_sha256=str(row["classification_sha256"]),
                 source_row_sha256=source_row_sha256,
             )
+            if asin in blocked_asins:
+                continue
             selection_sha256 = canonical_sha256(
                 {
                     "selection_policy": SELECTION_POLICY,

@@ -17,6 +17,7 @@ from agentenv_agentmemory.latent_preference.schema import (
 )
 from agentenv_agentmemory.native_webshop_backend import NativePage, NativePurchase
 from agentenv_agentmemory.negative_constraint import (
+    NEGATIVE_CONSTRAINT_RECIPES,
     PROVIDER_MODE_RESEEDED_STREAM,
     NegativeConstraintCandidate,
     NegativeConstraintDataError,
@@ -27,7 +28,10 @@ from agentenv_agentmemory.negative_constraint import (
     NativeNegativeConstraintPoolCertificationError,
     VerifiedNegativeConstraintBundleProvider,
     certify_native_negative_constraint_product_pool,
+    certify_native_negative_constraint_product_pool_with_reselection,
     load_negative_constraint_native_product_pool,
+    load_negative_constraint_product_pool,
+    split_for_asin,
     verify_negative_constraint_orbit,
     write_negative_constraint_product_pool_manifest,
 )
@@ -109,6 +113,63 @@ def make_negative_fixture_pool() -> NegativeConstraintProductPool:
         selection_policy="fixture_cell_selection_v1",
         native_certified=False,
     )
+
+
+def write_negative_candidate_fixture(path: Path) -> str:
+    rows = []
+    counter = 1
+    for recipe in NEGATIVE_CONSTRAINT_RECIPES:
+        for category_id in recipe.categories:
+            category_display = recipe.category_display_name(category_id)
+            for value in recipe.values:
+                value_display = recipe.value_display_name(value)
+                for split in SPLITS:
+                    for cell_index in range(3):
+                        while True:
+                            asin = f"T{counter:09d}"
+                            counter += 1
+                            if split_for_asin(asin) == split:
+                                break
+                        title = (
+                            f"{value_display.title()} {category_display.title()} "
+                            f"Fixture Product {cell_index} {split} {asin[-4:]}"
+                        )
+                        product_category = f"Fixture > {category_display}"
+                        title_evidence = [value_display.title()]
+                        classification = {
+                            "category_id": category_id,
+                            "axis": recipe.axis,
+                            "attribute_value": value,
+                            "asin": asin,
+                            "title": title,
+                            "product_category": product_category,
+                            "title_evidence": title_evidence,
+                        }
+                        rows.append(
+                            {
+                                "schema": (
+                                    "agentmemory_latent_preference_rule_candidate_v2"
+                                ),
+                                "asin": asin,
+                                "axis": recipe.axis,
+                                "attribute_value": value,
+                                "category_id": category_id,
+                                "classification_sha256": canonical_sha256(
+                                    classification
+                                ),
+                                "normalized_title": normalize_native_title(title),
+                                "product_category": product_category,
+                                "title": title,
+                                "title_evidence": title_evidence,
+                            }
+                        )
+    data = b"".join(
+        json.dumps(row, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        + b"\n"
+        for row in rows
+    )
+    path.write_bytes(data)
+    return hashlib.sha256(data).hexdigest()
 
 
 class NegativeConstraintGeneratorTests(unittest.TestCase):
@@ -531,7 +592,9 @@ class NegativeConstraintNativeCertificationTests(unittest.TestCase):
     def test_unsearchable_selected_product_fails_closed_and_cleans_session(self) -> None:
         failed_asin = min(self.backend.records)
         self.backend.unsearchable_asins.add(failed_asin)
-        with self.assertRaises(NativeNegativeConstraintPoolCertificationError) as caught:
+        with self.assertRaises(
+            NativeNegativeConstraintPoolCertificationError
+        ) as caught:
             self._certify()
         self.assertEqual(caught.exception.audit["status"], "failed")
         self.assertEqual(
@@ -539,6 +602,78 @@ class NegativeConstraintNativeCertificationTests(unittest.TestCase):
             failed_asin,
         )
         self.assertEqual(self.backend.active_session_count(), 0)
+
+    def test_candidate_local_failure_reselects_same_cell_deterministically(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            candidate_path = Path(temp) / "candidates.jsonl"
+            candidate_sha256 = write_negative_candidate_fixture(candidate_path)
+            initial = load_negative_constraint_product_pool(
+                candidate_path,
+                expected_file_sha256=candidate_sha256,
+            )
+            failed_asin = min(candidate.asin for candidate in initial.candidates)
+            expected = load_negative_constraint_product_pool(
+                candidate_path,
+                expected_file_sha256=candidate_sha256,
+                blocked_asins={failed_asin},
+            )
+
+            backend = _FakeNegativeCertificationBackend(initial)
+            for index, candidate in enumerate(expected.candidates, start=1):
+                backend.records.setdefault(
+                    candidate.asin,
+                    {
+                        "Title": candidate.title,
+                        "category": [candidate.category_id],
+                        "query": candidate.category_display_name,
+                        "product_category": candidate.product_category,
+                        "price_cents": 10_000 + index,
+                    },
+                )
+            backend.unsearchable_asins.add(failed_asin)
+            pool, audit = (
+                certify_native_negative_constraint_product_pool_with_reselection(
+                    backend,
+                    candidate_artifact=candidate_path,
+                    expected_candidate_artifact_sha256=candidate_sha256,
+                    catalog_sha256="1" * 64,
+                    attributes_sha256="2" * 64,
+                    lucene_index_sha256="3" * 64,
+                    expected_memoryarena_commit="f" * 40,
+                    config=NativeNegativeConstraintCertificationConfig(
+                        pool_id="fixture_negative_constraint_native_v2"
+                    ),
+                )
+            )
+
+        self.assertEqual(pool.candidates, expected.candidates)
+        self.assertNotIn(failed_asin, {item.asin for item in pool.candidates})
+        self.assertEqual(audit["selection"]["rebuild_count"], 1)
+        self.assertEqual(
+            audit["selection"]["blocked_candidate_asins"],
+            [failed_asin],
+        )
+        self.assertEqual(
+            audit["selection"]["candidate_rejections"][0][
+                "rejection_reason"
+            ],
+            "target_absent_from_all_title_derived_first_pages",
+        )
+        self.assertTrue(
+            audit["verification"]["deterministic_same_cell_split_reselection"]
+        )
+
+    def test_native_title_mismatch_audit_records_both_titles(self) -> None:
+        failed_asin = min(self.backend.records)
+        source_title = str(self.backend.records[failed_asin]["Title"])
+        native_title = source_title.upper()
+        self.backend.records[failed_asin]["Title"] = native_title
+        with self.assertRaises(NativeNegativeConstraintPoolCertificationError) as caught:
+            self._certify()
+        rejected = caught.exception.audit["probes"][-1]
+        self.assertEqual(rejected["rejection_reason"], "native_title_mismatch")
+        self.assertEqual(rejected["source_title"], source_title)
+        self.assertEqual(rejected["native_title"], native_title)
 
     def test_manifest_nested_field_tamper_is_rejected(self) -> None:
         pool, _ = self._certify()

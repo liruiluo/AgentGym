@@ -16,9 +16,8 @@ from agentenv_agentmemory.native_webshop_backend import (
 from agentenv_agentmemory.negative_constraint import (
     NativeNegativeConstraintCertificationConfig,
     NativeNegativeConstraintPoolCertificationError,
-    certify_native_negative_constraint_product_pool,
+    certify_native_negative_constraint_product_pool_with_reselection,
     load_negative_constraint_native_product_pool,
-    load_negative_constraint_product_pool,
     write_negative_constraint_product_pool_manifest,
 )
 from agentenv_agentmemory.negative_constraint.schema import (
@@ -93,11 +92,6 @@ def main() -> None:
         args.lucene_index_manifest,
         index_dir=args.search_root / "indexes-full",
     )
-    rules_pool = load_negative_constraint_product_pool(
-        args.candidate_artifact,
-        expected_file_sha256=args.expected_candidate_artifact_sha256,
-    )
-
     backend = MemoryArenaNativeWebShopBackend(
         memoryarena_root=args.memoryarena_root,
         items_file=args.items_file,
@@ -109,17 +103,22 @@ def main() -> None:
     )
     try:
         try:
-            pool, audit = certify_native_negative_constraint_product_pool(
-                backend,
-                rules_pool=rules_pool,
-                catalog_sha256=observed_items,
-                attributes_sha256=observed_attributes,
-                lucene_index_sha256=observed_lucene,
-                expected_memoryarena_commit=args.memoryarena_base_commit,
-                config=NativeNegativeConstraintCertificationConfig(
-                    pool_id=args.pool_id,
-                    max_search_rank=args.max_search_rank,
-                ),
+            pool, audit = (
+                certify_native_negative_constraint_product_pool_with_reselection(
+                    backend,
+                    candidate_artifact=args.candidate_artifact,
+                    expected_candidate_artifact_sha256=(
+                        args.expected_candidate_artifact_sha256
+                    ),
+                    catalog_sha256=observed_items,
+                    attributes_sha256=observed_attributes,
+                    lucene_index_sha256=observed_lucene,
+                    expected_memoryarena_commit=args.memoryarena_base_commit,
+                    config=NativeNegativeConstraintCertificationConfig(
+                        pool_id=args.pool_id,
+                        max_search_rank=args.max_search_rank,
+                    ),
+                )
             )
         except NativeNegativeConstraintPoolCertificationError as exc:
             audit_sha256 = _write_audit(exc.audit, args.output_audit)
