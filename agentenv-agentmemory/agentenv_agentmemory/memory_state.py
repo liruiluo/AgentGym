@@ -56,7 +56,7 @@ def rank_memory_entries_bm25(
     for entry, document, doc_length in zip(entries, documents, doc_lengths):
         term_frequencies = Counter(document)
         score = 0.0
-        for term in query_terms:
+        for term in sorted(query_terms):
             term_frequency = term_frequencies.get(term, 0)
             if term_frequency <= 0:
                 continue
@@ -67,5 +67,5 @@ def rank_memory_entries_bm25(
         if score > 0.0:
             scored.append((entry, score))
 
-    scored.sort(key=lambda item: item[1], reverse=True)
+    scored.sort(key=lambda item: (-item[1], item[0].memory_id))
     return scored[: max(1, top_k)]

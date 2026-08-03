@@ -147,6 +147,7 @@ class VerifiedProceduralBundleProvider:
             "task_count": self.task_count,
             "virtual_task_count": self.task_count,
             "orbit_count": self.orbit_count,
+            "tasks_per_orbit": 2,
             "accepted_index_domain": (
                 "all_nonnegative_integers"
                 if self.mode == PROVIDER_MODE_RESEEDED_STREAM

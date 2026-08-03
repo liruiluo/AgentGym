@@ -5,7 +5,11 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from .env_wrapper import LATENT_PREFERENCE_PROMPT_MODE, MEMORY_PROMPT_MODES
+from .env_wrapper import (
+    LATENT_PREFERENCE_PROMPT_MODE,
+    MEMORY_PROMPT_MODES,
+    SELECTIVE_MEMORY_PROMPT_MODE,
+)
 from .memoryarena_webshop_env import (
     ACTION_LISTING_MODES,
     LTM_INVENTORY_KEY_MAX_CHARS,
@@ -50,9 +54,12 @@ class ProceduralAgentMemoryWrapper:
                 "AGENTMEMORY_ANNOTATION_MANUAL_EVIDENCE",
             )
         )
-        if self.memory_prompt_mode == LATENT_PREFERENCE_PROMPT_MODE:
+        if self.memory_prompt_mode in {
+            LATENT_PREFERENCE_PROMPT_MODE,
+            SELECTIVE_MEMORY_PROMPT_MODE,
+        }:
             raise RuntimeError(
-                "The natural-chain surface cannot use the latent_preference_sop prompt."
+                "The natural-chain surface cannot use a specialized preference prompt."
             )
         pool = load_certified_product_pool(
             _required_file("AGENTMEMORY_PROCEDURAL_PRODUCT_POOL"),

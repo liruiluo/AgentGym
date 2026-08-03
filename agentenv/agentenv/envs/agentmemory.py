@@ -124,6 +124,25 @@ AGENTMEMORY_FUNCTION_DESCRIPTION = [
     },
 ]
 
+AGENTMEMORY_ASK_FUNCTION_DESCRIPTION = {
+    "name": "ask",
+    "description": (
+        "Ask once for the single clarification field exposed by the current "
+        "intent-clarification task."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "field": {
+                "type": "string",
+                "description": "The ambiguity-resolving field named by the task.",
+            },
+        },
+        "required": ["field"],
+        "additionalProperties": False,
+    },
+}
+
 FUNCTION_TO_ACTION = {
     "search": "search",
     "click": "click",
@@ -133,14 +152,17 @@ FUNCTION_TO_ACTION = {
     "retrieve": "RETRIEVE",
     "summary": "SUMMARY",
     "filter": "FILTER",
+    "ask": "ASK",
 }
 
 MEMORY_ACTION_NAMES = ("ADD", "UPDATE", "DELETE", "RETRIEVE", "SUMMARY", "FILTER")
+CLARIFICATION_ACTION_NAMES = ("ASK",)
 NATIVE_ACTION_NAMES = ("search", "click")
-ACTION_NAMES = (*NATIVE_ACTION_NAMES, *MEMORY_ACTION_NAMES)
+JSON_ACTION_NAMES = (*MEMORY_ACTION_NAMES, *CLARIFICATION_ACTION_NAMES)
+ACTION_NAMES = (*NATIVE_ACTION_NAMES, *JSON_ACTION_NAMES)
 NATIVE_ACTION_RE = re.compile(r"\A(search|click)\[([^\[\]\r\n]+)\]\Z")
-MEMORY_ACTION_RE = re.compile(
-    r"\A(" + "|".join(MEMORY_ACTION_NAMES) + r")\s+(\{.*\})\Z",
+JSON_ACTION_RE = re.compile(
+    r"\A(" + "|".join(JSON_ACTION_NAMES) + r")\s+(\{.*\})\Z",
     flags=re.DOTALL,
 )
 FORMAL_SCHEMA_V3 = "agentmemory_formal_step_v3"
@@ -154,19 +176,53 @@ LATENT_PREFERENCE_WEBSHOP_SURFACE = (
 RECENCY_OVERRIDE_WEBSHOP_SURFACE = (
     "agentmemory_webshop_recency_override_train_v1"
 )
+DISTRACTOR_ROBUSTNESS_WEBSHOP_SURFACE = (
+    "agentmemory_webshop_distractor_robustness_top1_train_v1"
+)
+COMPOSITIONAL_RECALL_WEBSHOP_SURFACE = (
+    "agentmemory_webshop_compositional_recall_top1_train_v1"
+)
+INTENT_CLARIFICATION_WEBSHOP_SURFACE = (
+    "agentmemory_webshop_intent_clarification_train_v1"
+)
+SELECTIVE_MEMORY_USE_WEBSHOP_SURFACE = (
+    "agentmemory_webshop_selective_memory_use_top1_train_v1"
+)
 PREFERENCE_WEBSHOP_SURFACES = frozenset(
     {LATENT_PREFERENCE_WEBSHOP_SURFACE, RECENCY_OVERRIDE_WEBSHOP_SURFACE}
 )
+QUERY_TOP1_WEBSHOP_SURFACES = frozenset(
+    {
+        DISTRACTOR_ROBUSTNESS_WEBSHOP_SURFACE,
+        COMPOSITIONAL_RECALL_WEBSHOP_SURFACE,
+        INTENT_CLARIFICATION_WEBSHOP_SURFACE,
+        SELECTIVE_MEMORY_USE_WEBSHOP_SURFACE,
+    }
+)
+LATENT_PREFERENCE_SOP_WEBSHOP_SURFACES = frozenset(
+    {
+        *PREFERENCE_WEBSHOP_SURFACES,
+        DISTRACTOR_ROBUSTNESS_WEBSHOP_SURFACE,
+        COMPOSITIONAL_RECALL_WEBSHOP_SURFACE,
+        INTENT_CLARIFICATION_WEBSHOP_SURFACE,
+    }
+)
 PROGRAMMATIC_WEBSHOP_SURFACES = frozenset(
-    {PROCEDURAL_WEBSHOP_SURFACE, *PREFERENCE_WEBSHOP_SURFACES}
+    {
+        PROCEDURAL_WEBSHOP_SURFACE,
+        SELECTIVE_MEMORY_USE_WEBSHOP_SURFACE,
+        *LATENT_PREFERENCE_SOP_WEBSHOP_SURFACES,
+    }
 )
 LATENT_PREFERENCE_PROMPT_MODE = "latent_preference_sop"
+SELECTIVE_MEMORY_PROMPT_MODE = "selective_memory_sop"
 MEMORY_PROMPT_MODES = (
     "legacy",
     "neutral",
     "neutral_horizon",
     "neutral_horizon_responsibility",
     LATENT_PREFERENCE_PROMPT_MODE,
+    SELECTIVE_MEMORY_PROMPT_MODE,
 )
 NEUTRAL_HORIZON_CONTEXT = (
     "This episode has six sequential shopping sessions. Later-session compatibility "
@@ -191,6 +247,25 @@ LATENT_PREFERENCE_SOP = (
     "sessions, apply the retrieved preference when choosing between approved "
     "listings. The environment does not perform these memory actions for you, and it "
     "does not reject an otherwise correct purchase when ADD was skipped."
+)
+SELECTIVE_MEMORY_SOP = (
+    "First decide whether the current request already states every attribute needed "
+    "to choose between its approved listings. When the current request is complete, "
+    "follow it directly: explicit current requirements override profile history, and "
+    "you should not ADD or RETRIEVE merely by habit. When the current request omits "
+    "the customer's profile preference, use RETRIEVE to expose the saved current "
+    "profile before choosing. Store new memory only when the episode provides new "
+    "information that a later session will actually need."
+)
+QUERY_TOP1_RETRIEVAL_CONTRACT = (
+    "On this surface, RETRIEVE requires exactly query:string and returns exactly "
+    "one highest-ranked matching memory. memory_id and top_k are forbidden."
+)
+INTENT_CLARIFICATION_CONTRACT = (
+    "In the first shopping session, the request is intentionally ambiguous. Use "
+    'ASK {"field":"..."} exactly once with the ambiguity-resolving field named '
+    "by the task. The environment returns a CLARIFY observation; store that "
+    "clarification before the first purchase and retrieve it in later sessions."
 )
 _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
@@ -262,6 +337,10 @@ def _validate_programmatic_metadata(
     metadata: Mapping[str, Any],
     *,
     provider_schema: str,
+    tasks_per_orbit: int = 2,
+    seed_epoch_boundary_field: str = (
+        "counterfactual_pair_never_crosses_seed_epoch"
+    ),
 ) -> Mapping[str, Any]:
     if metadata.get("source") != "agentmemory_programmatic_generator":
         raise RuntimeError("Procedural AgentMemoryGym source metadata is invalid")
@@ -272,6 +351,10 @@ def _validate_programmatic_metadata(
         raise RuntimeError("Procedural AgentMemoryGym metadata requires provider")
     if provider.get("schema") != provider_schema:
         raise RuntimeError("Programmatic AgentMemoryGym provider schema is unsupported")
+    if provider.get("tasks_per_orbit") != tasks_per_orbit:
+        raise RuntimeError(
+            "Programmatic AgentMemoryGym tasks_per_orbit metadata is invalid"
+        )
     if provider.get("candidate_count_per_phase") != 2:
         raise RuntimeError("Procedural AgentMemoryGym requires two candidates per phase")
     if provider.get("phase_count_per_task") != 6:
@@ -304,7 +387,7 @@ def _validate_programmatic_metadata(
         isinstance(task_count, bool)
         or not isinstance(task_count, int)
         or task_count <= 0
-        or task_count % 2
+        or task_count % tasks_per_orbit
         or provider.get("task_count") != task_count
     ):
         raise RuntimeError("Procedural AgentMemoryGym task_count metadata is invalid")
@@ -323,7 +406,7 @@ def _validate_programmatic_metadata(
         or semantic_period_orbits <= 0
         or isinstance(semantic_period_tasks, bool)
         or not isinstance(semantic_period_tasks, int)
-        or semantic_period_tasks != semantic_period_orbits * 2
+        or semantic_period_tasks != semantic_period_orbits * tasks_per_orbit
     ):
         raise RuntimeError(
             "Procedural AgentMemoryGym semantic period metadata is invalid"
@@ -341,7 +424,7 @@ def _validate_programmatic_metadata(
         expected_stream_values = {
             "tasks_per_seed_epoch": semantic_period_tasks,
             "orbits_per_seed_epoch": semantic_period_orbits,
-            "counterfactual_pair_never_crosses_seed_epoch": True,
+            seed_epoch_boundary_field: True,
             "seed_epoch_zero_uses_base_seed": True,
             "collision_free_within_complete_seed_epoch": True,
             "semantic_uniqueness_guaranteed_through_task_index": (
@@ -428,9 +511,138 @@ def _validate_recency_override_metadata(metadata: Mapping[str, Any]) -> None:
         )
 
 
+def _validate_distractor_robustness_metadata(
+    metadata: Mapping[str, Any],
+) -> None:
+    provider = _validate_programmatic_metadata(
+        metadata,
+        provider_schema="agentmemory_verified_distractor_robustness_provider_v1",
+    )
+    expected = {
+        "counterfactual_pairing": True,
+        "branch_order": ["clean", "distracted"],
+        "correct_memory_preloaded": False,
+        "correct_memory_policy_authored_after_evidence": True,
+        "retrieve_policy": "query_top1",
+        "memory_id_lookup_allowed": False,
+        "initial_memory_inventory_visible": False,
+        "strict_top1_certified": True,
+        "purchase_receipt_asin_verification": True,
+    }
+    mismatches = [
+        key for key, expected_value in expected.items()
+        if provider.get(key) != expected_value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "Distractor-robustness AgentMemoryGym provider metadata is "
+            "inconsistent: " + ", ".join(mismatches)
+        )
+
+
+def _validate_compositional_recall_metadata(
+    metadata: Mapping[str, Any],
+) -> None:
+    provider = _validate_programmatic_metadata(
+        metadata,
+        provider_schema="agentmemory_verified_compositional_recall_provider_v1",
+        tasks_per_orbit=4,
+        seed_epoch_boundary_field="factorial_orbit_never_crosses_seed_epoch",
+    )
+    expected = {
+        "factorial_coordinates": [[0, 0], [0, 1], [1, 0], [1, 1]],
+        "canonical_memory_count": 2,
+        "retrieve_policy": "query_top1",
+        "required_sequential_retrievals": 2,
+        "memory_id_lookup_allowed": False,
+        "ltm_inventory_visible": False,
+        "leave_one_memory_out_certified": True,
+        "purchase_receipt_asin_verification": True,
+    }
+    mismatches = [
+        key for key, expected_value in expected.items()
+        if provider.get(key) != expected_value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "Compositional-recall AgentMemoryGym provider metadata is "
+            "inconsistent: " + ", ".join(mismatches)
+        )
+
+
+def _validate_intent_clarification_metadata(
+    metadata: Mapping[str, Any],
+) -> None:
+    provider = _validate_programmatic_metadata(
+        metadata,
+        provider_schema="agentmemory_verified_intent_clarification_provider_v1",
+    )
+    expected = {
+        "counterfactual_pairing": True,
+        "pre_ask_observation_identity": True,
+        "all_targets_flip_after_clarification": True,
+        "required_action": "ASK",
+        "clarification_event": "CLARIFY",
+        "ask_allowed_session": 0,
+        "max_successful_asks": 1,
+        "purchase_before_clarification_allowed": False,
+        "canonical_memory_count": 1,
+        "retrieve_policy": "query_top1",
+        "memory_id_lookup_allowed": False,
+        "ltm_inventory_visible": False,
+        "training_ready": True,
+    }
+    mismatches = [
+        key for key, expected_value in expected.items()
+        if provider.get(key) != expected_value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "Intent-clarification AgentMemoryGym provider metadata is "
+            "inconsistent: " + ", ".join(mismatches)
+        )
+
+
+def _validate_selective_memory_use_metadata(
+    metadata: Mapping[str, Any],
+) -> None:
+    provider = _validate_programmatic_metadata(
+        metadata,
+        provider_schema="agentmemory_verified_selective_memory_use_provider_v1",
+        tasks_per_orbit=4,
+        seed_epoch_boundary_field="factorial_orbit_never_crosses_seed_epoch",
+    )
+    expected = {
+        "memory_required_fraction": 0.5,
+        "memory_not_required_fraction": 0.5,
+        "required_branch_seeded_memory_state": "current",
+        "not_required_branch_seeded_memory_state": "stale_opposite",
+        "retrieve_policy": "query_top1",
+        "memory_id_lookup_allowed": False,
+        "ltm_inventory_visible": False,
+        "memory_action_positive_shaping_allowed": False,
+        "unnecessary_memory_action_penalty": -0.01,
+        "memory_required_without_memory_counterfactually_ambiguous": True,
+        "memory_not_required_current_request_explicit": True,
+        "purchase_receipt_asin_verification": True,
+    }
+    mismatches = [
+        key
+        for key, expected_value in expected.items()
+        if provider.get(key) != expected_value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "Selective-memory-use AgentMemoryGym provider metadata is "
+            "inconsistent: " + ", ".join(mismatches)
+        )
+
+
 def build_procedural_conversation_start(
     action_format: ActionFormat,
     memory_prompt_mode: str,
+    *,
+    surface: str = PROCEDURAL_WEBSHOP_SURFACE,
 ) -> tuple[ConversationMessage, ConversationMessage]:
     if memory_prompt_mode not in MEMORY_PROMPT_MODES:
         raise ValueError(
@@ -456,12 +668,48 @@ def build_procedural_conversation_start(
         interface += " " + CROSS_SESSION_MEMORY_RESPONSIBILITY
     if memory_prompt_mode == LATENT_PREFERENCE_PROMPT_MODE:
         interface += " " + LATENT_PREFERENCE_SOP
+    elif memory_prompt_mode == SELECTIVE_MEMORY_PROMPT_MODE:
+        interface += " " + SELECTIVE_MEMORY_SOP
     elif memory_prompt_mode == "legacy":
         interface += (
             " Preserve and retrieve any visible product attribute that a later "
             "customer rule needs; the environment does not perform memory actions "
             "for you and does not require a particular key or schema."
         )
+    if surface in QUERY_TOP1_WEBSHOP_SURFACES:
+        interface += " " + QUERY_TOP1_RETRIEVAL_CONTRACT
+    if surface == INTENT_CLARIFICATION_WEBSHOP_SURFACE:
+        interface += " " + INTENT_CLARIFICATION_CONTRACT
+
+    function_descriptions = list(AGENTMEMORY_FUNCTION_DESCRIPTION)
+    if surface in QUERY_TOP1_WEBSHOP_SURFACES:
+        function_descriptions = [
+            (
+                {
+                    **description,
+                    "description": (
+                        "Match a query against text previously stored with add and "
+                        "expose exactly the highest-ranked memory as active context."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Retrieval query.",
+                            }
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                }
+                if description["name"] == "retrieve"
+                else description
+            )
+            for description in function_descriptions
+        ]
+    if surface == INTENT_CLARIFICATION_WEBSHOP_SURFACE:
+        function_descriptions.append(AGENTMEMORY_ASK_FUNCTION_DESCRIPTION)
 
     if action_format is ActionFormat.REACT:
         prompt = (
@@ -474,13 +722,13 @@ def build_procedural_conversation_start(
         prompt = (
             interface
             + " Invoke exactly one available function.\n\n"
-            + format_function_call_prompt(AGENTMEMORY_FUNCTION_DESCRIPTION)
+            + format_function_call_prompt(function_descriptions)
         )
     elif action_format is ActionFormat.CODE_AS_ACTION:
         prompt = (
             interface
             + " Write Python code to call exactly one available function.\n\n"
-            + format_code_as_action_prompt(AGENTMEMORY_FUNCTION_DESCRIPTION)
+            + format_code_as_action_prompt(function_descriptions)
         )
     else:  # pragma: no cover - ActionFormat is closed over the three modes above.
         raise ValueError(f"Unsupported AgentMemoryGym action format: {action_format}")
@@ -731,7 +979,23 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self.is_recency_override = (
             self.surface == RECENCY_OVERRIDE_WEBSHOP_SURFACE
         )
+        self.is_distractor_robustness = (
+            self.surface == DISTRACTOR_ROBUSTNESS_WEBSHOP_SURFACE
+        )
+        self.is_compositional_recall = (
+            self.surface == COMPOSITIONAL_RECALL_WEBSHOP_SURFACE
+        )
+        self.is_intent_clarification = (
+            self.surface == INTENT_CLARIFICATION_WEBSHOP_SURFACE
+        )
+        self.is_selective_memory_use = (
+            self.surface == SELECTIVE_MEMORY_USE_WEBSHOP_SURFACE
+        )
         self.is_preference_memory = self.surface in PREFERENCE_WEBSHOP_SURFACES
+        self.requires_latent_preference_sop = (
+            self.surface in LATENT_PREFERENCE_SOP_WEBSHOP_SURFACES
+        )
+        self.requires_selective_memory_sop = self.is_selective_memory_use
         if self.is_v3:
             _validate_v3_metadata(self.metadata)
             if self.action_format is not ActionFormat.REACT:
@@ -743,6 +1007,14 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 _validate_latent_preference_metadata(self.metadata)
             elif self.is_recency_override:
                 _validate_recency_override_metadata(self.metadata)
+            elif self.is_distractor_robustness:
+                _validate_distractor_robustness_metadata(self.metadata)
+            elif self.is_compositional_recall:
+                _validate_compositional_recall_metadata(self.metadata)
+            elif self.is_intent_clarification:
+                _validate_intent_clarification_metadata(self.metadata)
+            elif self.is_selective_memory_use:
+                _validate_selective_memory_use_metadata(self.metadata)
             else:
                 _validate_procedural_metadata(self.metadata)
             memory_prompt_mode = self.metadata.get("memory_prompt_mode", "legacy")
@@ -751,20 +1023,31 @@ class AgentMemoryEnvClient(BaseEnvClient):
                     "AgentMemoryGym procedural metadata has unsupported "
                     f"memory_prompt_mode: {memory_prompt_mode!r}"
                 )
-            if self.is_preference_memory and (
+            if self.requires_latent_preference_sop and (
                 memory_prompt_mode != LATENT_PREFERENCE_PROMPT_MODE
             ):
                 raise RuntimeError(
-                    "AgentMemoryGym preference-memory surface requires "
+                    "AgentMemoryGym surface requires "
                     f"memory_prompt_mode={LATENT_PREFERENCE_PROMPT_MODE!r}"
                 )
+            if self.requires_selective_memory_sop and (
+                memory_prompt_mode != SELECTIVE_MEMORY_PROMPT_MODE
+            ):
+                raise RuntimeError(
+                    "AgentMemoryGym selective-memory-use surface requires "
+                    f"memory_prompt_mode={SELECTIVE_MEMORY_PROMPT_MODE!r}"
+                )
             if (
-                not self.is_preference_memory
-                and memory_prompt_mode == LATENT_PREFERENCE_PROMPT_MODE
+                not self.requires_latent_preference_sop
+                and not self.requires_selective_memory_sop
+                and memory_prompt_mode in {
+                    LATENT_PREFERENCE_PROMPT_MODE,
+                    SELECTIVE_MEMORY_PROMPT_MODE,
+                }
             ):
                 raise RuntimeError(
                     "AgentMemoryGym natural-chain surface cannot use the "
-                    "latent_preference_sop prompt"
+                    "specialized memory prompt"
                 )
             self.memory_prompt_mode = memory_prompt_mode
         elif self.surface != WEBSHOP_V2_SURFACE:
@@ -800,6 +1083,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
             else build_procedural_conversation_start(
                 self.action_format,
                 self.memory_prompt_mode,
+                surface=self.surface,
             )
             if self.is_procedural
             else self.adapter_cls.conversation_start_for_mode(
@@ -910,7 +1194,7 @@ def format_action(action_name: str, arguments: dict[str, Any]) -> str:
         return f"search[{_require_function_text(arguments, 'keywords')}]"
     if action_name == "click":
         return f"click[{_require_function_text(arguments, 'item')}]"
-    if action_name not in MEMORY_ACTION_NAMES:
+    if action_name not in JSON_ACTION_NAMES:
         raise ValueError(f"Unsupported AgentMemoryGym action: {action_name}")
     return f"{action_name} {json.dumps(arguments, ensure_ascii=False)}"
 
@@ -936,13 +1220,15 @@ def parse_env_action(action: str) -> tuple[str, dict[str, Any]]:
         argument = native_match.group(2).strip()
         key = "keywords" if native_match.group(1) == "search" else "item"
         return native_match.group(1), {key: argument}
-    memory_match = MEMORY_ACTION_RE.fullmatch(cleaned)
-    if memory_match is None:
-        raise ValueError("Expected one native bracket action or uppercase memory-tool JSON action.")
-    payload = json.loads(memory_match.group(2))
+    json_match = JSON_ACTION_RE.fullmatch(cleaned)
+    if json_match is None:
+        raise ValueError(
+            "Expected one native bracket action or uppercase JSON tool action."
+        )
+    payload = json.loads(json_match.group(2))
     if not isinstance(payload, dict):
-        raise ValueError("Memory-tool payload must be a JSON object.")
-    return memory_match.group(1), payload
+        raise ValueError("JSON tool payload must be a JSON object.")
+    return json_match.group(1), payload
 
 
 def build_code_action_functions() -> dict[str, Any]:

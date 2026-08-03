@@ -21,7 +21,30 @@ from .memoryarena_webshop_env import (
     LTM_INVENTORY_MODES,
     LTM_TRANSITION_NOTICE_MODES,
 )
-from .env_wrapper import LATENT_PREFERENCE_PROMPT_MODE, MEMORY_PROMPT_MODES
+from .env_wrapper import (
+    LATENT_PREFERENCE_PROMPT_MODE,
+    MEMORY_PROMPT_MODES,
+    SELECTIVE_MEMORY_PROMPT_MODE,
+)
+from .compositional_recall import (
+    PROVIDER_MODE_FIXED_WINDOW as COMPOSITIONAL_PROVIDER_MODE_FIXED_WINDOW,
+    PROVIDER_MODE_RESEEDED_STREAM as COMPOSITIONAL_PROVIDER_MODE_RESEEDED_STREAM,
+    PROVIDER_MODES as COMPOSITIONAL_PROVIDER_MODES,
+    TASKS_PER_ORBIT as COMPOSITIONAL_TASKS_PER_ORBIT,
+)
+from .compositional_recall_webshop_env import COMPOSITIONAL_RECALL_SURFACE
+from .distractor_robustness import (
+    PROVIDER_MODE_FIXED_WINDOW as DISTRACTOR_PROVIDER_MODE_FIXED_WINDOW,
+    PROVIDER_MODE_RESEEDED_STREAM as DISTRACTOR_PROVIDER_MODE_RESEEDED_STREAM,
+    PROVIDER_MODES as DISTRACTOR_PROVIDER_MODES,
+)
+from .distractor_robustness_webshop_env import DISTRACTOR_ROBUSTNESS_SURFACE
+from .intent_clarification import (
+    PROVIDER_MODE_FIXED_WINDOW as INTENT_PROVIDER_MODE_FIXED_WINDOW,
+    PROVIDER_MODE_RESEEDED_STREAM as INTENT_PROVIDER_MODE_RESEEDED_STREAM,
+    PROVIDER_MODES as INTENT_PROVIDER_MODES,
+)
+from .intent_clarification_webshop_env import INTENT_CLARIFICATION_SURFACE
 from .latent_preference import (
     PROVIDER_MODE_FIXED_WINDOW as LATENT_PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM as LATENT_PROVIDER_MODE_RESEEDED_STREAM,
@@ -34,6 +57,13 @@ from .recency_override import (
     PROVIDER_MODES as RECENCY_PROVIDER_MODES,
 )
 from .recency_override_webshop_env import RECENCY_OVERRIDE_SURFACE
+from .selective_memory_use import (
+    PROVIDER_MODE_FIXED_WINDOW as SELECTIVE_PROVIDER_MODE_FIXED_WINDOW,
+    PROVIDER_MODE_RESEEDED_STREAM as SELECTIVE_PROVIDER_MODE_RESEEDED_STREAM,
+    PROVIDER_MODES as SELECTIVE_PROVIDER_MODES,
+    TASKS_PER_ORBIT as SELECTIVE_TASKS_PER_ORBIT,
+)
+from .selective_memory_use_webshop_env import SELECTIVE_MEMORY_USE_SURFACE
 from .procedural import (
     PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM,
@@ -59,6 +89,10 @@ def launch() -> None:
             PROCEDURAL_SURFACE,
             LATENT_PREFERENCE_SURFACE,
             RECENCY_OVERRIDE_SURFACE,
+            DISTRACTOR_ROBUSTNESS_SURFACE,
+            COMPOSITIONAL_RECALL_SURFACE,
+            INTENT_CLARIFICATION_SURFACE,
+            SELECTIVE_MEMORY_USE_SURFACE,
             *V3_SURFACES,
         ],
         required=True,
@@ -120,6 +154,42 @@ def launch() -> None:
         choices=RECENCY_PROVIDER_MODES,
     )
     parser.add_argument("--recency-override-start-orbit", type=int, default=0)
+    parser.add_argument("--distractor-robustness-product-pool")
+    parser.add_argument("--distractor-robustness-product-pool-sha256")
+    parser.add_argument("--distractor-robustness-task-count", type=int)
+    parser.add_argument("--distractor-robustness-generator-seed", type=int)
+    parser.add_argument(
+        "--distractor-robustness-provider-mode",
+        choices=DISTRACTOR_PROVIDER_MODES,
+    )
+    parser.add_argument("--distractor-robustness-start-orbit", type=int, default=0)
+    parser.add_argument("--compositional-recall-product-pool")
+    parser.add_argument("--compositional-recall-product-pool-sha256")
+    parser.add_argument("--compositional-recall-task-count", type=int)
+    parser.add_argument("--compositional-recall-generator-seed", type=int)
+    parser.add_argument(
+        "--compositional-recall-provider-mode",
+        choices=COMPOSITIONAL_PROVIDER_MODES,
+    )
+    parser.add_argument("--compositional-recall-start-orbit", type=int, default=0)
+    parser.add_argument("--intent-clarification-product-pool")
+    parser.add_argument("--intent-clarification-product-pool-sha256")
+    parser.add_argument("--intent-clarification-task-count", type=int)
+    parser.add_argument("--intent-clarification-generator-seed", type=int)
+    parser.add_argument(
+        "--intent-clarification-provider-mode",
+        choices=INTENT_PROVIDER_MODES,
+    )
+    parser.add_argument("--intent-clarification-start-orbit", type=int, default=0)
+    parser.add_argument("--selective-memory-use-product-pool")
+    parser.add_argument("--selective-memory-use-product-pool-sha256")
+    parser.add_argument("--selective-memory-use-task-count", type=int)
+    parser.add_argument("--selective-memory-use-generator-seed", type=int)
+    parser.add_argument(
+        "--selective-memory-use-provider-mode",
+        choices=SELECTIVE_PROVIDER_MODES,
+    )
+    parser.add_argument("--selective-memory-use-start-orbit", type=int, default=0)
     parser.add_argument("--travel-tasks-path")
     parser.add_argument("--travel-database-path")
     parser.add_argument("--formal-reasoning-tasks-path")
@@ -185,16 +255,32 @@ def launch() -> None:
     if args.service_role == "smoke" and not args.runtime_source_id:
         parser.error("--service-role smoke requires --runtime-source-id")
 
-    if args.surface in {LATENT_PREFERENCE_SURFACE, RECENCY_OVERRIDE_SURFACE}:
+    preference_surfaces = {
+        LATENT_PREFERENCE_SURFACE,
+        RECENCY_OVERRIDE_SURFACE,
+        DISTRACTOR_ROBUSTNESS_SURFACE,
+        COMPOSITIONAL_RECALL_SURFACE,
+        INTENT_CLARIFICATION_SURFACE,
+    }
+    if args.surface == SELECTIVE_MEMORY_USE_SURFACE:
+        if args.memory_prompt_mode != SELECTIVE_MEMORY_PROMPT_MODE:
+            parser.error(
+                "the selective-memory-use surface requires "
+                f"--memory-prompt-mode {SELECTIVE_MEMORY_PROMPT_MODE}"
+            )
+    elif args.surface in preference_surfaces:
         if args.memory_prompt_mode != LATENT_PREFERENCE_PROMPT_MODE:
             parser.error(
                 "this programmatic preference surface requires "
                 f"--memory-prompt-mode {LATENT_PREFERENCE_PROMPT_MODE}"
             )
-    elif args.memory_prompt_mode == LATENT_PREFERENCE_PROMPT_MODE:
+    elif args.memory_prompt_mode in {
+        LATENT_PREFERENCE_PROMPT_MODE,
+        SELECTIVE_MEMORY_PROMPT_MODE,
+    }:
         parser.error(
-            "--memory-prompt-mode latent_preference_sop is only valid for the "
-            "latent-preference surface"
+            "specialized --memory-prompt-mode is only valid for its approved "
+            "programmatic memory surface"
         )
 
     configured = {
@@ -508,6 +594,55 @@ def launch() -> None:
                 "AGENTMEMORY_ACTION_LISTING_MODE": args.action_listing_mode,
             }
         )
+    elif args.surface == DISTRACTOR_ROBUSTNESS_SURFACE:
+        configured.update(
+            _configure_programmatic_memory_surface(
+                parser,
+                args,
+                cli_prefix="distractor_robustness",
+                env_prefix="AGENTMEMORY_DISTRACTOR_ROBUSTNESS",
+                tasks_per_orbit=2,
+                fixed_window_mode=DISTRACTOR_PROVIDER_MODE_FIXED_WINDOW,
+                reseeded_stream_mode=DISTRACTOR_PROVIDER_MODE_RESEEDED_STREAM,
+            )
+        )
+    elif args.surface == COMPOSITIONAL_RECALL_SURFACE:
+        configured.update(
+            _configure_programmatic_memory_surface(
+                parser,
+                args,
+                cli_prefix="compositional_recall",
+                env_prefix="AGENTMEMORY_COMPOSITIONAL_RECALL",
+                tasks_per_orbit=COMPOSITIONAL_TASKS_PER_ORBIT,
+                fixed_window_mode=COMPOSITIONAL_PROVIDER_MODE_FIXED_WINDOW,
+                reseeded_stream_mode=COMPOSITIONAL_PROVIDER_MODE_RESEEDED_STREAM,
+            )
+        )
+    elif args.surface == INTENT_CLARIFICATION_SURFACE:
+        configured.update(
+            _configure_programmatic_memory_surface(
+                parser,
+                args,
+                cli_prefix="intent_clarification",
+                env_prefix="AGENTMEMORY_INTENT_CLARIFICATION",
+                tasks_per_orbit=2,
+                fixed_window_mode=INTENT_PROVIDER_MODE_FIXED_WINDOW,
+                reseeded_stream_mode=INTENT_PROVIDER_MODE_RESEEDED_STREAM,
+            )
+        )
+    elif args.surface == SELECTIVE_MEMORY_USE_SURFACE:
+        configured.update(
+            _configure_programmatic_memory_surface(
+                parser,
+                args,
+                cli_prefix="selective_memory_use",
+                env_prefix="AGENTMEMORY_SELECTIVE_MEMORY_USE",
+                tasks_per_orbit=SELECTIVE_TASKS_PER_ORBIT,
+                fixed_window_mode=SELECTIVE_PROVIDER_MODE_FIXED_WINDOW,
+                reseeded_stream_mode=SELECTIVE_PROVIDER_MODE_RESEEDED_STREAM,
+                zero_memory_rewards=True,
+            )
+        )
     elif args.surface in TRAVEL_SURFACES.values():
         _require_args(parser, args, "travel_tasks_path", "travel_database_path")
         configured.update(
@@ -656,6 +791,108 @@ def _require_args(parser: argparse.ArgumentParser, args, *names: str) -> None:
     ]
     if missing:
         parser.error(f"surface {args.surface!r} requires: " + ", ".join(missing))
+
+
+def _configure_programmatic_memory_surface(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    *,
+    cli_prefix: str,
+    env_prefix: str,
+    tasks_per_orbit: int,
+    fixed_window_mode: str,
+    reseeded_stream_mode: str,
+    zero_memory_rewards: bool = False,
+) -> dict[str, str]:
+    product_pool_name = f"{cli_prefix}_product_pool"
+    product_pool_sha_name = f"{cli_prefix}_product_pool_sha256"
+    task_count_name = f"{cli_prefix}_task_count"
+    generator_seed_name = f"{cli_prefix}_generator_seed"
+    provider_mode_name = f"{cli_prefix}_provider_mode"
+    start_orbit_name = f"{cli_prefix}_start_orbit"
+    _require_args(
+        parser,
+        args,
+        "items_file",
+        "attributes_file",
+        "search_root",
+        "java_home",
+        "lucene_index_manifest",
+        product_pool_name,
+        product_pool_sha_name,
+        task_count_name,
+    )
+    generator_seed = getattr(args, generator_seed_name)
+    rendered_prefix = cli_prefix.replace("_", "-")
+    if generator_seed is None:
+        parser.error(f"surface requires --{rendered_prefix}-generator-seed")
+    if args.split == "all":
+        parser.error(f"{rendered_prefix} data requires one explicit split")
+    task_count = getattr(args, task_count_name)
+    if task_count <= 0 or task_count % tasks_per_orbit:
+        parser.error(
+            f"--{rendered_prefix}-task-count must be a positive multiple of "
+            f"{tasks_per_orbit}"
+        )
+    provider_mode = getattr(args, provider_mode_name) or (
+        reseeded_stream_mode if args.split == "train" else fixed_window_mode
+    )
+    start_orbit = getattr(args, start_orbit_name)
+    if start_orbit < 0:
+        parser.error(f"--{rendered_prefix}-start-orbit must be non-negative")
+    if provider_mode == reseeded_stream_mode:
+        if args.split != "train":
+            parser.error(
+                f"--{rendered_prefix}-provider-mode reseeded_stream is training-only"
+            )
+        if start_orbit != 0:
+            parser.error(
+                f"reseeded_stream requires --{rendered_prefix}-start-orbit 0"
+            )
+    if zero_memory_rewards and any(
+        value is not None and float(value) != 0.0
+        for value in (
+            args.memory_first_add_reward,
+            args.memory_first_later_retrieve_reward,
+        )
+    ):
+        parser.error(
+            f"{rendered_prefix} requires --memory-first-add-reward and "
+            "--memory-first-later-retrieve-reward to remain zero"
+        )
+    first_add_reward = 0.0 if zero_memory_rewards else (
+        FIRST_VALID_ADD_BONUS
+        if args.memory_first_add_reward is None
+        else args.memory_first_add_reward
+    )
+    first_later_retrieve_reward = 0.0 if zero_memory_rewards else (
+        FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS
+        if args.memory_first_later_retrieve_reward is None
+        else args.memory_first_later_retrieve_reward
+    )
+    return {
+        "MEMORYARENA_WEBSHOP_ITEMS_FILE": args.items_file,
+        "MEMORYARENA_WEBSHOP_ATTR_FILE": args.attributes_file,
+        "MEMORYARENA_WEBSHOP_SEARCH_ROOT": args.search_root,
+        "MEMORYARENA_WEBSHOP_JAVA_HOME": args.java_home,
+        "MEMORYARENA_LUCENE_INDEX_MANIFEST": args.lucene_index_manifest,
+        f"{env_prefix}_PRODUCT_POOL": getattr(args, product_pool_name),
+        f"{env_prefix}_PRODUCT_POOL_SHA256": getattr(args, product_pool_sha_name),
+        f"{env_prefix}_TASK_COUNT": str(task_count),
+        f"{env_prefix}_GENERATOR_SEED": str(generator_seed),
+        f"{env_prefix}_PROVIDER_MODE": provider_mode,
+        f"{env_prefix}_START_ORBIT": str(start_orbit),
+        "AGENTMEMORY_SPLIT": args.split,
+        "AGENTMEMORY_WEBSHOP_PRICE_SEED": str(args.price_seed),
+        "AGENTMEMORY_FIRST_VALID_ADD_REWARD": str(first_add_reward),
+        "AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD": str(
+            first_later_retrieve_reward
+        ),
+        "AGENTMEMORY_LTM_INVENTORY_MODE": args.ltm_inventory_mode,
+        "AGENTMEMORY_LTM_TRANSITION_NOTICE_MODE": args.ltm_transition_notice_mode,
+        "AGENTMEMORY_MEMORY_PROMPT_MODE": args.memory_prompt_mode,
+        "AGENTMEMORY_ACTION_LISTING_MODE": args.action_listing_mode,
+    }
 
 
 if __name__ == "__main__":

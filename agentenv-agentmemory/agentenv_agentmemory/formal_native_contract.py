@@ -12,13 +12,14 @@ MEMORY_ACTION_OPS = frozenset(
     {"ADD", "UPDATE", "DELETE", "RETRIEVE", "SUMMARY", "FILTER"}
 )
 FORMAL_NATIVE_ACTION_OPS = frozenset(
-    {*MEMORY_ACTION_OPS, "SEARCH", "CLICK", "BUY", "INVALID"}
+    {*MEMORY_ACTION_OPS, "SEARCH", "CLICK", "BUY", "ASK", "CLARIFY", "INVALID"}
 )
 _NATIVE_ACTION_RE = re.compile(r"\A(search|click)\[([^\[\]\r\n]+)\]\Z")
 _MEMORY_ACTION_RE = re.compile(
     r"\A(ADD|UPDATE|DELETE|RETRIEVE|SUMMARY|FILTER)\s+(\{.*\})\Z",
     re.DOTALL,
 )
+_ASK_ACTION_RE = re.compile(r"\AASK\s+(\{.*\})\Z", re.DOTALL)
 
 
 def canonical_tool_op(value: Any) -> str:
@@ -42,6 +43,14 @@ def infer_raw_action_op(raw_action: str) -> str:
         if not isinstance(payload, dict):
             return "INVALID"
         return memory.group(1).upper()
+    ask = _ASK_ACTION_RE.fullmatch(text)
+    if ask is not None:
+        try:
+            payload = json.loads(ask.group(1))
+        except json.JSONDecodeError:
+            return "INVALID"
+        if isinstance(payload, dict):
+            return "ASK"
     return "INVALID"
 
 
@@ -63,6 +72,8 @@ def resolve_formal_action_op(
         raise ValueError("A native click action produced a non-CLICK/BUY tool operation.")
     if inferred in MEMORY_ACTION_OPS and tool_op != inferred:
         raise ValueError("A memory action produced a different tool operation.")
+    if inferred == "ASK" and tool_op != "CLARIFY":
+        raise ValueError("An ASK action produced a non-CLARIFY tool operation.")
     if inferred == "INVALID":
         raise ValueError("An invalid raw action claims a successful tool operation.")
     return tool_op

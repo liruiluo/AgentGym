@@ -16,12 +16,20 @@ from ..domains import (
     TravelPlannerFactory,
 )
 from ..env_wrapper import AgentMemoryWrapper, NATIVE_SURFACE
+from ..compositional_recall_webshop_env import COMPOSITIONAL_RECALL_SURFACE
+from ..compositional_recall_wrapper import CompositionalRecallAgentMemoryWrapper
+from ..distractor_robustness_webshop_env import DISTRACTOR_ROBUSTNESS_SURFACE
+from ..distractor_robustness_wrapper import DistractorRobustnessAgentMemoryWrapper
+from ..intent_clarification_webshop_env import INTENT_CLARIFICATION_SURFACE
+from ..intent_clarification_wrapper import IntentClarificationAgentMemoryWrapper
 from ..latent_preference_webshop_env import LATENT_PREFERENCE_SURFACE
 from ..latent_preference_wrapper import LatentPreferenceAgentMemoryWrapper
 from ..procedural_webshop_env import PROCEDURAL_SURFACE
 from ..procedural_wrapper import ProceduralAgentMemoryWrapper
 from ..recency_override_webshop_env import RECENCY_OVERRIDE_SURFACE
 from ..recency_override_wrapper import RecencyOverrideAgentMemoryWrapper
+from ..selective_memory_use_webshop_env import SELECTIVE_MEMORY_USE_SURFACE
+from ..selective_memory_use_wrapper import SelectiveMemoryUseAgentMemoryWrapper
 from ..domains.browsecomp import (
     BROWSECOMP_BM25_INTEGRATION_BACKEND,
     BROWSECOMP_DENSE_BACKEND,
@@ -47,6 +55,14 @@ def build_server():
         return LatentPreferenceAgentMemoryWrapper()
     if surface == RECENCY_OVERRIDE_SURFACE:
         return RecencyOverrideAgentMemoryWrapper()
+    if surface == DISTRACTOR_ROBUSTNESS_SURFACE:
+        return DistractorRobustnessAgentMemoryWrapper()
+    if surface == COMPOSITIONAL_RECALL_SURFACE:
+        return CompositionalRecallAgentMemoryWrapper()
+    if surface == INTENT_CLARIFICATION_SURFACE:
+        return IntentClarificationAgentMemoryWrapper()
+    if surface == SELECTIVE_MEMORY_USE_SURFACE:
+        return SelectiveMemoryUseAgentMemoryWrapper()
 
     factory = build_domain_registry().build(surface)
     first_add = _env_float("AGENTMEMORY_FIRST_ADD_REWARD", 0.0)

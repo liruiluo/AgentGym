@@ -70,6 +70,9 @@ class NativeWebShopBackend(Protocol):
     def metadata(self) -> dict[str, Any]:
         ...
 
+    def active_session_count(self) -> int:
+        ...
+
 
 class MemoryArenaNativeWebShopBackend:
     """Shared original MemoryArena WebShop runtime with isolated sessions.
@@ -231,6 +234,10 @@ class MemoryArenaNativeWebShopBackend:
         for token in tokens:
             self.close_session(token)
 
+    def active_session_count(self) -> int:
+        with self._lifecycle_lock:
+            return len(self._envs)
+
     def has_product(self, asin: str) -> bool:
         self.start()
         if self._server is None:
@@ -314,6 +321,7 @@ class MemoryArenaNativeWebShopBackend:
             "jvm_path": str(self.jvm_path),
             "price_seed": self.price_seed,
             "product_count": len(self._server.product_item_dict),
+            "active_session_count": self.active_session_count(),
             "price_table_sha256": self.price_table_sha256(),
             "upstream_provenance": dict(self._upstream_provenance or {}),
         }

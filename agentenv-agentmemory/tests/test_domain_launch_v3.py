@@ -13,10 +13,22 @@ from agentenv_agentmemory.domains import (
     TRAVEL_SURFACES,
 )
 from agentenv_agentmemory.env_wrapper import NATIVE_SURFACE
+from agentenv_agentmemory.compositional_recall_webshop_env import (
+    COMPOSITIONAL_RECALL_SURFACE,
+)
+from agentenv_agentmemory.distractor_robustness_webshop_env import (
+    DISTRACTOR_ROBUSTNESS_SURFACE,
+)
+from agentenv_agentmemory.intent_clarification_webshop_env import (
+    INTENT_CLARIFICATION_SURFACE,
+)
 from agentenv_agentmemory.latent_preference_webshop_env import (
     LATENT_PREFERENCE_SURFACE,
 )
 from agentenv_agentmemory.procedural_webshop_env import PROCEDURAL_SURFACE
+from agentenv_agentmemory.selective_memory_use_webshop_env import (
+    SELECTIVE_MEMORY_USE_SURFACE,
+)
 from agentenv_agentmemory.launch import launch
 from agentenv_agentmemory.reward_hierarchy import (
     FIRST_VALID_ADD_BONUS,
@@ -105,6 +117,49 @@ class DomainLaunchTest(unittest.TestCase):
             "233",
             "--memory-prompt-mode",
             "latent_preference_sop",
+            "--split",
+            split,
+        ]
+
+    @staticmethod
+    def _programmatic_memory_arguments(
+        *,
+        surface: str,
+        cli_prefix: str,
+        split: str = "train",
+        task_count: int = 10000,
+        memory_prompt_mode: str = "latent_preference_sop",
+    ):
+        rendered_prefix = cli_prefix.replace("_", "-")
+        return [
+            "--surface",
+            surface,
+            "--memoryarena-root",
+            "/memoryarena",
+            "--memoryarena-base-commit",
+            "a" * 40,
+            "--run-id",
+            f"{rendered_prefix}-{split}-test",
+            "--items-file",
+            "/data/items.json",
+            "--attributes-file",
+            "/data/attrs.json",
+            "--search-root",
+            "/data/search",
+            "--java-home",
+            "/java",
+            "--lucene-index-manifest",
+            "/data/lucene.sha256",
+            f"--{rendered_prefix}-product-pool",
+            f"/data/{rendered_prefix}-pool.json",
+            f"--{rendered_prefix}-product-pool-sha256",
+            "d" * 64,
+            f"--{rendered_prefix}-task-count",
+            str(task_count),
+            f"--{rendered_prefix}-generator-seed",
+            "233",
+            "--memory-prompt-mode",
+            memory_prompt_mode,
             "--split",
             split,
         ]
@@ -392,6 +447,116 @@ class DomainLaunchTest(unittest.TestCase):
         ):
             launch()
         uvicorn.run.assert_not_called()
+
+    def test_new_programmatic_memory_surfaces_bind_isolated_inputs(self):
+        cases = (
+            (
+                DISTRACTOR_ROBUSTNESS_SURFACE,
+                "distractor_robustness",
+                "AGENTMEMORY_DISTRACTOR_ROBUSTNESS",
+                10000,
+            ),
+            (
+                COMPOSITIONAL_RECALL_SURFACE,
+                "compositional_recall",
+                "AGENTMEMORY_COMPOSITIONAL_RECALL",
+                10000,
+            ),
+            (
+                INTENT_CLARIFICATION_SURFACE,
+                "intent_clarification",
+                "AGENTMEMORY_INTENT_CLARIFICATION",
+                10000,
+                "latent_preference_sop",
+            ),
+            (
+                SELECTIVE_MEMORY_USE_SURFACE,
+                "selective_memory_use",
+                "AGENTMEMORY_SELECTIVE_MEMORY_USE",
+                10000,
+                "selective_memory_sop",
+            ),
+        )
+        normalized_cases = tuple(
+            (*case, "latent_preference_sop") if len(case) == 4 else case
+            for case in cases
+        )
+        for surface, cli_prefix, env_prefix, task_count, prompt_mode in normalized_cases:
+            with self.subTest(surface=surface):
+                configured, _ = self._launch(
+                    self._programmatic_memory_arguments(
+                        surface=surface,
+                        cli_prefix=cli_prefix,
+                        task_count=task_count,
+                        memory_prompt_mode=prompt_mode,
+                    )
+                )
+                self.assertEqual(configured["AGENTMEMORY_SURFACE"], surface)
+                self.assertEqual(configured[f"{env_prefix}_TASK_COUNT"], "10000")
+                self.assertEqual(configured[f"{env_prefix}_GENERATOR_SEED"], "233")
+                self.assertEqual(
+                    configured[f"{env_prefix}_PROVIDER_MODE"],
+                    "reseeded_stream",
+                )
+                self.assertEqual(
+                    configured["AGENTMEMORY_MEMORY_PROMPT_MODE"],
+                    prompt_mode,
+                )
+                self.assertNotIn("AGENTMEMORY_PROCEDURAL_PRODUCT_POOL", configured)
+                self.assertNotIn("AGENTMEMORY_MEMORYARENA_RAW_PATH", configured)
+                if surface == SELECTIVE_MEMORY_USE_SURFACE:
+                    self.assertEqual(
+                        configured["AGENTMEMORY_FIRST_VALID_ADD_REWARD"],
+                        "0.0",
+                    )
+                    self.assertEqual(
+                        configured[
+                            "AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD"
+                        ],
+                        "0.0",
+                    )
+
+    def test_new_programmatic_memory_eval_defaults_to_fixed_window(self):
+        configured, _ = self._launch(
+            self._programmatic_memory_arguments(
+                surface=DISTRACTOR_ROBUSTNESS_SURFACE,
+                cli_prefix="distractor_robustness",
+                split="dev",
+            )
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_DISTRACTOR_ROBUSTNESS_PROVIDER_MODE"],
+            "fixed_window",
+        )
+
+    def test_compositional_recall_requires_complete_four_task_orbits(self):
+        with self.assertRaises(SystemExit):
+            self._launch(
+                self._programmatic_memory_arguments(
+                    surface=COMPOSITIONAL_RECALL_SURFACE,
+                    cli_prefix="compositional_recall",
+                    task_count=10002,
+                )
+            )
+
+    def test_selective_memory_requires_complete_four_task_orbits_and_zero_bonus(self):
+        arguments = self._programmatic_memory_arguments(
+            surface=SELECTIVE_MEMORY_USE_SURFACE,
+            cli_prefix="selective_memory_use",
+            task_count=10002,
+            memory_prompt_mode="selective_memory_sop",
+        )
+        with self.assertRaises(SystemExit):
+            self._launch(arguments)
+
+        arguments = self._programmatic_memory_arguments(
+            surface=SELECTIVE_MEMORY_USE_SURFACE,
+            cli_prefix="selective_memory_use",
+            memory_prompt_mode="selective_memory_sop",
+        )
+        arguments.extend(["--memory-first-add-reward", "0.1"])
+        with self.assertRaises(SystemExit):
+            self._launch(arguments)
 
     def test_procedural_provider_defaults_are_stream_for_train_and_fixed_for_eval(
         self,

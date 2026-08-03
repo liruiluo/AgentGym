@@ -30,6 +30,7 @@ NONTERMINAL_NEGATIVE_SHAPING_COMPONENTS = frozenset(
         "exact_repeated_valid_zero_reward_action",
         "invalid_action",
         "memory_add_duplicate_visible_product_reference",
+        "memory_action_not_required",
         "memory_delete_product_anchor",
         "memory_retrieve_empty_repeat_same_query_noop",
         "memory_retrieve_nonempty_repeat_same_session",

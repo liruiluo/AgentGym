@@ -35,12 +35,14 @@ from .reward_hierarchy import (
 
 NATIVE_SURFACE = "memoryarena_webshop_native_v1"
 LATENT_PREFERENCE_PROMPT_MODE = "latent_preference_sop"
+SELECTIVE_MEMORY_PROMPT_MODE = "selective_memory_sop"
 MEMORY_PROMPT_MODES = (
     "legacy",
     "neutral",
     "neutral_horizon",
     "neutral_horizon_responsibility",
     LATENT_PREFERENCE_PROMPT_MODE,
+    SELECTIVE_MEMORY_PROMPT_MODE,
 )
 FORBIDDEN_SURROGATE_ENV = {
     "AGENTMEMORY_CATALOG_INDEX_PATH",
@@ -95,10 +97,13 @@ class AgentMemoryWrapper:
             default="legacy",
             choices=MEMORY_PROMPT_MODES,
         )
-        if self.memory_prompt_mode == LATENT_PREFERENCE_PROMPT_MODE:
+        if self.memory_prompt_mode in {
+            LATENT_PREFERENCE_PROMPT_MODE,
+            SELECTIVE_MEMORY_PROMPT_MODE,
+        }:
             raise RuntimeError(
                 "The native MemoryArena WebShop surface cannot use the "
-                "latent_preference_sop prompt."
+                "specialized procedural memory prompt."
             )
 
         domain_data_path = _required_path("MEMORYARENA_WEBSHOP_DOMAIN_DATA_PATH")

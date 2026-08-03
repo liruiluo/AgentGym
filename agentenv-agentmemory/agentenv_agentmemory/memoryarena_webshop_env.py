@@ -24,6 +24,7 @@ MEMORY_TOOL_OPS = {"ADD", "UPDATE", "DELETE", "RETRIEVE", "SUMMARY", "FILTER"}
 LTM_INVENTORY_MODES = ("hidden", "keys")
 LTM_TRANSITION_NOTICE_MODES = ("none", "state")
 ACTION_LISTING_MODES = ("separate", "unified")
+RETRIEVE_POLICIES = ("standard", "query_top1")
 LTM_INVENTORY_KEY_MAX_CHARS = 24
 LTM_INVENTORY_KEY_RE = re.compile(
     rf"\A[A-Za-z0-9](?:[A-Za-z0-9 _-]{{0,{LTM_INVENTORY_KEY_MAX_CHARS - 2}}}"
@@ -68,6 +69,7 @@ class MemoryArenaWebShopEnv:
         ltm_inventory_mode: str = "hidden",
         ltm_transition_notice_mode: str = "none",
         action_listing_mode: str = "separate",
+        retrieve_policy: str = "standard",
     ) -> None:
         if not bundles:
             raise ValueError("MemoryArenaWebShopEnv requires at least one bundle.")
@@ -86,12 +88,18 @@ class MemoryArenaWebShopEnv:
                 "action_listing_mode must be one of: "
                 + ", ".join(ACTION_LISTING_MODES)
             )
+        if retrieve_policy not in RETRIEVE_POLICIES:
+            raise ValueError(
+                "retrieve_policy must be one of: "
+                + ", ".join(RETRIEVE_POLICIES)
+            )
         self.bundles = tuple(bundles)
         self.backend = backend
         self.env_uid = env_uid or uuid.uuid4().hex[:12]
         self.ltm_inventory_mode = ltm_inventory_mode
         self.ltm_transition_notice_mode = ltm_transition_notice_mode
         self.action_listing_mode = action_listing_mode
+        self.retrieve_policy = retrieve_policy
         self._reward_contract = build_memoryarena_reward_contract(
             first_valid_add_reward=first_valid_add_reward,
             first_valid_later_session_retrieve_reward=(
@@ -248,11 +256,16 @@ class MemoryArenaWebShopEnv:
         if prefix:
             sections.append(prefix.strip())
         if self.action_listing_mode == "unified":
-            native_actions = _render_unified_actions(page)
+            native_actions = _render_unified_actions(
+                page,
+                retrieve_policy=self.retrieve_policy,
+            )
             memory_actions = ""
         else:
             native_actions = _render_native_actions(page)
-            memory_actions = _memory_action_contract()
+            memory_actions = _memory_action_contract(
+                retrieve_policy=self.retrieve_policy,
+            )
         sections.extend(
             [
                 f"Task family: bundled_shopping\nProgress: {self.current_session_index}/6",
@@ -296,6 +309,7 @@ class MemoryArenaWebShopEnv:
             "ltm_inventory_mode": self.ltm_inventory_mode,
             "ltm_transition_notice_mode": self.ltm_transition_notice_mode,
             "action_listing_mode": self.action_listing_mode,
+            "retrieve_policy": self.retrieve_policy,
             "ltm_inventory_count": len(self.long_term_memory),
             "ltm_inventory_key_max_chars": LTM_INVENTORY_KEY_MAX_CHARS,
             "ltm_inventory_key_format": "ascii_identifier",
@@ -529,6 +543,10 @@ class MemoryArenaWebShopEnv:
     def _memory_retrieve(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         has_query = "query" in payload
         has_memory_id = "memory_id" in payload
+        if self.retrieve_policy == "query_top1" and has_memory_id:
+            raise InvalidNativeAction(
+                "This task requires query-based top-1 RETRIEVE; memory_id lookup is disabled."
+            )
         if has_query == has_memory_id:
             raise InvalidNativeAction(
                 "RETRIEVE expects exactly one of query or memory_id."
@@ -544,11 +562,25 @@ class MemoryArenaWebShopEnv:
                 "memory_id": memory_id,
             }
         else:
-            _require_exact_fields(payload, required={"query"}, optional={"top_k"})
             query = _require_text(payload, "query")
-            top_k = payload.get("top_k", 3)
-            if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= 20:
-                raise InvalidNativeAction("RETRIEVE top_k must be an integer from 1 to 20.")
+            if self.retrieve_policy == "query_top1":
+                _require_exact_fields(payload, required={"query"})
+                top_k = 1
+            else:
+                _require_exact_fields(
+                    payload,
+                    required={"query"},
+                    optional={"top_k"},
+                )
+                top_k = payload.get("top_k", 3)
+                if (
+                    isinstance(top_k, bool)
+                    or not isinstance(top_k, int)
+                    or not 1 <= top_k <= 20
+                ):
+                    raise InvalidNativeAction(
+                        "RETRIEVE top_k must be an integer from 1 to 20."
+                    )
             ranked = rank_memory_entries_bm25(
                 query,
                 list(self.long_term_memory.values()),
@@ -717,7 +749,11 @@ def _render_native_actions(page: NativePage) -> str:
     return "\n".join(lines)
 
 
-def _render_unified_actions(page: NativePage) -> str:
+def _render_unified_actions(
+    page: NativePage,
+    *,
+    retrieve_policy: str = "standard",
+) -> str:
     lines = [
         "Action formats:",
         (
@@ -733,7 +769,10 @@ def _render_unified_actions(page: NativePage) -> str:
     if page.has_search_bar:
         lines.append("- search[keywords]")
     lines.extend(f"- click[{value}]" for value in page.clickables)
-    lines.extend(f"- {action}" for action in _memory_action_examples())
+    lines.extend(
+        f"- {action}"
+        for action in _memory_action_examples(retrieve_policy=retrieve_policy)
+    )
     return "\n".join(lines)
 
 
@@ -749,7 +788,7 @@ def _render_context(active: Sequence[str], trace: Sequence[str]) -> str:
     return "\n".join(lines)
 
 
-def _memory_action_contract() -> str:
+def _memory_action_contract(*, retrieve_policy: str = "standard") -> str:
     return "\n".join(
         [
             "Memory actions:",
@@ -762,21 +801,35 @@ def _memory_action_contract() -> str:
                 "schema, memory content, or query wording is prescribed; choose them "
                 "from the task context."
             ),
-            *_memory_action_examples(),
+            *_memory_action_examples(retrieve_policy=retrieve_policy),
         ]
     )
 
 
-def _memory_action_examples() -> list[str]:
-    return [
+def _memory_action_examples(*, retrieve_policy: str = "standard") -> list[str]:
+    if retrieve_policy not in RETRIEVE_POLICIES:
+        raise ValueError(f"unsupported retrieve policy: {retrieve_policy!r}")
+    actions = [
         'ADD {"key": "...", "value": "..."}',
         'UPDATE {"memory_id": "mem_0000", "value": "..."}',
         'DELETE {"memory_id": "mem_0000"}',
-        'RETRIEVE {"query": "...", "top_k": 3}',
-        'RETRIEVE {"memory_id": "mem_0000"}',
-        'SUMMARY {"text": "...", "source_ids": ["S0", "C0"]}',
-        'FILTER {"keep_ids": ["C0"], "scope": "active"}',
     ]
+    if retrieve_policy == "query_top1":
+        actions.append('RETRIEVE {"query": "..."}')
+    else:
+        actions.extend(
+            [
+                'RETRIEVE {"query": "...", "top_k": 3}',
+                'RETRIEVE {"memory_id": "mem_0000"}',
+            ]
+        )
+    actions.extend(
+        [
+            'SUMMARY {"text": "...", "source_ids": ["S0", "C0"]}',
+            'FILTER {"keep_ids": ["C0"], "scope": "active"}',
+        ]
+    )
+    return actions
 
 
 def _require_exact_fields(

@@ -181,6 +181,7 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
         ltm_inventory_mode: str = "hidden",
         ltm_transition_notice_mode: str = "none",
         action_listing_mode: str = "separate",
+        retrieve_policy: str = "standard",
     ):
         backend = backend or FakeNativeBackend()
         env = MemoryArenaWebShopEnv(
@@ -194,6 +195,7 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
             ltm_inventory_mode=ltm_inventory_mode,
             ltm_transition_notice_mode=ltm_transition_notice_mode,
             action_listing_mode=action_listing_mode,
+            retrieve_policy=retrieve_policy,
         )
         env.reset()
         return env, backend
@@ -587,6 +589,35 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
                 self.assertFalse(done)
                 self.assertEqual(env.active_context, [])
                 self.assertEqual(info["memory_ops"], [])
+
+    def test_query_top1_policy_rejects_broader_or_direct_lookup(self) -> None:
+        env, _ = self.make_env(retrieve_policy="query_top1")
+        env.step('ADD {"key":"customer profile","value":"current color black"}')
+        env.step('ADD {"key":"customer archive","value":"historical color gray"}')
+
+        observation = env.render_observation()
+        self.assertIn('RETRIEVE {"query": "..."}', observation)
+        self.assertNotIn('"top_k": 1', observation)
+        self.assertNotIn('RETRIEVE {"memory_id":', observation)
+        self.assertEqual(env.build_info()["retrieve_policy"], "query_top1")
+
+        retrieved, _, _, _, info = env.step(
+            'RETRIEVE {"query":"current customer profile"}'
+        )
+        self.assertEqual(info["memory_ops"][0]["retrieved_count"], 1)
+        self.assertIn("current color black", retrieved)
+
+        for action in (
+            'RETRIEVE {"query":"customer","top_k":1}',
+            'RETRIEVE {"query":"customer","top_k":2}',
+            'RETRIEVE {"memory_id":"mem_0000"}',
+        ):
+            with self.subTest(action=action):
+                invalid, reward, done, _, invalid_info = env.step(action)
+                self.assertIn("Invalid action", invalid)
+                self.assertLess(reward, 0.0)
+                self.assertFalse(done)
+                self.assertEqual(invalid_info["memory_ops"], [])
 
     def test_key_inventory_is_opt_in_and_never_exposes_memory_values(self) -> None:
         hidden_env, _ = self.make_env()

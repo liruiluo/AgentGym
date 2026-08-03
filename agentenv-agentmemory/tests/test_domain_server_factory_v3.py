@@ -17,10 +17,22 @@ from agentenv_agentmemory.domains import (
     TRAVEL_SURFACES,
 )
 from agentenv_agentmemory.env_wrapper import NATIVE_SURFACE
+from agentenv_agentmemory.compositional_recall_webshop_env import (
+    COMPOSITIONAL_RECALL_SURFACE,
+)
+from agentenv_agentmemory.distractor_robustness_webshop_env import (
+    DISTRACTOR_ROBUSTNESS_SURFACE,
+)
+from agentenv_agentmemory.intent_clarification_webshop_env import (
+    INTENT_CLARIFICATION_SURFACE,
+)
 from agentenv_agentmemory.latent_preference_webshop_env import (
     LATENT_PREFERENCE_SURFACE,
 )
 from agentenv_agentmemory.procedural_webshop_env import PROCEDURAL_SURFACE
+from agentenv_agentmemory.selective_memory_use_webshop_env import (
+    SELECTIVE_MEMORY_USE_SURFACE,
+)
 from agentenv_agentmemory.domains.formal_reasoning import FROZEN_MEMORYARENA_COMMIT
 from agentenv_agentmemory.domains.browsecomp import (
     BROWSECOMP_BM25_INTEGRATION_BACKEND,
@@ -86,6 +98,43 @@ class DomainServerFactoryTest(unittest.TestCase):
         ):
             self.assertIs(server_factory.build_server(), sentinel)
         wrapper.assert_called_once_with()
+
+    def test_new_programmatic_surfaces_use_separate_wrappers(self):
+        cases = (
+            (
+                DISTRACTOR_ROBUSTNESS_SURFACE,
+                "DistractorRobustnessAgentMemoryWrapper",
+            ),
+            (
+                COMPOSITIONAL_RECALL_SURFACE,
+                "CompositionalRecallAgentMemoryWrapper",
+            ),
+            (
+                INTENT_CLARIFICATION_SURFACE,
+                "IntentClarificationAgentMemoryWrapper",
+            ),
+            (
+                SELECTIVE_MEMORY_USE_SURFACE,
+                "SelectiveMemoryUseAgentMemoryWrapper",
+            ),
+        )
+        for surface, wrapper_name in cases:
+            sentinel = object()
+            with (
+                self.subTest(surface=surface),
+                patch.dict(
+                    os.environ,
+                    {"AGENTMEMORY_SURFACE": surface},
+                    clear=True,
+                ),
+                patch.object(
+                    server_factory,
+                    wrapper_name,
+                    return_value=sentinel,
+                ) as wrapper,
+            ):
+                self.assertIs(server_factory.build_server(), sentinel)
+            wrapper.assert_called_once_with()
 
     def test_travel_surfaces_bind_explicit_contract_modes(self):
         with tempfile.TemporaryDirectory() as tempdir:

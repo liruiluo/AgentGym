@@ -130,6 +130,7 @@ class NativeWebShopBackendCompatibilityTests(unittest.TestCase):
                 backend._server.product_item_dict["B000000001"]["Price"],
                 "$12.50",
             )
+            self.assertEqual(backend.active_session_count(), 0)
 
 
 class NativeWebShopUpstreamAttestationTests(unittest.TestCase):
