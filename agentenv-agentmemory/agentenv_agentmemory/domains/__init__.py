@@ -11,6 +11,7 @@ from .formal_reasoning import (
     FORMAL_REASONING_SURFACES_BY_MODE,
     FormalReasoningFactory,
 )
+from .sciworld import SCIWORLD_SURFACES, SciWorldMemoryFactory
 from .travel import TRAVEL_SURFACES, TravelPlannerFactory
 
 V3_SURFACES = (
@@ -23,6 +24,8 @@ V3_SURFACES = (
     BROWSECOMP_SURFACES["paper_eval"],
     BROWSECOMP_SURFACES["failfast"],
     BROWSECOMP_BM25_INTEGRATION_SURFACE,
+    SCIWORLD_SURFACES["conductivity_memory"],
+    SCIWORLD_SURFACES["lab_notebook_longhorizon"],
 )
 
 __all__ = [
@@ -33,6 +36,8 @@ __all__ = [
     "FORMAL_REASONING_SURFACES",
     "FORMAL_REASONING_SURFACES_BY_MODE",
     "FormalReasoningFactory",
+    "SCIWORLD_SURFACES",
+    "SciWorldMemoryFactory",
     "TRAVEL_SURFACES",
     "TravelPlannerFactory",
     "V3_SURFACES",

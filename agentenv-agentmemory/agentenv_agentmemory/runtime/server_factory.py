@@ -10,9 +10,11 @@ from ..domains import (
     BROWSECOMP_SURFACES,
     FORMAL_REASONING_PAPER_EVAL_SURFACES,
     FORMAL_REASONING_SURFACES_BY_MODE,
+    SCIWORLD_SURFACES,
     TRAVEL_SURFACES,
     BrowseCompPlusFactory,
     FormalReasoningFactory,
+    SciWorldMemoryFactory,
     TravelPlannerFactory,
 )
 from ..env_wrapper import AgentMemoryWrapper, NATIVE_SURFACE
@@ -107,6 +109,8 @@ def build_domain_registry() -> DomainRegistry:
             search_backend=BROWSECOMP_BM25_INTEGRATION_BACKEND,
         ),
     )
+    for surface in SCIWORLD_SURFACES.values():
+        registry.register(surface, lambda surface=surface: _build_sciworld_factory(surface))
     return registry
 
 
@@ -274,6 +278,14 @@ def _build_browsecomp_factory(
             ),
         },
         expected_memoryarena_commit=BROWSECOMP_FROZEN_MEMORYARENA_COMMIT,
+    )
+
+
+def _build_sciworld_factory(surface: str) -> SciWorldMemoryFactory:
+    return SciWorldMemoryFactory(
+        surface=surface,
+        backend=os.environ.get("AGENTMEMORY_SCIWORLD_BACKEND", "scienceworld"),
+        task_count=_env_int("AGENTMEMORY_SCIWORLD_TASK_COUNT", 0) or None,
     )
 
 
