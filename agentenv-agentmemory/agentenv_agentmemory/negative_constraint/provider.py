@@ -160,12 +160,48 @@ class VerifiedNegativeConstraintBundleProvider:
             "distinct_values_per_phase": 3,
             "counterfactual_branches": 3,
             "retrieve_policy": "query_top1",
+            "memory_id_lookup_allowed": False,
+            "initial_memory_inventory_visible": False,
+            "task_prompt_product_identity": "complete_native_title",
+            "target_asin_in_task_prompt": False,
+            "native_search_result_asin_handles_visible": True,
+            "native_click_action_uses_asin_handle": True,
+            "purchase_receipt_asin_verification": True,
             "rules_only": not pool.native_certified,
             "native_certified": pool.native_certified,
             "training_ready": pool.native_certified,
             "native_certificate_count": len(pool.native_certificates),
             "certifier_version": pool.certifier_version,
             "source_manifest_sha256": pool.source_manifest_sha256,
+            "semantic_period_orbits": self.seed_epoch_orbit_count,
+            "semantic_period_tasks": self.seed_epoch_task_count,
+            "human_review_required": False,
+            "llm_judge_required": False,
+            "paper_eligible": False,
+            "fixed_window": (
+                {
+                    "start_orbit": self.start_orbit,
+                    "end_orbit_exclusive": self.start_orbit + self.orbit_count,
+                }
+                if self.mode == PROVIDER_MODE_FIXED_WINDOW
+                else None
+            ),
+            "reseeded_stream": (
+                {
+                    "tasks_per_seed_epoch": self.seed_epoch_task_count,
+                    "orbits_per_seed_epoch": self.seed_epoch_orbit_count,
+                    "counterfactual_orbit_never_crosses_seed_epoch": True,
+                    "seed_epoch_zero_uses_base_seed": True,
+                    "later_seed_epoch_derivation": "sha256_v1",
+                    "collision_free_within_complete_seed_epoch": True,
+                    "semantic_uniqueness_guaranteed_through_task_index": (
+                        self.seed_epoch_task_count - 1
+                    ),
+                    "cross_seed_epoch_semantic_uniqueness_guaranteed": False,
+                }
+                if self.mode == PROVIDER_MODE_RESEEDED_STREAM
+                else None
+            ),
             "seed_epoch_orbit_count": self.seed_epoch_orbit_count,
             "seed_epoch_task_count": self.seed_epoch_task_count,
         }
