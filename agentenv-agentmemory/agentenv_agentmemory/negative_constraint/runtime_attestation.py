@@ -35,7 +35,9 @@ def attest_negative_constraint_runtime_inputs(
     metadata = backend.metadata()
     upstream = metadata.get("upstream_provenance")
     observed_commit = (
-        str(upstream.get("commit") or "") if isinstance(upstream, dict) else ""
+        str(upstream.get("memoryarena_commit") or "")
+        if isinstance(upstream, dict)
+        else ""
     )
     if observed_commit != pool.memoryarena_commit:
         raise RuntimeError(

@@ -123,7 +123,9 @@ def certify_native_negative_constraint_product_pool(
         )
     upstream = metadata.get("upstream_provenance")
     observed_commit = (
-        str(upstream.get("commit") or "") if isinstance(upstream, Mapping) else ""
+        str(upstream.get("memoryarena_commit") or "")
+        if isinstance(upstream, Mapping)
+        else ""
     )
     if observed_commit != expected_memoryarena_commit:
         raise NegativeConstraintDataError(

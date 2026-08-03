@@ -356,7 +356,7 @@ class _FakeNegativeCertificationBackend:
                     for asin in sorted(self.records)
                 ]
             ),
-            "upstream_provenance": {"commit": "f" * 40},
+            "upstream_provenance": {"memoryarena_commit": "f" * 40},
         }
 
     def active_session_count(self) -> int:
