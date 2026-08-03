@@ -8,6 +8,7 @@ from .domains import (
     BROWSECOMP_BM25_INTEGRATION_SURFACE,
     BROWSECOMP_SURFACES,
     FORMAL_REASONING_SURFACES_BY_MODE,
+    SCIWORLD_SURFACES,
     TRAVEL_SURFACES,
     V3_SURFACES,
 )
@@ -98,6 +99,12 @@ def launch() -> None:
         default=8000,
     )
     parser.add_argument("--browsecomp-api-base-url")
+    parser.add_argument(
+        "--sciworld-backend",
+        choices=["fixture", "scienceworld"],
+        default="scienceworld",
+    )
+    parser.add_argument("--sciworld-task-count", type=int)
     parser.add_argument("--memory-first-add-reward", type=float)
     parser.add_argument("--memory-first-later-retrieve-reward", type=float)
     parser.add_argument("--memory-exact-repeat-reward", type=float, default=0.0)
@@ -284,6 +291,14 @@ def launch() -> None:
                 "OPENAI_BASE_URL": args.browsecomp_api_base_url,
             }
         )
+    elif args.surface in SCIWORLD_SURFACES.values():
+        configured.update({"AGENTMEMORY_SCIWORLD_BACKEND": args.sciworld_backend})
+        if args.sciworld_task_count is not None:
+            if args.sciworld_task_count < 1:
+                parser.error("--sciworld-task-count must be positive")
+            configured["AGENTMEMORY_SCIWORLD_TASK_COUNT"] = str(
+                args.sciworld_task_count
+            )
     else:  # pragma: no cover - argparse choices keep this unreachable.
         parser.error(f"unsupported AgentMemoryGym surface {args.surface!r}")
 

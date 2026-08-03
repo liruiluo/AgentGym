@@ -3,16 +3,24 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from ..runtime.domain import DomainContract, DomainTransition
 
 
 SCIWORLD_DOMAIN_ID = "sciworld"
 SCIWORLD_CONDUCTIVITY_SURFACE = "sciworld_conductivity_memory_v1"
+SCIWORLD_MELTINGPOINT_SURFACE = "sciworld_meltingpoint_memory_v1"
+SCIWORLD_FRICTION_SURFACE = "sciworld_friction_memory_v1"
+SCIWORLD_RULE_MEMORY_SURFACE = "sciworld_rule_memory_v1"
+SCIWORLD_SOP_MEMORY_SURFACE = "sciworld_sop_memory_v1"
 SCIWORLD_LAB_NOTEBOOK_LONGHORIZON_SURFACE = "sciworld_lab_notebook_longhorizon_v1"
 SCIWORLD_SURFACES = {
     "conductivity_memory": SCIWORLD_CONDUCTIVITY_SURFACE,
+    "meltingpoint_memory": SCIWORLD_MELTINGPOINT_SURFACE,
+    "friction_memory": SCIWORLD_FRICTION_SURFACE,
+    "rule_memory": SCIWORLD_RULE_MEMORY_SURFACE,
+    "sop_memory": SCIWORLD_SOP_MEMORY_SURFACE,
     "lab_notebook_longhorizon": SCIWORLD_LAB_NOTEBOOK_LONGHORIZON_SURFACE,
 }
 SCIWORLD_BACKENDS = ("fixture", "scienceworld")
@@ -25,9 +33,10 @@ _ANSWER_RE = re.compile(r"\AANSWER\s+(\{.*\})\Z", flags=re.DOTALL)
 class SciWorldSurfaceConfig:
     surface: str
     contract_id: str
+    memory_kind: str
     system_prompt: str
     max_steps: int
-    fixture_phase_count: int
+    native_task_family: str
 
 
 def _surface_configs() -> dict[str, SciWorldSurfaceConfig]:
@@ -44,17 +53,69 @@ def _surface_configs() -> dict[str, SciWorldSurfaceConfig]:
         SCIWORLD_CONDUCTIVITY_SURFACE: SciWorldSurfaceConfig(
             surface=SCIWORLD_CONDUCTIVITY_SURFACE,
             contract_id="sciworld_conductivity_memory_v1_20260803",
+            memory_kind="experimental_fact_and_object_property_binding",
             system_prompt=(
                 common
                 + " This surface focuses on remembering experimental conductivity "
                 "results for unknown materials and using them in later phases."
             ),
             max_steps=64,
-            fixture_phase_count=2,
+            native_task_family="test-conductivity-of-unknown-substances",
+        ),
+        SCIWORLD_MELTINGPOINT_SURFACE: SciWorldSurfaceConfig(
+            surface=SCIWORLD_MELTINGPOINT_SURFACE,
+            contract_id="sciworld_meltingpoint_memory_v1_20260803",
+            memory_kind="numeric_experimental_memory",
+            system_prompt=(
+                common
+                + " This surface focuses on remembering measured melting points "
+                "and using exact numeric thresholds later."
+            ),
+            max_steps=72,
+            native_task_family="measure-melting-point-unknown-substance",
+        ),
+        SCIWORLD_FRICTION_SURFACE: SciWorldSurfaceConfig(
+            surface=SCIWORLD_FRICTION_SURFACE,
+            contract_id="sciworld_friction_memory_v1_20260803",
+            memory_kind="comparative_experimental_memory",
+            system_prompt=(
+                common
+                + " This surface focuses on remembering comparative friction "
+                "measurements for unnamed surfaces and using the ranking later."
+            ),
+            max_steps=72,
+            native_task_family="inclined-plane-friction-unnamed-surfaces",
+        ),
+        SCIWORLD_RULE_MEMORY_SURFACE: SciWorldSurfaceConfig(
+            surface=SCIWORLD_RULE_MEMORY_SURFACE,
+            contract_id="sciworld_rule_memory_v1_20260803",
+            memory_kind="multi_experiment_fact_rule_induction",
+            system_prompt=(
+                common
+                + " This surface focuses on deriving a reusable scientific fact "
+                "or rule from multiple experiments. It is fact/rule memory, not "
+                "procedure memory."
+            ),
+            max_steps=96,
+            native_task_family="chemistry-mix-paint-secondary-and-tertiary-color",
+        ),
+        SCIWORLD_SOP_MEMORY_SURFACE: SciWorldSurfaceConfig(
+            surface=SCIWORLD_SOP_MEMORY_SURFACE,
+            contract_id="sciworld_sop_memory_v1_20260803",
+            memory_kind="procedural_sop_memory",
+            system_prompt=(
+                common
+                + " This surface focuses on remembering reusable lab procedure, "
+                "such as how to test conductivity, rather than remembering only "
+                "the measured fact."
+            ),
+            max_steps=96,
+            native_task_family="procedure-transfer-across-sciworld-tasks",
         ),
         SCIWORLD_LAB_NOTEBOOK_LONGHORIZON_SURFACE: SciWorldSurfaceConfig(
             surface=SCIWORLD_LAB_NOTEBOOK_LONGHORIZON_SURFACE,
             contract_id="sciworld_lab_notebook_longhorizon_v1_20260803",
+            memory_kind="self_managed_external_lab_notebook",
             system_prompt=(
                 common
                 + " This long-horizon surface is intended to exceed raw-context "
@@ -62,7 +123,7 @@ def _surface_configs() -> dict[str, SciWorldSurfaceConfig]:
                 "with ADD/UPDATE/RETRIEVE and policy-authored context control."
             ),
             max_steps=512,
-            fixture_phase_count=12,
+            native_task_family="multi-experiment-lab-notebook-chain",
         ),
     }
 
@@ -87,27 +148,239 @@ def contract_for_surface(surface: str) -> DomainContract:
 
 
 @dataclass(frozen=True)
+class SciWorldFixturePhase:
+    observation: str
+    experiment_keywords: tuple[str, ...]
+    experiment_result: str
+    answer_keywords: tuple[str, ...]
+    dependency: str
+
+
+@dataclass(frozen=True)
 class SciWorldFixtureTask:
     task_id: str
-    unknown_material: str
-    property_value: Literal["conductive", "nonconductive"]
-    distractor_material: str
+    phases: tuple[SciWorldFixturePhase, ...]
+
+    @property
+    def phase_count(self) -> int:
+        return len(self.phases)
 
 
-FIXTURE_TASKS = (
-    SciWorldFixtureTask(
-        task_id="conductivity_fixture_000",
-        unknown_material="unknown sample alpha",
-        property_value="conductive",
-        distractor_material="rubber strip beta",
-    ),
-    SciWorldFixtureTask(
-        task_id="conductivity_fixture_001",
-        unknown_material="unknown sample gamma",
-        property_value="nonconductive",
-        distractor_material="copper wire delta",
-    ),
-)
+def _fixture_tasks_for_surface(surface: str) -> tuple[SciWorldFixtureTask, ...]:
+    if surface == SCIWORLD_CONDUCTIVITY_SURFACE:
+        return (
+            SciWorldFixtureTask(
+                task_id="conductivity_fixture_000",
+                phases=(
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Conductivity source phase. The lab has unknown sample "
+                            "alpha. Determine whether it conducts electricity."
+                        ),
+                        experiment_keywords=("conduct",),
+                        experiment_result=(
+                            "You build a simple circuit. Result: unknown sample "
+                            "alpha is conductive. The lab result is visible now "
+                            "but is not repeated after the phase changes."
+                        ),
+                        answer_keywords=("conductive",),
+                        dependency="measure_conductivity",
+                    ),
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Conductivity dependent phase. Build a working circuit "
+                            "using one material. Candidate materials: unknown sample "
+                            "alpha; rubber strip beta. The prior lab result is not "
+                            "repeated in this observation."
+                        ),
+                        experiment_keywords=("conduct", "alpha"),
+                        experiment_result=(
+                            "A fresh circuit test shows unknown sample alpha conducts."
+                        ),
+                        answer_keywords=("unknown sample alpha",),
+                        dependency="use_prior_conductivity_result",
+                    ),
+                ),
+            ),
+        )
+    if surface == SCIWORLD_MELTINGPOINT_SURFACE:
+        return (
+            SciWorldFixtureTask(
+                task_id="meltingpoint_fixture_000",
+                phases=(
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Melting-point source phase. The lab has unknown crystal "
+                            "mira. Measure its melting point."
+                        ),
+                        experiment_keywords=("melt",),
+                        experiment_result=(
+                            "You heat the sample slowly. Result: unknown crystal "
+                            "mira melts at 70 celsius."
+                        ),
+                        answer_keywords=("70",),
+                        dependency="measure_numeric_melting_point",
+                    ),
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Melting-point dependent phase. Choose the material that "
+                            "will melt below 80 celsius. Candidates: unknown crystal "
+                            "mira; ceramic bead nora. The previous measurement is not "
+                            "shown again."
+                        ),
+                        experiment_keywords=("melt", "mira"),
+                        experiment_result="A fresh measurement shows mira melts at 70 celsius.",
+                        answer_keywords=("mira",),
+                        dependency="use_numeric_threshold_memory",
+                    ),
+                ),
+            ),
+        )
+    if surface == SCIWORLD_FRICTION_SURFACE:
+        return (
+            SciWorldFixtureTask(
+                task_id="friction_fixture_000",
+                phases=(
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Friction source phase. Two unnamed surfaces, slate A "
+                            "and glass B, are available. Measure which has greater "
+                            "friction on the inclined plane."
+                        ),
+                        experiment_keywords=("friction",),
+                        experiment_result=(
+                            "The cart rolls less far on slate A. Result: slate A has "
+                            "higher friction than glass B."
+                        ),
+                        answer_keywords=("slate", "higher"),
+                        dependency="measure_relative_friction",
+                    ),
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Friction dependent phase. Choose a surface to slow a cart. "
+                            "Candidates: slate A; glass B. The earlier ranking is not "
+                            "shown again."
+                        ),
+                        experiment_keywords=("friction", "slate"),
+                        experiment_result="A fresh test again shows slate A has higher friction.",
+                        answer_keywords=("slate",),
+                        dependency="use_prior_friction_ranking",
+                    ),
+                ),
+            ),
+        )
+    if surface == SCIWORLD_RULE_MEMORY_SURFACE:
+        return (
+            SciWorldFixtureTask(
+                task_id="rule_fixture_000",
+                phases=(
+                    SciWorldFixturePhase(
+                        observation="Rule source phase 1. Mix red paint with yellow paint.",
+                        experiment_keywords=("red", "yellow"),
+                        experiment_result="The mixture becomes orange.",
+                        answer_keywords=("orange",),
+                        dependency="observe_color_rule_part_1",
+                    ),
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Rule source phase 2. Mix orange paint with yellow paint. "
+                            "The previous red/yellow result is not repeated."
+                        ),
+                        experiment_keywords=("orange", "yellow"),
+                        experiment_result="The mixture becomes amber.",
+                        answer_keywords=("amber",),
+                        dependency="observe_color_rule_part_2",
+                    ),
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Rule dependent phase. A later task needs amber paint, "
+                            "starting only from the available primary paints red and "
+                            "yellow. State the two-step mixing plan. Prior experiments "
+                            "are not repeated."
+                        ),
+                        experiment_keywords=("amber",),
+                        experiment_result=(
+                            "If you rerun the experiment, orange plus yellow makes amber."
+                        ),
+                        answer_keywords=("red", "yellow", "orange"),
+                        dependency="use_induced_color_rule",
+                    ),
+                ),
+            ),
+        )
+    if surface == SCIWORLD_SOP_MEMORY_SURFACE:
+        return (
+            SciWorldFixtureTask(
+                task_id="sop_fixture_000",
+                phases=(
+                    SciWorldFixturePhase(
+                        observation=(
+                            "SOP source phase. Learn the procedure for testing whether "
+                            "a material conducts electricity."
+                        ),
+                        experiment_keywords=("assemble", "circuit"),
+                        experiment_result=(
+                            "Procedure result: connect battery, wire, bulb, and the "
+                            "sample in one circuit; a lit bulb means the sample conducts."
+                        ),
+                        answer_keywords=("battery", "bulb", "sample"),
+                        dependency="learn_conductivity_test_procedure",
+                    ),
+                    SciWorldFixturePhase(
+                        observation=(
+                            "SOP dependent phase. A new unknown material must be tested, "
+                            "but the lab manual is not shown again. State the procedure "
+                            "you should perform."
+                        ),
+                        experiment_keywords=("assemble", "circuit"),
+                        experiment_result=(
+                            "Rebuilding the procedure: battery, wire, bulb, sample; "
+                            "observe whether the bulb lights."
+                        ),
+                        answer_keywords=("battery", "bulb", "sample"),
+                        dependency="reuse_procedure_not_fact",
+                    ),
+                ),
+            ),
+        )
+    if surface == SCIWORLD_LAB_NOTEBOOK_LONGHORIZON_SURFACE:
+        colors = (
+            ("station 1", "blue"),
+            ("station 2", "green"),
+            ("station 3", "orange"),
+            ("station 4", "silver"),
+            ("station 5", "violet"),
+            ("station 6", "black"),
+        )
+        phases = []
+        for station, color in colors:
+            phases.append(
+                SciWorldFixturePhase(
+                    observation=(
+                        f"Long-horizon notebook phase. Inspect {station} and record "
+                        "its sealed indicator color for later. Earlier station "
+                        "readings are not repeated."
+                    ),
+                    experiment_keywords=("inspect", station.split()[1]),
+                    experiment_result=f"{station} indicator color is {color}.",
+                    answer_keywords=(color,),
+                    dependency="record_lab_notebook_entry",
+                )
+            )
+        phases.append(
+            SciWorldFixturePhase(
+                observation=(
+                    "Long-horizon final phase. Which station had the violet indicator? "
+                    "The station readings are not repeated; use your own notebook/memory."
+                ),
+                experiment_keywords=("inspect", "5"),
+                experiment_result="A fresh inspection shows station 5 is violet.",
+                answer_keywords=("station 5",),
+                dependency="retrieve_external_lab_notebook_entry",
+            )
+        )
+        return (SciWorldFixtureTask(task_id="longhorizon_fixture_000", phases=tuple(phases)),)
+    raise ValueError(f"unsupported SciWorld fixture surface: {surface!r}")
 
 
 class SciWorldMemoryFactory:
@@ -131,8 +404,9 @@ class SciWorldMemoryFactory:
         self.surface = surface
         self.backend = backend
         self.contract = contract_for_surface(surface)
+        self.fixture_tasks = _fixture_tasks_for_surface(surface)
         self._task_count = task_count or (
-            len(FIXTURE_TASKS)
+            len(self.fixture_tasks)
             if backend == "fixture"
             else _scienceworld_task_count_hint(surface)
         )
@@ -147,7 +421,7 @@ class SciWorldMemoryFactory:
                 env_uid=env_uid,
                 surface=self.surface,
                 contract=self.contract,
-                phase_count=SCIWORLD_SURFACE_CONFIGS[self.surface].fixture_phase_count,
+                fixture_tasks=self.fixture_tasks,
             )
         return ScienceWorldNativeDriver(
             env_uid=env_uid,
@@ -156,10 +430,13 @@ class SciWorldMemoryFactory:
         )
 
     def metadata(self) -> dict[str, Any]:
+        config = SCIWORLD_SURFACE_CONFIGS[self.surface]
         return {
             "source": "allenai/ScienceWorld",
             "domain_family": "scientific_experiment_lab",
             "backend": self.backend,
+            "memory_kind": config.memory_kind,
+            "native_task_family": config.native_task_family,
             "memory_management": "policy_managed_external_notebook",
             "history_policy": "no_harness_recent_n_no_environment_summary",
             "harness_summarizes_history": False,
@@ -178,23 +455,21 @@ class SciWorldFixtureDriver:
         env_uid: str,
         surface: str,
         contract: DomainContract,
-        phase_count: int,
+        fixture_tasks: tuple[SciWorldFixtureTask, ...],
     ) -> None:
         self.env_uid = env_uid
         self.surface = surface
         self.contract = contract
-        self.phase_count = phase_count
+        self.fixture_tasks = fixture_tasks
+        self.task = fixture_tasks[0]
         self.phase_index = 0
-        self.task = FIXTURE_TASKS[0]
         self.closed = False
-        self.tested = False
 
     def reset(self, data_idx: int) -> DomainTransition:
-        self.task = FIXTURE_TASKS[int(data_idx) % len(FIXTURE_TASKS)]
+        self.task = self.fixture_tasks[int(data_idx) % len(self.fixture_tasks)]
         self.phase_index = 0
         self.closed = False
-        self.tested = False
-        return self._transition(self._source_observation(), status="active")
+        return self._transition(self._active_phase().observation, status="active")
 
     def step(self, action: str, env_step: int) -> DomainTransition:
         if self.closed:
@@ -213,45 +488,24 @@ class SciWorldFixtureDriver:
     def close(self) -> None:
         self.closed = True
 
+    def _active_phase(self) -> SciWorldFixturePhase:
+        return self.task.phases[min(self.phase_index, self.task.phase_count - 1)]
+
     def _step_sci_action(
         self,
         payload: dict[str, Any],
         env_step: int,
         raw_action: str,
     ) -> DomainTransition:
+        del raw_action
         command = _require_payload_text(payload, "action")
         lowered = command.lower()
-        if self.phase_index == 0 and "conduct" in lowered:
-            self.tested = True
-            observation = (
-                "You build a simple circuit with the unknown material. "
-                f"Result: {self.task.unknown_material} is {self.task.property_value}. "
-                "The lab result is visible now, but it will not be automatically "
-                "shown after the phase changes."
-            )
-            return self._transition(
-                observation,
-                action_execution={
-                    "op": "SCI_ACTION",
-                    "status": "executed",
-                    "step": env_step,
-                    "command": command,
-                },
-                tool_ops=(
-                    {
-                        "op": "SCI_ACTION",
-                        "step": env_step,
-                        "command": command,
-                    },
-                ),
-                domain_evidence={
-                    "task_id": self.task.task_id,
-                    "experiment_observed": True,
-                },
-            )
+        phase = self._active_phase()
+        matches = all(keyword.lower() in lowered for keyword in phase.experiment_keywords)
         observation = (
-            "The lab action executes, but it does not resolve the current memory-"
-            "dependent question."
+            phase.experiment_result
+            if matches
+            else "The lab action executes, but it does not resolve the current memory-dependent question."
         )
         return self._transition(
             observation,
@@ -260,14 +514,21 @@ class SciWorldFixtureDriver:
                 "status": "executed",
                 "step": env_step,
                 "command": command,
+                "experiment_matched": matches,
             },
             tool_ops=(
                 {
                     "op": "SCI_ACTION",
                     "step": env_step,
                     "command": command,
+                    "experiment_matched": matches,
                 },
             ),
+            domain_evidence={
+                "task_id": self.task.task_id,
+                "dependency": phase.dependency,
+                "experiment_observed": matches,
+            },
         )
 
     def _step_answer(
@@ -277,22 +538,24 @@ class SciWorldFixtureDriver:
         raw_action: str,
     ) -> DomainTransition:
         answer = _require_payload_text(payload, "answer").lower()
-        if self.phase_index == 0:
-            correct = self.task.property_value in answer
-            if not correct:
-                return self._terminal_failure(env_step, raw_action, answer)
-            self.phase_index = 1
-            self.tested = False
+        phase = self._active_phase()
+        correct = all(keyword.lower() in answer for keyword in phase.answer_keywords)
+        if not correct:
+            return self._terminal_failure(env_step, raw_action, answer)
+        final_phase = self.phase_index >= self.task.phase_count - 1
+        if final_phase:
+            self.phase_index = self.task.phase_count
             return self._transition(
-                self._dependent_observation(),
+                "SciWorld memory task complete.",
                 reward=1.0,
-                status="active",
+                done=True,
+                status="success",
+                episode_success=True,
                 action_execution={
                     "op": "ANSWER",
                     "status": "correct",
                     "step": env_step,
                     "answer": answer,
-                    "phase_advanced": True,
                 },
                 tool_ops=(
                     {
@@ -304,7 +567,7 @@ class SciWorldFixtureDriver:
                 ),
                 reward_components=(
                     {
-                        "name": "sciworld_phase_answer_correct",
+                        "name": "sciworld_final_answer_correct",
                         "value": 1.0,
                         "op": "ANSWER",
                         "step": env_step,
@@ -312,26 +575,21 @@ class SciWorldFixtureDriver:
                 ),
                 domain_evidence={
                     "task_id": self.task.task_id,
-                    "hidden_property": self.task.property_value,
-                    "phase_advanced": True,
+                    "dependency": phase.dependency,
                 },
             )
-        target = self.task.unknown_material if self.task.property_value == "conductive" else self.task.distractor_material
-        correct = target.lower() in answer
-        if not correct:
-            return self._terminal_failure(env_step, raw_action, answer)
-        self.phase_index = self.phase_count
+        self.phase_index += 1
+        next_phase = self._active_phase()
         return self._transition(
-            "The final circuit works. Episode complete.",
+            next_phase.observation,
             reward=1.0,
-            done=True,
-            status="success",
-            episode_success=True,
+            status="active",
             action_execution={
                 "op": "ANSWER",
                 "status": "correct",
                 "step": env_step,
                 "answer": answer,
+                "phase_advanced": True,
             },
             tool_ops=(
                 {
@@ -343,7 +601,7 @@ class SciWorldFixtureDriver:
             ),
             reward_components=(
                 {
-                    "name": "sciworld_final_answer_correct",
+                    "name": "sciworld_phase_answer_correct",
                     "value": 1.0,
                     "op": "ANSWER",
                     "step": env_step,
@@ -351,17 +609,12 @@ class SciWorldFixtureDriver:
             ),
             domain_evidence={
                 "task_id": self.task.task_id,
-                "target_material": target,
-                "memory_dependency": "prior_conductivity_result",
+                "dependency": phase.dependency,
+                "phase_advanced": True,
             },
         )
 
-    def _invalid(
-        self,
-        env_step: int,
-        raw_action: str,
-        reason: str,
-    ) -> DomainTransition:
+    def _invalid(self, env_step: int, raw_action: str, reason: str) -> DomainTransition:
         return self._transition(
             f"Invalid SciWorld action: {reason}.",
             reward=-0.01,
@@ -408,24 +661,6 @@ class SciWorldFixtureDriver:
             domain_evidence={"task_id": self.task.task_id},
         )
 
-    def _source_observation(self) -> str:
-        return (
-            "SciWorld conductivity source phase. You are in a lab with "
-            f"{self.task.unknown_material}. Determine whether it conducts "
-            "electricity. Native lab action example: "
-            'SCI_ACTION {"action": "test conductivity of the unknown sample"}. '
-            "When ready, submit ANSWER with the observed property."
-        )
-
-    def _dependent_observation(self) -> str:
-        return (
-            "SciWorld dependent phase. Build a working circuit using one material. "
-            f"Candidate materials: {self.task.unknown_material}; "
-            f"{self.task.distractor_material}. The prior lab result is not repeated "
-            "in this observation. Use your own stored memory if you made one, or run "
-            "a visible experiment before answering."
-        )
-
     def _transition(
         self,
         observation: str,
@@ -443,6 +678,7 @@ class SciWorldFixtureDriver:
             "task_id": self.task.task_id,
             "surface": self.surface,
             "backend": "fixture",
+            "memory_kind": SCIWORLD_SURFACE_CONFIGS[self.surface].memory_kind,
             "history_policy": "no_harness_recent_n_no_environment_summary",
         }
         if domain_evidence:
@@ -450,14 +686,14 @@ class SciWorldFixtureDriver:
         return DomainTransition(
             observation=(
                 f"SciWorld task {self.task.task_id}. Phase "
-                f"{min(self.phase_index, self.phase_count)}/{self.phase_count}. "
+                f"{min(self.phase_index, self.task.phase_count)}/{self.task.phase_count}. "
                 + observation
             ),
             reward=reward,
             done=done,
             status=status,
-            phase_index=min(self.phase_index, self.phase_count),
-            phase_count=self.phase_count,
+            phase_index=min(self.phase_index, self.task.phase_count),
+            phase_count=self.task.phase_count,
             episode_success=episode_success,
             action_execution=action_execution or {},
             tool_ops=tool_ops,
@@ -560,7 +796,9 @@ class ScienceWorldNativeDriver:
                     "step": env_step,
                 },
             ),
-            domain_evidence={"scienceworld_info": dict(info) if isinstance(info, dict) else {}},
+            domain_evidence={
+                "scienceworld_info": dict(info) if isinstance(info, dict) else {}
+            },
         )
 
     def close(self) -> None:
@@ -572,6 +810,7 @@ class ScienceWorldNativeDriver:
         evidence = {
             "surface": self.surface,
             "backend": "scienceworld",
+            "memory_kind": SCIWORLD_SURFACE_CONFIGS[self.surface].memory_kind,
             "task_name": self.task_name,
             "variation_idx": self.variation_idx,
             "history_policy": "no_harness_recent_n_no_environment_summary",

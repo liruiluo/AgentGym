@@ -24,8 +24,7 @@ V3_SURFACES = (
     BROWSECOMP_SURFACES["paper_eval"],
     BROWSECOMP_SURFACES["failfast"],
     BROWSECOMP_BM25_INTEGRATION_SURFACE,
-    SCIWORLD_SURFACES["conductivity_memory"],
-    SCIWORLD_SURFACES["lab_notebook_longhorizon"],
+    *SCIWORLD_SURFACES.values(),
 )
 
 __all__ = [
