@@ -151,8 +151,14 @@ PROCEDURAL_WEBSHOP_SURFACE = (
 LATENT_PREFERENCE_WEBSHOP_SURFACE = (
     "agentmemory_webshop_latent_preference_train_v1"
 )
+RECENCY_OVERRIDE_WEBSHOP_SURFACE = (
+    "agentmemory_webshop_recency_override_train_v1"
+)
+PREFERENCE_WEBSHOP_SURFACES = frozenset(
+    {LATENT_PREFERENCE_WEBSHOP_SURFACE, RECENCY_OVERRIDE_WEBSHOP_SURFACE}
+)
 PROGRAMMATIC_WEBSHOP_SURFACES = frozenset(
-    {PROCEDURAL_WEBSHOP_SURFACE, LATENT_PREFERENCE_WEBSHOP_SURFACE}
+    {PROCEDURAL_WEBSHOP_SURFACE, *PREFERENCE_WEBSHOP_SURFACES}
 )
 LATENT_PREFERENCE_PROMPT_MODE = "latent_preference_sop"
 MEMORY_PROMPT_MODES = (
@@ -382,6 +388,42 @@ def _validate_latent_preference_metadata(metadata: Mapping[str, Any]) -> None:
     if mismatches:
         raise RuntimeError(
             "Latent-preference AgentMemoryGym provider metadata is inconsistent: "
+            + ", ".join(mismatches)
+        )
+
+
+def _validate_recency_override_metadata(metadata: Mapping[str, Any]) -> None:
+    provider = _validate_programmatic_metadata(
+        metadata,
+        provider_schema="agentmemory_verified_recency_override_provider_v1",
+    )
+    expected = {
+        "phase_schedule": [
+            "evidence",
+            "application",
+            "override",
+            "application",
+            "application",
+            "application",
+        ],
+        "override_phase_index": 2,
+        "canonical_memory_key": "user_preference",
+        "counterfactual_pairing": True,
+        "stay_branch": "old preference remains active",
+        "flip_branch": "new preference replaces old canonical state",
+        "update_contract": "UPDATE same memory_id or DELETE old then ADD new",
+        "application_observation_identity": True,
+        "application_target_flip": True,
+        "purchase_receipt_asin_verification": True,
+    }
+    mismatches = [
+        key
+        for key, expected_value in expected.items()
+        if provider.get(key) != expected_value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "Recency-override AgentMemoryGym provider metadata is inconsistent: "
             + ", ".join(mismatches)
         )
 
@@ -686,6 +728,10 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self.is_latent_preference = (
             self.surface == LATENT_PREFERENCE_WEBSHOP_SURFACE
         )
+        self.is_recency_override = (
+            self.surface == RECENCY_OVERRIDE_WEBSHOP_SURFACE
+        )
+        self.is_preference_memory = self.surface in PREFERENCE_WEBSHOP_SURFACES
         if self.is_v3:
             _validate_v3_metadata(self.metadata)
             if self.action_format is not ActionFormat.REACT:
@@ -695,6 +741,8 @@ class AgentMemoryEnvClient(BaseEnvClient):
         elif self.is_procedural:
             if self.is_latent_preference:
                 _validate_latent_preference_metadata(self.metadata)
+            elif self.is_recency_override:
+                _validate_recency_override_metadata(self.metadata)
             else:
                 _validate_procedural_metadata(self.metadata)
             memory_prompt_mode = self.metadata.get("memory_prompt_mode", "legacy")
@@ -703,15 +751,15 @@ class AgentMemoryEnvClient(BaseEnvClient):
                     "AgentMemoryGym procedural metadata has unsupported "
                     f"memory_prompt_mode: {memory_prompt_mode!r}"
                 )
-            if self.is_latent_preference and (
+            if self.is_preference_memory and (
                 memory_prompt_mode != LATENT_PREFERENCE_PROMPT_MODE
             ):
                 raise RuntimeError(
-                    "AgentMemoryGym latent-preference surface requires "
+                    "AgentMemoryGym preference-memory surface requires "
                     f"memory_prompt_mode={LATENT_PREFERENCE_PROMPT_MODE!r}"
                 )
             if (
-                not self.is_latent_preference
+                not self.is_preference_memory
                 and memory_prompt_mode == LATENT_PREFERENCE_PROMPT_MODE
             ):
                 raise RuntimeError(
