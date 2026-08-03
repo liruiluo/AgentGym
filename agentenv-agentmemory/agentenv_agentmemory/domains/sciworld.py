@@ -14,6 +14,12 @@ SCIWORLD_MELTINGPOINT_SURFACE = "sciworld_meltingpoint_memory_v1"
 SCIWORLD_FRICTION_SURFACE = "sciworld_friction_memory_v1"
 SCIWORLD_RULE_MEMORY_SURFACE = "sciworld_rule_memory_v1"
 SCIWORLD_SOP_MEMORY_SURFACE = "sciworld_sop_memory_v1"
+SCIWORLD_NEGATIVE_EVIDENCE_SURFACE = "sciworld_negative_evidence_memory_v1"
+SCIWORLD_HYPOTHESIS_TRACKING_SURFACE = "sciworld_hypothesis_tracking_memory_v1"
+SCIWORLD_CALIBRATION_SURFACE = "sciworld_calibration_memory_v1"
+SCIWORLD_CONTEXTUAL_RULE_SURFACE = "sciworld_contextual_rule_memory_v1"
+SCIWORLD_STATE_CHANGE_SURFACE = "sciworld_state_change_memory_v1"
+SCIWORLD_GOAL_PROGRESS_SURFACE = "sciworld_goal_progress_memory_v1"
 SCIWORLD_LAB_NOTEBOOK_LONGHORIZON_SURFACE = "sciworld_lab_notebook_longhorizon_v1"
 SCIWORLD_SURFACES = {
     "conductivity_memory": SCIWORLD_CONDUCTIVITY_SURFACE,
@@ -21,6 +27,12 @@ SCIWORLD_SURFACES = {
     "friction_memory": SCIWORLD_FRICTION_SURFACE,
     "rule_memory": SCIWORLD_RULE_MEMORY_SURFACE,
     "sop_memory": SCIWORLD_SOP_MEMORY_SURFACE,
+    "negative_evidence_memory": SCIWORLD_NEGATIVE_EVIDENCE_SURFACE,
+    "hypothesis_tracking_memory": SCIWORLD_HYPOTHESIS_TRACKING_SURFACE,
+    "calibration_memory": SCIWORLD_CALIBRATION_SURFACE,
+    "contextual_rule_memory": SCIWORLD_CONTEXTUAL_RULE_SURFACE,
+    "state_change_memory": SCIWORLD_STATE_CHANGE_SURFACE,
+    "goal_progress_memory": SCIWORLD_GOAL_PROGRESS_SURFACE,
     "lab_notebook_longhorizon": SCIWORLD_LAB_NOTEBOOK_LONGHORIZON_SURFACE,
 }
 SCIWORLD_BACKENDS = ("fixture", "scienceworld")
@@ -111,6 +123,81 @@ def _surface_configs() -> dict[str, SciWorldSurfaceConfig]:
             ),
             max_steps=96,
             native_task_family="procedure-transfer-across-sciworld-tasks",
+        ),
+        SCIWORLD_NEGATIVE_EVIDENCE_SURFACE: SciWorldSurfaceConfig(
+            surface=SCIWORLD_NEGATIVE_EVIDENCE_SURFACE,
+            contract_id="sciworld_negative_evidence_memory_v1_20260803",
+            memory_kind="negative_experimental_evidence",
+            system_prompt=(
+                common
+                + " This surface focuses on remembering failed/null experiment "
+                "results and using them to exclude a candidate later, rather "
+                "than repeating the same dead-end."
+            ),
+            max_steps=96,
+            native_task_family="negative-evidence-and-elimination",
+        ),
+        SCIWORLD_HYPOTHESIS_TRACKING_SURFACE: SciWorldSurfaceConfig(
+            surface=SCIWORLD_HYPOTHESIS_TRACKING_SURFACE,
+            contract_id="sciworld_hypothesis_tracking_memory_v1_20260803",
+            memory_kind="hypothesis_and_evidence_tracking",
+            system_prompt=(
+                common
+                + " This surface focuses on tracking competing hypotheses and "
+                "which experiment supported or ruled out each hypothesis."
+            ),
+            max_steps=128,
+            native_task_family="multi-experiment-hypothesis-tracking",
+        ),
+        SCIWORLD_CALIBRATION_SURFACE: SciWorldSurfaceConfig(
+            surface=SCIWORLD_CALIBRATION_SURFACE,
+            contract_id="sciworld_calibration_memory_v1_20260803",
+            memory_kind="instrument_calibration_memory",
+            system_prompt=(
+                common
+                + " This surface focuses on remembering an instrument calibration "
+                "or measurement offset and applying it to later observations."
+            ),
+            max_steps=96,
+            native_task_family="instrument-calibration-and-corrected-measurement",
+        ),
+        SCIWORLD_CONTEXTUAL_RULE_SURFACE: SciWorldSurfaceConfig(
+            surface=SCIWORLD_CONTEXTUAL_RULE_SURFACE,
+            contract_id="sciworld_contextual_rule_memory_v1_20260803",
+            memory_kind="conditioned_scientific_rule_memory",
+            system_prompt=(
+                common
+                + " This surface focuses on remembering that a scientific rule is "
+                "conditional on the experimental context, not universally true."
+            ),
+            max_steps=128,
+            native_task_family="context-dependent-scientific-rule",
+        ),
+        SCIWORLD_STATE_CHANGE_SURFACE: SciWorldSurfaceConfig(
+            surface=SCIWORLD_STATE_CHANGE_SURFACE,
+            contract_id="sciworld_state_change_memory_v1_20260803",
+            memory_kind="memory_revision_after_new_evidence",
+            system_prompt=(
+                common
+                + " This surface focuses on updating or replacing an earlier lab "
+                "note when a later experiment shows that the old state is no "
+                "longer the right one to use."
+            ),
+            max_steps=128,
+            native_task_family="state-change-and-memory-revision",
+        ),
+        SCIWORLD_GOAL_PROGRESS_SURFACE: SciWorldSurfaceConfig(
+            surface=SCIWORLD_GOAL_PROGRESS_SURFACE,
+            contract_id="sciworld_goal_progress_memory_v1_20260803",
+            memory_kind="unfinished_goal_progress_memory",
+            system_prompt=(
+                common
+                + " This surface focuses on remembering unfinished experiment "
+                "progress, completed subgoals, and the next step after a phase "
+                "boundary."
+            ),
+            max_steps=128,
+            native_task_family="multi-step-goal-progress-tracking",
         ),
         SCIWORLD_LAB_NOTEBOOK_LONGHORIZON_SURFACE: SciWorldSurfaceConfig(
             surface=SCIWORLD_LAB_NOTEBOOK_LONGHORIZON_SURFACE,
@@ -339,6 +426,250 @@ def _fixture_tasks_for_surface(surface: str) -> tuple[SciWorldFixtureTask, ...]:
                         ),
                         answer_keywords=("battery", "bulb", "sample"),
                         dependency="reuse_procedure_not_fact",
+                    ),
+                ),
+            ),
+        )
+    if surface == SCIWORLD_NEGATIVE_EVIDENCE_SURFACE:
+        return (
+            SciWorldFixtureTask(
+                task_id="negative_evidence_fixture_000",
+                phases=(
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Negative-evidence source phase. Test whether powder "
+                            "zeta fizzes when vinegar is added."
+                        ),
+                        experiment_keywords=("vinegar", "zeta"),
+                        experiment_result=(
+                            "You add vinegar to powder zeta. Result: powder zeta "
+                            "does not fizz with vinegar."
+                        ),
+                        answer_keywords=("does not fizz",),
+                        dependency="observe_null_reaction",
+                    ),
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Negative-evidence dependent phase. Exactly one candidate "
+                            "should fizz with vinegar. Candidates: powder zeta; powder "
+                            "eta. The earlier failed test is not repeated."
+                        ),
+                        experiment_keywords=("vinegar", "eta"),
+                        experiment_result="A fresh test shows powder eta fizzes with vinegar.",
+                        answer_keywords=("powder eta",),
+                        dependency="exclude_candidate_from_negative_evidence",
+                    ),
+                ),
+            ),
+        )
+    if surface == SCIWORLD_HYPOTHESIS_TRACKING_SURFACE:
+        return (
+            SciWorldFixtureTask(
+                task_id="hypothesis_tracking_fixture_000",
+                phases=(
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Hypothesis source phase 1. A sprout leans after the lamp "
+                            "is moved to the east side. Record which hypothesis this "
+                            "supports."
+                        ),
+                        experiment_keywords=("lamp", "east"),
+                        experiment_result=(
+                            "The sprout bends east toward the lamp. Evidence supports "
+                            "the light-direction hypothesis."
+                        ),
+                        answer_keywords=("light",),
+                        dependency="support_first_hypothesis",
+                    ),
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Hypothesis source phase 2. Keep the lamp fixed but swap "
+                            "the soil tray color. Record whether the color hypothesis "
+                            "is supported."
+                        ),
+                        experiment_keywords=("soil", "color"),
+                        experiment_result=(
+                            "The sprout direction does not change when only soil color "
+                            "changes. Evidence rules out the soil-color hypothesis."
+                        ),
+                        answer_keywords=("rules out", "soil"),
+                        dependency="rule_out_competing_hypothesis",
+                    ),
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Hypothesis dependent phase. Choose the supported cause of "
+                            "the sprout direction. Prior evidence is not repeated."
+                        ),
+                        experiment_keywords=("lamp", "soil"),
+                        experiment_result=(
+                            "Rerunning the paired tests again supports light direction "
+                            "and rules out soil color."
+                        ),
+                        answer_keywords=("light direction",),
+                        dependency="retrieve_supported_hypothesis",
+                    ),
+                ),
+            ),
+        )
+    if surface == SCIWORLD_CALIBRATION_SURFACE:
+        return (
+            SciWorldFixtureTask(
+                task_id="calibration_fixture_000",
+                phases=(
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Calibration source phase. Compare thermometer T with a "
+                            "reference bath known to be 50 celsius."
+                        ),
+                        experiment_keywords=("thermometer", "reference"),
+                        experiment_result=(
+                            "Thermometer T reads 55 celsius in the 50 celsius bath. "
+                            "Result: thermometer T reads 5 celsius high."
+                        ),
+                        answer_keywords=("5", "high"),
+                        dependency="measure_instrument_offset",
+                    ),
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Calibration dependent phase. Thermometer T now reads 75 "
+                            "celsius for sample mira. Report the corrected temperature. "
+                            "The calibration result is not repeated."
+                        ),
+                        experiment_keywords=("thermometer", "mira"),
+                        experiment_result=(
+                            "The raw thermometer reading is 75 celsius; applying the "
+                            "stored offset gives 70 celsius."
+                        ),
+                        answer_keywords=("70",),
+                        dependency="apply_calibration_memory",
+                    ),
+                ),
+            ),
+        )
+    if surface == SCIWORLD_CONTEXTUAL_RULE_SURFACE:
+        return (
+            SciWorldFixtureTask(
+                task_id="contextual_rule_fixture_000",
+                phases=(
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Contextual-rule source phase. Compare how sugar dissolves "
+                            "in cold water and hot water."
+                        ),
+                        experiment_keywords=("sugar", "water"),
+                        experiment_result=(
+                            "Sugar dissolves slowly in cold water but quickly in hot "
+                            "water. The speed rule depends on water temperature."
+                        ),
+                        answer_keywords=("hot", "quickly"),
+                        dependency="observe_conditioned_rule",
+                    ),
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Contextual-rule dependent phase. You need sugar to dissolve "
+                            "quickly. Choose the context to use. Prior experiments are "
+                            "not repeated."
+                        ),
+                        experiment_keywords=("sugar", "quickly"),
+                        experiment_result=(
+                            "Repeating the experiment shows hot water is the fast "
+                            "dissolving context."
+                        ),
+                        answer_keywords=("hot water",),
+                        dependency="apply_conditioned_rule",
+                    ),
+                ),
+            ),
+        )
+    if surface == SCIWORLD_STATE_CHANGE_SURFACE:
+        return (
+            SciWorldFixtureTask(
+                task_id="state_change_fixture_000",
+                phases=(
+                    SciWorldFixturePhase(
+                        observation=(
+                            "State-change source phase. A quick indicator strip is used "
+                            "on solution riva."
+                        ),
+                        experiment_keywords=("indicator", "riva"),
+                        experiment_result=(
+                            "The quick strip suggests solution riva is acidic. This is "
+                            "a preliminary result."
+                        ),
+                        answer_keywords=("acidic",),
+                        dependency="record_preliminary_state",
+                    ),
+                    SciWorldFixturePhase(
+                        observation=(
+                            "State-change revision phase. A calibrated pH meter is now "
+                            "used on solution riva."
+                        ),
+                        experiment_keywords=("meter", "riva"),
+                        experiment_result=(
+                            "The calibrated pH meter shows solution riva is neutral. "
+                            "This supersedes the preliminary strip result."
+                        ),
+                        answer_keywords=("neutral",),
+                        dependency="revise_state_after_new_evidence",
+                    ),
+                    SciWorldFixturePhase(
+                        observation=(
+                            "State-change dependent phase. Classify solution riva using "
+                            "the latest reliable evidence. Prior measurements are not "
+                            "repeated."
+                        ),
+                        experiment_keywords=("classify", "riva"),
+                        experiment_result=(
+                            "The latest reliable evidence is the calibrated pH meter: "
+                            "riva is neutral."
+                        ),
+                        answer_keywords=("neutral",),
+                        dependency="use_revised_state",
+                    ),
+                ),
+            ),
+        )
+    if surface == SCIWORLD_GOAL_PROGRESS_SURFACE:
+        return (
+            SciWorldFixtureTask(
+                task_id="goal_progress_fixture_000",
+                phases=(
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Goal-progress phase 1. The experiment plan has three "
+                            "subgoals: collect sample, heat sample, then record color. "
+                            "Complete the collection subgoal."
+                        ),
+                        experiment_keywords=("collect", "sample"),
+                        experiment_result=(
+                            "Subgoal complete: sample collected. Remaining subgoals: "
+                            "heat sample, then record color."
+                        ),
+                        answer_keywords=("sample collected",),
+                        dependency="remember_completed_subgoal",
+                    ),
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Goal-progress phase 2. Continue the same experiment after "
+                            "a phase boundary. The previous progress list is not repeated."
+                        ),
+                        experiment_keywords=("heat", "sample"),
+                        experiment_result=(
+                            "Subgoal complete: sample heated. Remaining subgoal: record "
+                            "the final color."
+                        ),
+                        answer_keywords=("sample heated",),
+                        dependency="resume_next_subgoal",
+                    ),
+                    SciWorldFixturePhase(
+                        observation=(
+                            "Goal-progress final phase. State the only unfinished "
+                            "subgoal. Prior progress notes are not repeated."
+                        ),
+                        experiment_keywords=("record", "color"),
+                        experiment_result="The unfinished subgoal is to record final color.",
+                        answer_keywords=("record final color",),
+                        dependency="retrieve_unfinished_subgoal",
                     ),
                 ),
             ),

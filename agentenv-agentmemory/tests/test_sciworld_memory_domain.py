@@ -7,12 +7,18 @@ from unittest.mock import patch
 
 from agentenv_agentmemory.domains import V3_SURFACES
 from agentenv_agentmemory.domains.sciworld import (
+    SCIWORLD_CALIBRATION_SURFACE,
+    SCIWORLD_CONTEXTUAL_RULE_SURFACE,
     SCIWORLD_CONDUCTIVITY_SURFACE,
     SCIWORLD_FRICTION_SURFACE,
+    SCIWORLD_GOAL_PROGRESS_SURFACE,
+    SCIWORLD_HYPOTHESIS_TRACKING_SURFACE,
     SCIWORLD_LAB_NOTEBOOK_LONGHORIZON_SURFACE,
     SCIWORLD_MELTINGPOINT_SURFACE,
+    SCIWORLD_NEGATIVE_EVIDENCE_SURFACE,
     SCIWORLD_RULE_MEMORY_SURFACE,
     SCIWORLD_SOP_MEMORY_SURFACE,
+    SCIWORLD_STATE_CHANGE_SURFACE,
     SCIWORLD_SURFACES,
     SciWorldMemoryFactory,
 )
@@ -74,6 +80,96 @@ _SOLUTIONS = {
             "battery bulb sample",
         ),
     ],
+    SCIWORLD_NEGATIVE_EVIDENCE_SURFACE: [
+        (
+            "test zeta with vinegar",
+            "powder zeta does not fizz with vinegar",
+            "does not fizz",
+        ),
+        (
+            None,
+            (("zeta vinegar", "powder zeta does not fizz with vinegar"),),
+            "powder eta",
+        ),
+    ],
+    SCIWORLD_HYPOTHESIS_TRACKING_SURFACE: [
+        (
+            "move lamp east",
+            "light direction hypothesis supported by lamp east",
+            "light",
+        ),
+        (
+            "change soil color",
+            "soil-color hypothesis is ruled out",
+            "rules out soil",
+        ),
+        (
+            None,
+            (
+                ("light hypothesis", "light direction hypothesis supported"),
+                ("soil hypothesis", "soil-color hypothesis is ruled out"),
+            ),
+            "light direction",
+        ),
+    ],
+    SCIWORLD_CALIBRATION_SURFACE: [
+        (
+            "compare thermometer with reference bath",
+            "thermometer T reads 5 celsius high",
+            "5 high",
+        ),
+        (
+            None,
+            (("thermometer offset", "thermometer T reads 5 celsius high"),),
+            "70",
+        ),
+    ],
+    SCIWORLD_CONTEXTUAL_RULE_SURFACE: [
+        (
+            "test sugar in cold water and hot water",
+            "sugar dissolves quickly in hot water and slowly in cold water",
+            "hot quickly",
+        ),
+        (
+            None,
+            (("sugar hot water", "sugar dissolves quickly in hot water"),),
+            "hot water",
+        ),
+    ],
+    SCIWORLD_STATE_CHANGE_SURFACE: [
+        (
+            "test riva with indicator strip",
+            "preliminary strip says riva acidic",
+            "acidic",
+        ),
+        (
+            "test riva with calibrated meter",
+            "calibrated meter supersedes strip: riva neutral",
+            "neutral",
+        ),
+        (
+            None,
+            (("riva neutral", "calibrated meter supersedes strip: riva neutral"),),
+            "neutral",
+        ),
+    ],
+    SCIWORLD_GOAL_PROGRESS_SURFACE: [
+        (
+            "collect sample",
+            "sample collected; next heat sample then record final color",
+            "sample collected",
+        ),
+        (
+            "heat sample",
+            "sample heated; next record final color",
+            "sample heated",
+        ),
+        (
+            None,
+            (("record final color", "sample heated; next record final color"),),
+            "record final color",
+        ),
+    ],
     SCIWORLD_LAB_NOTEBOOK_LONGHORIZON_SURFACE: [
         ("inspect station 1", "station 1 color blue", "blue"),
         ("inspect station 2", "station 2 color green", "green"),
@@ -94,6 +190,12 @@ class SciWorldMemoryContractTest(unittest.TestCase):
             SCIWORLD_FRICTION_SURFACE,
             SCIWORLD_RULE_MEMORY_SURFACE,
             SCIWORLD_SOP_MEMORY_SURFACE,
+            SCIWORLD_NEGATIVE_EVIDENCE_SURFACE,
+            SCIWORLD_HYPOTHESIS_TRACKING_SURFACE,
+            SCIWORLD_CALIBRATION_SURFACE,
+            SCIWORLD_CONTEXTUAL_RULE_SURFACE,
+            SCIWORLD_STATE_CHANGE_SURFACE,
+            SCIWORLD_GOAL_PROGRESS_SURFACE,
             SCIWORLD_LAB_NOTEBOOK_LONGHORIZON_SURFACE,
         }
         self.assertEqual(set(SCIWORLD_SURFACES.values()), expected)
@@ -222,6 +324,55 @@ class SciWorldMemoryContractTest(unittest.TestCase):
             self.assertEqual(advanced["info"]["phase_index"], 1)
             self.assertNotIn("unknown sample alpha is conductive", advanced["observation"])
             self.assertIn("prior lab result is not repeated", advanced["observation"])
+        finally:
+            if env_id in wrapper.envs:
+                wrapper.close(env_id)
+
+    def test_state_change_surface_can_revise_memory_instead_of_using_stale_fact(self):
+        wrapper = DomainEnvWrapper(
+            SciWorldMemoryFactory(
+                surface=SCIWORLD_STATE_CHANGE_SURFACE,
+                backend="fixture",
+            ),
+            reward_policy=MemoryRewardPolicy(first_add=0.1),
+        )
+        env_id = wrapper.create()["id"]
+        try:
+            wrapper.step(
+                env_id,
+                'Action: SCI_ACTION {"action": "test riva with indicator strip"}',
+            )
+            added = wrapper.step(
+                env_id,
+                'Action: ADD {"key": "riva state", "value": "preliminary strip says riva acidic"}',
+            )
+            self.assertIn("mem_0000", added["observation"])
+            wrapper.step(env_id, 'Action: ANSWER {"answer": "acidic"}')
+            wrapper.step(
+                env_id,
+                'Action: SCI_ACTION {"action": "test riva with calibrated meter"}',
+            )
+            updated = wrapper.step(
+                env_id,
+                'Action: UPDATE {"memory_id": "mem_0000", "value": "calibrated meter supersedes strip: riva neutral"}',
+            )
+            self.assertIn("Updated memory [mem_0000]", updated["observation"])
+            wrapper.step(env_id, 'Action: ANSWER {"answer": "neutral"}')
+            retrieved = wrapper.step(
+                env_id,
+                'Action: RETRIEVE {"query": "riva neutral", "top_k": 1}',
+            )
+            self.assertIn(
+                "calibrated meter supersedes strip: riva neutral",
+                retrieved["observation"],
+            )
+            self.assertNotIn(
+                "preliminary strip says riva acidic",
+                retrieved["observation"],
+            )
+            result = wrapper.step(env_id, 'Action: ANSWER {"answer": "neutral"}')
+            self.assertTrue(result["done"])
+            self.assertTrue(result["info"]["episode_success"])
         finally:
             if env_id in wrapper.envs:
                 wrapper.close(env_id)
