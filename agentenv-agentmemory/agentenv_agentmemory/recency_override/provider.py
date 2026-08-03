@@ -109,6 +109,7 @@ class VerifiedRecencyOverrideBundleProvider:
             "update_contract": "UPDATE same memory_id or DELETE old then ADD new",
             "application_observation_identity": True,
             "application_target_flip": True,
+            "task_prompt_product_identity": "complete_native_title",
             "target_asin_in_task_prompt": False,
             "native_search_result_asin_handles_visible": True,
             "native_click_action_uses_asin_handle": True,

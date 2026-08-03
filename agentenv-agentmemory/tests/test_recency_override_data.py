@@ -174,13 +174,18 @@ class RecencyOverrideGeneratorTests(unittest.TestCase):
             task_count=2,
             mode=PROVIDER_MODE_RESEEDED_STREAM,
         )
+        metadata = provider.metadata()
         first = provider.get(0)
         next_epoch = provider.get(provider.seed_epoch_orbit_count * 2)
         self.assertNotEqual(first.task_id, next_epoch.task_id)
         self.assertEqual(provider.get(0).orbit_id, provider.get(1).orbit_id)
-        self.assertEqual(provider.metadata()["accepted_index_domain"], "all_nonnegative_integers")
+        self.assertEqual(metadata["accepted_index_domain"], "all_nonnegative_integers")
         self.assertEqual(
-            provider.metadata()["reseeded_stream"]["tasks_per_seed_epoch"],
+            metadata["task_prompt_product_identity"],
+            "complete_native_title",
+        )
+        self.assertEqual(
+            metadata["reseeded_stream"]["tasks_per_seed_epoch"],
             provider.seed_epoch_task_count,
         )
 
