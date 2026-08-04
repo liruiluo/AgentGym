@@ -239,9 +239,17 @@ class SciWorldMemoryContractTest(unittest.TestCase):
                     metadata["history_policy"],
                     "no_harness_recent_n_no_environment_summary",
                 )
+                self.assertEqual(
+                    metadata["episode_structure"],
+                    "fixture_stages_only_not_capability_evidence",
+                )
+                self.assertFalse(metadata["artificial_session_boundaries"])
+                self.assertEqual(metadata["context_compaction_owner"], "policy")
                 self.assertFalse(metadata["harness_summarizes_history"])
                 self.assertIsNone(metadata["manual_recent_n_window"])
-                self.assertIn("use your own memory actions", prompt)
+                self.assertIn("one continuous episode", prompt)
+                self.assertIn("decide when to use SUMMARY/FILTER", prompt)
+                self.assertIn("create artificial session boundaries", prompt)
                 self.assertIn("does not write lab notes", prompt)
                 self.assertIn("memory_kind", metadata)
                 for forbidden in _FORBIDDEN_HISTORY_HELP:

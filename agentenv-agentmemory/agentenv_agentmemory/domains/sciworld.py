@@ -56,10 +56,11 @@ def _surface_configs() -> dict[str, SciWorldSurfaceConfig]:
         "You are operating a SciWorld lab through AgentMemoryGym. Run one "
         "executable lab action at a time. Private target facts and future tasks "
         "are never exposed. The environment does not write lab notes, summarize "
-        "history, or maintain a helpful rolling transcript for you. If a task "
-        "spans multiple phases, use your own memory actions to keep any fact, "
-        "procedure, or notebook entry you will need later. If your memory is "
-        "insufficient, run another visible experiment instead of inventing a result."
+        "history, maintain a helpful rolling transcript, or create artificial "
+        "session boundaries for you. A formal native task is one continuous "
+        "episode. As its visible trace grows, decide when to use SUMMARY/FILTER "
+        "and what to keep with ADD/UPDATE/RETRIEVE. If your memory is insufficient, "
+        "run another visible experiment instead of inventing a result."
     )
     return {
         SCIWORLD_CONDUCTIVITY_SURFACE: SciWorldSurfaceConfig(
@@ -205,9 +206,10 @@ def _surface_configs() -> dict[str, SciWorldSurfaceConfig]:
             memory_kind="self_managed_external_lab_notebook",
             system_prompt=(
                 common
-                + " This long-horizon surface is intended to exceed raw-context "
-                "comfort unless the policy maintains its own external lab notebook "
-                "with ADD/UPDATE/RETRIEVE and policy-authored context control."
+                + " This long-horizon surface remains one continuous native episode "
+                "and is intended to exceed raw-context comfort unless the policy "
+                "compresses its own visible trace and maintains an external lab "
+                "notebook with policy-authored memory actions."
             ),
             max_steps=512,
             native_task_family="multi-experiment-lab-notebook-chain",
@@ -762,6 +764,11 @@ class SciWorldMemoryFactory:
 
     def metadata(self) -> dict[str, Any]:
         config = SCIWORLD_SURFACE_CONFIGS[self.surface]
+        episode_structure = (
+            "single_continuous_native_episode"
+            if self.backend == "scienceworld"
+            else "fixture_stages_only_not_capability_evidence"
+        )
         return {
             "source": "allenai/ScienceWorld",
             "domain_family": "scientific_experiment_lab",
@@ -770,6 +777,9 @@ class SciWorldMemoryFactory:
             "native_task_family": config.native_task_family,
             "memory_management": "policy_managed_external_notebook",
             "history_policy": "no_harness_recent_n_no_environment_summary",
+            "episode_structure": episode_structure,
+            "artificial_session_boundaries": False,
+            "context_compaction_owner": "policy",
             "harness_summarizes_history": False,
             "manual_recent_n_window": None,
             "requires_scienceworld_dependency": self.backend == "scienceworld",
