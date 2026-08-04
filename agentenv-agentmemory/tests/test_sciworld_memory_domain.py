@@ -225,6 +225,18 @@ class SciWorldMemoryContractTest(unittest.TestCase):
                 backend="scienceworld",
             )
 
+    def test_native_sop_fails_closed_until_multi_episode_orchestrator_exists(self):
+        with patch(
+            "agentenv_agentmemory.domains.sciworld._require_scienceworld_dependency"
+        ):
+            factory = SciWorldMemoryFactory(
+                surface=SCIWORLD_SOP_MEMORY_SURFACE,
+                backend="scienceworld",
+            )
+        self.assertTrue(factory.metadata()["requires_multi_episode_orchestrator"])
+        with self.assertRaisesRegex(RuntimeError, "multi-episode orbit driver"):
+            factory.create("sop-native-contract-test")
+
     def test_contract_says_model_manages_external_memory_not_manual_window(self):
         for surface in SCIWORLD_SURFACES.values():
             with self.subTest(surface=surface):
@@ -247,14 +259,58 @@ class SciWorldMemoryContractTest(unittest.TestCase):
                 self.assertEqual(metadata["context_compaction_owner"], "policy")
                 self.assertFalse(metadata["harness_summarizes_history"])
                 self.assertIsNone(metadata["manual_recent_n_window"])
-                self.assertIn("one continuous episode", prompt)
                 self.assertIn("decide when to use SUMMARY/FILTER", prompt)
-                self.assertIn("create artificial session boundaries", prompt)
+                self.assertIn("extra session boundaries", prompt)
                 self.assertIn("does not write lab notes", prompt)
                 self.assertIn("memory_kind", metadata)
                 for forbidden in _FORBIDDEN_HISTORY_HELP:
                     self.assertNotIn(forbidden.lower(), prompt.lower())
                 self.assertNotIn("keep only", prompt.lower())
+
+    def test_episode_structure_is_surface_specific(self):
+        sop = SciWorldMemoryFactory(
+            surface=SCIWORLD_SOP_MEMORY_SURFACE,
+            backend="fixture",
+        )
+        sop_metadata = sop.metadata()
+        self.assertEqual(
+            sop_metadata["formal_episode_structure"],
+            "multi_native_episode_procedure_transfer_orbit",
+        )
+        self.assertEqual(
+            sop_metadata["session_boundary_policy"],
+            "required_native_episode_boundaries_preserve_ltm_reset_local_trace",
+        )
+        self.assertTrue(sop_metadata["requires_multi_episode_orchestrator"])
+        self.assertIn(
+            "semantically distinct native episodes",
+            sop.contract.canonical_system_prompt,
+        )
+        self.assertIn(
+            "external notebook persists",
+            sop.contract.canonical_system_prompt,
+        )
+
+        longhorizon = SciWorldMemoryFactory(
+            surface=SCIWORLD_LAB_NOTEBOOK_LONGHORIZON_SURFACE,
+            backend="fixture",
+        )
+        longhorizon_metadata = longhorizon.metadata()
+        self.assertEqual(
+            longhorizon_metadata["formal_episode_structure"],
+            "single_continuous_native_episode",
+        )
+        self.assertEqual(
+            longhorizon_metadata["session_boundary_policy"],
+            "no_boundary_before_native_episode_terminal",
+        )
+        self.assertFalse(
+            longhorizon_metadata["requires_multi_episode_orchestrator"]
+        )
+        self.assertIn(
+            "one continuous native episode",
+            longhorizon.contract.canonical_system_prompt,
+        )
 
     def test_each_fixture_surface_has_minimal_memory_chain(self):
         for surface, solution in _SOLUTIONS.items():

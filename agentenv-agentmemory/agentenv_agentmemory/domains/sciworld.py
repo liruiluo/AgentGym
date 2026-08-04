@@ -37,6 +37,10 @@ SCIWORLD_SURFACES = {
 }
 SCIWORLD_BACKENDS = ("fixture", "scienceworld")
 
+_SINGLE_NATIVE_EPISODE = "single_native_episode"
+_SINGLE_CONTINUOUS_LONGHORIZON_EPISODE = "single_continuous_native_episode"
+_MULTI_EPISODE_SOP_ORBIT = "multi_native_episode_procedure_transfer_orbit"
+
 _SCI_ACTION_RE = re.compile(r"\ASCI_ACTION\s+(\{.*\})\Z", flags=re.DOTALL)
 _ANSWER_RE = re.compile(r"\AANSWER\s+(\{.*\})\Z", flags=re.DOTALL)
 
@@ -56,11 +60,12 @@ def _surface_configs() -> dict[str, SciWorldSurfaceConfig]:
         "You are operating a SciWorld lab through AgentMemoryGym. Run one "
         "executable lab action at a time. Private target facts and future tasks "
         "are never exposed. The environment does not write lab notes, summarize "
-        "history, maintain a helpful rolling transcript, or create artificial "
-        "session boundaries for you. A formal native task is one continuous "
-        "episode. As its visible trace grows, decide when to use SUMMARY/FILTER "
-        "and what to keep with ADD/UPDATE/RETRIEVE. If your memory is insufficient, "
-        "run another visible experiment instead of inventing a result."
+        "history, or maintain a helpful rolling transcript for you. Follow this "
+        "surface's declared native episode structure; extra session boundaries "
+        "must never be invented merely to clear history. As the visible trace "
+        "grows, decide when to use SUMMARY/FILTER and what to keep with "
+        "ADD/UPDATE/RETRIEVE. If your memory is insufficient, run another visible "
+        "experiment instead of inventing a result."
     )
     return {
         SCIWORLD_CONDUCTIVITY_SURFACE: SciWorldSurfaceConfig(
@@ -120,7 +125,9 @@ def _surface_configs() -> dict[str, SciWorldSurfaceConfig]:
                 common
                 + " This surface focuses on remembering reusable lab procedure, "
                 "such as how to test conductivity, rather than remembering only "
-                "the measured fact."
+                "the measured fact. It intentionally spans semantically distinct "
+                "native episodes or tasks: per-episode trace resets at a real task "
+                "boundary, while the policy-authored external notebook persists."
             ),
             max_steps=96,
             native_task_family="procedure-transfer-across-sciworld-tasks",
@@ -218,6 +225,20 @@ def _surface_configs() -> dict[str, SciWorldSurfaceConfig]:
 
 
 SCIWORLD_SURFACE_CONFIGS = _surface_configs()
+
+
+def _formal_episode_contract(surface: str) -> tuple[str, str]:
+    if surface == SCIWORLD_SOP_MEMORY_SURFACE:
+        return (
+            _MULTI_EPISODE_SOP_ORBIT,
+            "required_native_episode_boundaries_preserve_ltm_reset_local_trace",
+        )
+    if surface == SCIWORLD_LAB_NOTEBOOK_LONGHORIZON_SURFACE:
+        return (
+            _SINGLE_CONTINUOUS_LONGHORIZON_EPISODE,
+            "no_boundary_before_native_episode_terminal",
+        )
+    return _SINGLE_NATIVE_EPISODE, "native_episode_boundaries_only"
 
 
 def contract_for_surface(surface: str) -> DomainContract:
@@ -756,6 +777,13 @@ class SciWorldMemoryFactory:
                 contract=self.contract,
                 fixture_tasks=self.fixture_tasks,
             )
+        if self.surface == SCIWORLD_SOP_MEMORY_SURFACE:
+            raise RuntimeError(
+                "The native SciWorld SOP surface requires a multi-episode orbit "
+                "driver that preserves policy-authored LTM while resetting the "
+                "per-episode trace; the current single-episode native driver "
+                "cannot certify SOP transfer."
+            )
         return ScienceWorldNativeDriver(
             env_uid=env_uid,
             surface=self.surface,
@@ -764,8 +792,11 @@ class SciWorldMemoryFactory:
 
     def metadata(self) -> dict[str, Any]:
         config = SCIWORLD_SURFACE_CONFIGS[self.surface]
+        formal_episode_structure, session_boundary_policy = _formal_episode_contract(
+            self.surface
+        )
         episode_structure = (
-            "single_continuous_native_episode"
+            formal_episode_structure
             if self.backend == "scienceworld"
             else "fixture_stages_only_not_capability_evidence"
         )
@@ -778,6 +809,11 @@ class SciWorldMemoryFactory:
             "memory_management": "policy_managed_external_notebook",
             "history_policy": "no_harness_recent_n_no_environment_summary",
             "episode_structure": episode_structure,
+            "formal_episode_structure": formal_episode_structure,
+            "session_boundary_policy": session_boundary_policy,
+            "requires_multi_episode_orchestrator": (
+                self.surface == SCIWORLD_SOP_MEMORY_SURFACE
+            ),
             "artificial_session_boundaries": False,
             "context_compaction_owner": "policy",
             "harness_summarizes_history": False,
