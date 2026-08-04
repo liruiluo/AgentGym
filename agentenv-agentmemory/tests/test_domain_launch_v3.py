@@ -10,6 +10,7 @@ from agentenv_agentmemory.domains import (
     BROWSECOMP_BM25_INTEGRATION_SURFACE,
     BROWSECOMP_SURFACES,
     FORMAL_REASONING_SURFACES_BY_MODE,
+    SCIWORLD_SURFACES,
     TRAVEL_SURFACES,
 )
 from agentenv_agentmemory.env_wrapper import NATIVE_SURFACE
@@ -398,6 +399,60 @@ class DomainLaunchTest(unittest.TestCase):
         ):
             with self.assertRaises(SystemExit):
                 launch()
+        uvicorn.run.assert_not_called()
+
+    def test_sciworld_launch_binds_backend_split_and_task_count(self):
+        surface = SCIWORLD_SURFACES["sop_memory"]
+        configured, run = self._launch(
+            [
+                "--surface",
+                surface,
+                "--memoryarena-root",
+                "/memoryarena",
+                "--memoryarena-base-commit",
+                "a" * 40,
+                "--run-id",
+                "sciworld-sop-dev",
+                "--sciworld-backend",
+                "scienceworld",
+                "--sciworld-task-count",
+                "7",
+                "--split",
+                "dev",
+            ]
+        )
+        self.assertEqual(configured["AGENTMEMORY_SURFACE"], surface)
+        self.assertEqual(configured["AGENTMEMORY_SCIWORLD_BACKEND"], "scienceworld")
+        self.assertEqual(configured["AGENTMEMORY_SCIWORLD_TASK_COUNT"], "7")
+        self.assertEqual(configured["AGENTMEMORY_SPLIT"], "dev")
+        run.assert_called_once()
+
+    def test_sciworld_launch_rejects_all_split(self):
+        uvicorn = types.ModuleType("uvicorn")
+        uvicorn.run = Mock()
+        with (
+            patch.dict(sys.modules, {"uvicorn": uvicorn}),
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "agentmemory",
+                    "--surface",
+                    SCIWORLD_SURFACES["conductivity_memory"],
+                    "--memoryarena-root",
+                    "/memoryarena",
+                    "--memoryarena-base-commit",
+                    "a" * 40,
+                    "--run-id",
+                    "sciworld-all-invalid",
+                    "--split",
+                    "all",
+                ],
+            ),
+            patch.dict(os.environ, {}, clear=True),
+            self.assertRaises(SystemExit),
+        ):
+            launch()
         uvicorn.run.assert_not_called()
 
     def test_math_and_physics_launch_bind_judge_configuration(self):

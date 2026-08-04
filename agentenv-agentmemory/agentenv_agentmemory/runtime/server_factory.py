@@ -285,6 +285,7 @@ def _build_sciworld_factory(surface: str) -> SciWorldMemoryFactory:
     return SciWorldMemoryFactory(
         surface=surface,
         backend=os.environ.get("AGENTMEMORY_SCIWORLD_BACKEND", "scienceworld"),
+        split=os.environ.get("AGENTMEMORY_SPLIT", "train"),
         task_count=_env_int("AGENTMEMORY_SCIWORLD_TASK_COUNT", 0) or None,
     )
 

@@ -14,6 +14,7 @@ from agentenv_agentmemory.domains import (
     FORMAL_REASONING_PAPER_EVAL_SURFACES,
     FORMAL_REASONING_SURFACES,
     FORMAL_REASONING_SURFACES_BY_MODE,
+    SCIWORLD_SURFACES,
     TRAVEL_SURFACES,
 )
 from agentenv_agentmemory.env_wrapper import NATIVE_SURFACE
@@ -48,6 +49,33 @@ class DomainServerFactoryTest(unittest.TestCase):
         ):
             self.assertIs(server_factory.build_server(), sentinel)
         wrapper.assert_called_once_with()
+
+    def test_sciworld_factory_receives_frozen_split(self):
+        surface = SCIWORLD_SURFACES["sop_memory"]
+        sentinel = object()
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "AGENTMEMORY_SCIWORLD_BACKEND": "scienceworld",
+                    "AGENTMEMORY_SPLIT": "test",
+                    "AGENTMEMORY_SCIWORLD_TASK_COUNT": "11",
+                },
+                clear=True,
+            ),
+            patch.object(
+                server_factory,
+                "SciWorldMemoryFactory",
+                return_value=sentinel,
+            ) as factory_type,
+        ):
+            self.assertIs(server_factory._build_sciworld_factory(surface), sentinel)
+        factory_type.assert_called_once_with(
+            surface=surface,
+            backend="scienceworld",
+            split="test",
+            task_count=11,
+        )
 
     def test_travel_surfaces_bind_explicit_contract_modes(self):
         with tempfile.TemporaryDirectory() as tempdir:

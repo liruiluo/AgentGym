@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -36,10 +37,35 @@ SCIWORLD_SURFACES = {
     "lab_notebook_longhorizon": SCIWORLD_LAB_NOTEBOOK_LONGHORIZON_SURFACE,
 }
 SCIWORLD_BACKENDS = ("fixture", "scienceworld")
+SCIWORLD_SPLITS = ("train", "dev", "test")
 
 _SINGLE_NATIVE_EPISODE = "single_native_episode"
 _SINGLE_CONTINUOUS_LONGHORIZON_EPISODE = "single_continuous_native_episode"
 _MULTI_EPISODE_SOP_ORBIT = "multi_native_episode_procedure_transfer_orbit"
+_NATIVE_SUCCESS_SCORE = 100.0
+
+_NATIVE_TASK_PLANS = {
+    SCIWORLD_CONDUCTIVITY_SURFACE: (
+        "test-conductivity-of-unknown-substances",
+    ),
+    SCIWORLD_SOP_MEMORY_SURFACE: (
+        "test-conductivity",
+        "test-conductivity-of-unknown-substances",
+    ),
+}
+
+_NATIVE_SPLIT_MANIFESTS = {
+    "test-conductivity": {
+        "max_variations": 900,
+        "split_counts": {"train": 450, "dev": 225, "test": 225},
+        "split_sha256": "6d9689d79ec3fca8831fbc942036f8911fa9f5bd2d0baec2c81715f0493867b2",
+    },
+    "test-conductivity-of-unknown-substances": {
+        "max_variations": 600,
+        "split_counts": {"train": 300, "dev": 150, "test": 150},
+        "split_sha256": "a89a6a78f0c13d3984f4a7a11574d255e683795acc25c74fd51e900b6b2e55d8",
+    },
+}
 
 _SCI_ACTION_RE = re.compile(r"\ASCI_ACTION\s+(\{.*\})\Z", flags=re.DOTALL)
 _ANSWER_RE = re.compile(r"\AANSWER\s+(\{.*\})\Z", flags=re.DOTALL)
@@ -745,6 +771,7 @@ class SciWorldMemoryFactory:
         *,
         surface: str = SCIWORLD_CONDUCTIVITY_SURFACE,
         backend: str = "scienceworld",
+        split: str = "train",
         task_count: int | None = None,
     ) -> None:
         if surface not in SCIWORLD_SURFACE_CONFIGS:
@@ -753,17 +780,38 @@ class SciWorldMemoryFactory:
             raise ValueError(
                 "SciWorld backend must be one of: " + ", ".join(SCIWORLD_BACKENDS)
             )
+        if split not in SCIWORLD_SPLITS:
+            raise ValueError(
+                "SciWorld split must be one of: " + ", ".join(SCIWORLD_SPLITS)
+            )
+        self._scienceworld_module = None
         if backend == "scienceworld":
-            _require_scienceworld_dependency()
+            if surface not in _NATIVE_TASK_PLANS:
+                raise RuntimeError(
+                    f"SciWorld surface {surface!r} has no frozen native task plan; "
+                    "use the fixture backend only for plumbing until an official "
+                    "task mapping and split manifest are certified."
+                )
+            self._scienceworld_module = _require_scienceworld_dependency()
         self.surface = surface
         self.backend = backend
+        self.split = split
         self.contract = contract_for_surface(surface)
         self.fixture_tasks = _fixture_tasks_for_surface(surface)
-        self._task_count = task_count or (
-            len(self.fixture_tasks)
-            if backend == "fixture"
-            else _scienceworld_task_count_hint(surface)
-        )
+        self.native_task_plan = _NATIVE_TASK_PLANS.get(surface, ())
+        if backend == "fixture":
+            available_task_count = len(self.fixture_tasks)
+        else:
+            available_task_count = min(
+                int(_NATIVE_SPLIT_MANIFESTS[task]["split_counts"][split])
+                for task in self.native_task_plan
+            )
+        if task_count is not None and not 1 <= task_count <= available_task_count:
+            raise ValueError(
+                "SciWorld task_count must be between 1 and the frozen split size "
+                f"{available_task_count}; got {task_count}."
+            )
+        self._task_count = task_count or available_task_count
 
     @property
     def task_count(self) -> int:
@@ -777,17 +825,13 @@ class SciWorldMemoryFactory:
                 contract=self.contract,
                 fixture_tasks=self.fixture_tasks,
             )
-        if self.surface == SCIWORLD_SOP_MEMORY_SURFACE:
-            raise RuntimeError(
-                "The native SciWorld SOP surface requires a multi-episode orbit "
-                "driver that preserves policy-authored LTM while resetting the "
-                "per-episode trace; the current single-episode native driver "
-                "cannot certify SOP transfer."
-            )
         return ScienceWorldNativeDriver(
             env_uid=env_uid,
             surface=self.surface,
             contract=self.contract,
+            module=self._scienceworld_module,
+            split=self.split,
+            task_names=self.native_task_plan,
         )
 
     def metadata(self) -> dict[str, Any]:
@@ -804,8 +848,10 @@ class SciWorldMemoryFactory:
             "source": "allenai/ScienceWorld",
             "domain_family": "scientific_experiment_lab",
             "backend": self.backend,
+            "split": self.split,
             "memory_kind": config.memory_kind,
             "native_task_family": config.native_task_family,
+            "native_task_names": list(self.native_task_plan),
             "memory_management": "policy_managed_external_notebook",
             "history_policy": "no_harness_recent_n_no_environment_summary",
             "episode_structure": episode_structure,
@@ -814,6 +860,10 @@ class SciWorldMemoryFactory:
             "requires_multi_episode_orchestrator": (
                 self.surface == SCIWORLD_SOP_MEMORY_SURFACE
             ),
+            "native_split_manifest": {
+                task: dict(_NATIVE_SPLIT_MANIFESTS[task])
+                for task in self.native_task_plan
+            },
             "artificial_session_boundaries": False,
             "context_compaction_owner": "policy",
             "harness_summarizes_history": False,
@@ -1091,31 +1141,38 @@ class SciWorldFixtureDriver:
 class ScienceWorldNativeDriver:
     domain_id = SCIWORLD_DOMAIN_ID
 
-    def __init__(self, *, env_uid: str, surface: str, contract: DomainContract) -> None:
+    def __init__(
+        self,
+        *,
+        env_uid: str,
+        surface: str,
+        contract: DomainContract,
+        module,
+        split: str,
+        task_names: tuple[str, ...],
+    ) -> None:
+        if module is None:
+            raise RuntimeError("ScienceWorld native module was not initialized")
+        if not task_names:
+            raise RuntimeError("ScienceWorld native driver requires a frozen task plan")
         self.env_uid = env_uid
         self.surface = surface
         self.contract = contract
-        module = _require_scienceworld_dependency()
+        self.split = split
+        self.task_names = task_names
         self.env = module.ScienceWorldEnv()
         self.closed = False
         self.phase_index = 0
+        self.data_idx = 0
         self.task_name = ""
         self.variation_idx = 0
+        self._splits_by_task: dict[str, dict[str, tuple[int, ...]]] = {}
 
     def reset(self, data_idx: int) -> DomainTransition:
-        tasks = list(getattr(self.env, "tasks", {}).values())
-        if not tasks:
-            raise RuntimeError("ScienceWorldEnv exposes no tasks")
-        self.task_name = tasks[int(data_idx) % len(tasks)]
-        self.variation_idx = 0
-        self.env.load(self.task_name, self.variation_idx)
-        observation, _reward, done, info = self.env.step("look around")
-        return self._transition(
-            observation,
-            done=bool(done),
-            status="success" if done else "active",
-            domain_evidence={"scienceworld_info": dict(info)},
-        )
+        self.closed = False
+        self.phase_index = 0
+        self.data_idx = int(data_idx)
+        return self._load_current_native_episode()
 
     def step(self, action: str, env_step: int) -> DomainTransition:
         try:
@@ -1126,71 +1183,177 @@ class ScienceWorldNativeDriver:
         else:
             parse_error = "expected SCI_ACTION JSON"
         if parsed is None or parsed[0] != "SCI_ACTION":
-            return DomainTransition(
-                observation=f"Native ScienceWorld backend expects SCI_ACTION JSON: {parse_error}.",
-                reward=-0.01,
-                done=False,
-                status="active",
-                phase_index=self.phase_index,
-                phase_count=None,
-                episode_success=False,
-                action_execution={
-                    "op": "INVALID",
-                    "status": "invalid",
-                    "step": env_step,
-                    "submitted_action": action,
-                },
-                reward_components=(
-                    {
-                        "name": "invalid_action",
-                        "value": -0.01,
-                        "op": "INVALID",
-                        "step": env_step,
-                    },
-                ),
-                domain_evidence={"backend": "scienceworld"},
-            )
+            return self._invalid(action, env_step, parse_error)
+
         command = _require_payload_text(parsed[1], "action")
-        observation, reward, done, info = self.env.step(command)
-        score = float(info.get("score", reward)) if isinstance(info, dict) else float(reward)
-        if done:
-            self.phase_index = 1
-        return self._transition(
-            observation,
-            reward=score,
-            done=bool(done),
-            status="success" if done else "active",
-            episode_success=bool(done and score > 0.0),
-            action_execution={
+        completed_task = self.task_name
+        completed_variation = self.variation_idx
+        observation, reward, native_done, raw_info = self.env.step(command)
+        info = dict(raw_info) if isinstance(raw_info, dict) else {}
+        reward_delta = float(reward)
+        score = float(info.get("score", 0.0))
+        strict_success = bool(native_done and score >= _NATIVE_SUCCESS_SCORE)
+        action_execution = {
+            "op": "SCI_ACTION",
+            "status": "executed",
+            "step": env_step,
+            "command": command,
+            "native_task_name": completed_task,
+            "native_variation_idx": completed_variation,
+        }
+        tool_ops = (
+            {
                 "op": "SCI_ACTION",
-                "status": "executed",
                 "step": env_step,
                 "command": command,
+                "native_task_name": completed_task,
             },
-            tool_ops=(
-                {
-                    "op": "SCI_ACTION",
-                    "step": env_step,
-                    "command": command,
-                },
-            ),
-            reward_components=(
-                {
-                    "name": "scienceworld_score_delta_or_score",
-                    "value": score,
-                    "op": "SCI_ACTION",
-                    "step": env_step,
-                },
-            ),
-            domain_evidence={
-                "scienceworld_info": dict(info) if isinstance(info, dict) else {}
+        )
+        reward_components = (
+            {
+                "name": "scienceworld_reward_delta",
+                "value": reward_delta,
+                "op": "SCI_ACTION",
+                "step": env_step,
             },
+        )
+        evidence = {
+            "scienceworld_info": info,
+            "native_score": score,
+            "native_done": bool(native_done),
+            "native_strict_success": strict_success,
+        }
+
+        if not native_done:
+            return self._transition(
+                observation,
+                reward=reward_delta,
+                action_execution=action_execution,
+                tool_ops=tool_ops,
+                reward_components=reward_components,
+                domain_evidence=evidence,
+            )
+
+        if not strict_success:
+            action_execution.update(
+                {"status": "failed", "native_episode_completed": True}
+            )
+            return self._transition(
+                observation,
+                reward=reward_delta,
+                done=True,
+                status="failed",
+                episode_success=False,
+                action_execution=action_execution,
+                tool_ops=tool_ops,
+                reward_components=reward_components,
+                domain_evidence=evidence,
+            )
+
+        self.phase_index += 1
+        action_execution["native_episode_completed"] = True
+        if self.phase_index < len(self.task_names):
+            next_transition = self._load_current_native_episode()
+            action_execution.update(
+                {
+                    "phase_advanced": True,
+                    "next_native_task_name": self.task_name,
+                    "next_native_variation_idx": self.variation_idx,
+                }
+            )
+            evidence.update(
+                {
+                    "completed_native_task_name": completed_task,
+                    "completed_native_variation_idx": completed_variation,
+                    "next_scienceworld_info": next_transition.domain_evidence.get(
+                        "scienceworld_info", {}
+                    ),
+                }
+            )
+            return self._transition(
+                next_transition.observation,
+                reward=reward_delta,
+                status="active",
+                action_execution=action_execution,
+                tool_ops=tool_ops,
+                reward_components=reward_components,
+                domain_evidence=evidence,
+            )
+
+        action_execution["status"] = "success"
+        return self._transition(
+            observation,
+            reward=reward_delta,
+            done=True,
+            status="success",
+            episode_success=True,
+            action_execution=action_execution,
+            tool_ops=tool_ops,
+            reward_components=reward_components,
+            domain_evidence=evidence,
         )
 
     def close(self) -> None:
         if not self.closed:
             self.env.close()
             self.closed = True
+
+    def _load_current_native_episode(self) -> DomainTransition:
+        task_name = self.task_names[self.phase_index]
+        variation_idx = self._variation_for(task_name, self.data_idx)
+        self.env.load(task_name, variation_idx)
+        observation, raw_info = self.env.reset()
+        info = dict(raw_info) if isinstance(raw_info, dict) else {}
+        self.task_name = task_name
+        self.variation_idx = variation_idx
+        task_description = str(
+            info.get("taskDesc") or self.env.get_task_description()
+        ).strip()
+        visible_observation = "\n\n".join(
+            part for part in (task_description, str(observation).strip()) if part
+        )
+        return self._transition(
+            visible_observation,
+            status="active",
+            domain_evidence={
+                "scienceworld_info": info,
+                "native_episode_index": self.phase_index,
+            },
+        )
+
+    def _variation_for(self, task_name: str, data_idx: int) -> int:
+        if task_name not in self._splits_by_task:
+            self.env.load(task_name, 0)
+            observed_splits = {
+                "train": tuple(int(item) for item in self.env.get_variations_train()),
+                "dev": tuple(int(item) for item in self.env.get_variations_dev()),
+                "test": tuple(int(item) for item in self.env.get_variations_test()),
+            }
+            _attest_native_splits(self.env, task_name, observed_splits)
+            self._splits_by_task[task_name] = observed_splits
+        variations = self._splits_by_task[task_name][self.split]
+        return variations[data_idx % len(variations)]
+
+    def _invalid(self, action: str, env_step: int, reason: str) -> DomainTransition:
+        return self._transition(
+            f"Native ScienceWorld backend expects SCI_ACTION JSON: {reason}.",
+            reward=-0.01,
+            status="active",
+            action_execution={
+                "op": "INVALID",
+                "status": "invalid",
+                "step": env_step,
+                "submitted_action": action,
+            },
+            reward_components=(
+                {
+                    "name": "invalid_action",
+                    "value": -0.01,
+                    "op": "INVALID",
+                    "step": env_step,
+                },
+            ),
+        )
 
     def _transition(self, observation: str, **kwargs) -> DomainTransition:
         evidence = {
@@ -1199,6 +1362,9 @@ class ScienceWorldNativeDriver:
             "memory_kind": SCIWORLD_SURFACE_CONFIGS[self.surface].memory_kind,
             "task_name": self.task_name,
             "variation_idx": self.variation_idx,
+            "split": self.split,
+            "native_episode_index": self.phase_index,
+            "native_episode_count": len(self.task_names),
             "history_policy": "no_harness_recent_n_no_environment_summary",
         }
         evidence.update(kwargs.pop("domain_evidence", {}) or {})
@@ -1208,12 +1374,45 @@ class ScienceWorldNativeDriver:
             done=bool(kwargs.pop("done", False)),
             status=kwargs.pop("status", "active"),
             phase_index=self.phase_index,
-            phase_count=1,
+            phase_count=len(self.task_names),
             episode_success=bool(kwargs.pop("episode_success", False)),
             action_execution=kwargs.pop("action_execution", {}),
             tool_ops=kwargs.pop("tool_ops", ()),
             reward_components=kwargs.pop("reward_components", ()),
             domain_evidence=evidence,
+        )
+
+
+def _attest_native_splits(env, task_name: str, observed: dict[str, tuple[int, ...]]) -> None:
+    manifest = _NATIVE_SPLIT_MANIFESTS[task_name]
+    counts = {split: len(observed[split]) for split in SCIWORLD_SPLITS}
+    if counts != manifest["split_counts"]:
+        raise RuntimeError(
+            f"ScienceWorld split counts changed for {task_name}: "
+            f"expected {manifest['split_counts']}, observed {counts}."
+        )
+    flattened = [item for split in SCIWORLD_SPLITS for item in observed[split]]
+    if len(flattened) != len(set(flattened)):
+        raise RuntimeError(f"ScienceWorld splits overlap for {task_name}.")
+    max_variations = int(env.get_max_variations(task_name))
+    if max_variations != manifest["max_variations"]:
+        raise RuntimeError(
+            f"ScienceWorld max variations changed for {task_name}: "
+            f"expected {manifest['max_variations']}, observed {max_variations}."
+        )
+    structured = {split: list(observed[split]) for split in SCIWORLD_SPLITS}
+    digest = hashlib.sha256(
+        json.dumps(
+            structured,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if digest != manifest["split_sha256"]:
+        raise RuntimeError(
+            f"ScienceWorld split manifest changed for {task_name}: "
+            f"expected {manifest['split_sha256']}, observed {digest}."
         )
 
 
@@ -1251,12 +1450,3 @@ def _require_scienceworld_dependency():
             "native smoke."
         ) from exc
     return scienceworld
-
-
-def _scienceworld_task_count_hint(surface: str) -> int:
-    # Real task enumeration is deferred to the backend process because importing
-    # ScienceWorld can start JVM-heavy setup. The exact count is checked in the
-    # native smoke; this hint only keeps the v3 factory contract positive.
-    if surface == SCIWORLD_LAB_NOTEBOOK_LONGHORIZON_SURFACE:
-        return 1
-    return 30

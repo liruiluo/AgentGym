@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from agentenv_agentmemory.domains import V3_SURFACES
@@ -42,6 +43,79 @@ _FORBIDDEN_HISTORY_HELP = (
     "harness summary",
     "ground-truth lab notes",
 )
+
+
+class _FakeNativeScienceWorldEnv:
+    SPLITS = {
+        "test-conductivity": {
+            "train": (10, 11),
+            "dev": (20, 21),
+            "test": (30, 31),
+        },
+        "test-conductivity-of-unknown-substances": {
+            "train": (110, 111),
+            "dev": (120, 121),
+            "test": (130, 131),
+        },
+    }
+
+    def __init__(self):
+        self.task_name = ""
+        self.variation_idx = 0
+        self.score = 0
+        self.loads = []
+        self.closed = False
+
+    def load(self, task_name, variation_idx=0, generateGoldPath=False):
+        del generateGoldPath
+        self.task_name = task_name
+        self.variation_idx = int(variation_idx)
+        self.score = 0
+        self.loads.append((task_name, self.variation_idx))
+
+    def reset(self):
+        return (
+            f"Initial observation for {self.task_name} variation {self.variation_idx}.",
+            self._info(),
+        )
+
+    def step(self, command):
+        if command == "progress":
+            self.score = 25
+            return "Partial progress.", 25, False, self._info()
+        if command == "complete":
+            reward = 100 - self.score
+            self.score = 100
+            return "Native task completed.", reward, True, self._info()
+        if command == "fail":
+            return "Native task ended without success.", 0, True, self._info()
+        return f"Executed {command}.", 0, False, self._info()
+
+    def get_variations_train(self):
+        return self.SPLITS[self.task_name]["train"]
+
+    def get_variations_dev(self):
+        return self.SPLITS[self.task_name]["dev"]
+
+    def get_variations_test(self):
+        return self.SPLITS[self.task_name]["test"]
+
+    def get_max_variations(self, task_name):
+        return 900 if task_name == "test-conductivity" else 600
+
+    def get_task_description(self):
+        return self._info()["taskDesc"]
+
+    def close(self):
+        self.closed = True
+
+    def _info(self):
+        return {
+            "score": self.score,
+            "taskDesc": f"Task Description: execute {self.task_name}.",
+            "taskName": self.task_name,
+            "variationIdx": self.variation_idx,
+        }
 
 _SOLUTIONS = {
     SCIWORLD_CONDUCTIVITY_SURFACE: [
@@ -225,17 +299,136 @@ class SciWorldMemoryContractTest(unittest.TestCase):
                 backend="scienceworld",
             )
 
-    def test_native_sop_fails_closed_until_multi_episode_orchestrator_exists(self):
-        with patch(
-            "agentenv_agentmemory.domains.sciworld._require_scienceworld_dependency"
+    def test_native_sop_orbit_resets_trace_but_preserves_policy_ltm(self):
+        module = SimpleNamespace(ScienceWorldEnv=_FakeNativeScienceWorldEnv)
+        with (
+            patch(
+                "agentenv_agentmemory.domains.sciworld._require_scienceworld_dependency",
+                return_value=module,
+            ),
+            patch("agentenv_agentmemory.domains.sciworld._attest_native_splits"),
         ):
-            factory = SciWorldMemoryFactory(
-                surface=SCIWORLD_SOP_MEMORY_SURFACE,
-                backend="scienceworld",
+            wrapper = DomainEnvWrapper(
+                SciWorldMemoryFactory(
+                    surface=SCIWORLD_SOP_MEMORY_SURFACE,
+                    backend="scienceworld",
+                    split="dev",
+                    task_count=2,
+                )
             )
-        self.assertTrue(factory.metadata()["requires_multi_episode_orchestrator"])
-        with self.assertRaisesRegex(RuntimeError, "multi-episode orbit driver"):
-            factory.create("sop-native-contract-test")
+            created = wrapper.create()
+        env_id = created["id"]
+        try:
+            self.assertIn("execute test-conductivity", created["observation"])
+            stored = wrapper.step(
+                env_id,
+                'Action: ADD {"key": "conductivity SOP", "value": "build the circuit"}',
+            )
+            self.assertEqual(
+                stored["info"]["domain_evidence"]["memory_inventory_count"],
+                1,
+            )
+
+            with patch("agentenv_agentmemory.domains.sciworld._attest_native_splits"):
+                advanced = wrapper.step(
+                    env_id,
+                    'Action: SCI_ACTION {"action": "complete"}',
+                )
+            self.assertFalse(advanced["done"])
+            self.assertEqual(advanced["info"]["phase_index"], 1)
+            self.assertIn(
+                "execute test-conductivity-of-unknown-substances",
+                advanced["observation"],
+            )
+            self.assertIn("Current-phase trace:\n<empty>", advanced["observation"])
+            self.assertEqual(
+                advanced["info"]["domain_evidence"]["memory_inventory_count"],
+                1,
+            )
+
+            retrieved = wrapper.step(
+                env_id,
+                'Action: RETRIEVE {"query": "conductivity SOP", "top_k": 1}',
+            )
+            self.assertIn("build the circuit", retrieved["observation"])
+            completed = wrapper.step(
+                env_id,
+                'Action: SCI_ACTION {"action": "complete"}',
+            )
+            self.assertTrue(completed["done"])
+            self.assertTrue(completed["info"]["episode_success"])
+            self.assertEqual(completed["info"]["phase_index"], 2)
+
+            native = wrapper.envs[env_id].driver.env
+            self.assertIn(("test-conductivity", 20), native.loads)
+            self.assertIn(
+                ("test-conductivity-of-unknown-substances", 120),
+                native.loads,
+            )
+        finally:
+            if env_id in wrapper.envs:
+                wrapper.close(env_id)
+
+    def test_native_reward_uses_delta_and_requires_full_score_for_success(self):
+        module = SimpleNamespace(ScienceWorldEnv=_FakeNativeScienceWorldEnv)
+        with (
+            patch(
+                "agentenv_agentmemory.domains.sciworld._require_scienceworld_dependency",
+                return_value=module,
+            ),
+            patch("agentenv_agentmemory.domains.sciworld._attest_native_splits"),
+        ):
+            wrapper = DomainEnvWrapper(
+                SciWorldMemoryFactory(
+                    surface=SCIWORLD_CONDUCTIVITY_SURFACE,
+                    backend="scienceworld",
+                    split="test",
+                    task_count=1,
+                )
+            )
+            env_id = wrapper.create()["id"]
+        try:
+            progress = wrapper.step(
+                env_id,
+                'Action: SCI_ACTION {"action": "progress"}',
+            )
+            self.assertEqual(progress["reward"], 25.0)
+            completed = wrapper.step(
+                env_id,
+                'Action: SCI_ACTION {"action": "complete"}',
+            )
+            self.assertEqual(completed["reward"], 75.0)
+            self.assertTrue(completed["info"]["episode_success"])
+        finally:
+            if env_id in wrapper.envs:
+                wrapper.close(env_id)
+
+        with (
+            patch(
+                "agentenv_agentmemory.domains.sciworld._require_scienceworld_dependency",
+                return_value=module,
+            ),
+            patch("agentenv_agentmemory.domains.sciworld._attest_native_splits"),
+        ):
+            failed_wrapper = DomainEnvWrapper(
+                SciWorldMemoryFactory(
+                    surface=SCIWORLD_CONDUCTIVITY_SURFACE,
+                    backend="scienceworld",
+                    task_count=1,
+                )
+            )
+            failed_env_id = failed_wrapper.create()["id"]
+        try:
+            failed = failed_wrapper.step(
+                failed_env_id,
+                'Action: SCI_ACTION {"action": "fail"}',
+            )
+            self.assertTrue(failed["done"])
+            self.assertEqual(failed["info"]["status"], "failed")
+            self.assertFalse(failed["info"]["episode_success"])
+        finally:
+            if failed_env_id in failed_wrapper.envs:
+                failed_wrapper.close(failed_env_id)
 
     def test_contract_says_model_manages_external_memory_not_manual_window(self):
         for surface in SCIWORLD_SURFACES.values():

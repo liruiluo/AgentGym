@@ -292,7 +292,14 @@ def launch() -> None:
             }
         )
     elif args.surface in SCIWORLD_SURFACES.values():
-        configured.update({"AGENTMEMORY_SCIWORLD_BACKEND": args.sciworld_backend})
+        if args.split == "all":
+            parser.error("SciWorld requires an explicit train, dev, or test split")
+        configured.update(
+            {
+                "AGENTMEMORY_SCIWORLD_BACKEND": args.sciworld_backend,
+                "AGENTMEMORY_SPLIT": args.split,
+            }
+        )
         if args.sciworld_task_count is not None:
             if args.sciworld_task_count < 1:
                 parser.error("--sciworld-task-count must be positive")
