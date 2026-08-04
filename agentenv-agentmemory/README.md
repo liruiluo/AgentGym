@@ -399,6 +399,15 @@ Run `scripts/smoke/smoke_latent_preference_webshop_native.py` with the same
 pinned inputs to execute paired tasks through real `search`, `click[ASIN]`,
 `Buy Now`, `ADD`, and later-session `RETRIEVE` transitions.
 
+The negative-constraint surface accepts only a native-certified three-candidate
+product pool. Run
+`scripts/smoke/smoke_negative_constraint_webshop_native.py` with its frozen
+pool, catalog, attributes, Lucene manifest, price seed, and MemoryArena commit.
+The default smoke executes all three counterfactual branches for six sessions:
+session zero writes the standing exclusion constraint, sessions one through
+five retrieve it with query-only top-1, and every session completes the native
+`search -> click[ASIN] -> click[Buy Now]` path with receipt verification.
+
 ## Resident native smoke server
 
 The direct native smoke scripts load the 5.48 GB catalog, construct roughly
