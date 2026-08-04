@@ -855,6 +855,15 @@ class SciWorldFixtureDriver:
                     "experiment_matched": matches,
                 },
             ),
+            reward_components=(
+                {
+                    "name": "sciworld_experiment_observed",
+                    "value": 0.0,
+                    "op": "SCI_ACTION",
+                    "step": env_step,
+                    "experiment_matched": matches,
+                },
+            ),
             domain_evidence={
                 "task_id": self.task.task_id,
                 "dependency": phase.dependency,

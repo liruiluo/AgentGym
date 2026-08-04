@@ -270,6 +270,10 @@ class SciWorldMemoryContractTest(unittest.TestCase):
                             self.assertTrue(
                                 observed["info"]["action_execution"]["experiment_matched"]
                             )
+                            self.assertEqual(
+                                observed["info"]["reward_components"][0]["name"],
+                                "sciworld_experiment_observed",
+                            )
                             stored = wrapper.step(
                                 env_id,
                                 'Action: ADD '
