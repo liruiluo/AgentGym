@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from agentenv_agentmemory.domains import (
@@ -13,6 +15,7 @@ from agentenv_agentmemory.domains import (
     TRAVEL_SURFACES,
 )
 from agentenv_agentmemory.env_wrapper import NATIVE_SURFACE
+from agentenv_agentmemory.filesystem_webshop_env import PROCEDURAL_FILESYSTEM_SURFACE
 from agentenv_agentmemory.compositional_recall_webshop_env import (
     COMPOSITIONAL_RECALL_SURFACE,
 )
@@ -85,6 +88,23 @@ class DomainLaunchTest(unittest.TestCase):
             "--split",
             split,
         ]
+
+    @classmethod
+    def _filesystem_arguments(cls, *, split="train"):
+        arguments = cls._procedural_arguments(split=split)
+        surface_index = arguments.index("--surface") + 1
+        arguments[surface_index] = PROCEDURAL_FILESYSTEM_SURFACE
+        arguments.extend(
+            [
+                "--memory-prompt-mode",
+                "natural_filesystem",
+                "--workspace-rg-binary",
+                "/opt/agentmemory/bin/rg",
+                "--workspace-rg-sha256",
+                "c" * 64,
+            ]
+        )
+        return arguments
 
     @staticmethod
     def _latent_preference_arguments(*, split="train"):
@@ -339,6 +359,96 @@ class DomainLaunchTest(unittest.TestCase):
         self.assertNotIn("AGENTMEMORY_MEMORYARENA_RAW_PATH", configured)
         self.assertNotIn("AGENTMEMORY_ANNOTATION_GATE_MANIFEST", configured)
         self.assertNotIn("AGENTMEMORY_ANNOTATION_MANUAL_EVIDENCE", configured)
+
+    def test_filesystem_webshop_binds_natural_prompt_and_zero_shaping(self):
+        configured, _ = self._launch(self._filesystem_arguments())
+
+        self.assertEqual(
+            configured["AGENTMEMORY_SURFACE"], PROCEDURAL_FILESYSTEM_SURFACE
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_MEMORY_PROMPT_MODE"], "natural_filesystem"
+        )
+        self.assertEqual(configured["AGENTMEMORY_LTM_INVENTORY_MODE"], "hidden")
+        self.assertEqual(configured["AGENTMEMORY_LTM_TRANSITION_NOTICE_MODE"], "none")
+        self.assertEqual(configured["AGENTMEMORY_ACTION_LISTING_MODE"], "separate")
+        self.assertEqual(
+            configured["AGENTMEMORY_WORKSPACE_RG_BINARY"],
+            "/opt/agentmemory/bin/rg",
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_WORKSPACE_RG_SHA256"],
+            "c" * 64,
+        )
+        self.assertEqual(configured["AGENTMEMORY_FIRST_VALID_ADD_REWARD"], "0.0")
+        self.assertEqual(
+            configured["AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD"],
+            "0.0",
+        )
+
+    def test_filesystem_webshop_rejects_legacy_modes_and_reward_shaping(self):
+        cases = (
+            ("prompt", ["--memory-prompt-mode", "legacy"]),
+            ("inventory", ["--ltm-inventory-mode", "keys"]),
+            ("reward", ["--memory-first-add-reward", "0.1"]),
+        )
+        for label, replacement in cases:
+            arguments = self._filesystem_arguments()
+            flag = replacement[0]
+            if flag in arguments:
+                arguments[arguments.index(flag) + 1] = replacement[1]
+            else:
+                arguments.extend(replacement)
+            with self.subTest(label=label), self.assertRaises(SystemExit):
+                self._launch(arguments)
+
+    def test_filesystem_webshop_requires_both_rg_pin_fields(self):
+        for flag in ("--workspace-rg-binary", "--workspace-rg-sha256"):
+            arguments = self._filesystem_arguments()
+            index = arguments.index(flag)
+            del arguments[index : index + 2]
+            with self.subTest(flag=flag), self.assertRaises(SystemExit):
+                self._launch(arguments)
+
+    def test_filesystem_intervention_eval_requires_private_token_file(self):
+        base = [
+            *self._filesystem_arguments(),
+            "--service-role",
+            "intervention_eval",
+            "--runtime-source-id",
+            "d" * 40,
+        ]
+        with self.assertRaises(SystemExit):
+            self._launch(base)
+
+        with tempfile.TemporaryDirectory() as raw:
+            token_path = Path(raw) / "token"
+            token_path.write_text("t" * 48 + "\n", encoding="utf-8")
+            token_path.chmod(0o600)
+            configured, _ = self._launch(
+                [
+                    *base,
+                    "--workspace-intervention-token-file",
+                    str(token_path),
+                ]
+            )
+        self.assertEqual(
+            configured["AGENTMEMORY_SERVICE_ROLE"],
+            "intervention_eval",
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_WORKSPACE_INTERVENTION_TOKEN"],
+            "t" * 48,
+        )
+
+        with self.assertRaises(SystemExit):
+            self._launch(
+                [
+                    *self._filesystem_arguments(),
+                    "--workspace-intervention-token-file",
+                    "/tmp/not-allowed",
+                ]
+            )
 
     def test_procedural_webshop_rejects_odd_task_count(self):
         uvicorn = types.ModuleType("uvicorn")

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import stat
+from pathlib import Path
 
 from .annotation_gate import ANNOTATION_GATE_MODES
 from .domains import (
@@ -24,8 +26,10 @@ from .memoryarena_webshop_env import (
 from .env_wrapper import (
     LATENT_PREFERENCE_PROMPT_MODE,
     MEMORY_PROMPT_MODES,
+    NATURAL_FILESYSTEM_PROMPT_MODE,
     SELECTIVE_MEMORY_PROMPT_MODE,
 )
+from .filesystem_webshop_env import PROCEDURAL_FILESYSTEM_SURFACE
 from .compositional_recall import (
     PROVIDER_MODE_FIXED_WINDOW as COMPOSITIONAL_PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM as COMPOSITIONAL_PROVIDER_MODE_RESEEDED_STREAM,
@@ -94,6 +98,7 @@ def launch() -> None:
         choices=[
             NATIVE_SURFACE,
             PROCEDURAL_SURFACE,
+            PROCEDURAL_FILESYSTEM_SURFACE,
             LATENT_PREFERENCE_SURFACE,
             RECENCY_OVERRIDE_SURFACE,
             DISTRACTOR_ROBUSTNESS_SURFACE,
@@ -144,6 +149,9 @@ def launch() -> None:
         choices=PROVIDER_MODES,
     )
     parser.add_argument("--procedural-start-orbit", type=int, default=0)
+    parser.add_argument("--workspace-rg-binary")
+    parser.add_argument("--workspace-rg-sha256")
+    parser.add_argument("--workspace-intervention-token-file")
     parser.add_argument("--latent-preference-product-pool")
     parser.add_argument("--latent-preference-product-pool-sha256")
     parser.add_argument("--latent-preference-task-count", type=int)
@@ -269,8 +277,10 @@ def launch() -> None:
     )
     args = parser.parse_args()
 
-    if args.service_role == "smoke" and not args.runtime_source_id:
-        parser.error("--service-role smoke requires --runtime-source-id")
+    if args.service_role in {"smoke", "intervention_eval"} and not args.runtime_source_id:
+        parser.error(
+            f"--service-role {args.service_role} requires --runtime-source-id"
+        )
 
     preference_surfaces = {
         LATENT_PREFERENCE_SURFACE,
@@ -280,7 +290,52 @@ def launch() -> None:
         INTENT_CLARIFICATION_SURFACE,
         NEGATIVE_CONSTRAINT_SURFACE,
     }
-    if args.surface == SELECTIVE_MEMORY_USE_SURFACE:
+    if args.surface == PROCEDURAL_FILESYSTEM_SURFACE:
+        if not args.workspace_rg_binary or not args.workspace_rg_sha256:
+            parser.error(
+                "the Codex workspace surface requires --workspace-rg-binary and "
+                "--workspace-rg-sha256"
+            )
+        if args.memory_prompt_mode != NATURAL_FILESYSTEM_PROMPT_MODE:
+            parser.error(
+                "the filesystem-v2 surface requires "
+                f"--memory-prompt-mode {NATURAL_FILESYSTEM_PROMPT_MODE}"
+            )
+        if any(
+            value not in {None, 0.0}
+            for value in (
+                args.memory_first_add_reward,
+                args.memory_first_later_retrieve_reward,
+            )
+        ):
+            parser.error(
+                "the filesystem-v2 surface refuses dedicated write/read reward shaping"
+            )
+        if (
+            args.ltm_inventory_mode != "hidden"
+            or args.ltm_transition_notice_mode != "none"
+            or args.action_listing_mode != "separate"
+        ):
+            parser.error(
+                "the filesystem-v2 surface refuses legacy LTM inventory, transition, "
+                "or unified action-listing modes"
+            )
+        if args.service_role == "intervention_eval":
+            if not args.workspace_intervention_token_file:
+                parser.error(
+                    "--service-role intervention_eval requires "
+                    "--workspace-intervention-token-file"
+                )
+        elif args.workspace_intervention_token_file:
+            parser.error(
+                "--workspace-intervention-token-file is valid only for the "
+                "intervention_eval service role"
+            )
+    elif args.service_role == "intervention_eval":
+        parser.error(
+            "--service-role intervention_eval is valid only for the filesystem-v2 surface"
+        )
+    elif args.surface == SELECTIVE_MEMORY_USE_SURFACE:
         if args.memory_prompt_mode != SELECTIVE_MEMORY_PROMPT_MODE:
             parser.error(
                 "the selective-memory-use surface requires "
@@ -295,6 +350,7 @@ def launch() -> None:
     elif args.memory_prompt_mode in {
         LATENT_PREFERENCE_PROMPT_MODE,
         SELECTIVE_MEMORY_PROMPT_MODE,
+        NATURAL_FILESYSTEM_PROMPT_MODE,
     }:
         parser.error(
             "specialized --memory-prompt-mode is only valid for its approved "
@@ -310,6 +366,26 @@ def launch() -> None:
     }
     if args.runtime_source_id:
         configured["AGENTMEMORY_RUNTIME_SOURCE_ID"] = args.runtime_source_id
+    if args.workspace_intervention_token_file:
+        token_path = Path(args.workspace_intervention_token_file).expanduser()
+        try:
+            token_info = token_path.lstat()
+            token = token_path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            parser.error(f"cannot read workspace intervention token file: {exc}")
+        if (
+            token_path.is_symlink()
+            or not stat.S_ISREG(token_info.st_mode)
+            or token_info.st_mode & 0o077
+        ):
+            parser.error(
+                "workspace intervention token file must be a private regular file"
+            )
+        if len(token) < 32 or any(character.isspace() for character in token):
+            parser.error(
+                "workspace intervention token must contain at least 32 non-whitespace characters"
+            )
+        configured["AGENTMEMORY_WORKSPACE_INTERVENTION_TOKEN"] = token
     if args.surface == NATIVE_SURFACE:
         _require_args(
             parser,
@@ -364,7 +440,7 @@ def launch() -> None:
                 "AGENTMEMORY_ACTION_LISTING_MODE": args.action_listing_mode,
             }
         )
-    elif args.surface == PROCEDURAL_SURFACE:
+    elif args.surface in {PROCEDURAL_SURFACE, PROCEDURAL_FILESYSTEM_SURFACE}:
         _require_args(
             parser,
             args,
@@ -425,12 +501,16 @@ def launch() -> None:
                 "AGENTMEMORY_SPLIT": args.split,
                 "AGENTMEMORY_WEBSHOP_PRICE_SEED": str(args.price_seed),
                 "AGENTMEMORY_FIRST_VALID_ADD_REWARD": str(
-                    FIRST_VALID_ADD_BONUS
+                    0.0
+                    if args.surface == PROCEDURAL_FILESYSTEM_SURFACE
+                    else FIRST_VALID_ADD_BONUS
                     if args.memory_first_add_reward is None
                     else args.memory_first_add_reward
                 ),
                 "AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD": str(
-                    FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS
+                    0.0
+                    if args.surface == PROCEDURAL_FILESYSTEM_SURFACE
+                    else FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS
                     if args.memory_first_later_retrieve_reward is None
                     else args.memory_first_later_retrieve_reward
                 ),
@@ -442,6 +522,13 @@ def launch() -> None:
                 "AGENTMEMORY_ACTION_LISTING_MODE": args.action_listing_mode,
             }
         )
+        if args.surface == PROCEDURAL_FILESYSTEM_SURFACE:
+            configured["AGENTMEMORY_WORKSPACE_RG_BINARY"] = (
+                args.workspace_rg_binary
+            )
+            configured["AGENTMEMORY_WORKSPACE_RG_SHA256"] = (
+                args.workspace_rg_sha256
+            )
     elif args.surface == LATENT_PREFERENCE_SURFACE:
         _require_args(
             parser,

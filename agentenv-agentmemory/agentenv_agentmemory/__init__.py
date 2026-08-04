@@ -4,6 +4,7 @@ from .intent_clarification_webshop_env import IntentClarificationWebShopEnv
 from .memoryarena_webshop_env import MemoryArenaWebShopEnv
 from .latent_preference_webshop_env import LatentPreferenceWebShopEnv
 from .procedural_webshop_env import ProceduralMemoryWebShopEnv
+from .filesystem_webshop_env import ProceduralFilesystemWebShopEnv
 from .recency_override_webshop_env import RecencyOverrideWebShopEnv
 from .selective_memory_use_webshop_env import SelectiveMemoryUseWebShopEnv
 
@@ -21,6 +22,7 @@ __all__ = [
     "LatentPreferenceWebShopEnv",
     "MemoryArenaWebShopEnv",
     "ProceduralMemoryWebShopEnv",
+    "ProceduralFilesystemWebShopEnv",
     "RecencyOverrideWebShopEnv",
     "SelectiveMemoryUseWebShopEnv",
     "launch",

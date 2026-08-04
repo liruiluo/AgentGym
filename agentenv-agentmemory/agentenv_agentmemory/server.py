@@ -1,6 +1,12 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 
-from .model import CloseRequestBody, ResetRequestBody, StepRequestBody
+from .model import (
+    CloseRequestBody,
+    ResetRequestBody,
+    StepRequestBody,
+    WorkspaceExportRequestBody,
+    WorkspaceInterventionRequestBody,
+)
 from .runtime.server_factory import build_server
 from .service_identity import decorate_service_metadata
 
@@ -48,3 +54,46 @@ def detail(id: int):
 @app.post("/close")
 def close(body: CloseRequestBody):
     return server.close(body.id)
+
+
+@app.post("/workspace-intervention")
+def workspace_intervention(
+    body: WorkspaceInterventionRequestBody,
+    token: str = Header(alias="X-AgentMemory-Intervention-Token"),
+):
+    control = getattr(server, "workspace_intervention", None)
+    if control is None:
+        raise HTTPException(
+            status_code=404,
+            detail="workspace intervention control is unavailable on this surface",
+        )
+    try:
+        return control(
+            body.id,
+            arm=body.arm,
+            source_env_id=body.source_env_id,
+            token=token,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (KeyError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/workspace-export")
+def workspace_export(
+    body: WorkspaceExportRequestBody,
+    token: str = Header(alias="X-AgentMemory-Intervention-Token"),
+):
+    control = getattr(server, "workspace_export", None)
+    if control is None:
+        raise HTTPException(
+            status_code=404,
+            detail="workspace export control is unavailable on this surface",
+        )
+    try:
+        return control(body.id, token=token)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except (KeyError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

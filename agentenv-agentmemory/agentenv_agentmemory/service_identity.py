@@ -7,7 +7,7 @@ from typing import Any, Mapping
 
 
 SERVICE_IDENTITY_SCHEMA = "agentmemory_service_identity_v1"
-SERVICE_ROLES = ("formal", "smoke")
+SERVICE_ROLES = ("formal", "smoke", "intervention_eval")
 
 
 def decorate_service_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
@@ -19,9 +19,9 @@ def decorate_service_metadata(metadata: Mapping[str, Any]) -> dict[str, Any]:
             "AGENTMEMORY_SERVICE_ROLE must be one of: " + ", ".join(SERVICE_ROLES)
         )
     source_id = os.environ.get("AGENTMEMORY_RUNTIME_SOURCE_ID", "").strip()
-    if role == "smoke" and not source_id:
+    if role in {"smoke", "intervention_eval"} and not source_id:
         raise RuntimeError(
-            "A smoke service requires AGENTMEMORY_RUNTIME_SOURCE_ID so clients "
+            f"A {role} service requires AGENTMEMORY_RUNTIME_SOURCE_ID so clients "
             "cannot reuse stale code."
         )
 

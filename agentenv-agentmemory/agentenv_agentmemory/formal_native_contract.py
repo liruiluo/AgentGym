@@ -5,14 +5,29 @@ import math
 import re
 from typing import Any, Sequence
 
+from .persistent_workspace import (
+    WORKSPACE_TOOL_OPS,
+    WorkspaceActionError,
+    parse_workspace_action,
+)
 from .reward_hierarchy import INVALID_ACTION_PENALTY, WRONG_BUY_TERMINAL_FAILURE
 
 
 MEMORY_ACTION_OPS = frozenset(
     {"ADD", "UPDATE", "DELETE", "RETRIEVE", "SUMMARY", "FILTER"}
 )
+WORKSPACE_ACTION_OPS = frozenset(WORKSPACE_TOOL_OPS)
 FORMAL_NATIVE_ACTION_OPS = frozenset(
-    {*MEMORY_ACTION_OPS, "SEARCH", "CLICK", "BUY", "ASK", "CLARIFY", "INVALID"}
+    {
+        *MEMORY_ACTION_OPS,
+        *WORKSPACE_ACTION_OPS,
+        "SEARCH",
+        "CLICK",
+        "BUY",
+        "ASK",
+        "CLARIFY",
+        "INVALID",
+    }
 )
 _NATIVE_ACTION_RE = re.compile(r"\A(search|click)\[([^\[\]\r\n]+)\]\Z")
 _MEMORY_ACTION_RE = re.compile(
@@ -43,6 +58,12 @@ def infer_raw_action_op(raw_action: str) -> str:
         if not isinstance(payload, dict):
             return "INVALID"
         return memory.group(1).upper()
+    try:
+        workspace_action = parse_workspace_action(text)
+    except WorkspaceActionError:
+        return "INVALID"
+    if workspace_action is not None:
+        return workspace_action.tool_name.upper()
     ask = _ASK_ACTION_RE.fullmatch(text)
     if ask is not None:
         try:
@@ -72,6 +93,8 @@ def resolve_formal_action_op(
         raise ValueError("A native click action produced a non-CLICK/BUY tool operation.")
     if inferred in MEMORY_ACTION_OPS and tool_op != inferred:
         raise ValueError("A memory action produced a different tool operation.")
+    if inferred in WORKSPACE_ACTION_OPS and tool_op != inferred:
+        raise ValueError("A workspace action produced a different tool operation.")
     if inferred == "ASK" and tool_op != "CLARIFY":
         raise ValueError("An ASK action produced a non-CLARIFY tool operation.")
     if inferred == "INVALID":

@@ -16,6 +16,8 @@ from ..domains import (
     TravelPlannerFactory,
 )
 from ..env_wrapper import AgentMemoryWrapper, NATIVE_SURFACE
+from ..filesystem_webshop_env import PROCEDURAL_FILESYSTEM_SURFACE
+from ..filesystem_wrapper import ProceduralFilesystemAgentMemoryWrapper
 from ..compositional_recall_webshop_env import COMPOSITIONAL_RECALL_SURFACE
 from ..compositional_recall_wrapper import CompositionalRecallAgentMemoryWrapper
 from ..distractor_robustness_webshop_env import DISTRACTOR_ROBUSTNESS_SURFACE
@@ -53,6 +55,8 @@ def build_server():
         return AgentMemoryWrapper()
     if surface == PROCEDURAL_SURFACE:
         return ProceduralAgentMemoryWrapper()
+    if surface == PROCEDURAL_FILESYSTEM_SURFACE:
+        return ProceduralFilesystemAgentMemoryWrapper()
     if surface == LATENT_PREFERENCE_SURFACE:
         return LatentPreferenceAgentMemoryWrapper()
     if surface == RECENCY_OVERRIDE_SURFACE:

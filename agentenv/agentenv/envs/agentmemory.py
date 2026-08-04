@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -124,6 +125,55 @@ AGENTMEMORY_FUNCTION_DESCRIPTION = [
     },
 ]
 
+AGENTMEMORY_FILESYSTEM_FUNCTION_DESCRIPTION = [
+    *AGENTMEMORY_FUNCTION_DESCRIPTION[:2],
+    {
+        "name": "shell_command",
+        "description": (
+            "Run one shell command inside the private, networkless, "
+            "resource-bounded episode workspace."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The shell command to execute.",
+                },
+                "workdir": {
+                    "type": "string",
+                    "description": "Optional workspace-relative working directory.",
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional wall-clock timeout in milliseconds.",
+                },
+            },
+            "required": ["command"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "apply_patch",
+        "description": (
+            "Apply one Codex-style *** Begin Patch ... *** End Patch patch to "
+            "workspace-relative files."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "patch": {
+                    "type": "string",
+                    "description": "The complete multiline Codex patch payload.",
+                },
+            },
+            "required": ["patch"],
+            "additionalProperties": False,
+        },
+    },
+]
+
 AGENTMEMORY_ASK_FUNCTION_DESCRIPTION = {
     "name": "ask",
     "description": (
@@ -154,6 +204,12 @@ FUNCTION_TO_ACTION = {
     "filter": "FILTER",
     "ask": "ASK",
 }
+FILESYSTEM_FUNCTION_TO_ACTION = {
+    "search": "search",
+    "click": "click",
+    "shell_command": "shell_command",
+    "apply_patch": "apply_patch",
+}
 
 MEMORY_ACTION_NAMES = ("ADD", "UPDATE", "DELETE", "RETRIEVE", "SUMMARY", "FILTER")
 CLARIFICATION_ACTION_NAMES = ("ASK",)
@@ -165,10 +221,19 @@ JSON_ACTION_RE = re.compile(
     r"\A(" + "|".join(JSON_ACTION_NAMES) + r")\s+(\{.*\})\Z",
     flags=re.DOTALL,
 )
+FILESYSTEM_ACTION_NAMES = ("shell_command", "apply_patch")
+FILESYSTEM_JSON_ACTION_RE = re.compile(
+    r"\Ashell_command\s+(\{.*\})\Z",
+    flags=re.DOTALL,
+)
+FILESYSTEM_APPLY_PATCH_PREFIX = "apply_patch\n"
 FORMAL_SCHEMA_V3 = "agentmemory_formal_step_v3"
 WEBSHOP_V2_SURFACE = "memoryarena_webshop_native_v1"
 PROCEDURAL_WEBSHOP_SURFACE = (
     "agentmemory_webshop_procedural_natural_chain_train_v1"
+)
+PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE = (
+    "agentmemory_webshop_procedural_natural_chain_filesystem_v2"
 )
 LATENT_PREFERENCE_WEBSHOP_SURFACE = (
     "agentmemory_webshop_latent_preference_train_v1"
@@ -210,12 +275,90 @@ LATENT_PREFERENCE_SOP_WEBSHOP_SURFACES = frozenset(
 PROGRAMMATIC_WEBSHOP_SURFACES = frozenset(
     {
         PROCEDURAL_WEBSHOP_SURFACE,
+        PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE,
         SELECTIVE_MEMORY_USE_WEBSHOP_SURFACE,
         *LATENT_PREFERENCE_SOP_WEBSHOP_SURFACES,
     }
 )
 LATENT_PREFERENCE_PROMPT_MODE = "latent_preference_sop"
 SELECTIVE_MEMORY_PROMPT_MODE = "selective_memory_sop"
+NATURAL_FILESYSTEM_PROMPT_MODE = "natural_filesystem"
+FILESYSTEM_WORKSPACE_LIMIT_FIELDS = frozenset(
+    {
+        "max_path_chars",
+        "max_files",
+        "max_directories",
+        "max_file_bytes",
+        "max_total_bytes",
+        "max_command_chars",
+        "max_patch_bytes",
+        "default_timeout_ms",
+        "max_timeout_ms",
+        "cpu_seconds",
+        "address_space_bytes",
+        "max_processes",
+        "max_open_files",
+        "stdout_bytes",
+        "stderr_bytes",
+        "tmp_bytes",
+        "tmp_inodes",
+    }
+)
+FILESYSTEM_SANDBOX_FIELDS = {
+    "contract": "linux_namespace_chroot_tmpfs_v1",
+    "formal_eligible": True,
+    "network": "new_namespace_no_routes",
+    "rootfs": "minimal_read_only_system_roots",
+    "workspace_mount": "bounded_tmpfs_copy_in_copy_out",
+    "shell": "bash_no_profile_no_rc",
+    "ripgrep_path": "/tools/rg",
+    "ripgrep_revalidation": "stat_fingerprint_before_each_command",
+    "model_identity": "exclusive_leased_high_uid_per_command",
+    "rlimit_nproc_scope": "host_uid_lease_per_concurrent_command",
+    "uid_lease_slots": 4096,
+    "no_new_privileges": True,
+    "capability_bounding_set": "empty",
+    "process_namespace": True,
+    "mount_namespace": True,
+    "ipc_namespace": True,
+    "uts_namespace": True,
+}
+FILESYSTEM_SANDBOX_BOOLEAN_FIELDS = frozenset(
+    {
+        "formal_eligible",
+        "no_new_privileges",
+        "process_namespace",
+        "mount_namespace",
+        "ipc_namespace",
+        "uts_namespace",
+    }
+)
+FILESYSTEM_SANDBOX_RESOURCE_FIELDS = frozenset(
+    {
+        "workspace_bytes",
+        "workspace_inodes",
+        "max_files",
+        "max_directories",
+        "max_file_bytes",
+        "max_path_chars",
+        "default_timeout_ms",
+        "max_timeout_ms",
+        "cpu_seconds",
+        "address_space_bytes",
+        "max_processes",
+        "max_open_files",
+        "stdout_bytes",
+        "stderr_bytes",
+        "tmp_bytes",
+        "tmp_inodes",
+    }
+)
+FILESYSTEM_SANDBOX_SHARED_LIMIT_FIELDS = frozenset(
+    FILESYSTEM_SANDBOX_RESOURCE_FIELDS - {"workspace_bytes", "workspace_inodes"}
+)
+FILESYSTEM_SANDBOX_FINGERPRINT_FIELDS = frozenset(
+    {"device", "inode", "mode", "size", "mtime_ns", "ctime_ns"}
+)
 MEMORY_PROMPT_MODES = (
     "legacy",
     "neutral",
@@ -223,6 +366,7 @@ MEMORY_PROMPT_MODES = (
     "neutral_horizon_responsibility",
     LATENT_PREFERENCE_PROMPT_MODE,
     SELECTIVE_MEMORY_PROMPT_MODE,
+    NATURAL_FILESYSTEM_PROMPT_MODE,
 )
 NEUTRAL_HORIZON_CONTEXT = (
     "This episode has six sequential shopping sessions. Later-session compatibility "
@@ -450,6 +594,176 @@ def _validate_procedural_metadata(metadata: Mapping[str, Any]) -> None:
     )
 
 
+def _validate_filesystem_sandbox_metadata(metadata: Mapping[str, Any]) -> None:
+    limits = metadata.get("workspace_limits")
+    if (
+        not isinstance(limits, Mapping)
+        or not FILESYSTEM_WORKSPACE_LIMIT_FIELDS.issubset(limits)
+        or any(
+            type(limits[name]) is not int or limits[name] <= 0
+            for name in FILESYSTEM_WORKSPACE_LIMIT_FIELDS
+        )
+    ):
+        raise RuntimeError(
+            "Filesystem AgentMemoryGym workspace_limits are incomplete or invalid"
+        )
+    if limits["default_timeout_ms"] > limits["max_timeout_ms"]:
+        raise RuntimeError(
+            "Filesystem AgentMemoryGym default timeout exceeds its maximum"
+        )
+    if limits["max_file_bytes"] > limits["max_total_bytes"]:
+        raise RuntimeError(
+            "Filesystem AgentMemoryGym file limit exceeds workspace capacity"
+        )
+
+    sandbox = metadata.get("workspace_sandbox")
+    if not isinstance(sandbox, Mapping):
+        raise RuntimeError("Filesystem AgentMemoryGym requires workspace_sandbox")
+    mismatches = []
+    for field, expected in FILESYSTEM_SANDBOX_FIELDS.items():
+        observed = sandbox.get(field)
+        if field in FILESYSTEM_SANDBOX_BOOLEAN_FIELDS:
+            matches = type(observed) is bool and observed is expected
+        elif field == "uid_lease_slots":
+            matches = type(observed) is int and observed == expected
+        else:
+            matches = observed == expected
+        if not matches:
+            mismatches.append(field)
+    if mismatches:
+        raise RuntimeError(
+            "Filesystem AgentMemoryGym workspace_sandbox is inconsistent: "
+            + ", ".join(sorted(mismatches))
+        )
+
+    observed_sha256 = sandbox.get("ripgrep_sha256")
+    expected_sha256 = sandbox.get("ripgrep_expected_sha256")
+    if (
+        not isinstance(observed_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", observed_sha256) is None
+        or expected_sha256 != observed_sha256
+    ):
+        raise RuntimeError(
+            "Filesystem AgentMemoryGym workspace_sandbox has an invalid ripgrep pin"
+        )
+    version = sandbox.get("ripgrep_version")
+    if not isinstance(version, str) or not version.strip():
+        raise RuntimeError(
+            "Filesystem AgentMemoryGym workspace_sandbox lacks a ripgrep version"
+        )
+    fingerprint = sandbox.get("ripgrep_startup_fingerprint")
+    if (
+        not isinstance(fingerprint, Mapping)
+        or not FILESYSTEM_SANDBOX_FINGERPRINT_FIELDS.issubset(fingerprint)
+        or any(
+            type(fingerprint[name]) is not int or fingerprint[name] < 0
+            for name in FILESYSTEM_SANDBOX_FINGERPRINT_FIELDS
+        )
+        or any(
+            fingerprint[name] <= 0
+            for name in FILESYSTEM_SANDBOX_FINGERPRINT_FIELDS - {"device"}
+        )
+    ):
+        raise RuntimeError(
+            "Filesystem AgentMemoryGym workspace_sandbox has an invalid ripgrep fingerprint"
+        )
+
+    resources = sandbox.get("resource_limits")
+    if (
+        not isinstance(resources, Mapping)
+        or not FILESYSTEM_SANDBOX_RESOURCE_FIELDS.issubset(resources)
+        or any(
+            type(resources[name]) is not int or resources[name] <= 0
+            for name in FILESYSTEM_SANDBOX_RESOURCE_FIELDS
+        )
+    ):
+        raise RuntimeError(
+            "Filesystem AgentMemoryGym workspace_sandbox resource_limits are invalid"
+        )
+    for name in FILESYSTEM_SANDBOX_SHARED_LIMIT_FIELDS:
+        if resources[name] != limits[name]:
+            raise RuntimeError(
+                f"Filesystem AgentMemoryGym sandbox/workspace limit mismatch: {name}"
+            )
+    if resources["workspace_bytes"] != limits["max_total_bytes"]:
+        raise RuntimeError(
+            "Filesystem AgentMemoryGym sandbox workspace_bytes mismatch"
+        )
+    if (
+        resources["workspace_inodes"]
+        != limits["max_files"] + limits["max_directories"] + 1
+    ):
+        raise RuntimeError(
+            "Filesystem AgentMemoryGym sandbox workspace_inodes mismatch"
+        )
+
+
+def _validate_filesystem_metadata(metadata: Mapping[str, Any]) -> None:
+    _validate_procedural_metadata(metadata)
+    expected = {
+        "memory_prompt_mode": NATURAL_FILESYSTEM_PROMPT_MODE,
+        "memory_management": "policy_managed_persistent_workspace",
+        "workspace_surface": "codex_workspace_v2",
+        "workspace_tool_contract": "codex_shell_command_apply_patch_v1",
+        "workspace_persistence": "episode_across_sessions",
+        "workspace_episode_isolation": True,
+        "workspace_shell_enabled": True,
+        "workspace_apply_patch_enabled": True,
+        "workspace_host_path_exposed": False,
+    }
+    mismatches = []
+    for key, expected_value in expected.items():
+        observed = metadata.get(key)
+        if type(expected_value) is bool:
+            matches = type(observed) is bool and observed is expected_value
+        else:
+            matches = observed == expected_value
+        if not matches:
+            mismatches.append(key)
+    if mismatches:
+        raise RuntimeError(
+            "Filesystem AgentMemoryGym metadata is inconsistent: "
+            + ", ".join(mismatches)
+        )
+    observed_ops = metadata.get("workspace_tool_ops")
+    if not isinstance(observed_ops, (list, tuple)) or {
+        str(value) for value in observed_ops
+    } != {"SHELL_COMMAND", "APPLY_PATCH"}:
+        raise RuntimeError(
+            "Filesystem AgentMemoryGym must expose exactly shell_command/apply_patch"
+        )
+    reward_contract = metadata.get("reward_contract")
+    if not isinstance(reward_contract, Mapping):
+        raise RuntimeError("Filesystem AgentMemoryGym metadata requires reward_contract")
+    for field in (
+        "workspace_action_reward",
+        "shell_command_reward",
+        "apply_patch_reward",
+    ):
+        value = reward_contract.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) != 0.0:
+            raise RuntimeError(
+                f"Filesystem AgentMemoryGym requires zero {field}"
+            )
+    if reward_contract.get("memory_specific_shaping") != "none":
+        raise RuntimeError(
+            "Filesystem AgentMemoryGym must disable memory-specific shaping"
+        )
+    _validate_filesystem_sandbox_metadata(metadata)
+    forbidden_legacy_fields = {
+        "ltm_inventory_mode",
+        "ltm_transition_notice_mode",
+        "ltm_inventory_key_max_chars",
+        "ltm_inventory_key_format",
+    }
+    leaked = sorted(forbidden_legacy_fields.intersection(metadata))
+    if leaked:
+        raise RuntimeError(
+            "Filesystem AgentMemoryGym leaks legacy LTM metadata: "
+            + ", ".join(leaked)
+        )
+
+
 def _validate_latent_preference_metadata(metadata: Mapping[str, Any]) -> None:
     provider = _validate_programmatic_metadata(
         metadata,
@@ -638,6 +952,50 @@ def _validate_selective_memory_use_metadata(
         )
 
 
+def build_filesystem_conversation_start(
+    action_format: ActionFormat,
+) -> tuple[ConversationMessage, ConversationMessage]:
+    interface = (
+        "You are operating a programmatically generated AgentMemoryGym WebShop "
+        "task with six shopping sessions and a private persistent workspace. "
+        "Native shopping actions are search[keywords] and click[current clickable "
+        "value]; click[Buy Now] commits the current product. A failed purchase ends "
+        "the episode without revealing the expected answer. The workspace persists "
+        "across shopping sessions within this episode and is reset between episodes. "
+        "Use shell_command with one JSON object containing command and optional workdir "
+        "and timeout_ms to inspect or manipulate files. Use apply_patch followed by a "
+        "multiline *** Begin Patch ... *** End Patch payload for precise file edits. "
+        "The shell is networkless and resource-bounded; paths stay inside the workspace. "
+        "Workspace actions have zero task reward and are optional. There is no host-path "
+        "access or dedicated memory API."
+    )
+    if action_format is ActionFormat.REACT:
+        prompt = (
+            interface
+            + " Reply in exactly this format:\n\nThought:\nbrief reasoning\n\n"
+            "Action:\n<exactly one native bracket action, shell_command JSON action, "
+            "or apply_patch newline action>"
+        )
+    elif action_format is ActionFormat.FUNCTION_CALLING:
+        prompt = (
+            interface
+            + " Invoke exactly one available function.\n\n"
+            + format_function_call_prompt(AGENTMEMORY_FILESYSTEM_FUNCTION_DESCRIPTION)
+        )
+    elif action_format is ActionFormat.CODE_AS_ACTION:
+        prompt = (
+            interface
+            + " Write Python code to call exactly one available function.\n\n"
+            + format_code_as_action_prompt(AGENTMEMORY_FILESYSTEM_FUNCTION_DESCRIPTION)
+        )
+    else:  # pragma: no cover - ActionFormat is closed over the three modes above.
+        raise ValueError(f"Unsupported AgentMemoryGym action format: {action_format}")
+    return (
+        ConversationMessage({"from": "human", "loss": None, "value": prompt}),
+        ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
+    )
+
+
 def build_procedural_conversation_start(
     action_format: ActionFormat,
     memory_prompt_mode: str,
@@ -649,6 +1007,17 @@ def build_procedural_conversation_start(
             "memory_prompt_mode must be one of: "
             + ", ".join(MEMORY_PROMPT_MODES)
             + "."
+        )
+    if surface == PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE:
+        if memory_prompt_mode != NATURAL_FILESYSTEM_PROMPT_MODE:
+            raise ValueError(
+                "The filesystem surface requires memory_prompt_mode="
+                f"{NATURAL_FILESYSTEM_PROMPT_MODE!r}."
+            )
+        return build_filesystem_conversation_start(action_format)
+    if memory_prompt_mode == NATURAL_FILESYSTEM_PROMPT_MODE:
+        raise ValueError(
+            "natural_filesystem prompt mode is only valid for the filesystem surface."
         )
     interface = (
         "You are operating a programmatically generated AgentMemoryGym WebShop "
@@ -945,6 +1314,188 @@ class AgentMemoryAdapter(BaseAdapter):
         return f"```python\n# {action_with_thought.thought}\n{function_name}(**{repr(arguments)})\n```"
 
 
+def format_filesystem_action(action_name: str, arguments: dict[str, Any]) -> str:
+    if action_name == "search":
+        return f"search[{_require_function_text(arguments, 'keywords')}]"
+    if action_name == "click":
+        return f"click[{_require_function_text(arguments, 'item')}]"
+    if action_name == "shell_command":
+        if not isinstance(arguments, dict):
+            raise ValueError("shell_command arguments must be an object.")
+        return "shell_command " + json.dumps(arguments, ensure_ascii=False)
+    if action_name == "apply_patch":
+        if not isinstance(arguments, dict) or set(arguments) != {"patch"}:
+            raise ValueError("apply_patch requires exactly patch:string.")
+        patch = arguments["patch"]
+        if not isinstance(patch, str) or not patch.strip():
+            raise ValueError("apply_patch patch must be a non-empty string.")
+        return FILESYSTEM_APPLY_PATCH_PREFIX + patch.strip()
+    raise ValueError(f"Unsupported filesystem AgentMemoryGym action: {action_name}")
+
+
+def parse_filesystem_env_action(action: str) -> tuple[str, dict[str, Any]]:
+    cleaned = action.strip()
+    native_match = NATIVE_ACTION_RE.fullmatch(cleaned)
+    if native_match is not None:
+        argument = native_match.group(2).strip()
+        key = "keywords" if native_match.group(1) == "search" else "item"
+        return native_match.group(1), {key: argument}
+    json_match = FILESYSTEM_JSON_ACTION_RE.fullmatch(cleaned)
+    if json_match is not None:
+        payload = json.loads(json_match.group(1))
+        if not isinstance(payload, dict):
+            raise ValueError("shell_command payload must be a JSON object.")
+        return "shell_command", payload
+    if cleaned.startswith(FILESYSTEM_APPLY_PATCH_PREFIX):
+        patch = cleaned[len(FILESYSTEM_APPLY_PATCH_PREFIX) :]
+        if not patch.strip():
+            raise ValueError("apply_patch patch must be non-empty.")
+        return "apply_patch", {"patch": patch}
+    raise ValueError(
+        "Expected one native bracket action, shell_command JSON action, or "
+        "apply_patch newline action."
+    )
+
+
+def extract_bare_filesystem_action(text: str) -> str:
+    cleaned = strip_think_prefix(text).strip()
+    if cleaned.endswith("</s>"):
+        cleaned = cleaned[:-4].strip()
+    try:
+        action_name, arguments = parse_filesystem_env_action(cleaned)
+        return format_filesystem_action(action_name, arguments)
+    except Exception:
+        return ""
+
+
+def parse_filesystem_code_action(code: str) -> str:
+    """Parse one literal tool call without executing policy-authored Python."""
+
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError as exc:
+        raise ValueError("Filesystem code action must be valid Python syntax.") from exc
+    if len(module.body) != 1 or not isinstance(module.body[0], ast.Expr):
+        raise ValueError("Filesystem code action must contain exactly one function call.")
+    call = module.body[0].value
+    if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+        raise ValueError("Filesystem code action must call one registered function.")
+    if call.args:
+        raise ValueError("Filesystem code action accepts keyword arguments only.")
+    function_name = call.func.id
+    action_name = FILESYSTEM_FUNCTION_TO_ACTION.get(function_name.lower())
+    if action_name is None:
+        raise ValueError(f"Invalid filesystem function name: {function_name}")
+    arguments: dict[str, Any] = {}
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            raise ValueError("Filesystem code action does not accept **kwargs expansion.")
+        if keyword.arg in arguments:
+            raise ValueError(
+                f"Filesystem code action repeats argument: {keyword.arg}"
+            )
+        try:
+            arguments[keyword.arg] = ast.literal_eval(keyword.value)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(
+                "Filesystem code action arguments must be Python literals."
+            ) from exc
+    try:
+        json.dumps(arguments, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Filesystem code action arguments must be JSON-compatible literals."
+        ) from exc
+    return format_filesystem_action(action_name, arguments)
+
+
+class FilesystemAgentMemoryAdapter(AgentMemoryAdapter):
+    """Surface-local parser that leaves legacy memory actions unchanged elsewhere."""
+
+    @staticmethod
+    def parse_react(text: str) -> ActionWithTought:
+        action_text = strip_think_prefix(text)
+        think_thought = ""
+        if action_text != text:
+            removed = text[: len(text) - len(action_text)]
+            think_thought = re.sub(
+                r"</?think\s*>", "", removed, flags=re.IGNORECASE
+            ).strip()
+        if "Action:" not in action_text:
+            bare_action = extract_bare_filesystem_action(action_text)
+            if bare_action:
+                return ActionWithTought(thought=think_thought, action=bare_action)
+        parsed = BaseAdapter.parse_react(action_text)
+        if parsed.action:
+            try:
+                action_name, arguments = parse_filesystem_env_action(parsed.action)
+                return ActionWithTought(
+                    thought=parsed.thought or think_thought,
+                    action=format_filesystem_action(action_name, arguments),
+                )
+            except Exception:
+                return ActionWithTought(
+                    thought=parsed.thought or think_thought,
+                    action="",
+                )
+        bare_action = extract_bare_filesystem_action(action_text)
+        if bare_action:
+            return ActionWithTought(
+                thought=parsed.thought or think_thought,
+                action=bare_action,
+            )
+        return ActionWithTought(thought=parsed.thought or think_thought, action="")
+
+    @staticmethod
+    def parse_function_calling(text: str) -> ActionWithTought:
+        fn_call = json.loads(
+            "{" + text.split("{", 1)[-1].rsplit("}", 1)[0] + "}",
+            strict=False,
+        )
+        function_name = fn_call["function_name"]
+        action_name = FILESYSTEM_FUNCTION_TO_ACTION.get(str(function_name).lower())
+        if action_name is None:
+            raise ValueError(f"Invalid filesystem function name: {function_name}")
+        return ActionWithTought(
+            thought=fn_call["thought"],
+            action=format_filesystem_action(action_name, fn_call["arguments"]),
+        )
+
+    @staticmethod
+    def to_function_calling(action_with_thought: ActionWithTought) -> str:
+        action_name, arguments = parse_filesystem_env_action(
+            action_with_thought.action
+        )
+        return json.dumps(
+            {
+                "thought": action_with_thought.thought,
+                "function_name": action_name.lower(),
+                "arguments": arguments,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    @staticmethod
+    def parse_code_as_action(text: str) -> ActionWithTought:
+        code = extract_python_code_blocks(text)
+        action = parse_filesystem_code_action(code)
+        return ActionWithTought(
+            thought=parse_python_code_comments(code),
+            action=action,
+        )
+
+    @staticmethod
+    def to_code_as_action(action_with_thought: ActionWithTought) -> str:
+        action_name, arguments = parse_filesystem_env_action(
+            action_with_thought.action
+        )
+        return (
+            f"```python\n# {action_with_thought.thought}\n"
+            f"{action_name.lower()}(**{repr(arguments)})\n```"
+        )
+
+
 class AgentMemoryEnvClient(BaseEnvClient):
     adapter_cls = AgentMemoryAdapter
     requires_ephemeral_context = True
@@ -973,6 +1524,14 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self.memory_prompt_mode: str | None = None
         self.is_v3 = self.formal_schema_version == FORMAL_SCHEMA_V3
         self.is_procedural = self.surface in PROGRAMMATIC_WEBSHOP_SURFACES
+        self.is_filesystem = (
+            self.surface == PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE
+        )
+        self.adapter_cls = (
+            FilesystemAgentMemoryAdapter
+            if self.is_filesystem
+            else AgentMemoryAdapter
+        )
         self.is_latent_preference = (
             self.surface == LATENT_PREFERENCE_WEBSHOP_SURFACE
         )
@@ -1003,7 +1562,9 @@ class AgentMemoryEnvClient(BaseEnvClient):
                     "AgentMemoryGym v3 domains currently require action_format='react'"
                 )
         elif self.is_procedural:
-            if self.is_latent_preference:
+            if self.is_filesystem:
+                _validate_filesystem_metadata(self.metadata)
+            elif self.is_latent_preference:
                 _validate_latent_preference_metadata(self.metadata)
             elif self.is_recency_override:
                 _validate_recency_override_metadata(self.metadata)
@@ -1030,6 +1591,13 @@ class AgentMemoryEnvClient(BaseEnvClient):
                     "AgentMemoryGym surface requires "
                     f"memory_prompt_mode={LATENT_PREFERENCE_PROMPT_MODE!r}"
                 )
+            if self.is_filesystem and (
+                memory_prompt_mode != NATURAL_FILESYSTEM_PROMPT_MODE
+            ):
+                raise RuntimeError(
+                    "AgentMemoryGym filesystem surface requires "
+                    f"memory_prompt_mode={NATURAL_FILESYSTEM_PROMPT_MODE!r}"
+                )
             if self.requires_selective_memory_sop and (
                 memory_prompt_mode != SELECTIVE_MEMORY_PROMPT_MODE
             ):
@@ -1040,9 +1608,11 @@ class AgentMemoryEnvClient(BaseEnvClient):
             if (
                 not self.requires_latent_preference_sop
                 and not self.requires_selective_memory_sop
+                and not self.is_filesystem
                 and memory_prompt_mode in {
                     LATENT_PREFERENCE_PROMPT_MODE,
                     SELECTIVE_MEMORY_PROMPT_MODE,
+                    NATURAL_FILESYSTEM_PROMPT_MODE,
                 }
             ):
                 raise RuntimeError(
@@ -1061,6 +1631,11 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 raise RuntimeError(
                     "AgentMemoryGym WebShop metadata has unsupported "
                     f"memory_prompt_mode: {memory_prompt_mode!r}"
+                )
+            if memory_prompt_mode == NATURAL_FILESYSTEM_PROMPT_MODE:
+                raise RuntimeError(
+                    "natural_filesystem prompt mode is only valid for the "
+                    "persistent-workspace surface"
                 )
             self.memory_prompt_mode = memory_prompt_mode
         self.data_len = data_len if data_len is not None else int(self.metadata["task_count"])

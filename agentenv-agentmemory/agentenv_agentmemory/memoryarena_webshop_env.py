@@ -176,7 +176,7 @@ class MemoryArenaWebShopEnv:
         parsed: ParsedAction | None = None
         action_executed = False
         try:
-            parsed = parse_mixed_action(action)
+            parsed = self._parse_action(action)
             if parsed.is_native:
                 observation, reward, done = self._step_native(parsed)
             else:
@@ -244,6 +244,9 @@ class MemoryArenaWebShopEnv:
 
         self.done = bool(done)
         return observation, float(reward), self.done, False, self.build_info()
+
+    def _parse_action(self, action: str) -> ParsedAction:
+        return parse_mixed_action(action)
 
     def close(self) -> None:
         self._close_native_session()

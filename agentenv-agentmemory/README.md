@@ -5,12 +5,14 @@ HTTP/runtime contract and adds the same policy-facing memory tools without
 exposing private answers. MemoryArena Formal Reasoning contains separate Math
 and Physics data domains. Search, Travel, and both Formal data domains expose
 separate paper-evaluation and fail-fast contracts. AMG keeps those nine frozen
-MemoryArena surfaces and adds one non-paper procedural training surface:
+MemoryArena surfaces and adds separate legacy-control and natural-filesystem
+procedural surfaces:
 
 | Source / contract | AMG surface |
 | --- | --- |
 | Web Shopping | `memoryarena_webshop_native_v1` |
-| Programmatic memory training | `agentmemory_webshop_procedural_natural_chain_train_v1` |
+| Programmatic memory / legacy API control | `agentmemory_webshop_procedural_natural_chain_train_v1` |
+| Programmatic memory / natural filesystem v2 | `agentmemory_webshop_procedural_natural_chain_filesystem_v2` |
 | Travel Planner / fail-fast | `memoryarena_travel_planner_failfast_one_action_v3` |
 | Travel Planner / paper eval | `memoryarena_travel_planner_paper_eval_one_action_v3` |
 | Web Search / public221 paper eval | `memoryarena_progressive_search_paper_eval_public221_one_action_v3` |
@@ -52,7 +54,7 @@ out-of-shortlist purchase, including another catalog item with the same natural
 attribute, without revealing the answer. This surface requires neither human
 review nor an LLM judge and is never paper-eligible.
 
-The Web Shopping action surface is:
+The legacy Web Shopping memory action surface is:
 
 ```text
 search[keywords]
@@ -71,6 +73,28 @@ listing identifiers as part of ordinary navigation. Product and option pages
 are navigated with `click[...]`, and only `click[Buy Now]` commits a purchase.
 The purchase receipt's ASIN is an internal verifier key, not a customer request.
 There is no formal synthetic `SEARCH`, `BUY`, `ANSWER`, or `GROUND` action.
+
+The natural-filesystem v2 surface instead exposes native WebShop navigation plus
+the two Codex workspace tools:
+
+```text
+shell_command {"command":"rg -n 'finish|color' .agent_memory","workdir":".","timeout_ms":10000}
+apply_patch
+*** Begin Patch
+*** Add File: .agent_memory/MEMORY.md
++selected finish: black
+*** End Patch
+```
+
+Its workspace starts empty, persists across all six shopping sessions in one
+episode, and is destroyed on reset/close. It exposes no `ADD`, `RETRIEVE`,
+`UPDATE`, `DELETE`, `SUMMARY`, `FILTER`, synthetic `Read/Write/Edit/Grep/Glob`,
+or host path. `shell_command` runs normal shell semantics inside a networkless,
+resource-bounded Linux namespace/chroot; `apply_patch` is parsed and applied
+transactionally by the harness. Every workspace action has zero task reward.
+Background evidence records exact workspace hashes and diffs, but shell use
+does not prove a specific file was read. Operation counts and temporal candidate
+chains are never treated as memory ability without the four-arm intervention.
 
 ## Runtime contract
 
@@ -295,6 +319,55 @@ PYTHONPATH=AgentGym/agentenv-agentmemory:AgentGym/agentenv \
 Run `scripts/smoke/smoke_procedural_memory_webshop_native.py` with the same
 pinned native inputs to exercise all six real search, product-page, purchase,
 `ADD`, and later-session `RETRIEVE` transitions.
+
+Launch the separate Codex-workspace v2 surface with the same native inputs and
+generator contract, plus the natural-filesystem prompt and both halves of the
+frozen ripgrep pin:
+
+```bash
+PYTHONPATH=AgentGym/agentenv-agentmemory:AgentGym/agentenv \
+/path/to/python -m agentenv_agentmemory.launch \
+  --surface agentmemory_webshop_procedural_natural_chain_filesystem_v2 \
+  --memoryarena-root /path/to/frozen/MemoryArena \
+  --memoryarena-base-commit 6cd9de14b71915e39ac742a20dc33785e14b6aab \
+  --items-file /path/to/items_shuffle.json \
+  --attributes-file /path/to/items_ins_v2.json \
+  --search-root /path/to/search_engine \
+  --java-home /path/to/java-home \
+  --lucene-index-manifest /path/to/original_lucene_index_files.sha256 \
+  --procedural-product-pool /path/to/certified_pool_v3.json \
+  --procedural-product-pool-sha256 <pool-file-sha256> \
+  --procedural-task-count 10000 \
+  --procedural-generator-seed 233 \
+  --split train \
+  --memory-prompt-mode natural_filesystem \
+  --workspace-rg-binary /path/to/pinned-static-rg \
+  --workspace-rg-sha256 <externally-pinned-rg-sha256> \
+  --run-id <run-id> \
+  --port 8000
+```
+
+The server hashes the executable before sandbox preflight and refuses a digest
+mismatch. It records the startup file identity and rechecks the lightweight
+device/inode/mode/size/mtime/ctime fingerprint before every command, so a
+replaced pin fails closed without rehashing the full shared-storage binary for
+every action. Concurrent commands hold distinct host-wide high-UID leases,
+which keeps `RLIMIT_NPROC` accounting isolated even across env-server
+processes. `scripts/smoke/smoke_workspace_sandbox_linux.py` is the rootful
+Linux security gate; `scripts/smoke/smoke_filesystem_memory_webshop_native.py`
+is the scripted native four-arm plumbing gate. Neither script is
+model-capability evidence.
+
+For a real-model causal evaluation, launch the same surface with
+`--service-role intervention_eval`, a frozen `--runtime-source-id`, and a
+private `0600 --workspace-intervention-token-file`. This role alone exposes
+authenticated `POST /workspace-export` and `POST /workspace-intervention`
+control endpoints. Export returns only policy-authored workspace bytes to the
+evaluator; intervention is accepted only after the first correct purchase and
+can copy `swapped` state only from the exact counterfactual pair. Neither
+operation is policy-visible, rewarded, or recorded as a policy action. The
+normal `formal` and `smoke` roles reject the token flag and do not enable this
+control plane.
 
 ## Programmatic latent user preferences
 

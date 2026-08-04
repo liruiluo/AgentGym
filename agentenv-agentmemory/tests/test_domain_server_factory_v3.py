@@ -17,6 +17,7 @@ from agentenv_agentmemory.domains import (
     TRAVEL_SURFACES,
 )
 from agentenv_agentmemory.env_wrapper import NATIVE_SURFACE
+from agentenv_agentmemory.filesystem_webshop_env import PROCEDURAL_FILESYSTEM_SURFACE
 from agentenv_agentmemory.compositional_recall_webshop_env import (
     COMPOSITIONAL_RECALL_SURFACE,
 )
@@ -76,6 +77,23 @@ class DomainServerFactoryTest(unittest.TestCase):
             patch.object(
                 server_factory,
                 "ProceduralAgentMemoryWrapper",
+                return_value=sentinel,
+            ) as wrapper,
+        ):
+            self.assertIs(server_factory.build_server(), sentinel)
+        wrapper.assert_called_once_with()
+
+    def test_filesystem_webshop_uses_dedicated_wrapper(self):
+        sentinel = object()
+        with (
+            patch.dict(
+                os.environ,
+                {"AGENTMEMORY_SURFACE": PROCEDURAL_FILESYSTEM_SURFACE},
+                clear=True,
+            ),
+            patch.object(
+                server_factory,
+                "ProceduralFilesystemAgentMemoryWrapper",
                 return_value=sentinel,
             ) as wrapper,
         ):

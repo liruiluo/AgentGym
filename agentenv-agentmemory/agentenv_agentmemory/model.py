@@ -13,3 +13,13 @@ class ResetRequestBody(BaseModel):
 
 class CloseRequestBody(BaseModel):
     id: int
+
+
+class WorkspaceInterventionRequestBody(BaseModel):
+    id: int
+    arm: str
+    source_env_id: int | None = None
+
+
+class WorkspaceExportRequestBody(BaseModel):
+    id: int

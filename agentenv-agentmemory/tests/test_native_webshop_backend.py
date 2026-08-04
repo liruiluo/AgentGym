@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import agentenv_agentmemory.native_webshop_backend as native_webshop_backend
 from agentenv_agentmemory.native_webshop_backend import (
     MemoryArenaNativeWebShopBackend,
     NATIVE_WEBSHOP_UPSTREAM_SCOPE,
@@ -106,12 +107,14 @@ class NativeWebShopBackendCompatibilityTests(unittest.TestCase):
             _OriginalSignatureSimServer.constructor_called = False
             try:
                 with (
-                    mock.patch(
-                        "agentenv_agentmemory.native_webshop_backend.importlib.import_module",
+                    mock.patch.object(
+                        native_webshop_backend.importlib,
+                        "import_module",
                         side_effect=lambda name: imported[name],
                     ),
-                    mock.patch(
-                        "agentenv_agentmemory.native_webshop_backend.attest_native_webshop_upstream",
+                    mock.patch.object(
+                        native_webshop_backend,
+                        "attest_native_webshop_upstream",
                         return_value={
                             "mode": "pinned_pristine_upstream",
                             "memoryarena_commit": "f" * 40,

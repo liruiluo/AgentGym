@@ -94,14 +94,41 @@ class ServiceIdentityTest(unittest.TestCase):
             third["service"]["fingerprint_sha256"],
         )
 
-    def test_smoke_role_requires_source_identity(self):
+    def test_nonformal_roles_require_source_identity(self):
+        for role in ("smoke", "intervention_eval"):
+            with (
+                self.subTest(role=role),
+                patch.dict(
+                    os.environ,
+                    {"AGENTMEMORY_SERVICE_ROLE": role},
+                    clear=True,
+                ),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "RUNTIME_SOURCE_ID"):
+                    decorate_service_metadata(fixture_metadata())
+
+    def test_intervention_eval_identity_is_distinct_from_smoke(self):
         with patch.dict(
             os.environ,
-            {"AGENTMEMORY_SERVICE_ROLE": "smoke"},
+            {
+                "AGENTMEMORY_SERVICE_ROLE": "intervention_eval",
+                "AGENTMEMORY_RUNTIME_SOURCE_ID": "8" * 40,
+                "AGENTMEMORY_RUN_ID": "causal-eval",
+                "MEMORYARENA_BASE_COMMIT": "6" * 40,
+            },
             clear=True,
         ):
-            with self.assertRaisesRegex(RuntimeError, "RUNTIME_SOURCE_ID"):
-                decorate_service_metadata(fixture_metadata())
+            intervention = decorate_service_metadata(fixture_metadata())
+        smoke = self._decorate(fixture_metadata())
+        self.assertEqual(intervention["service"]["role"], "intervention_eval")
+        self.assertEqual(
+            intervention["service"]["runtime_source_id"],
+            "8" * 40,
+        )
+        self.assertNotEqual(
+            intervention["service"]["fingerprint_sha256"],
+            smoke["service"]["fingerprint_sha256"],
+        )
 
 
 if __name__ == "__main__":

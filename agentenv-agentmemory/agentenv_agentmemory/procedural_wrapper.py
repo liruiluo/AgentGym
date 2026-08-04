@@ -179,17 +179,7 @@ class ProceduralAgentMemoryWrapper:
                 provider=self.provider,
                 backend=self.backend,
                 env_uid=f"env{env_id}",
-                first_valid_add_reward=float(
-                    self.reward_contract["first_valid_add_reward"]
-                ),
-                first_valid_later_session_retrieve_reward=float(
-                    self.reward_contract[
-                        "first_valid_later_session_retrieve_reward"
-                    ]
-                ),
-                ltm_inventory_mode=self.ltm_inventory_mode,
-                ltm_transition_notice_mode=self.ltm_transition_notice_mode,
-                action_listing_mode=self.action_listing_mode,
+                **self._environment_configuration(),
             )
             # Client creation is transport setup, not task selection.  The
             # rollout sends the authoritative absolute index in a later reset.
@@ -207,6 +197,21 @@ class ProceduralAgentMemoryWrapper:
             self.info[env_id] = payload
             self.env_locks[env_id] = threading.RLock()
             return payload
+
+    def _environment_configuration(self) -> dict[str, Any]:
+        return {
+            "first_valid_add_reward": float(
+                self.reward_contract["first_valid_add_reward"]
+            ),
+            "first_valid_later_session_retrieve_reward": float(
+                self.reward_contract[
+                    "first_valid_later_session_retrieve_reward"
+                ]
+            ),
+            "ltm_inventory_mode": self.ltm_inventory_mode,
+            "ltm_transition_notice_mode": self.ltm_transition_notice_mode,
+            "action_listing_mode": self.action_listing_mode,
+        }
 
     def step(self, env_id: int, action: str) -> dict[str, Any]:
         env = self.require_env(env_id)

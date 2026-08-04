@@ -36,6 +36,7 @@ from .reward_hierarchy import (
 NATIVE_SURFACE = "memoryarena_webshop_native_v1"
 LATENT_PREFERENCE_PROMPT_MODE = "latent_preference_sop"
 SELECTIVE_MEMORY_PROMPT_MODE = "selective_memory_sop"
+NATURAL_FILESYSTEM_PROMPT_MODE = "natural_filesystem"
 MEMORY_PROMPT_MODES = (
     "legacy",
     "neutral",
@@ -43,6 +44,7 @@ MEMORY_PROMPT_MODES = (
     "neutral_horizon_responsibility",
     LATENT_PREFERENCE_PROMPT_MODE,
     SELECTIVE_MEMORY_PROMPT_MODE,
+    NATURAL_FILESYSTEM_PROMPT_MODE,
 )
 FORBIDDEN_SURROGATE_ENV = {
     "AGENTMEMORY_CATALOG_INDEX_PATH",
