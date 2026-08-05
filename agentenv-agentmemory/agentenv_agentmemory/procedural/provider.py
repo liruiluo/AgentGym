@@ -5,6 +5,7 @@ import threading
 from collections import OrderedDict
 
 from .generator import NaturalAttributeChainGenerator
+from .question_format import QUESTION_FORMAT_VERSION
 from .schema import (
     SPLITS,
     CounterfactualOrbit,
@@ -156,6 +157,7 @@ class VerifiedProceduralBundleProvider:
             "on_demand_generation": True,
             "scenario_ids": list(self.generator.pool.scenario_ids),
             "generator_version": self.generator.version,
+            "question_format_version": QUESTION_FORMAT_VERSION,
             "generator_base_seed": self.generator.seed,
             "product_pool_sha256": self.generator.pool.semantic_sha256,
             "products_per_attribute_cell": self.generator.pool.products_per_cell,

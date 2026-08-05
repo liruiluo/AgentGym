@@ -456,17 +456,19 @@ class ProceduralNaturalChainTests(unittest.TestCase):
             self.assertNotIn(synthetic_term, combined)
         self.assertNotIn("certified natural attribute", combined)
         self.assertIn(
-            "use Add File once with a new path to preserve the selected card's "
+            "use Add File once with a new path to preserve only the selected card's "
             "complete Confirmed field name and value",
             combined,
         )
+        self.assertIn("every Add File content line must begin with +", combined)
         self.assertIn("do not replace it with a generic certified", combined)
         self.assertIn("leave that note unchanged and commit the purchase", combined)
         self.assertIn(
-            "Before any catalog search, click, or new file write, use shell_command "
-            "to read the exact note",
+            "As the first action, use shell_command to discover and print saved "
+            "Confirmed lines",
             combined,
         )
+        self.assertIn("do not guess a path", combined)
         self.assertIn(
             "Do not infer or recreate the previous value from the two table rows",
             combined,
@@ -599,6 +601,10 @@ class ProceduralNaturalChainTests(unittest.TestCase):
         self.assertLessEqual(len(provider._cache), 2)
         metadata = provider.metadata()
         self.assertEqual(metadata["memory_dependency"], "previous_purchased_natural_attribute")
+        self.assertEqual(
+            metadata["question_format_version"],
+            "natural_customer_approved_shortlist_chain_question_v7",
+        )
 
     def test_reseeded_stream_exhausts_full_period_before_next_seed_epoch(
         self,

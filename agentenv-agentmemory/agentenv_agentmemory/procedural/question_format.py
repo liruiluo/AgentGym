@@ -7,7 +7,7 @@ from .schema import AttributeTransition
 from .scenarios import scenario_by_id
 
 
-QUESTION_FORMAT_VERSION = "natural_customer_approved_shortlist_chain_question_v6"
+QUESTION_FORMAT_VERSION = "natural_customer_approved_shortlist_chain_question_v7"
 
 
 def render_question(
@@ -52,11 +52,13 @@ def render_question(
             "The customer supplied this order-specific choice table:\n"
             + "\n".join(f"- {row}" for row in rows)
             + "\nThe immediately preceding purchase and its attribute value are not "
-            "repeated in this session. Before any catalog search, click, or new file "
-            "write, use shell_command to read the exact note you successfully saved "
-            "before the preceding click[Buy Now]. If you forgot its path, locate it and "
-            "then read that file. Do not infer or recreate the previous value from the "
-            f"two table rows. Use the read {previous_slot.attribute_name} value and buy "
+            "repeated in this session, and prior action messages do not reveal the filename "
+            "you chose. As the first action, use shell_command to discover and print saved "
+            "Confirmed lines, for example rg -n '^Confirmed ' .; do not guess a path. "
+            "Before any catalog search, click, or new file write, confirm that the shell "
+            f"output contains the preceding {previous_slot.attribute_name} note. Do not "
+            "infer or recreate the previous value from the two table rows. Use the read "
+            f"{previous_slot.attribute_name} value and buy "
             f"the matching {slot.display_name}."
         )
         if previous_slot.attribute_name != transition.previous_attribute_name:
@@ -80,10 +82,12 @@ def render_question(
         "2. The pairing table is this customer's own plan, so both approved products "
         "may be ordinary real-world choices. Do not replace the table with general "
         "product knowledge.\n"
-        "3. In sessions 1 through 5, after opening the exact selected listing and before "
-        "click[Buy Now], use Add File once with a new path to preserve the selected card's "
-        "complete Confirmed field name and value. Copy that field; do not replace it with "
-        "a generic certified, natural, normal, or boolean label. Once the environment "
+        "3. In sessions 1 through 5, do not write a note before opening the exact selected "
+        "listing. Before click[Buy Now], use Add File once with a new path to preserve only "
+        "the selected card's complete Confirmed field name and value. Use exactly one content "
+        "line beginning with +Confirmed; every Add File content line must begin with +. Copy "
+        "that field; do not replace it with a generic certified, natural, normal, or boolean "
+        "label. Once the environment "
         "returns Done!, leave that note unchanged and commit the purchase; do not add, "
         "delete, or rewrite the successful note. In the next session, read that same "
         "note's contents before any catalog action or replacement write.\n"
