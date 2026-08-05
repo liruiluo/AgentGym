@@ -983,7 +983,12 @@ def _validate_compositional_recall_metadata(
         seed_epoch_boundary_field="factorial_orbit_never_crosses_seed_epoch",
     )
     expected = {
-        "factorial_coordinates": [[0, 0], [0, 1], [1, 0], [1, 1]],
+        "factorial_coordinates": [
+            ["token_a", "identity"],
+            ["token_a", "swapped"],
+            ["token_b", "identity"],
+            ["token_b", "swapped"],
+        ],
         "canonical_memory_count": 2,
         "retrieve_policy": "query_top1",
         "required_sequential_retrievals": 2,
