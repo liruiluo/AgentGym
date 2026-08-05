@@ -849,7 +849,7 @@ def _validate_filesystem_metadata(metadata: Mapping[str, Any]) -> None:
     if provider_mismatches:
         raise RuntimeError(
             "Filesystem AgentMemoryGym provider contract is inconsistent: "
-            + ", ".join(provider_mismatches)
+            + ", ".join(f"provider {key}" for key in provider_mismatches)
         )
     control = metadata.get("workspace_intervention_control")
     expected_arms = ["correct", "blank", "swapped", "no_workspace"]
