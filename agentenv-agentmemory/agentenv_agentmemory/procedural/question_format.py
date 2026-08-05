@@ -7,7 +7,7 @@ from .schema import AttributeTransition
 from .scenarios import scenario_by_id
 
 
-QUESTION_FORMAT_VERSION = "natural_customer_approved_shortlist_chain_question_v4"
+QUESTION_FORMAT_VERSION = "natural_customer_approved_shortlist_chain_question_v5"
 
 
 def render_question(
@@ -36,8 +36,8 @@ def render_question(
         root_display = slot.value(root_attribute_value).display_name
         step_rule = (
             f"The customer's starting request is {slot.attribute_name} = "
-            f"{root_display}. Buy the {slot.display_name} with that certified "
-            "attribute."
+            f"{root_display}. Buy the {slot.display_name} whose confirmed "
+            f"{slot.attribute_name} is exactly {root_display}."
         )
     else:
         if root_attribute_value is not None or transition is None:
@@ -51,8 +51,9 @@ def render_question(
         step_rule = (
             "The customer supplied this order-specific choice table:\n"
             + "\n".join(f"- {row}" for row in rows)
-            + "\nUse the certified attribute of the product bought in the immediately "
-            "preceding shopping session. That earlier purchase is not repeated in "
+            + f"\nUse the exact {previous_slot.attribute_name} value from the product "
+            "bought in the immediately preceding shopping session. That earlier "
+            "purchase is not repeated in "
             f"this session. Buy the matching {slot.display_name}."
         )
         if previous_slot.attribute_name != transition.previous_attribute_name:
@@ -76,8 +77,10 @@ def render_question(
         "2. The pairing table is this customer's own plan, so both approved products "
         "may be ordinary real-world choices. Do not replace the table with general "
         "product knowledge.\n"
-        "3. After each purchase, preserve its certified natural attribute for the "
-        "next shopping session.\n"
+        "3. Before committing a purchase, preserve the exact attribute name and value "
+        "printed in that selected card's Confirmed line when a later session will need "
+        "it. Copy that field; do not replace it with a generic certified, natural, "
+        "normal, or boolean label.\n"
         f"4. The total price of all six products must not exceed ${budget:.2f}.\n"
         "5. Buy the products in the stated session order.\n\n"
         + "-" * 64

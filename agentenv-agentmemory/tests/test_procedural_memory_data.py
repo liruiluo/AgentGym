@@ -454,7 +454,13 @@ class ProceduralNaturalChainTests(unittest.TestCase):
             "mix-",
         ):
             self.assertNotIn(synthetic_term, combined)
-        self.assertIn("certified natural attribute", combined)
+        self.assertNotIn("certified natural attribute", combined)
+        self.assertIn(
+            "preserve the exact attribute name and value printed in that selected "
+            "card's Confirmed line",
+            combined,
+        )
+        self.assertIn("do not replace it with a generic certified", combined)
         for phase in left.phases:
             self.assertIn(
                 "Only those two exact listings are eligible for this order",
