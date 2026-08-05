@@ -15,7 +15,7 @@ from .schema import (
 )
 
 
-DEFAULT_GENERATOR_VERSION = "recency_override_native_v1"
+DEFAULT_GENERATOR_VERSION = "recency_override_native_v2"
 PHASE_CATEGORY_POSITIONS = (0, 1, 2, 3, 0, 1)
 CANONICAL_MEMORY_KEY = "user_preference"
 CORE_BUDGET_MARGIN_CENTS = 5_000

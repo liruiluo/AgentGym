@@ -37,12 +37,15 @@ def render_recency_question(
         if len(selected) != 1:
             raise RecencyOverrideDataError("initial evidence must identify one candidate.")
         position = candidates.index(selected[0]) + 1
+        preference_record = _preference_record(recipe, confirmed_attribute_value)
         body = (
             "The customer already compared two approved listings. Both satisfy the "
             "current explicit requirements.\n\n"
             f"Approved listings:\n{titles}\n\n"
             f"The customer confirmed approved listing {position}. Purchase exactly "
-            "that listing. This establishes the customer's current preference."
+            "that listing. This confirmation establishes the following current "
+            f"preference record:\n{preference_record}\n\n"
+            "Preserve that exact record before the purchase advances the session."
         )
     elif phase_kind == "application":
         if confirmed_attribute_value is not None:
@@ -71,11 +74,27 @@ def render_recency_question(
                 f"The customer explicitly changed the preference and now prefers "
                 f"{new_display}. Record this as the new current preference."
             )
+        preference_record = _preference_record(recipe, confirmed_attribute_value)
         body = (
             f"{change}\n\nApproved listings:\n{titles}\n\n"
             f"The customer confirmed approved listing {position}. Purchase exactly "
-            "that listing."
+            "that listing. After this confirmation, the one current preference record "
+            f"must be:\n{preference_record}\n\n"
+            "Before purchasing, make sure the persistent record contains exactly this "
+            "current value and no conflicting stale value."
         )
     else:
         raise RecencyOverrideDataError(f"unknown recency phase kind {phase_kind!r}.")
     return header + body
+
+
+def _preference_record(
+    recipe: PreferenceRecipe,
+    attribute_value: str | None,
+) -> str:
+    if attribute_value is None:
+        raise RecencyOverrideDataError("a visible preference record requires a value.")
+    return (
+        f"Current preference: {recipe.axis_display_name} = "
+        f"{recipe.value_display_name(attribute_value)}"
+    )

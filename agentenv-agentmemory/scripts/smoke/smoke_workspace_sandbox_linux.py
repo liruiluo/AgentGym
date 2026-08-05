@@ -88,6 +88,18 @@ def main() -> None:
             )
             return root, result
 
+        _, result = run(
+            "pinned_rg_visibility",
+            "test \"$(command -v rg)\" = /tools/rg && "
+            "rg --version | sed -n '1p'",
+        )
+        _require(
+            result.exit_code == 0
+            and result.stdout.startswith(b"ripgrep ")
+            and not result.stderr,
+            "pinned ripgrep visibility",
+        )
+
         drift_rg = parent / "rg-drift-probe"
         shutil.copy2(args.workspace_rg_binary, drift_rg)
         drift_sandbox = LinuxNamespaceShellSandbox.from_environment(

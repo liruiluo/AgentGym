@@ -235,7 +235,11 @@ class LinuxNamespaceShellSandbox:
             root.mkdir(mode=0o700)
             result = self.run(
                 root,
-                command="printf AGENTMEMORY_SHELL_SANDBOX_OK",
+                command=(
+                    "test \"$(command -v rg)\" = /tools/rg && "
+                    "rg --version >/dev/null && "
+                    "printf AGENTMEMORY_SHELL_SANDBOX_OK"
+                ),
                 workdir=".",
                 timeout_ms=min(10_000, self.limits.max_timeout_ms),
             )
@@ -433,9 +437,15 @@ class LinuxNamespaceShellSandbox:
             "tools",
         ):
             (rootfs / relative).mkdir(parents=True, exist_ok=True)
+        # TemporaryDirectory and the service process may use umask 077. These
+        # static roots must remain traversable after the command drops to its
+        # leased unprivileged UID.
+        os.chmod(rootfs / "etc", 0o755)
+        os.chmod(rootfs / "tools", 0o755)
         os.chmod(rootfs / "run", 0o700)
         os.chmod(output, 0o700)
         (rootfs / "tools/rg").touch(mode=0o755)
+        os.chmod(rootfs / "tools/rg", 0o755)
         (rootfs / "etc/ld.so.cache").touch(mode=0o644)
         (rootfs / "etc/passwd").write_text(
             "root:x:0:0:root:/root:/usr/bin/false\n"

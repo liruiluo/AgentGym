@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from agentenv_agentmemory.workspace_sandbox import (
+    LinuxNamespaceShellSandbox,
     ShellSandboxError,
     ShellSandboxLimits,
     _lease_ephemeral_model_uid,
@@ -142,6 +143,26 @@ class StagedWorkspaceValidationTests(unittest.TestCase):
 
 
 class PinValidationTests(unittest.TestCase):
+    def test_prepared_static_roots_are_visible_to_the_model_uid(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            rootfs = root / "rootfs"
+            output = root / "output"
+            rootfs.mkdir(mode=0o700)
+            output.mkdir(mode=0o700)
+
+            LinuxNamespaceShellSandbox._prepare_rootfs(  # type: ignore[arg-type]
+                None,
+                rootfs,
+                output,
+                model_uid=1_500_000_001,
+            )
+
+            self.assertEqual(rootfs.stat().st_mode & 0o777, 0o755)
+            self.assertEqual((rootfs / "etc").stat().st_mode & 0o777, 0o755)
+            self.assertEqual((rootfs / "tools").stat().st_mode & 0o777, 0o755)
+            self.assertEqual((rootfs / "tools/rg").stat().st_mode & 0o777, 0o755)
+
     def test_sha256_pin_is_canonical_and_fail_closed(self) -> None:
         self.assertEqual(_normalize_sha256("A" * 64, "pin"), "a" * 64)
         for value in ("", "g" * 64, "a" * 63, None):

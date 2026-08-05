@@ -197,6 +197,29 @@ class RecencyOverrideGeneratorTests(unittest.TestCase):
             provider.seed_epoch_task_count,
         )
 
+    def test_evidence_and_override_expose_exact_record_but_applications_do_not(self) -> None:
+        stay, flip = self.generator.generate_orbit(11, split="test").tasks
+        for task in (stay, flip):
+            evidence = task.phases[0]
+            override = task.phases[2]
+            expected_evidence = (
+                "Current preference: color = "
+                + self.pool.recipes[0].value_display_name(
+                    evidence.confirmed_attribute_value
+                )
+            )
+            expected_override = (
+                "Current preference: color = "
+                + self.pool.recipes[0].value_display_name(
+                    override.confirmed_attribute_value
+                )
+            )
+            self.assertIn(expected_evidence, evidence.question)
+            self.assertIn(expected_override, override.question)
+            for phase in task.phases:
+                if phase.phase_kind == "application":
+                    self.assertNotIn("Current preference:", phase.question)
+
     def test_fixed_provider_reports_window_boundary(self) -> None:
         provider = VerifiedRecencyOverrideBundleProvider(
             generator=self.generator,
