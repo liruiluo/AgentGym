@@ -464,12 +464,22 @@ class ProceduralNaturalChainTests(unittest.TestCase):
         self.assertIn("do not replace it with a generic certified", combined)
         self.assertIn("leave that note unchanged and commit the purchase", combined)
         self.assertIn(
-            "As the first action, use shell_command to discover and print saved "
-            "Confirmed lines",
+            "As the first action, issue exactly shell_command",
             combined,
         )
+        self.assertIn("to discover and print saved Confirmed lines", combined)
         self.assertIn("do not guess a path", combined)
         self.assertIn("rg --hidden -n '^Confirmed ' .", combined)
+        self.assertIn("A command without --hidden can miss the note", combined)
+        self.assertIn("If stdout is empty, retry that exact command", combined)
+        self.assertIn(
+            "complete Product title without shortening it",
+            combined,
+        )
+        self.assertIn(
+            "only on that exact product page copy the card's Confirmed line verbatim",
+            combined,
+        )
         self.assertIn(
             "Do not infer or recreate the previous value from the two table rows",
             combined,
@@ -604,7 +614,7 @@ class ProceduralNaturalChainTests(unittest.TestCase):
         self.assertEqual(metadata["memory_dependency"], "previous_purchased_natural_attribute")
         self.assertEqual(
             metadata["question_format_version"],
-            "natural_customer_approved_shortlist_chain_question_v8",
+            "natural_customer_approved_shortlist_chain_question_v9",
         )
 
     def test_reseeded_stream_exhausts_full_period_before_next_seed_epoch(

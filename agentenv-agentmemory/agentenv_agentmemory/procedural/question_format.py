@@ -7,7 +7,7 @@ from .schema import AttributeTransition
 from .scenarios import scenario_by_id
 
 
-QUESTION_FORMAT_VERSION = "natural_customer_approved_shortlist_chain_question_v8"
+QUESTION_FORMAT_VERSION = "natural_customer_approved_shortlist_chain_question_v9"
 
 
 def render_question(
@@ -53,13 +53,20 @@ def render_question(
             + "\n".join(f"- {row}" for row in rows)
             + "\nThe immediately preceding purchase and its attribute value are not "
             "repeated in this session, and prior action messages do not reveal the filename "
-            "you chose. As the first action, use shell_command to discover and print saved "
-            "Confirmed lines, for example rg --hidden -n '^Confirmed ' .; do not guess a path. "
+            "you chose. As the first action, issue exactly shell_command "
+            "{\"command\":\"rg --hidden -n '^Confirmed ' .\",\"workdir\":\".\","
+            "\"timeout_ms\":10000} to discover and print saved Confirmed lines; do not guess a "
+            "path. A command without --hidden can miss the note. If stdout is empty, retry that "
+            "exact command and do nothing else. "
             "Before any catalog search, click, or new file write, confirm that the shell "
             f"output contains the preceding {previous_slot.attribute_name} note. Do not "
             "infer or recreate the previous value from the two table rows. Use the read "
             f"{previous_slot.attribute_name} value and buy "
-            f"the matching {slot.display_name}."
+            f"the matching {slot.display_name}. Then follow this order: search the chosen "
+            "approved card's complete Product title without shortening it; open only a result "
+            "whose complete visible title exactly matches that card, including size, count, and "
+            "pack qualifiers; only on that exact product page copy the card's Confirmed line "
+            "verbatim into one new Add File note; after Done!, click[Buy Now]."
         )
         if previous_slot.attribute_name != transition.previous_attribute_name:
             raise ValueError("transition previous attribute metadata mismatch")
@@ -76,15 +83,17 @@ def render_question(
         "1. For this session, the customer shared exactly two approved product cards "
         "below. Only those two exact listings are eligible for this order; other "
         "catalog products are not approved alternatives even if they have the same "
-        "color, material, flavor, or other attribute. Search using identifying words "
-        "copied from the product title on the card, then open the result whose complete "
-        "title matches that card.\n"
+        "color, material, flavor, or other attribute. Copy the chosen card's complete Product "
+        "title verbatim into search[...]; do not shorten it. Open only a result whose complete "
+        "visible title exactly equals that card, including size, count, and pack qualifiers.\n"
         "2. The pairing table is this customer's own plan, so both approved products "
         "may be ordinary real-world choices. Do not replace the table with general "
         "product knowledge.\n"
         "3. In sessions 1 through 5, do not write a note before opening the exact selected "
         "listing. Before click[Buy Now], use Add File once with a new path to preserve only "
-        "the selected card's complete Confirmed field name and value. Use exactly one content "
+        "the selected card's complete Confirmed field name and value. Copy the card's entire "
+        "Confirmed line verbatim; never invent a `Confirmed ... to buy:` field or replace the "
+        "field and value with a product title. Use exactly one content "
         "line beginning with +Confirmed; every Add File content line must begin with +. Copy "
         "that field; do not replace it with a generic certified, natural, normal, or boolean "
         "label. Once the environment "
