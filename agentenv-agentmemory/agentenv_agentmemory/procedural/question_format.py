@@ -7,7 +7,7 @@ from .schema import AttributeTransition
 from .scenarios import scenario_by_id
 
 
-QUESTION_FORMAT_VERSION = "natural_customer_approved_shortlist_chain_question_v5"
+QUESTION_FORMAT_VERSION = "natural_customer_approved_shortlist_chain_question_v6"
 
 
 def render_question(
@@ -51,10 +51,13 @@ def render_question(
         step_rule = (
             "The customer supplied this order-specific choice table:\n"
             + "\n".join(f"- {row}" for row in rows)
-            + f"\nUse the exact {previous_slot.attribute_name} value from the product "
-            "bought in the immediately preceding shopping session. That earlier "
-            "purchase is not repeated in "
-            f"this session. Buy the matching {slot.display_name}."
+            + "\nThe immediately preceding purchase and its attribute value are not "
+            "repeated in this session. Before any catalog search, click, or new file "
+            "write, use shell_command to read the exact note you successfully saved "
+            "before the preceding click[Buy Now]. If you forgot its path, locate it and "
+            "then read that file. Do not infer or recreate the previous value from the "
+            f"two table rows. Use the read {previous_slot.attribute_name} value and buy "
+            f"the matching {slot.display_name}."
         )
         if previous_slot.attribute_name != transition.previous_attribute_name:
             raise ValueError("transition previous attribute metadata mismatch")
@@ -77,10 +80,13 @@ def render_question(
         "2. The pairing table is this customer's own plan, so both approved products "
         "may be ordinary real-world choices. Do not replace the table with general "
         "product knowledge.\n"
-        "3. Before committing a purchase, preserve the exact attribute name and value "
-        "printed in that selected card's Confirmed line when a later session will need "
-        "it. Copy that field; do not replace it with a generic certified, natural, "
-        "normal, or boolean label.\n"
+        "3. In sessions 1 through 5, after opening the exact selected listing and before "
+        "click[Buy Now], use Add File once with a new path to preserve the selected card's "
+        "complete Confirmed field name and value. Copy that field; do not replace it with "
+        "a generic certified, natural, normal, or boolean label. Once the environment "
+        "returns Done!, leave that note unchanged and commit the purchase; do not add, "
+        "delete, or rewrite the successful note. In the next session, read that same "
+        "note's contents before any catalog action or replacement write.\n"
         f"4. The total price of all six products must not exceed ${budget:.2f}.\n"
         "5. Buy the products in the stated session order.\n\n"
         + "-" * 64

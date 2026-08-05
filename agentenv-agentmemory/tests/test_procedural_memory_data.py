@@ -456,11 +456,21 @@ class ProceduralNaturalChainTests(unittest.TestCase):
             self.assertNotIn(synthetic_term, combined)
         self.assertNotIn("certified natural attribute", combined)
         self.assertIn(
-            "preserve the exact attribute name and value printed in that selected "
-            "card's Confirmed line",
+            "use Add File once with a new path to preserve the selected card's "
+            "complete Confirmed field name and value",
             combined,
         )
         self.assertIn("do not replace it with a generic certified", combined)
+        self.assertIn("leave that note unchanged and commit the purchase", combined)
+        self.assertIn(
+            "Before any catalog search, click, or new file write, use shell_command "
+            "to read the exact note",
+            combined,
+        )
+        self.assertIn(
+            "Do not infer or recreate the previous value from the two table rows",
+            combined,
+        )
         for phase in left.phases:
             self.assertIn(
                 "Only those two exact listings are eligible for this order",
