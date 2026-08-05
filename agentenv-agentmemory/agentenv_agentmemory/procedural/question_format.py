@@ -7,7 +7,7 @@ from .schema import AttributeTransition
 from .scenarios import scenario_by_id
 
 
-QUESTION_FORMAT_VERSION = "natural_customer_approved_shortlist_chain_question_v7"
+QUESTION_FORMAT_VERSION = "natural_customer_approved_shortlist_chain_question_v8"
 
 
 def render_question(
@@ -54,7 +54,7 @@ def render_question(
             + "\nThe immediately preceding purchase and its attribute value are not "
             "repeated in this session, and prior action messages do not reveal the filename "
             "you chose. As the first action, use shell_command to discover and print saved "
-            "Confirmed lines, for example rg -n '^Confirmed ' .; do not guess a path. "
+            "Confirmed lines, for example rg --hidden -n '^Confirmed ' .; do not guess a path. "
             "Before any catalog search, click, or new file write, confirm that the shell "
             f"output contains the preceding {previous_slot.attribute_name} note. Do not "
             "infer or recreate the previous value from the two table rows. Use the read "

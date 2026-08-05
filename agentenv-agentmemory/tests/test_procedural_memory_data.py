@@ -469,6 +469,7 @@ class ProceduralNaturalChainTests(unittest.TestCase):
             combined,
         )
         self.assertIn("do not guess a path", combined)
+        self.assertIn("rg --hidden -n '^Confirmed ' .", combined)
         self.assertIn(
             "Do not infer or recreate the previous value from the two table rows",
             combined,
@@ -603,7 +604,7 @@ class ProceduralNaturalChainTests(unittest.TestCase):
         self.assertEqual(metadata["memory_dependency"], "previous_purchased_natural_attribute")
         self.assertEqual(
             metadata["question_format_version"],
-            "natural_customer_approved_shortlist_chain_question_v7",
+            "natural_customer_approved_shortlist_chain_question_v8",
         )
 
     def test_reseeded_stream_exhausts_full_period_before_next_seed_epoch(
