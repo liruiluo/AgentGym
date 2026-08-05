@@ -714,7 +714,6 @@ def _validate_filesystem_sandbox_metadata(metadata: Mapping[str, Any]) -> None:
 
 
 def _validate_filesystem_metadata(metadata: Mapping[str, Any]) -> None:
-    _validate_procedural_metadata(metadata)
     expected = {
         "memory_prompt_mode": NATURAL_FILESYSTEM_PROMPT_MODE,
         "memory_management": "policy_managed_persistent_workspace",
@@ -1602,6 +1601,8 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 _validate_intent_clarification_metadata(self.metadata)
             elif self.is_selective_memory_use:
                 _validate_selective_memory_use_metadata(self.metadata)
+            elif self.surface == PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE:
+                _validate_procedural_metadata(self.metadata)
             elif not self.is_filesystem:
                 _validate_procedural_metadata(self.metadata)
             memory_prompt_mode = self.metadata.get("memory_prompt_mode", "legacy")
