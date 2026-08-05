@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import tempfile
+import threading
 import unittest
 from dataclasses import replace
+from pathlib import Path
 
 from agentenv_agentmemory.latent_preference.schema import (
     SPLITS,
@@ -21,8 +24,13 @@ from agentenv_agentmemory.recency_override import (
     verify_recency_override_orbit,
 )
 from agentenv_agentmemory.recency_override_webshop_env import (
+    RecencyOverrideFilesystemWebShopEnv,
     RecencyOverrideWebShopEnv,
 )
+from agentenv_agentmemory.recency_override_wrapper import (
+    RecencyOverrideFilesystemAgentMemoryWrapper,
+)
+from tests.workspace_test_support import InProcessTestShellSandbox
 
 
 CATEGORIES = (
@@ -357,6 +365,64 @@ class RecencyOverrideRuntimeTests(unittest.TestCase):
         observation, info = env.reset(data_idx=branch)
         return env, backend, task, observation, info
 
+    def _make_filesystem_env(self, branch: int, workspace_root: Path):
+        pool = make_fixture_pool()
+        generator = RecencyOverrideGenerator(pool=pool, seed=233)
+        orbit = generator.generate_orbit(0, split="train")
+        task = orbit.tasks[branch]
+        provider = VerifiedRecencyOverrideBundleProvider(
+            generator=generator,
+            split="train",
+            task_count=2,
+        )
+        backend = _FakeRecencyNativeBackend(task)
+        env = RecencyOverrideFilesystemWebShopEnv(
+            provider=provider,
+            backend=backend,
+            env_uid=f"recency-filesystem-{branch}",
+            shell_sandbox=InProcessTestShellSandbox(),
+            workspace_root_parent=workspace_root,
+        )
+        observation, info = env.reset(data_idx=branch)
+        return env, backend, task, observation, info
+
+    @staticmethod
+    def _write_preference(env, value: str, *, previous: str | None = None):
+        if previous is None:
+            patch_text = (
+                "apply_patch\n"
+                "*** Begin Patch\n"
+                "*** Add File: .agent_memory/MEMORY.md\n"
+                f"+current color: {value}\n"
+                "*** End Patch"
+            )
+        else:
+            patch_text = (
+                "apply_patch\n"
+                "*** Begin Patch\n"
+                "*** Update File: .agent_memory/MEMORY.md\n"
+                "@@\n"
+                f"-current color: {previous}\n"
+                f"+current color: {value}\n"
+                "*** End Patch"
+            )
+        _, reward, done, _, info = env.step(patch_text)
+        assert reward == 0.0 and not done
+        assert info["workspace_ops"][0]["op"] == "APPLY_PATCH"
+
+    def _advance_filesystem_to_intervention_boundary(self, env, task):
+        self._write_preference(env, task.old_attribute_value)
+        self._purchase(env, task.target_asins[0], expected_index=0)
+        self._purchase(env, task.target_asins[1], expected_index=1)
+        if task.branch_kind == "flip":
+            self._write_preference(
+                env,
+                task.new_attribute_value,
+                previous=task.old_attribute_value,
+            )
+        self._purchase(env, task.target_asins[2], expected_index=2)
+        self.assertEqual(env.current_session_index, 3)
+
     @staticmethod
     def _purchase(env, target_asin: str, expected_index: int):
         observation, reward, done, truncated, info = env.step("search[product]")
@@ -482,6 +548,69 @@ class RecencyOverrideRuntimeTests(unittest.TestCase):
         finally:
             env.close()
         self.assertEqual(backend.sessions, {})
+
+    def test_filesystem_recency_intervention_is_frozen_after_override(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            env, _, task, _, _ = self._make_filesystem_env(1, Path(root))
+            try:
+                self._write_preference(env, task.old_attribute_value)
+                self._purchase(env, task.target_asins[0], expected_index=0)
+                self._purchase(env, task.target_asins[1], expected_index=1)
+                with self.assertRaisesRegex(RuntimeError, "session-3 boundary"):
+                    env.install_workspace_causal_intervention("blank")
+
+                self._write_preference(
+                    env,
+                    task.new_attribute_value,
+                    previous=task.old_attribute_value,
+                )
+                self._purchase(env, task.target_asins[2], expected_index=2)
+                _, info = env.install_workspace_causal_intervention("blank")
+                self.assertEqual(info["workspace_causal_arm"], "blank")
+                self.assertEqual(info["workspace_snapshot"]["file_count"], 0)
+            finally:
+                env.close()
+
+    def test_filesystem_stale_arm_copies_stay_state_only_into_flip(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            stay, _, stay_task, _, _ = self._make_filesystem_env(0, Path(root))
+            flip, _, flip_task, _, _ = self._make_filesystem_env(1, Path(root))
+            try:
+                self._advance_filesystem_to_intervention_boundary(stay, stay_task)
+                self._advance_filesystem_to_intervention_boundary(flip, flip_task)
+                wrapper = RecencyOverrideFilesystemAgentMemoryWrapper.__new__(
+                    RecencyOverrideFilesystemAgentMemoryWrapper
+                )
+                wrapper._workspace_intervention_token = "t" * 48
+                wrapper.envs = {0: stay, 1: flip}
+                wrapper.info = {}
+                wrapper.env_locks = {
+                    0: threading.RLock(),
+                    1: threading.RLock(),
+                }
+
+                with self.assertRaisesRegex(ValueError, "exact counterfactual pair"):
+                    wrapper.workspace_intervention(
+                        0,
+                        arm="stale",
+                        source_env_id=1,
+                        token="t" * 48,
+                    )
+                result = wrapper.workspace_intervention(
+                    1,
+                    arm="stale",
+                    source_env_id=0,
+                    token="t" * 48,
+                )
+                self.assertEqual(result["info"]["workspace_causal_arm"], "stale")
+                memory_text = (
+                    flip.workspace.host_root / ".agent_memory" / "MEMORY.md"
+                ).read_text(encoding="utf-8")
+                self.assertIn(stay_task.old_attribute_value, memory_text)
+                self.assertNotIn(flip_task.new_attribute_value, memory_text)
+            finally:
+                stay.close()
+                flip.close()
 
 
 if __name__ == "__main__":

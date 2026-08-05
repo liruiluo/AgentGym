@@ -30,6 +30,9 @@ from agentenv_agentmemory.intent_clarification_webshop_env import (
 from agentenv_agentmemory.latent_preference_webshop_env import (
     LATENT_PREFERENCE_SURFACE,
 )
+from agentenv_agentmemory.recency_override_webshop_env import (
+    RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
+)
 from agentenv_agentmemory.procedural_webshop_env import PROCEDURAL_SURFACE
 from agentenv_agentmemory.selective_memory_use_webshop_env import (
     SELECTIVE_MEMORY_USE_SURFACE,
@@ -94,6 +97,23 @@ class DomainServerFactoryTest(unittest.TestCase):
             patch.object(
                 server_factory,
                 "ProceduralFilesystemAgentMemoryWrapper",
+                return_value=sentinel,
+            ) as wrapper,
+        ):
+            self.assertIs(server_factory.build_server(), sentinel)
+        wrapper.assert_called_once_with()
+
+    def test_recency_filesystem_uses_dedicated_wrapper(self):
+        sentinel = object()
+        with (
+            patch.dict(
+                os.environ,
+                {"AGENTMEMORY_SURFACE": RECENCY_OVERRIDE_FILESYSTEM_SURFACE},
+                clear=True,
+            ),
+            patch.object(
+                server_factory,
+                "RecencyOverrideFilesystemAgentMemoryWrapper",
                 return_value=sentinel,
             ) as wrapper,
         ):

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from .env_wrapper import LATENT_PREFERENCE_PROMPT_MODE
+from .env_wrapper import (
+    LATENT_PREFERENCE_PROMPT_MODE,
+    NATURAL_FILESYSTEM_PROMPT_MODE,
+)
+from .filesystem_wrapper import FilesystemAgentMemoryWrapperMixin
 from .latent_preference import load_preference_product_pool
 from .latent_preference.runtime_attestation import (
     attest_latent_preference_runtime_inputs,
@@ -15,7 +19,9 @@ from .procedural_wrapper import (
     _required_int,
 )
 from .recency_override_webshop_env import (
+    RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
     RECENCY_OVERRIDE_SURFACE,
+    RecencyOverrideFilesystemWebShopEnv,
     RecencyOverrideWebShopEnv,
 )
 from .recency_override import (
@@ -33,6 +39,15 @@ class RecencyOverrideAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
     environment_type = RecencyOverrideWebShopEnv
 
     def __init__(self) -> None:
+        self._initialize_recency_override_runtime(
+            expected_prompt_mode=LATENT_PREFERENCE_PROMPT_MODE,
+        )
+
+    def _initialize_recency_override_runtime(
+        self,
+        *,
+        expected_prompt_mode: str,
+    ) -> None:
         self._initialize_native_training_runtime(
             forbidden_env_keys=(
                 "AGENTMEMORY_MEMORYARENA_RAW_PATH",
@@ -44,10 +59,10 @@ class RecencyOverrideAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
                 "AGENTMEMORY_LATENT_PREFERENCE_PRODUCT_POOL_SHA256",
             )
         )
-        if self.memory_prompt_mode != LATENT_PREFERENCE_PROMPT_MODE:
+        if self.memory_prompt_mode != expected_prompt_mode:
             raise RuntimeError(
                 "The recency-override surface requires "
-                f"memory_prompt_mode={LATENT_PREFERENCE_PROMPT_MODE!r}."
+                f"memory_prompt_mode={expected_prompt_mode!r}."
             )
         pool = load_preference_product_pool(
             _required_file("AGENTMEMORY_RECENCY_OVERRIDE_PRODUCT_POOL"),
@@ -84,3 +99,40 @@ class RecencyOverrideAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
             start_orbit=_env_int("AGENTMEMORY_RECENCY_OVERRIDE_START_ORBIT", 0),
         )
         self._initialize_wrapper_state()
+
+
+class RecencyOverrideFilesystemAgentMemoryWrapper(
+    FilesystemAgentMemoryWrapperMixin,
+    RecencyOverrideAgentMemoryWrapper,
+):
+    """Recency-override training over ordinary persistent workspace files."""
+
+    surface = RECENCY_OVERRIDE_FILESYSTEM_SURFACE
+    environment_type = RecencyOverrideFilesystemWebShopEnv
+    workspace_intervention_boundary_index = 3
+    workspace_causal_arms = (
+        "correct",
+        "blank",
+        "swapped",
+        "stale",
+        "no_workspace",
+    )
+
+    def __init__(self) -> None:
+        self._initialize_recency_override_runtime(
+            expected_prompt_mode=NATURAL_FILESYSTEM_PROMPT_MODE,
+        )
+        self._initialize_filesystem_runtime()
+
+    @staticmethod
+    def _is_paired_intervention_source(target, source, *, arm: str) -> bool:
+        paired = (
+            target.data_idx // 2 == source.data_idx // 2
+            and (target.data_idx ^ 1) == source.data_idx
+        )
+        if not paired or arm != "stale":
+            return paired
+        return (
+            target._require_bundle().branch_kind == "flip"
+            and source._require_bundle().branch_kind == "stay"
+        )

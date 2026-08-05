@@ -42,6 +42,8 @@ FILESYSTEM_REWARD_CONTRACT = {
 class PersistentWorkspaceWebShopEnv(MemoryArenaWebShopEnv):
     """Native WebShop plus an episode-scoped general-purpose workspace."""
 
+    workspace_intervention_boundary_index = 1
+
     def __init__(
         self,
         *,
@@ -87,9 +89,13 @@ class PersistentWorkspaceWebShopEnv(MemoryArenaWebShopEnv):
             raise RuntimeError(
                 "workspace intervention requires an active nonterminal episode"
             )
-        if self.current_session_index != 1:
+        if (
+            self.current_session_index
+            != self.workspace_intervention_boundary_index
+        ):
             raise RuntimeError(
-                "workspace intervention is frozen at the first cross-session boundary"
+                "workspace intervention is frozen at session-"
+                f"{self.workspace_intervention_boundary_index} boundary"
             )
         self.workspace.install_causal_intervention(
             arm,

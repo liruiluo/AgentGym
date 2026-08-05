@@ -186,7 +186,7 @@ class PersistentWorkspaceWebShopEnvTests(unittest.TestCase):
         self.env.step(
             "apply_patch\n*** Begin Patch\n*** Add File: notes.md\n+black\n*** End Patch"
         )
-        with self.assertRaisesRegex(RuntimeError, "cross-session boundary"):
+        with self.assertRaisesRegex(RuntimeError, "session-1 boundary"):
             self.env.install_workspace_causal_intervention("blank")
         purchase(self.env, TARGETS[0])
         observation, info = self.env.install_workspace_causal_intervention("blank")
@@ -465,7 +465,7 @@ class ProceduralFilesystemWrapperTests(unittest.TestCase):
                 identifier: threading.RLock() for identifier in environments
             }
 
-            with self.assertRaisesRegex(ValueError, "first-session boundary"):
+            with self.assertRaisesRegex(ValueError, "session-1 boundary"):
                 wrapper.workspace_export(3, token="t" * 48)
             with self.assertRaisesRegex(ValueError, "exact counterfactual pair"):
                 wrapper.workspace_intervention(
@@ -488,7 +488,7 @@ class ProceduralFilesystemWrapperTests(unittest.TestCase):
                     source_env_id=1,
                     token="t" * 48,
                 )
-            with self.assertRaisesRegex(ValueError, "first-session boundary"):
+            with self.assertRaisesRegex(ValueError, "session-1 boundary"):
                 wrapper.workspace_intervention(
                     3,
                     arm="no_workspace",

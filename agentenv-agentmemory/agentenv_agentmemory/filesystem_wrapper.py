@@ -22,14 +22,13 @@ from .procedural_wrapper import ProceduralAgentMemoryWrapper
 from .workspace_sandbox import LinuxNamespaceShellSandbox
 
 
-class ProceduralFilesystemAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
-    """HTTP wrapper for the natural-chain persistent-workspace surface."""
+class FilesystemAgentMemoryWrapperMixin:
+    """Shared Codex-workspace runtime and authenticated intervention control."""
 
-    surface = PROCEDURAL_FILESYSTEM_SURFACE
-    environment_type = ProceduralFilesystemWebShopEnv
+    workspace_intervention_boundary_index = 1
+    workspace_causal_arms = ("correct", "blank", "swapped", "no_workspace")
 
-    def __init__(self) -> None:
-        super().__init__()
+    def _initialize_filesystem_runtime(self) -> None:
         if self.memory_prompt_mode != NATURAL_FILESYSTEM_PROMPT_MODE:
             raise RuntimeError(
                 "The filesystem-v2 surface requires memory prompt mode "
@@ -103,10 +102,10 @@ class ProceduralFilesystemAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
         expected_token = self._workspace_intervention_token
         if expected_token is None or not secrets.compare_digest(token, expected_token):
             raise PermissionError("invalid workspace intervention control token")
-        if arm not in WORKSPACE_CAUSAL_ARMS:
+        if arm not in self.workspace_causal_arms:
             raise ValueError(
                 "workspace intervention arm must be one of: "
-                + ", ".join(WORKSPACE_CAUSAL_ARMS)
+                + ", ".join(self.workspace_causal_arms)
             )
         target = self.require_env(env_id)
         source = None if source_env_id is None else self.require_env(source_env_id)
@@ -125,17 +124,19 @@ class ProceduralFilesystemAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
                     )
                 state = target.workspace.export_state()
                 source_label = f"target_env:{env_id}:data_idx:{target.data_idx}"
-            elif arm == "swapped":
+            elif arm in {"swapped", "stale"}:
                 if source is None or source_env_id == env_id:
                     raise ValueError(
-                        "swapped intervention requires a distinct source environment"
+                        f"{arm} intervention requires a distinct source environment"
                     )
                 self._validate_intervention_boundary(source, label="source")
-                if target.data_idx // 2 != source.data_idx // 2 or (
-                    target.data_idx ^ 1
-                ) != source.data_idx:
+                if not self._is_paired_intervention_source(
+                    target,
+                    source,
+                    arm=arm,
+                ):
                     raise ValueError(
-                        "swapped intervention source must be the target's exact "
+                        f"{arm} intervention source must be the target's exact "
                         "counterfactual pair"
                     )
                 state = source.workspace.export_state()
@@ -192,16 +193,25 @@ class ProceduralFilesystemAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
                 "hidden_answer_injection": False,
             }
 
-    @staticmethod
-    def _validate_intervention_boundary(environment, *, label: str) -> None:
+    def _validate_intervention_boundary(self, environment, *, label: str) -> None:
         if (
             environment.done
             or environment.status != "active"
-            or environment.current_session_index != 1
+            or environment.current_session_index
+            != self.workspace_intervention_boundary_index
         ):
             raise ValueError(
-                f"{label} environment is not at the frozen first-session boundary"
+                f"{label} environment is not at the frozen session-"
+                f"{self.workspace_intervention_boundary_index} boundary"
             )
+
+    @staticmethod
+    def _is_paired_intervention_source(target, source, *, arm: str) -> bool:
+        del arm
+        return (
+            target.data_idx // 2 == source.data_idx // 2
+            and (target.data_idx ^ 1) == source.data_idx
+        )
 
     def metadata(self) -> dict[str, Any]:
         metadata = super().metadata()
@@ -229,9 +239,13 @@ class ProceduralFilesystemAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
                 "workspace_limits": self.workspace_limits.as_metadata(),
                 "workspace_intervention_control": {
                     "enabled": self._workspace_intervention_token is not None,
-                    "contract": "authenticated_first_boundary_counterfactual_copy_v1",
-                    "allowed_arms": list(WORKSPACE_CAUSAL_ARMS),
-                    "boundary_session_index": 1,
+                    "contract": (
+                        "authenticated_session_boundary_counterfactual_copy_v1"
+                    ),
+                    "allowed_arms": list(self.workspace_causal_arms),
+                    "boundary_session_index": (
+                        self.workspace_intervention_boundary_index
+                    ),
                     "source_state": "policy_authored_workspace_only",
                     "authenticated_export": True,
                     "hidden_answer_injection": False,
@@ -246,3 +260,17 @@ class ProceduralFilesystemAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
             }
         )
         return metadata
+
+
+class ProceduralFilesystemAgentMemoryWrapper(
+    FilesystemAgentMemoryWrapperMixin,
+    ProceduralAgentMemoryWrapper,
+):
+    """HTTP wrapper for the natural-chain persistent-workspace surface."""
+
+    surface = PROCEDURAL_FILESYSTEM_SURFACE
+    environment_type = ProceduralFilesystemWebShopEnv
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._initialize_filesystem_runtime()

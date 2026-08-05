@@ -28,8 +28,14 @@ from ..latent_preference_webshop_env import LATENT_PREFERENCE_SURFACE
 from ..latent_preference_wrapper import LatentPreferenceAgentMemoryWrapper
 from ..procedural_webshop_env import PROCEDURAL_SURFACE
 from ..procedural_wrapper import ProceduralAgentMemoryWrapper
-from ..recency_override_webshop_env import RECENCY_OVERRIDE_SURFACE
-from ..recency_override_wrapper import RecencyOverrideAgentMemoryWrapper
+from ..recency_override_webshop_env import (
+    RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
+    RECENCY_OVERRIDE_SURFACE,
+)
+from ..recency_override_wrapper import (
+    RecencyOverrideAgentMemoryWrapper,
+    RecencyOverrideFilesystemAgentMemoryWrapper,
+)
 from ..selective_memory_use_webshop_env import SELECTIVE_MEMORY_USE_SURFACE
 from ..selective_memory_use_wrapper import SelectiveMemoryUseAgentMemoryWrapper
 from ..negative_constraint_webshop_env import NEGATIVE_CONSTRAINT_SURFACE
@@ -61,6 +67,8 @@ def build_server():
         return LatentPreferenceAgentMemoryWrapper()
     if surface == RECENCY_OVERRIDE_SURFACE:
         return RecencyOverrideAgentMemoryWrapper()
+    if surface == RECENCY_OVERRIDE_FILESYSTEM_SURFACE:
+        return RecencyOverrideFilesystemAgentMemoryWrapper()
     if surface == DISTRACTOR_ROBUSTNESS_SURFACE:
         return DistractorRobustnessAgentMemoryWrapper()
     if surface == COMPOSITIONAL_RECALL_SURFACE:

@@ -30,7 +30,13 @@ WORKSPACE_TOOL_NAMES = ("shell_command", "apply_patch")
 WORKSPACE_TOOL_OPS = ("SHELL_COMMAND", "APPLY_PATCH")
 WORKSPACE_TOOL_CONTRACT = "codex_shell_command_apply_patch_v1"
 WORKSPACE_STATE_SCHEMA = "agentmemory_workspace_transfer_state_v1"
-WORKSPACE_CAUSAL_ARMS = ("correct", "blank", "swapped", "no_workspace")
+WORKSPACE_CAUSAL_ARMS = (
+    "correct",
+    "blank",
+    "swapped",
+    "stale",
+    "no_workspace",
+)
 _SHELL_ACTION_RE = re.compile(r"\Ashell_command\s+(\{.*\})\Z", re.DOTALL)
 _APPLY_PATCH_PREFIX = "apply_patch\n"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")

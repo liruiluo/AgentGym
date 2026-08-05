@@ -241,6 +241,9 @@ LATENT_PREFERENCE_WEBSHOP_SURFACE = (
 RECENCY_OVERRIDE_WEBSHOP_SURFACE = (
     "agentmemory_webshop_recency_override_train_v1"
 )
+RECENCY_OVERRIDE_FILESYSTEM_WEBSHOP_SURFACE = (
+    "agentmemory_webshop_recency_override_filesystem_v2"
+)
 DISTRACTOR_ROBUSTNESS_WEBSHOP_SURFACE = (
     "agentmemory_webshop_distractor_robustness_top1_train_v1"
 )
@@ -255,6 +258,18 @@ SELECTIVE_MEMORY_USE_WEBSHOP_SURFACE = (
 )
 PREFERENCE_WEBSHOP_SURFACES = frozenset(
     {LATENT_PREFERENCE_WEBSHOP_SURFACE, RECENCY_OVERRIDE_WEBSHOP_SURFACE}
+)
+RECENCY_OVERRIDE_WEBSHOP_SURFACES = frozenset(
+    {
+        RECENCY_OVERRIDE_WEBSHOP_SURFACE,
+        RECENCY_OVERRIDE_FILESYSTEM_WEBSHOP_SURFACE,
+    }
+)
+FILESYSTEM_WEBSHOP_SURFACES = frozenset(
+    {
+        PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE,
+        RECENCY_OVERRIDE_FILESYSTEM_WEBSHOP_SURFACE,
+    }
 )
 QUERY_TOP1_WEBSHOP_SURFACES = frozenset(
     {
@@ -275,7 +290,7 @@ LATENT_PREFERENCE_SOP_WEBSHOP_SURFACES = frozenset(
 PROGRAMMATIC_WEBSHOP_SURFACES = frozenset(
     {
         PROCEDURAL_WEBSHOP_SURFACE,
-        PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE,
+        *FILESYSTEM_WEBSHOP_SURFACES,
         SELECTIVE_MEMORY_USE_WEBSHOP_SURFACE,
         *LATENT_PREFERENCE_SOP_WEBSHOP_SURFACES,
     }
@@ -954,7 +969,11 @@ def _validate_selective_memory_use_metadata(
 
 def build_filesystem_conversation_start(
     action_format: ActionFormat,
+    *,
+    surface: str,
 ) -> tuple[ConversationMessage, ConversationMessage]:
+    if surface not in FILESYSTEM_WEBSHOP_SURFACES:
+        raise ValueError(f"Unsupported filesystem AgentMemoryGym surface: {surface!r}")
     interface = (
         "You are operating a programmatically generated AgentMemoryGym WebShop "
         "task with six shopping sessions and a private persistent workspace. "
@@ -969,6 +988,14 @@ def build_filesystem_conversation_start(
         "Workspace actions have zero task reward and are optional. There is no host-path "
         "access or dedicated memory API."
     )
+    if surface == RECENCY_OVERRIDE_FILESYSTEM_WEBSHOP_SURFACE:
+        interface += (
+            " Maintain the user's current confirmed preference in ordinary workspace "
+            "files. When the user explicitly changes that preference, update the "
+            "existing current-state record so it contains the new value and no "
+            "conflicting stale value. In later application sessions, inspect the "
+            "workspace and use the current recorded value rather than an older one."
+        )
     if action_format is ActionFormat.REACT:
         prompt = (
             interface
@@ -1008,16 +1035,19 @@ def build_procedural_conversation_start(
             + ", ".join(MEMORY_PROMPT_MODES)
             + "."
         )
-    if surface == PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE:
+    if surface in FILESYSTEM_WEBSHOP_SURFACES:
         if memory_prompt_mode != NATURAL_FILESYSTEM_PROMPT_MODE:
             raise ValueError(
                 "The filesystem surface requires memory_prompt_mode="
                 f"{NATURAL_FILESYSTEM_PROMPT_MODE!r}."
             )
-        return build_filesystem_conversation_start(action_format)
+        return build_filesystem_conversation_start(
+            action_format,
+            surface=surface,
+        )
     if memory_prompt_mode == NATURAL_FILESYSTEM_PROMPT_MODE:
         raise ValueError(
-            "natural_filesystem prompt mode is only valid for the filesystem surface."
+            "natural_filesystem prompt mode is only valid for a filesystem surface."
         )
     interface = (
         "You are operating a programmatically generated AgentMemoryGym WebShop "
@@ -1524,9 +1554,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self.memory_prompt_mode: str | None = None
         self.is_v3 = self.formal_schema_version == FORMAL_SCHEMA_V3
         self.is_procedural = self.surface in PROGRAMMATIC_WEBSHOP_SURFACES
-        self.is_filesystem = (
-            self.surface == PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE
-        )
+        self.is_filesystem = self.surface in FILESYSTEM_WEBSHOP_SURFACES
         self.adapter_cls = (
             FilesystemAgentMemoryAdapter
             if self.is_filesystem
@@ -1535,9 +1563,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self.is_latent_preference = (
             self.surface == LATENT_PREFERENCE_WEBSHOP_SURFACE
         )
-        self.is_recency_override = (
-            self.surface == RECENCY_OVERRIDE_WEBSHOP_SURFACE
-        )
+        self.is_recency_override = self.surface in RECENCY_OVERRIDE_WEBSHOP_SURFACES
         self.is_distractor_robustness = (
             self.surface == DISTRACTOR_ROBUSTNESS_WEBSHOP_SURFACE
         )
@@ -1564,7 +1590,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         elif self.is_procedural:
             if self.is_filesystem:
                 _validate_filesystem_metadata(self.metadata)
-            elif self.is_latent_preference:
+            if self.is_latent_preference:
                 _validate_latent_preference_metadata(self.metadata)
             elif self.is_recency_override:
                 _validate_recency_override_metadata(self.metadata)
@@ -1576,7 +1602,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 _validate_intent_clarification_metadata(self.metadata)
             elif self.is_selective_memory_use:
                 _validate_selective_memory_use_metadata(self.metadata)
-            else:
+            elif not self.is_filesystem:
                 _validate_procedural_metadata(self.metadata)
             memory_prompt_mode = self.metadata.get("memory_prompt_mode", "legacy")
             if memory_prompt_mode not in MEMORY_PROMPT_MODES:

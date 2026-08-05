@@ -60,7 +60,10 @@ from .recency_override import (
     PROVIDER_MODE_RESEEDED_STREAM as RECENCY_PROVIDER_MODE_RESEEDED_STREAM,
     PROVIDER_MODES as RECENCY_PROVIDER_MODES,
 )
-from .recency_override_webshop_env import RECENCY_OVERRIDE_SURFACE
+from .recency_override_webshop_env import (
+    RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
+    RECENCY_OVERRIDE_SURFACE,
+)
 from .selective_memory_use import (
     PROVIDER_MODE_FIXED_WINDOW as SELECTIVE_PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM as SELECTIVE_PROVIDER_MODE_RESEEDED_STREAM,
@@ -85,6 +88,10 @@ from .service_identity import SERVICE_ROLES
 
 
 NATIVE_SURFACE = "memoryarena_webshop_native_v1"
+FILESYSTEM_SURFACES = {
+    PROCEDURAL_FILESYSTEM_SURFACE,
+    RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
+}
 
 
 def launch() -> None:
@@ -101,6 +108,7 @@ def launch() -> None:
             PROCEDURAL_FILESYSTEM_SURFACE,
             LATENT_PREFERENCE_SURFACE,
             RECENCY_OVERRIDE_SURFACE,
+            RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
             DISTRACTOR_ROBUSTNESS_SURFACE,
             COMPOSITIONAL_RECALL_SURFACE,
             INTENT_CLARIFICATION_SURFACE,
@@ -290,7 +298,7 @@ def launch() -> None:
         INTENT_CLARIFICATION_SURFACE,
         NEGATIVE_CONSTRAINT_SURFACE,
     }
-    if args.surface == PROCEDURAL_FILESYSTEM_SURFACE:
+    if args.surface in FILESYSTEM_SURFACES:
         if not args.workspace_rg_binary or not args.workspace_rg_sha256:
             parser.error(
                 "the Codex workspace surface requires --workspace-rg-binary and "
@@ -333,7 +341,7 @@ def launch() -> None:
             )
     elif args.service_role == "intervention_eval":
         parser.error(
-            "--service-role intervention_eval is valid only for the filesystem-v2 surface"
+            "--service-role intervention_eval is valid only for a filesystem-v2 surface"
         )
     elif args.surface == SELECTIVE_MEMORY_USE_SURFACE:
         if args.memory_prompt_mode != SELECTIVE_MEMORY_PROMPT_MODE:
@@ -613,7 +621,10 @@ def launch() -> None:
                 "AGENTMEMORY_ACTION_LISTING_MODE": args.action_listing_mode,
             }
         )
-    elif args.surface == RECENCY_OVERRIDE_SURFACE:
+    elif args.surface in {
+        RECENCY_OVERRIDE_SURFACE,
+        RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
+    }:
         _require_args(
             parser,
             args,
@@ -682,12 +693,16 @@ def launch() -> None:
                 "AGENTMEMORY_SPLIT": args.split,
                 "AGENTMEMORY_WEBSHOP_PRICE_SEED": str(args.price_seed),
                 "AGENTMEMORY_FIRST_VALID_ADD_REWARD": str(
-                    FIRST_VALID_ADD_BONUS
+                    0.0
+                    if args.surface == RECENCY_OVERRIDE_FILESYSTEM_SURFACE
+                    else FIRST_VALID_ADD_BONUS
                     if args.memory_first_add_reward is None
                     else args.memory_first_add_reward
                 ),
                 "AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD": str(
-                    FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS
+                    0.0
+                    if args.surface == RECENCY_OVERRIDE_FILESYSTEM_SURFACE
+                    else FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS
                     if args.memory_first_later_retrieve_reward is None
                     else args.memory_first_later_retrieve_reward
                 ),
@@ -699,6 +714,13 @@ def launch() -> None:
                 "AGENTMEMORY_ACTION_LISTING_MODE": args.action_listing_mode,
             }
         )
+        if args.surface == RECENCY_OVERRIDE_FILESYSTEM_SURFACE:
+            configured["AGENTMEMORY_WORKSPACE_RG_BINARY"] = (
+                args.workspace_rg_binary
+            )
+            configured["AGENTMEMORY_WORKSPACE_RG_SHA256"] = (
+                args.workspace_rg_sha256
+            )
     elif args.surface == DISTRACTOR_ROBUSTNESS_SURFACE:
         configured.update(
             _configure_programmatic_memory_surface(

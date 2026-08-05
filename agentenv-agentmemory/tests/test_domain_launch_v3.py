@@ -28,6 +28,9 @@ from agentenv_agentmemory.intent_clarification_webshop_env import (
 from agentenv_agentmemory.latent_preference_webshop_env import (
     LATENT_PREFERENCE_SURFACE,
 )
+from agentenv_agentmemory.recency_override_webshop_env import (
+    RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
+)
 from agentenv_agentmemory.procedural_webshop_env import PROCEDURAL_SURFACE
 from agentenv_agentmemory.selective_memory_use_webshop_env import (
     SELECTIVE_MEMORY_USE_SURFACE,
@@ -104,6 +107,25 @@ class DomainLaunchTest(unittest.TestCase):
                 "c" * 64,
             ]
         )
+        return arguments
+
+    @classmethod
+    def _recency_filesystem_arguments(cls, *, split="train"):
+        arguments = cls._programmatic_memory_arguments(
+            surface=RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
+            cli_prefix="recency_override",
+            split=split,
+        )
+        arguments.extend(
+            [
+                "--workspace-rg-binary",
+                "/opt/agentmemory/bin/rg",
+                "--workspace-rg-sha256",
+                "c" * 64,
+            ]
+        )
+        prompt_index = arguments.index("--memory-prompt-mode") + 1
+        arguments[prompt_index] = "natural_filesystem"
         return arguments
 
     @staticmethod
@@ -379,6 +401,31 @@ class DomainLaunchTest(unittest.TestCase):
         self.assertEqual(
             configured["AGENTMEMORY_WORKSPACE_RG_SHA256"],
             "c" * 64,
+        )
+        self.assertEqual(configured["AGENTMEMORY_FIRST_VALID_ADD_REWARD"], "0.0")
+        self.assertEqual(
+            configured["AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD"],
+            "0.0",
+        )
+
+    def test_recency_filesystem_binds_recency_data_and_workspace_contract(self):
+        configured, _ = self._launch(self._recency_filesystem_arguments())
+
+        self.assertEqual(
+            configured["AGENTMEMORY_SURFACE"],
+            RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_MEMORY_PROMPT_MODE"],
+            "natural_filesystem",
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_RECENCY_OVERRIDE_TASK_COUNT"],
+            "10000",
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_WORKSPACE_RG_BINARY"],
+            "/opt/agentmemory/bin/rg",
         )
         self.assertEqual(configured["AGENTMEMORY_FIRST_VALID_ADD_REWARD"], "0.0")
         self.assertEqual(
