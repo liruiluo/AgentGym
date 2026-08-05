@@ -250,11 +250,20 @@ DISTRACTOR_ROBUSTNESS_WEBSHOP_SURFACE = (
 COMPOSITIONAL_RECALL_WEBSHOP_SURFACE = (
     "agentmemory_webshop_compositional_recall_top1_train_v1"
 )
+COMPOSITIONAL_RECALL_FILESYSTEM_WEBSHOP_SURFACE = (
+    "agentmemory_webshop_compositional_recall_filesystem_v2"
+)
 INTENT_CLARIFICATION_WEBSHOP_SURFACE = (
     "agentmemory_webshop_intent_clarification_train_v1"
 )
 SELECTIVE_MEMORY_USE_WEBSHOP_SURFACE = (
     "agentmemory_webshop_selective_memory_use_top1_train_v1"
+)
+NEGATIVE_CONSTRAINT_WEBSHOP_SURFACE = (
+    "agentmemory_webshop_negative_constraint_top1_train_v1"
+)
+NEGATIVE_CONSTRAINT_FILESYSTEM_WEBSHOP_SURFACE = (
+    "agentmemory_webshop_negative_constraint_filesystem_v2"
 )
 PREFERENCE_WEBSHOP_SURFACES = frozenset(
     {LATENT_PREFERENCE_WEBSHOP_SURFACE, RECENCY_OVERRIDE_WEBSHOP_SURFACE}
@@ -269,6 +278,20 @@ FILESYSTEM_WEBSHOP_SURFACES = frozenset(
     {
         PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE,
         RECENCY_OVERRIDE_FILESYSTEM_WEBSHOP_SURFACE,
+        COMPOSITIONAL_RECALL_FILESYSTEM_WEBSHOP_SURFACE,
+        NEGATIVE_CONSTRAINT_FILESYSTEM_WEBSHOP_SURFACE,
+    }
+)
+COMPOSITIONAL_RECALL_WEBSHOP_SURFACES = frozenset(
+    {
+        COMPOSITIONAL_RECALL_WEBSHOP_SURFACE,
+        COMPOSITIONAL_RECALL_FILESYSTEM_WEBSHOP_SURFACE,
+    }
+)
+NEGATIVE_CONSTRAINT_WEBSHOP_SURFACES = frozenset(
+    {
+        NEGATIVE_CONSTRAINT_WEBSHOP_SURFACE,
+        NEGATIVE_CONSTRAINT_FILESYSTEM_WEBSHOP_SURFACE,
     }
 )
 QUERY_TOP1_WEBSHOP_SURFACES = frozenset(
@@ -277,6 +300,7 @@ QUERY_TOP1_WEBSHOP_SURFACES = frozenset(
         COMPOSITIONAL_RECALL_WEBSHOP_SURFACE,
         INTENT_CLARIFICATION_WEBSHOP_SURFACE,
         SELECTIVE_MEMORY_USE_WEBSHOP_SURFACE,
+        NEGATIVE_CONSTRAINT_WEBSHOP_SURFACE,
     }
 )
 LATENT_PREFERENCE_SOP_WEBSHOP_SURFACES = frozenset(
@@ -285,6 +309,7 @@ LATENT_PREFERENCE_SOP_WEBSHOP_SURFACES = frozenset(
         DISTRACTOR_ROBUSTNESS_WEBSHOP_SURFACE,
         COMPOSITIONAL_RECALL_WEBSHOP_SURFACE,
         INTENT_CLARIFICATION_WEBSHOP_SURFACE,
+        NEGATIVE_CONSTRAINT_WEBSHOP_SURFACE,
     }
 )
 PROGRAMMATIC_WEBSHOP_SURFACES = frozenset(
@@ -298,6 +323,40 @@ PROGRAMMATIC_WEBSHOP_SURFACES = frozenset(
 LATENT_PREFERENCE_PROMPT_MODE = "latent_preference_sop"
 SELECTIVE_MEMORY_PROMPT_MODE = "selective_memory_sop"
 NATURAL_FILESYSTEM_PROMPT_MODE = "natural_filesystem"
+FILESYSTEM_SURFACE_CONTRACTS = {
+    PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE: {
+        "provider_schema": "agentmemory_verified_natural_chain_provider_v4",
+        "tasks_per_orbit": 2,
+        "candidate_count_per_phase": 2,
+        "source_pairing": "xor_lsb_within_orbit_v1",
+        "boundary_session_index": 1,
+        "prompt_family": "natural_attribute_chain_filesystem_v2",
+    },
+    RECENCY_OVERRIDE_FILESYSTEM_WEBSHOP_SURFACE: {
+        "provider_schema": "agentmemory_verified_recency_override_provider_v1",
+        "tasks_per_orbit": 2,
+        "candidate_count_per_phase": 2,
+        "source_pairing": "xor_lsb_within_orbit_v1",
+        "boundary_session_index": 3,
+        "prompt_family": "recency_override_filesystem_v2",
+    },
+    COMPOSITIONAL_RECALL_FILESYSTEM_WEBSHOP_SURFACE: {
+        "provider_schema": "agentmemory_verified_compositional_recall_provider_v1",
+        "tasks_per_orbit": 4,
+        "candidate_count_per_phase": 2,
+        "source_pairing": "xor_lsb_within_orbit_v1",
+        "boundary_session_index": 2,
+        "prompt_family": "compositional_recall_filesystem_v2",
+    },
+    NEGATIVE_CONSTRAINT_FILESYSTEM_WEBSHOP_SURFACE: {
+        "provider_schema": "agentmemory_verified_negative_constraint_provider_v1",
+        "tasks_per_orbit": 3,
+        "candidate_count_per_phase": 3,
+        "source_pairing": "cyclic_next_within_orbit_v1",
+        "boundary_session_index": 1,
+        "prompt_family": "negative_constraint_filesystem_v2",
+    },
+}
 FILESYSTEM_WORKSPACE_LIMIT_FIELDS = frozenset(
     {
         "max_path_chars",
@@ -497,6 +556,7 @@ def _validate_programmatic_metadata(
     *,
     provider_schema: str,
     tasks_per_orbit: int = 2,
+    candidate_count_per_phase: int = 2,
     seed_epoch_boundary_field: str = (
         "counterfactual_pair_never_crosses_seed_epoch"
     ),
@@ -514,8 +574,10 @@ def _validate_programmatic_metadata(
         raise RuntimeError(
             "Programmatic AgentMemoryGym tasks_per_orbit metadata is invalid"
         )
-    if provider.get("candidate_count_per_phase") != 2:
-        raise RuntimeError("Procedural AgentMemoryGym requires two candidates per phase")
+    if provider.get("candidate_count_per_phase") != candidate_count_per_phase:
+        raise RuntimeError(
+            "Procedural AgentMemoryGym candidate_count_per_phase metadata is invalid"
+        )
     if provider.get("phase_count_per_task") != 6:
         raise RuntimeError("Procedural AgentMemoryGym requires six phases per task")
     if provider.get("human_review_required") is not False:
@@ -714,6 +776,10 @@ def _validate_filesystem_sandbox_metadata(metadata: Mapping[str, Any]) -> None:
 
 
 def _validate_filesystem_metadata(metadata: Mapping[str, Any]) -> None:
+    surface = metadata.get("surface")
+    contract = FILESYSTEM_SURFACE_CONTRACTS.get(surface)
+    if contract is None:
+        raise RuntimeError("Unsupported filesystem AgentMemoryGym surface")
     expected = {
         "memory_prompt_mode": NATURAL_FILESYSTEM_PROMPT_MODE,
         "memory_management": "policy_managed_persistent_workspace",
@@ -724,6 +790,9 @@ def _validate_filesystem_metadata(metadata: Mapping[str, Any]) -> None:
         "workspace_shell_enabled": True,
         "workspace_apply_patch_enabled": True,
         "workspace_host_path_exposed": False,
+        "source_pairing": contract["source_pairing"],
+        "tasks_per_orbit": contract["tasks_per_orbit"],
+        "workspace_prompt_family": contract["prompt_family"],
     }
     mismatches = []
     for key, expected_value in expected.items():
@@ -764,6 +833,42 @@ def _validate_filesystem_metadata(metadata: Mapping[str, Any]) -> None:
             "Filesystem AgentMemoryGym must disable memory-specific shaping"
         )
     _validate_filesystem_sandbox_metadata(metadata)
+    provider = metadata.get("provider")
+    if not isinstance(provider, Mapping):
+        raise RuntimeError("Filesystem AgentMemoryGym metadata requires provider")
+    provider_expected = {
+        "schema": contract["provider_schema"],
+        "tasks_per_orbit": contract["tasks_per_orbit"],
+        "candidate_count_per_phase": contract["candidate_count_per_phase"],
+    }
+    provider_mismatches = [
+        key
+        for key, expected_value in provider_expected.items()
+        if provider.get(key) != expected_value
+    ]
+    if provider_mismatches:
+        raise RuntimeError(
+            "Filesystem AgentMemoryGym provider contract is inconsistent: "
+            + ", ".join(provider_mismatches)
+        )
+    control = metadata.get("workspace_intervention_control")
+    expected_arms = ["correct", "blank", "swapped", "no_workspace"]
+    if surface == RECENCY_OVERRIDE_FILESYSTEM_WEBSHOP_SURFACE:
+        expected_arms.insert(3, "stale")
+    if (
+        not isinstance(control, Mapping)
+        or control.get("contract")
+        != "authenticated_session_boundary_counterfactual_copy_v1"
+        or control.get("allowed_arms") != expected_arms
+        or control.get("boundary_session_index")
+        != contract["boundary_session_index"]
+        or control.get("source_state") != "policy_authored_workspace_only"
+        or control.get("authenticated_export") is not True
+        or control.get("hidden_answer_injection") is not False
+    ):
+        raise RuntimeError(
+            "Filesystem AgentMemoryGym intervention boundary contract is invalid"
+        )
     forbidden_legacy_fields = {
         "ltm_inventory_mode",
         "ltm_transition_notice_mode",
@@ -898,6 +1003,41 @@ def _validate_compositional_recall_metadata(
         )
 
 
+def _validate_negative_constraint_metadata(
+    metadata: Mapping[str, Any],
+) -> None:
+    provider = _validate_programmatic_metadata(
+        metadata,
+        provider_schema="agentmemory_verified_negative_constraint_provider_v1",
+        tasks_per_orbit=3,
+        candidate_count_per_phase=3,
+        seed_epoch_boundary_field=(
+            "counterfactual_orbit_never_crosses_seed_epoch"
+        ),
+    )
+    expected = {
+        "distinct_values_per_phase": 3,
+        "counterfactual_branches": 3,
+        "retrieve_policy": "query_top1",
+        "memory_id_lookup_allowed": False,
+        "initial_memory_inventory_visible": False,
+        "purchase_receipt_asin_verification": True,
+        "rules_only": False,
+        "native_certified": True,
+        "training_ready": True,
+    }
+    mismatches = [
+        key
+        for key, expected_value in expected.items()
+        if provider.get(key) != expected_value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "Negative-constraint AgentMemoryGym provider metadata is inconsistent: "
+            + ", ".join(mismatches)
+        )
+
+
 def _validate_intent_clarification_metadata(
     metadata: Mapping[str, Any],
 ) -> None:
@@ -994,6 +1134,21 @@ def build_filesystem_conversation_start(
             "existing current-state record so it contains the new value and no "
             "conflicting stale value. In later application sessions, inspect the "
             "workspace and use the current recorded value rather than an older one."
+        )
+    elif surface == COMPOSITIONAL_RECALL_FILESYSTEM_WEBSHOP_SURFACE:
+        interface += (
+            " In session 0, save the visible customer-to-profile-token link in an "
+            "ordinary file. In session 1, save the visible profile-token-to-attribute "
+            "directory in another ordinary file. In every later session, inspect both "
+            "records and compose customer -> active profile token -> attribute before "
+            "choosing. Do not infer either hop from the current product choices."
+        )
+    elif surface == NEGATIVE_CONSTRAINT_FILESYSTEM_WEBSHOP_SURFACE:
+        interface += (
+            " In session 0, save both visible standing never-accept exclusions and "
+            "their attribute axis in an ordinary file. In every later session, inspect "
+            "that record and reject every listing that violates either exclusion. Do "
+            "not replace the exclusions with only the currently allowed product."
         )
     if action_format is ActionFormat.REACT:
         prompt = (
@@ -1567,13 +1722,16 @@ class AgentMemoryEnvClient(BaseEnvClient):
             self.surface == DISTRACTOR_ROBUSTNESS_WEBSHOP_SURFACE
         )
         self.is_compositional_recall = (
-            self.surface == COMPOSITIONAL_RECALL_WEBSHOP_SURFACE
+            self.surface in COMPOSITIONAL_RECALL_WEBSHOP_SURFACES
         )
         self.is_intent_clarification = (
             self.surface == INTENT_CLARIFICATION_WEBSHOP_SURFACE
         )
         self.is_selective_memory_use = (
             self.surface == SELECTIVE_MEMORY_USE_WEBSHOP_SURFACE
+        )
+        self.is_negative_constraint = (
+            self.surface in NEGATIVE_CONSTRAINT_WEBSHOP_SURFACES
         )
         self.is_preference_memory = self.surface in PREFERENCE_WEBSHOP_SURFACES
         self.requires_latent_preference_sop = (
@@ -1601,6 +1759,8 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 _validate_intent_clarification_metadata(self.metadata)
             elif self.is_selective_memory_use:
                 _validate_selective_memory_use_metadata(self.metadata)
+            elif self.is_negative_constraint:
+                _validate_negative_constraint_metadata(self.metadata)
             elif self.surface == PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE:
                 _validate_procedural_metadata(self.metadata)
             elif not self.is_filesystem:

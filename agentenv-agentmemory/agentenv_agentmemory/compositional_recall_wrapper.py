@@ -3,14 +3,25 @@ from __future__ import annotations
 from .compositional_recall import (
     PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODES,
+    TASKS_PER_ORBIT,
     CompositionalRecallGenerator,
     VerifiedCompositionalRecallBundleProvider,
 )
 from .compositional_recall_webshop_env import (
+    COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE,
     COMPOSITIONAL_RECALL_SURFACE,
+    CompositionalRecallFilesystemWebShopEnv,
     CompositionalRecallWebShopEnv,
 )
-from .env_wrapper import LATENT_PREFERENCE_PROMPT_MODE
+from .env_wrapper import (
+    LATENT_PREFERENCE_PROMPT_MODE,
+    NATURAL_FILESYSTEM_PROMPT_MODE,
+)
+from .filesystem_wrapper import (
+    FilesystemAgentMemoryWrapperMixin,
+    SOURCE_PAIRING_XOR_LSB,
+    WORKSPACE_PROMPT_FAMILY_COMPOSITIONAL,
+)
 from .latent_preference import load_preference_product_pool
 from .latent_preference.runtime_attestation import (
     attest_latent_preference_runtime_inputs,
@@ -33,6 +44,15 @@ class CompositionalRecallAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
     environment_type = CompositionalRecallWebShopEnv
 
     def __init__(self) -> None:
+        self._initialize_compositional_recall_runtime(
+            expected_prompt_mode=LATENT_PREFERENCE_PROMPT_MODE,
+        )
+
+    def _initialize_compositional_recall_runtime(
+        self,
+        *,
+        expected_prompt_mode: str,
+    ) -> None:
         self._initialize_native_training_runtime(
             forbidden_env_keys=(
                 "AGENTMEMORY_MEMORYARENA_RAW_PATH",
@@ -46,10 +66,10 @@ class CompositionalRecallAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
                 "AGENTMEMORY_RECENCY_OVERRIDE_PRODUCT_POOL_SHA256",
             )
         )
-        if self.memory_prompt_mode != LATENT_PREFERENCE_PROMPT_MODE:
+        if self.memory_prompt_mode != expected_prompt_mode:
             raise RuntimeError(
                 "The compositional-recall surface requires "
-                f"memory_prompt_mode={LATENT_PREFERENCE_PROMPT_MODE!r}."
+                f"memory_prompt_mode={expected_prompt_mode!r}."
             )
         pool = load_preference_product_pool(
             _required_file("AGENTMEMORY_COMPOSITIONAL_RECALL_PRODUCT_POOL"),
@@ -93,3 +113,23 @@ class CompositionalRecallAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
             ),
         )
         self._initialize_wrapper_state()
+
+
+class CompositionalRecallFilesystemAgentMemoryWrapper(
+    FilesystemAgentMemoryWrapperMixin,
+    CompositionalRecallAgentMemoryWrapper,
+):
+    """Two-hop profile recall over ordinary persistent workspace files."""
+
+    surface = COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE
+    environment_type = CompositionalRecallFilesystemWebShopEnv
+    workspace_intervention_boundary_index = 2
+    workspace_source_pairing = SOURCE_PAIRING_XOR_LSB
+    workspace_tasks_per_orbit = TASKS_PER_ORBIT
+    workspace_prompt_family = WORKSPACE_PROMPT_FAMILY_COMPOSITIONAL
+
+    def __init__(self) -> None:
+        self._initialize_compositional_recall_runtime(
+            expected_prompt_mode=NATURAL_FILESYSTEM_PROMPT_MODE,
+        )
+        self._initialize_filesystem_runtime()

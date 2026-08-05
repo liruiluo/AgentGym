@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from agentenv_agentmemory.filesystem_webshop_env import (
@@ -13,6 +14,9 @@ from agentenv_agentmemory.filesystem_webshop_env import (
 )
 from agentenv_agentmemory.filesystem_wrapper import (
     ProceduralFilesystemAgentMemoryWrapper,
+    SOURCE_PAIRING_CYCLIC_NEXT,
+    SOURCE_PAIRING_XOR_LSB,
+    resolve_workspace_source_data_idx,
 )
 from agentenv_agentmemory.memoryarena_webshop_env import MemoryArenaWebShopEnv
 from agentenv_agentmemory.persistent_workspace import WORKSPACE_TOOL_OPS, WorkspaceLimits
@@ -238,6 +242,36 @@ class PersistentWorkspaceWebShopEnvTests(unittest.TestCase):
 
 
 class ProceduralFilesystemWrapperTests(unittest.TestCase):
+    def test_source_pairing_resolver_stays_inside_declared_orbits(self) -> None:
+        self.assertEqual(
+            [
+                resolve_workspace_source_data_idx(
+                    index,
+                    source_pairing=SOURCE_PAIRING_XOR_LSB,
+                    tasks_per_orbit=4,
+                )
+                for index in range(8)
+            ],
+            [1, 0, 3, 2, 5, 4, 7, 6],
+        )
+        self.assertEqual(
+            [
+                resolve_workspace_source_data_idx(
+                    index,
+                    source_pairing=SOURCE_PAIRING_CYCLIC_NEXT,
+                    tasks_per_orbit=3,
+                )
+                for index in range(6)
+            ],
+            [1, 2, 0, 4, 5, 3],
+        )
+        with self.assertRaisesRegex(ValueError, "even"):
+            resolve_workspace_source_data_idx(
+                0,
+                source_pairing=SOURCE_PAIRING_XOR_LSB,
+                tasks_per_orbit=3,
+            )
+
     @staticmethod
     def _initialize_base(wrapper, *, prompt_mode="natural_filesystem", reward=0.0):
         wrapper.memory_prompt_mode = prompt_mode
@@ -245,6 +279,9 @@ class ProceduralFilesystemWrapperTests(unittest.TestCase):
             "first_valid_add_reward": reward,
             "first_valid_later_session_retrieve_reward": 0.0,
         }
+        wrapper.provider = SimpleNamespace(
+            metadata=lambda: {"tasks_per_orbit": 2}
+        )
 
     def _construct(self, *, intervention: bool = False):
         sandbox = InProcessTestShellSandbox()
@@ -336,6 +373,12 @@ class ProceduralFilesystemWrapperTests(unittest.TestCase):
         self.assertEqual(metadata["reward_contract"], FILESYSTEM_REWARD_CONTRACT)
         self.assertEqual(metadata["workspace_tool_ops"], list(WORKSPACE_TOOL_OPS))
         self.assertEqual(metadata["workspace_surface"], "codex_workspace_v2")
+        self.assertEqual(metadata["source_pairing"], SOURCE_PAIRING_XOR_LSB)
+        self.assertEqual(metadata["tasks_per_orbit"], 2)
+        self.assertEqual(
+            metadata["workspace_prompt_family"],
+            "natural_attribute_chain_filesystem_v2",
+        )
         self.assertTrue(metadata["workspace_shell_enabled"])
         self.assertTrue(metadata["workspace_apply_patch_enabled"])
         self.assertFalse(metadata["workspace_host_path_exposed"])

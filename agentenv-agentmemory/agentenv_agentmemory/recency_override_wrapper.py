@@ -4,7 +4,10 @@ from .env_wrapper import (
     LATENT_PREFERENCE_PROMPT_MODE,
     NATURAL_FILESYSTEM_PROMPT_MODE,
 )
-from .filesystem_wrapper import FilesystemAgentMemoryWrapperMixin
+from .filesystem_wrapper import (
+    FilesystemAgentMemoryWrapperMixin,
+    WORKSPACE_PROMPT_FAMILY_RECENCY,
+)
 from .latent_preference import load_preference_product_pool
 from .latent_preference.runtime_attestation import (
     attest_latent_preference_runtime_inputs,
@@ -117,6 +120,7 @@ class RecencyOverrideFilesystemAgentMemoryWrapper(
         "stale",
         "no_workspace",
     )
+    workspace_prompt_family = WORKSPACE_PROMPT_FAMILY_RECENCY
 
     def __init__(self) -> None:
         self._initialize_recency_override_runtime(
@@ -124,11 +128,12 @@ class RecencyOverrideFilesystemAgentMemoryWrapper(
         )
         self._initialize_filesystem_runtime()
 
-    @staticmethod
-    def _is_paired_intervention_source(target, source, *, arm: str) -> bool:
-        paired = (
-            target.data_idx // 2 == source.data_idx // 2
-            and (target.data_idx ^ 1) == source.data_idx
+    @classmethod
+    def _is_paired_intervention_source(cls, target, source, *, arm: str) -> bool:
+        paired = super()._is_paired_intervention_source(
+            target,
+            source,
+            arm=arm,
         )
         if not paired or arm != "stale":
             return paired

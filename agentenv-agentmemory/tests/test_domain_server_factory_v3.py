@@ -19,6 +19,7 @@ from agentenv_agentmemory.domains import (
 from agentenv_agentmemory.env_wrapper import NATIVE_SURFACE
 from agentenv_agentmemory.filesystem_webshop_env import PROCEDURAL_FILESYSTEM_SURFACE
 from agentenv_agentmemory.compositional_recall_webshop_env import (
+    COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE,
     COMPOSITIONAL_RECALL_SURFACE,
 )
 from agentenv_agentmemory.distractor_robustness_webshop_env import (
@@ -29,6 +30,9 @@ from agentenv_agentmemory.intent_clarification_webshop_env import (
 )
 from agentenv_agentmemory.latent_preference_webshop_env import (
     LATENT_PREFERENCE_SURFACE,
+)
+from agentenv_agentmemory.negative_constraint_webshop_env import (
+    NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
 )
 from agentenv_agentmemory.recency_override_webshop_env import (
     RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
@@ -119,6 +123,35 @@ class DomainServerFactoryTest(unittest.TestCase):
         ):
             self.assertIs(server_factory.build_server(), sentinel)
         wrapper.assert_called_once_with()
+
+    def test_new_filesystem_surfaces_use_dedicated_wrappers(self):
+        cases = (
+            (
+                COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE,
+                "CompositionalRecallFilesystemAgentMemoryWrapper",
+            ),
+            (
+                NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
+                "NegativeConstraintFilesystemAgentMemoryWrapper",
+            ),
+        )
+        for surface, wrapper_name in cases:
+            sentinel = object()
+            with (
+                self.subTest(surface=surface),
+                patch.dict(
+                    os.environ,
+                    {"AGENTMEMORY_SURFACE": surface},
+                    clear=True,
+                ),
+                patch.object(
+                    server_factory,
+                    wrapper_name,
+                    return_value=sentinel,
+                ) as wrapper,
+            ):
+                self.assertIs(server_factory.build_server(), sentinel)
+            wrapper.assert_called_once_with()
 
     def test_latent_preference_uses_separate_wrapper(self):
         sentinel = object()

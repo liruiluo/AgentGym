@@ -22,11 +22,57 @@ from .procedural_wrapper import ProceduralAgentMemoryWrapper
 from .workspace_sandbox import LinuxNamespaceShellSandbox
 
 
+SOURCE_PAIRING_XOR_LSB = "xor_lsb_within_orbit_v1"
+SOURCE_PAIRING_CYCLIC_NEXT = "cyclic_next_within_orbit_v1"
+SOURCE_PAIRING_CONTRACTS = frozenset(
+    {SOURCE_PAIRING_XOR_LSB, SOURCE_PAIRING_CYCLIC_NEXT}
+)
+WORKSPACE_PROMPT_FAMILY_NATURAL = "natural_attribute_chain_filesystem_v2"
+WORKSPACE_PROMPT_FAMILY_RECENCY = "recency_override_filesystem_v2"
+WORKSPACE_PROMPT_FAMILY_COMPOSITIONAL = "compositional_recall_filesystem_v2"
+WORKSPACE_PROMPT_FAMILY_NEGATIVE = "negative_constraint_filesystem_v2"
+
+
+def resolve_workspace_source_data_idx(
+    data_idx: int,
+    *,
+    source_pairing: str,
+    tasks_per_orbit: int,
+) -> int:
+    """Resolve the exact counterfactual source without crossing an orbit."""
+    if isinstance(data_idx, bool) or not isinstance(data_idx, int) or data_idx < 0:
+        raise ValueError("workspace source data_idx must be a non-negative integer")
+    if (
+        isinstance(tasks_per_orbit, bool)
+        or not isinstance(tasks_per_orbit, int)
+        or tasks_per_orbit < 2
+    ):
+        raise ValueError("workspace tasks_per_orbit must be an integer >= 2")
+    if source_pairing not in SOURCE_PAIRING_CONTRACTS:
+        raise ValueError(f"unsupported workspace source pairing: {source_pairing!r}")
+
+    orbit_start = data_idx - (data_idx % tasks_per_orbit)
+    offset = data_idx - orbit_start
+    if source_pairing == SOURCE_PAIRING_XOR_LSB:
+        if tasks_per_orbit % 2:
+            raise ValueError("xor_lsb pairing requires an even tasks_per_orbit")
+        source_offset = offset ^ 1
+    else:
+        source_offset = (offset + 1) % tasks_per_orbit
+    source_data_idx = orbit_start + source_offset
+    if source_data_idx == data_idx:
+        raise ValueError("workspace source pairing resolved to the target itself")
+    return source_data_idx
+
+
 class FilesystemAgentMemoryWrapperMixin:
     """Shared Codex-workspace runtime and authenticated intervention control."""
 
     workspace_intervention_boundary_index = 1
     workspace_causal_arms = ("correct", "blank", "swapped", "no_workspace")
+    workspace_source_pairing = SOURCE_PAIRING_XOR_LSB
+    workspace_tasks_per_orbit = 2
+    workspace_prompt_family = WORKSPACE_PROMPT_FAMILY_NATURAL
 
     def _initialize_filesystem_runtime(self) -> None:
         if self.memory_prompt_mode != NATURAL_FILESYSTEM_PROMPT_MODE:
@@ -43,6 +89,29 @@ class FilesystemAgentMemoryWrapperMixin:
                 "The filesystem-v2 surface refuses dedicated write/read reward shaping."
             )
         self.reward_contract = dict(FILESYSTEM_REWARD_CONTRACT)
+        provider_metadata = self.provider.metadata()
+        if (
+            provider_metadata.get("tasks_per_orbit")
+            != self.workspace_tasks_per_orbit
+        ):
+            raise RuntimeError(
+                "The filesystem-v2 source-pairing orbit disagrees with its provider."
+            )
+        if (
+            not isinstance(self.workspace_prompt_family, str)
+            or not self.workspace_prompt_family
+        ):
+            raise RuntimeError("The filesystem-v2 prompt family is invalid.")
+        try:
+            resolve_workspace_source_data_idx(
+                0,
+                source_pairing=self.workspace_source_pairing,
+                tasks_per_orbit=self.workspace_tasks_per_orbit,
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                "The filesystem-v2 source-pairing contract is invalid."
+            ) from exc
         root_parent = os.environ.get("AGENTMEMORY_WORKSPACE_ROOT_PARENT")
         self.workspace_root_parent = (
             None if not root_parent else Path(root_parent).expanduser().resolve()
@@ -205,12 +274,13 @@ class FilesystemAgentMemoryWrapperMixin:
                 f"{self.workspace_intervention_boundary_index} boundary"
             )
 
-    @staticmethod
-    def _is_paired_intervention_source(target, source, *, arm: str) -> bool:
+    @classmethod
+    def _is_paired_intervention_source(cls, target, source, *, arm: str) -> bool:
         del arm
-        return (
-            target.data_idx // 2 == source.data_idx // 2
-            and (target.data_idx ^ 1) == source.data_idx
+        return source.data_idx == resolve_workspace_source_data_idx(
+            target.data_idx,
+            source_pairing=cls.workspace_source_pairing,
+            tasks_per_orbit=cls.workspace_tasks_per_orbit,
         )
 
     def metadata(self) -> dict[str, Any]:
@@ -231,6 +301,9 @@ class FilesystemAgentMemoryWrapperMixin:
                 "workspace_tool_contract": WORKSPACE_TOOL_CONTRACT,
                 "workspace_tool_ops": list(WORKSPACE_TOOL_OPS),
                 "workspace_persistence": "episode_across_sessions",
+                "source_pairing": self.workspace_source_pairing,
+                "tasks_per_orbit": self.workspace_tasks_per_orbit,
+                "workspace_prompt_family": self.workspace_prompt_family,
                 "workspace_episode_isolation": True,
                 "workspace_shell_enabled": True,
                 "workspace_apply_patch_enabled": True,

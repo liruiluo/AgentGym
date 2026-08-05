@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from dataclasses import replace
+from pathlib import Path
 from unittest.mock import patch
 
 from agentenv_agentmemory.compositional_recall import (
@@ -13,12 +15,15 @@ from agentenv_agentmemory.compositional_recall import (
     verify_compositional_recall_orbit,
 )
 from agentenv_agentmemory.compositional_recall_webshop_env import (
+    COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE,
+    CompositionalRecallFilesystemWebShopEnv,
     CompositionalRecallWebShopEnv,
 )
 from tests.test_recency_override_data import (
     _FakeRecencyNativeBackend,
     make_fixture_pool,
 )
+from tests.workspace_test_support import InProcessTestShellSandbox
 
 
 class CompositionalRecallGeneratorTests(unittest.TestCase):
@@ -357,6 +362,46 @@ class CompositionalRecallRuntimeTests(unittest.TestCase):
         finally:
             env.close()
         self.assertEqual(backend.sessions, {})
+
+    def test_filesystem_surface_persists_both_hops_to_session_two(self) -> None:
+        pool = make_fixture_pool()
+        generator = CompositionalRecallGenerator(pool=pool, seed=233)
+        task = generator.generate_orbit(0, split="train").tasks[1]
+        provider = VerifiedCompositionalRecallBundleProvider(
+            generator=generator,
+            split="train",
+            task_count=4,
+        )
+        backend = _FakeRecencyNativeBackend(task.source_task)
+        with tempfile.TemporaryDirectory() as root:
+            env = CompositionalRecallFilesystemWebShopEnv(
+                provider=provider,
+                backend=backend,
+                env_uid="compositional-filesystem-1",
+                shell_sandbox=InProcessTestShellSandbox(),
+                workspace_root_parent=Path(root),
+            )
+            try:
+                _, info = env.reset(data_idx=1)
+                self.assertEqual(info["surface"], COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE)
+                mapping, directory = task.canonical_memories
+                for path, fact, phase_index in (
+                    ("mapping.md", mapping, 0),
+                    ("directory.md", directory, 1),
+                ):
+                    env.step(
+                        "apply_patch\n*** Begin Patch\n"
+                        f"*** Add File: {path}\n+{fact.value}\n"
+                        "*** End Patch"
+                    )
+                    self._purchase(env, task.target_asins[phase_index], phase_index)
+                self.assertEqual(env.current_session_index, 2)
+                state = env.workspace.export_state()
+                self.assertEqual(state["file_count"], 2)
+                _, info = env.install_workspace_causal_intervention("blank")
+                self.assertEqual(info["workspace_causal_arm"], "blank")
+            finally:
+                env.close()
 
 
 if __name__ == "__main__":

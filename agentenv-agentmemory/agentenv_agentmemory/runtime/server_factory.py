@@ -18,8 +18,14 @@ from ..domains import (
 from ..env_wrapper import AgentMemoryWrapper, NATIVE_SURFACE
 from ..filesystem_webshop_env import PROCEDURAL_FILESYSTEM_SURFACE
 from ..filesystem_wrapper import ProceduralFilesystemAgentMemoryWrapper
-from ..compositional_recall_webshop_env import COMPOSITIONAL_RECALL_SURFACE
-from ..compositional_recall_wrapper import CompositionalRecallAgentMemoryWrapper
+from ..compositional_recall_webshop_env import (
+    COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE,
+    COMPOSITIONAL_RECALL_SURFACE,
+)
+from ..compositional_recall_wrapper import (
+    CompositionalRecallAgentMemoryWrapper,
+    CompositionalRecallFilesystemAgentMemoryWrapper,
+)
 from ..distractor_robustness_webshop_env import DISTRACTOR_ROBUSTNESS_SURFACE
 from ..distractor_robustness_wrapper import DistractorRobustnessAgentMemoryWrapper
 from ..intent_clarification_webshop_env import INTENT_CLARIFICATION_SURFACE
@@ -38,8 +44,14 @@ from ..recency_override_wrapper import (
 )
 from ..selective_memory_use_webshop_env import SELECTIVE_MEMORY_USE_SURFACE
 from ..selective_memory_use_wrapper import SelectiveMemoryUseAgentMemoryWrapper
-from ..negative_constraint_webshop_env import NEGATIVE_CONSTRAINT_SURFACE
-from ..negative_constraint_wrapper import NegativeConstraintAgentMemoryWrapper
+from ..negative_constraint_webshop_env import (
+    NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
+    NEGATIVE_CONSTRAINT_SURFACE,
+)
+from ..negative_constraint_wrapper import (
+    NegativeConstraintAgentMemoryWrapper,
+    NegativeConstraintFilesystemAgentMemoryWrapper,
+)
 from ..domains.browsecomp import (
     BROWSECOMP_BM25_INTEGRATION_BACKEND,
     BROWSECOMP_DENSE_BACKEND,
@@ -73,12 +85,16 @@ def build_server():
         return DistractorRobustnessAgentMemoryWrapper()
     if surface == COMPOSITIONAL_RECALL_SURFACE:
         return CompositionalRecallAgentMemoryWrapper()
+    if surface == COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE:
+        return CompositionalRecallFilesystemAgentMemoryWrapper()
     if surface == INTENT_CLARIFICATION_SURFACE:
         return IntentClarificationAgentMemoryWrapper()
     if surface == SELECTIVE_MEMORY_USE_SURFACE:
         return SelectiveMemoryUseAgentMemoryWrapper()
     if surface == NEGATIVE_CONSTRAINT_SURFACE:
         return NegativeConstraintAgentMemoryWrapper()
+    if surface == NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE:
+        return NegativeConstraintFilesystemAgentMemoryWrapper()
 
     factory = build_domain_registry().build(surface)
     first_add = _env_float("AGENTMEMORY_FIRST_ADD_REWARD", 0.0)

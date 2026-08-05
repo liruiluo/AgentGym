@@ -36,7 +36,10 @@ from .compositional_recall import (
     PROVIDER_MODES as COMPOSITIONAL_PROVIDER_MODES,
     TASKS_PER_ORBIT as COMPOSITIONAL_TASKS_PER_ORBIT,
 )
-from .compositional_recall_webshop_env import COMPOSITIONAL_RECALL_SURFACE
+from .compositional_recall_webshop_env import (
+    COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE,
+    COMPOSITIONAL_RECALL_SURFACE,
+)
 from .distractor_robustness import (
     PROVIDER_MODE_FIXED_WINDOW as DISTRACTOR_PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM as DISTRACTOR_PROVIDER_MODE_RESEEDED_STREAM,
@@ -77,7 +80,10 @@ from .negative_constraint import (
     PROVIDER_MODES as NEGATIVE_PROVIDER_MODES,
     TASKS_PER_ORBIT as NEGATIVE_TASKS_PER_ORBIT,
 )
-from .negative_constraint_webshop_env import NEGATIVE_CONSTRAINT_SURFACE
+from .negative_constraint_webshop_env import (
+    NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
+    NEGATIVE_CONSTRAINT_SURFACE,
+)
 from .procedural import (
     PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM,
@@ -91,6 +97,8 @@ NATIVE_SURFACE = "memoryarena_webshop_native_v1"
 FILESYSTEM_SURFACES = {
     PROCEDURAL_FILESYSTEM_SURFACE,
     RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
+    COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE,
+    NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
 }
 
 
@@ -111,9 +119,11 @@ def launch() -> None:
             RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
             DISTRACTOR_ROBUSTNESS_SURFACE,
             COMPOSITIONAL_RECALL_SURFACE,
+            COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE,
             INTENT_CLARIFICATION_SURFACE,
             SELECTIVE_MEMORY_USE_SURFACE,
             NEGATIVE_CONSTRAINT_SURFACE,
+            NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
             *V3_SURFACES,
         ],
         required=True,
@@ -733,7 +743,10 @@ def launch() -> None:
                 reseeded_stream_mode=DISTRACTOR_PROVIDER_MODE_RESEEDED_STREAM,
             )
         )
-    elif args.surface == COMPOSITIONAL_RECALL_SURFACE:
+    elif args.surface in {
+        COMPOSITIONAL_RECALL_SURFACE,
+        COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE,
+    }:
         configured.update(
             _configure_programmatic_memory_surface(
                 parser,
@@ -743,8 +756,18 @@ def launch() -> None:
                 tasks_per_orbit=COMPOSITIONAL_TASKS_PER_ORBIT,
                 fixed_window_mode=COMPOSITIONAL_PROVIDER_MODE_FIXED_WINDOW,
                 reseeded_stream_mode=COMPOSITIONAL_PROVIDER_MODE_RESEEDED_STREAM,
+                zero_memory_rewards=(
+                    args.surface == COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE
+                ),
             )
         )
+        if args.surface == COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE:
+            configured["AGENTMEMORY_WORKSPACE_RG_BINARY"] = (
+                args.workspace_rg_binary
+            )
+            configured["AGENTMEMORY_WORKSPACE_RG_SHA256"] = (
+                args.workspace_rg_sha256
+            )
     elif args.surface == INTENT_CLARIFICATION_SURFACE:
         configured.update(
             _configure_programmatic_memory_surface(
@@ -770,7 +793,10 @@ def launch() -> None:
                 zero_memory_rewards=True,
             )
         )
-    elif args.surface == NEGATIVE_CONSTRAINT_SURFACE:
+    elif args.surface in {
+        NEGATIVE_CONSTRAINT_SURFACE,
+        NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
+    }:
         configured.update(
             _configure_programmatic_memory_surface(
                 parser,
@@ -780,8 +806,18 @@ def launch() -> None:
                 tasks_per_orbit=NEGATIVE_TASKS_PER_ORBIT,
                 fixed_window_mode=NEGATIVE_PROVIDER_MODE_FIXED_WINDOW,
                 reseeded_stream_mode=NEGATIVE_PROVIDER_MODE_RESEEDED_STREAM,
+                zero_memory_rewards=(
+                    args.surface == NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE
+                ),
             )
         )
+        if args.surface == NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE:
+            configured["AGENTMEMORY_WORKSPACE_RG_BINARY"] = (
+                args.workspace_rg_binary
+            )
+            configured["AGENTMEMORY_WORKSPACE_RG_SHA256"] = (
+                args.workspace_rg_sha256
+            )
     elif args.surface in TRAVEL_SURFACES.values():
         _require_args(parser, args, "travel_tasks_path", "travel_database_path")
         configured.update(

@@ -39,8 +39,11 @@ from agentenv_agentmemory.negative_constraint.runtime_attestation import (
     attest_negative_constraint_runtime_inputs,
 )
 from agentenv_agentmemory.negative_constraint_webshop_env import (
+    NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
+    NegativeConstraintFilesystemWebShopEnv,
     NegativeConstraintWebShopEnv,
 )
+from tests.workspace_test_support import InProcessTestShellSandbox
 
 
 CATEGORIES = (
@@ -51,6 +54,13 @@ CATEGORIES = (
 )
 VALUES = (("black", "black"), ("gray", "gray"), ("red", "red"))
 SPLITS = ("train", "dev", "test")
+
+
+def shell_action(command: str, *, workdir: str = ".") -> str:
+    return "shell_command " + json.dumps(
+        {"command": command, "workdir": workdir, "timeout_ms": 10_000},
+        separators=(",", ":"),
+    )
 
 
 def make_negative_fixture_pool() -> NegativeConstraintProductPool:
@@ -875,6 +885,52 @@ class NegativeConstraintRuntimeTests(unittest.TestCase):
             self.assertEqual(backend.sessions, {})
         finally:
             env.close()
+
+    def test_filesystem_surface_keeps_two_exclusions_at_session_one(self) -> None:
+        pool = make_negative_fixture_pool()
+        generator = NegativeConstraintGenerator(pool=pool, seed=233)
+        task = generator.generate_orbit(0, split="train").tasks[2]
+        provider = VerifiedNegativeConstraintBundleProvider(
+            generator=generator,
+            split="train",
+            task_count=3,
+            allow_rules_only=True,
+        )
+        backend = _FakeNegativeNativeBackend(task)
+        with tempfile.TemporaryDirectory() as root:
+            env = NegativeConstraintFilesystemWebShopEnv(
+                provider=provider,
+                backend=backend,
+                env_uid="negative-filesystem-2",
+                shell_sandbox=InProcessTestShellSandbox(),
+                workspace_root_parent=Path(root),
+                allow_rules_only=True,
+            )
+            try:
+                _, info = env.reset(data_idx=2)
+                self.assertEqual(info["surface"], NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE)
+                env.step(
+                    "apply_patch\n*** Begin Patch\n"
+                    "*** Add File: exclusions.md\n"
+                    f"+Standing exclusions: {task.canonical_memory_value}\n"
+                    "*** End Patch"
+                )
+                self._purchase(env, task.target_asins[0], 0)
+                self.assertEqual(env.current_session_index, 1)
+                state = env.workspace.export_state()
+                self.assertEqual(state["file_count"], 1)
+                self.assertNotIn("content", state["files"][0])
+                observation, reward, done, _, read_info = env.step(
+                    shell_action("cat exclusions.md")
+                )
+                self.assertEqual(reward, 0.0)
+                self.assertFalse(done)
+                self.assertIn("Standing exclusions", observation)
+                self.assertEqual(read_info["workspace_ops"][0]["op"], "SHELL_COMMAND")
+                _, info = env.install_workspace_causal_intervention("blank")
+                self.assertEqual(info["workspace_causal_arm"], "blank")
+            finally:
+                env.close()
 
     def test_reset_clears_policy_authored_memory(self) -> None:
         env, backend, task, _, _ = self._make_env(1)

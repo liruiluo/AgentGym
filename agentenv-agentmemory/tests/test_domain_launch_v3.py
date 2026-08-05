@@ -17,6 +17,7 @@ from agentenv_agentmemory.domains import (
 from agentenv_agentmemory.env_wrapper import NATIVE_SURFACE
 from agentenv_agentmemory.filesystem_webshop_env import PROCEDURAL_FILESYSTEM_SURFACE
 from agentenv_agentmemory.compositional_recall_webshop_env import (
+    COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE,
     COMPOSITIONAL_RECALL_SURFACE,
 )
 from agentenv_agentmemory.distractor_robustness_webshop_env import (
@@ -27,6 +28,9 @@ from agentenv_agentmemory.intent_clarification_webshop_env import (
 )
 from agentenv_agentmemory.latent_preference_webshop_env import (
     LATENT_PREFERENCE_SURFACE,
+)
+from agentenv_agentmemory.negative_constraint_webshop_env import (
+    NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
 )
 from agentenv_agentmemory.recency_override_webshop_env import (
     RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
@@ -126,6 +130,32 @@ class DomainLaunchTest(unittest.TestCase):
         )
         prompt_index = arguments.index("--memory-prompt-mode") + 1
         arguments[prompt_index] = "natural_filesystem"
+        return arguments
+
+    @classmethod
+    def _programmatic_filesystem_arguments(
+        cls,
+        *,
+        surface: str,
+        cli_prefix: str,
+        task_count: int,
+        split: str = "train",
+    ):
+        arguments = cls._programmatic_memory_arguments(
+            surface=surface,
+            cli_prefix=cli_prefix,
+            split=split,
+            task_count=task_count,
+            memory_prompt_mode="natural_filesystem",
+        )
+        arguments.extend(
+            [
+                "--workspace-rg-binary",
+                "/opt/agentmemory/bin/rg",
+                "--workspace-rg-sha256",
+                "c" * 64,
+            ]
+        )
         return arguments
 
     @staticmethod
@@ -432,6 +462,54 @@ class DomainLaunchTest(unittest.TestCase):
             configured["AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD"],
             "0.0",
         )
+
+    def test_new_filesystem_surfaces_bind_their_own_data_and_zero_shaping(self):
+        cases = (
+            (
+                COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE,
+                "compositional_recall",
+                "AGENTMEMORY_COMPOSITIONAL_RECALL",
+                10_000,
+            ),
+            (
+                NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
+                "negative_constraint",
+                "AGENTMEMORY_NEGATIVE_CONSTRAINT",
+                9_999,
+            ),
+        )
+        for surface, cli_prefix, env_prefix, task_count in cases:
+            with self.subTest(surface=surface):
+                configured, _ = self._launch(
+                    self._programmatic_filesystem_arguments(
+                        surface=surface,
+                        cli_prefix=cli_prefix,
+                        task_count=task_count,
+                    )
+                )
+                self.assertEqual(configured["AGENTMEMORY_SURFACE"], surface)
+                self.assertEqual(
+                    configured["AGENTMEMORY_MEMORY_PROMPT_MODE"],
+                    "natural_filesystem",
+                )
+                self.assertEqual(
+                    configured[f"{env_prefix}_TASK_COUNT"],
+                    str(task_count),
+                )
+                self.assertEqual(
+                    configured["AGENTMEMORY_WORKSPACE_RG_BINARY"],
+                    "/opt/agentmemory/bin/rg",
+                )
+                self.assertEqual(
+                    configured["AGENTMEMORY_FIRST_VALID_ADD_REWARD"],
+                    "0.0",
+                )
+                self.assertEqual(
+                    configured[
+                        "AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD"
+                    ],
+                    "0.0",
+                )
 
     def test_filesystem_webshop_rejects_legacy_modes_and_reward_shaping(self):
         cases = (

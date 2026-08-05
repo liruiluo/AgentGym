@@ -1,9 +1,18 @@
 from __future__ import annotations
 
-from .env_wrapper import LATENT_PREFERENCE_PROMPT_MODE
+from .env_wrapper import (
+    LATENT_PREFERENCE_PROMPT_MODE,
+    NATURAL_FILESYSTEM_PROMPT_MODE,
+)
+from .filesystem_wrapper import (
+    FilesystemAgentMemoryWrapperMixin,
+    SOURCE_PAIRING_CYCLIC_NEXT,
+    WORKSPACE_PROMPT_FAMILY_NEGATIVE,
+)
 from .negative_constraint import (
     PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODES,
+    TASKS_PER_ORBIT,
     NegativeConstraintGenerator,
     VerifiedNegativeConstraintBundleProvider,
     load_negative_constraint_native_product_pool,
@@ -12,7 +21,9 @@ from .negative_constraint.runtime_attestation import (
     attest_negative_constraint_runtime_inputs,
 )
 from .negative_constraint_webshop_env import (
+    NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
     NEGATIVE_CONSTRAINT_SURFACE,
+    NegativeConstraintFilesystemWebShopEnv,
     NegativeConstraintWebShopEnv,
 )
 from .procedural_wrapper import (
@@ -33,6 +44,15 @@ class NegativeConstraintAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
     environment_type = NegativeConstraintWebShopEnv
 
     def __init__(self) -> None:
+        self._initialize_negative_constraint_runtime(
+            expected_prompt_mode=LATENT_PREFERENCE_PROMPT_MODE,
+        )
+
+    def _initialize_negative_constraint_runtime(
+        self,
+        *,
+        expected_prompt_mode: str,
+    ) -> None:
         self._initialize_native_training_runtime(
             forbidden_env_keys=(
                 "AGENTMEMORY_MEMORYARENA_RAW_PATH",
@@ -54,10 +74,10 @@ class NegativeConstraintAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
                 "AGENTMEMORY_SELECTIVE_MEMORY_USE_PRODUCT_POOL_SHA256",
             )
         )
-        if self.memory_prompt_mode != LATENT_PREFERENCE_PROMPT_MODE:
+        if self.memory_prompt_mode != expected_prompt_mode:
             raise RuntimeError(
                 "The negative-constraint surface requires "
-                f"memory_prompt_mode={LATENT_PREFERENCE_PROMPT_MODE!r}."
+                f"memory_prompt_mode={expected_prompt_mode!r}."
             )
         pool_file_sha256 = _required_env(
             "AGENTMEMORY_NEGATIVE_CONSTRAINT_PRODUCT_POOL_SHA256"
@@ -93,3 +113,23 @@ class NegativeConstraintAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
             start_orbit=_env_int("AGENTMEMORY_NEGATIVE_CONSTRAINT_START_ORBIT", 0),
         )
         self._initialize_wrapper_state()
+
+
+class NegativeConstraintFilesystemAgentMemoryWrapper(
+    FilesystemAgentMemoryWrapperMixin,
+    NegativeConstraintAgentMemoryWrapper,
+):
+    """Standing exclusions remembered through ordinary persistent files."""
+
+    surface = NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE
+    environment_type = NegativeConstraintFilesystemWebShopEnv
+    workspace_intervention_boundary_index = 1
+    workspace_source_pairing = SOURCE_PAIRING_CYCLIC_NEXT
+    workspace_tasks_per_orbit = TASKS_PER_ORBIT
+    workspace_prompt_family = WORKSPACE_PROMPT_FAMILY_NEGATIVE
+
+    def __init__(self) -> None:
+        self._initialize_negative_constraint_runtime(
+            expected_prompt_mode=NATURAL_FILESYSTEM_PROMPT_MODE,
+        )
+        self._initialize_filesystem_runtime()
