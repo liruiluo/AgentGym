@@ -148,6 +148,17 @@ class IntentClarificationProviderTests(unittest.TestCase):
         self.assertEqual(metadata["accepted_index_domain"], "all_nonnegative_integers")
         self.assertEqual(metadata["required_action"], "ASK")
         self.assertEqual(metadata["retrieve_policy"], "query_top1")
+        self.assertEqual(
+            metadata["task_prompt_product_identity"],
+            "complete_native_title",
+        )
+        self.assertIs(metadata["target_asin_in_task_prompt"], False)
+        self.assertIs(
+            metadata["native_search_result_asin_handles_visible"],
+            True,
+        )
+        self.assertIs(metadata["native_click_action_uses_asin_handle"], True)
+        self.assertIs(metadata["purchase_receipt_asin_verification"], True)
 
 
 class IntentClarificationRuntimeTests(unittest.TestCase):
