@@ -7,6 +7,7 @@ import uvicorn
 
 from agentenv_agentmemory.workspace_sandbox import ShellSandboxLimits
 
+from .audit import SwesmithEpisodeAuditSink
 from .dataset import SwesmithDataset
 from .environment import SwesmithEpisodeManager
 from .grader import SwesmithHiddenGrader
@@ -43,6 +44,12 @@ def build_manager_from_environment() -> SwesmithEpisodeManager:
     rg_sha256 = _required_text("SWESMITH_RG_SHA256")
     lease_root_raw = os.environ.get("SWESMITH_UID_LEASE_ROOT")
     lease_root = None if not lease_root_raw else Path(lease_root_raw).expanduser().resolve()
+    audit_root_raw = os.environ.get("SWESMITH_AUDIT_ROOT")
+    audit_sink = (
+        None
+        if not audit_root_raw
+        else SwesmithEpisodeAuditSink(Path(audit_root_raw).expanduser())
+    )
 
     def sandbox_factory(record, profile):
         del record
@@ -68,6 +75,7 @@ def build_manager_from_environment() -> SwesmithEpisodeManager:
         profile_resolver=profile_resolver,
         sandbox_factory=sandbox_factory,
         grader=SwesmithHiddenGrader(timeout_ms=grader_timeout),
+        audit_sink=audit_sink,
         max_steps=_integer("SWESMITH_MAX_STEPS", 60),
         runtime_metadata={
             "image_manifest": images.public_metadata(),

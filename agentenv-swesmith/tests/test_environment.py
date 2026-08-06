@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from agentenv_agentmemory.workspace_sandbox import (
     ShellSandboxLimits,
 )
 from agentenv_swesmith.dataset import SwesmithDataset
+from agentenv_swesmith.audit import AUDIT_SCHEMA, SwesmithEpisodeAuditSink
 from agentenv_swesmith.environment import SwesmithEpisodeManager
 from agentenv_swesmith.grader import SwesmithGradeResult
 from agentenv_swesmith.profile import SwesmithProfileBinding
@@ -133,12 +135,18 @@ class Grader:
         )
 
 
+class FailingAuditSink:
+    def write(self, **_kwargs) -> None:
+        raise OSError("audit storage unavailable")
+
+
 class SwesmithEnvironmentTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.mirrors = self.root / "mirrors"
         self.episodes = self.root / "episodes"
+        self.audits = self.root / "audits"
         self.mirrors.mkdir()
         self.mirror = self.mirrors / "owner__repo.12345678"
         self.mirror.mkdir()
@@ -199,6 +207,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             profile_resolver=Resolver(),
             sandbox_factory=lambda _record, _profile: LocalSandbox(),
             grader=self.grader,
+            audit_sink=SwesmithEpisodeAuditSink(self.audits),
             max_steps=8,
         )
 
@@ -259,6 +268,19 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         closed = self.manager.close(slot)
         self.assertTrue(closed["closed"])
         self.assertEqual(list(self.episodes.iterdir()), [])
+        audits = list(self.audits.glob("episode-*.json"))
+        self.assertEqual(len(audits), 1)
+        audit = json.loads(audits[0].read_text(encoding="utf-8"))
+        self.assertEqual(audit["schema"], AUDIT_SCHEMA)
+        self.assertEqual(audit["close_reason"], "client_close")
+        self.assertEqual(audit["data_idx"], 0)
+        self.assertEqual(audit["instance_id"], self.instance_id)
+        self.assertEqual(audit["grade"]["reward"], 1.0)
+        self.assertEqual(audit["evidence"][2]["result"]["stdout"], "persistent")
+        self.assertIn("Fix the public value", audit["initial_observation"])
+        self.assertEqual(audits[0].stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.audits.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(list(self.audits.glob(".*.tmp")), [])
 
     def test_reset_replaces_previous_episode_with_pristine_workspace(self) -> None:
         slot = self.manager.create()
@@ -274,6 +296,64 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         )
         self.assertIn("exit_code=0", result.observation)
         self.manager.close(slot)
+
+    def test_unfinished_client_close_persists_private_audit(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+        self.manager.step(slot, 'shell_command {"command":"printf unfinished"}')
+        self.manager.close(slot)
+
+        audit_path = next(self.audits.glob("episode-*.json"))
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        self.assertEqual(audit["close_reason"], "client_close")
+        self.assertFalse(audit["done"])
+        self.assertEqual(audit["reward"], 0.0)
+        self.assertIsNone(audit["grade"])
+        self.assertEqual(audit["evidence"][1]["result"]["stdout"], "unfinished")
+
+    def test_concurrent_episode_closes_write_unique_atomic_audits(self) -> None:
+        slots = [self.manager.create(), self.manager.create()]
+        for slot in slots:
+            self.manager.reset(slot, 0)
+
+        errors: list[BaseException] = []
+
+        def close(slot: int) -> None:
+            try:
+                self.manager.close(slot)
+            except BaseException as exc:  # pragma: no cover - asserted below.
+                errors.append(exc)
+
+        threads = [threading.Thread(target=close, args=(slot,)) for slot in slots]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(errors, [])
+        audits = list(self.audits.glob("episode-*.json"))
+        self.assertEqual(len(audits), 2)
+        documents = [json.loads(path.read_text(encoding="utf-8")) for path in audits]
+        self.assertEqual(len({document["audit_id"] for document in documents}), 2)
+        self.assertTrue(all(document["grade"] is None for document in documents))
+        self.assertEqual(list(self.audits.glob(".*.tmp")), [])
+
+    def test_audit_failure_still_removes_private_episode_workspace(self) -> None:
+        manager = SwesmithEpisodeManager(
+            dataset=self.manager.dataset,
+            materializer=self.manager.materializer,
+            profile_resolver=Resolver(),
+            sandbox_factory=lambda _record, _profile: LocalSandbox(),
+            grader=self.grader,
+            audit_sink=FailingAuditSink(),
+            max_steps=8,
+        )
+        slot = manager.create()
+        manager.reset(slot, 0)
+
+        with self.assertRaisesRegex(OSError, "audit storage unavailable"):
+            manager.close(slot)
+        self.assertEqual(list(self.episodes.iterdir()), [])
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import threading
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Protocol
 
@@ -12,6 +14,7 @@ from agentenv_agentmemory.workspace_patch import (
 )
 
 from .actions import ParsedPolicyAction, parse_policy_action
+from .audit import SwesmithEpisodeAuditSink
 from .dataset import SwesmithDataset, SwesmithRecord
 from .grader import SwesmithGradeResult, SwesmithHiddenGrader
 from .profile import SwesmithProfileBinding
@@ -57,11 +60,14 @@ class EpisodeStep:
 
 @dataclass
 class _Episode:
+    audit_id: str
+    started_at: str
     record: SwesmithRecord
     profile: SwesmithProfileBinding
     workspace: SwesmithWorkspace
     sandbox: LinuxNamespaceEpisodeSandbox
     observation: str
+    initial_observation: str
     step_count: int = 0
     done: bool = False
     reward: float = 0.0
@@ -86,6 +92,7 @@ class SwesmithEpisodeManager:
         profile_resolver: ProfileResolver,
         sandbox_factory: SandboxFactory,
         grader: SwesmithHiddenGrader,
+        audit_sink: SwesmithEpisodeAuditSink | None = None,
         max_steps: int = 60,
         runtime_metadata: Mapping[str, Any] | None = None,
     ) -> None:
@@ -96,6 +103,7 @@ class SwesmithEpisodeManager:
         self.profile_resolver = profile_resolver
         self.sandbox_factory = sandbox_factory
         self.grader = grader
+        self.audit_sink = audit_sink
         self.max_steps = max_steps
         self.runtime_metadata = dict(runtime_metadata or {})
         self._slots: dict[int, _Slot] = {}
@@ -112,7 +120,7 @@ class SwesmithEpisodeManager:
     def reset(self, slot_id: int, data_idx: int) -> EpisodeStep:
         slot = self._slot(slot_id)
         with slot.lock:
-            self._close_episode(slot)
+            self._close_episode(slot, close_reason="reset")
             record = self.dataset[data_idx]
             profile = self.profile_resolver.resolve(record.instance)
             sandbox: LinuxNamespaceEpisodeSandbox | None = None
@@ -128,15 +136,19 @@ class SwesmithEpisodeManager:
                 initial_snapshot = sandbox.attach_workspace(workspace.policy_root)
                 observation = _initial_observation(record.problem_statement)
                 episode = _Episode(
+                    audit_id=uuid.uuid4().hex,
+                    started_at=_utc_now(),
                     record=record,
                     profile=profile,
                     workspace=workspace,
                     sandbox=sandbox,
                     observation=observation,
+                    initial_observation=observation,
                 )
                 episode.evidence.append(
                     {
                         "event": "reset",
+                        "audit_id": episode.audit_id,
                         "data_idx": record.data_idx,
                         "physical_index": record.physical_index,
                         "instance_id": record.instance_id,
@@ -145,6 +157,7 @@ class SwesmithEpisodeManager:
                         "workspace_contract": workspace.contract,
                         "workspace_initial": initial_snapshot.as_summary(),
                         "sandbox": dict(sandbox.metadata),
+                        "observation": observation,
                     }
                 )
                 slot.episode = episode
@@ -163,10 +176,12 @@ class SwesmithEpisodeManager:
             if episode.done:
                 raise RuntimeError("SWE-smith episode is already terminal")
             episode.step_count += 1
+            observation_before = episode.observation
             action = parse_policy_action(raw_output)
             evidence: dict[str, Any] = {
                 "event": "policy_step",
                 "step": episode.step_count,
+                "observation_before": observation_before,
                 "action": action.as_evidence(),
             }
             if action.kind == "parser_error":
@@ -180,12 +195,14 @@ class SwesmithEpisodeManager:
                 self._grade_terminal(episode, evidence, termination_reason="final")
             else:  # pragma: no cover - action parser owns the closed kind set.
                 raise RuntimeError(f"unsupported SWE-smith action kind: {action.kind}")
+            evidence["observation_after"] = episode.observation
             episode.evidence.append(evidence)
 
             if not episode.done and episode.step_count >= self.max_steps:
                 horizon: dict[str, Any] = {
                     "event": "terminal_submission",
                     "step": episode.step_count,
+                    "observation_before": episode.observation,
                     "action": {"kind": "horizon"},
                 }
                 self._grade_terminal(
@@ -193,6 +210,7 @@ class SwesmithEpisodeManager:
                     horizon,
                     termination_reason="max_steps",
                 )
+                horizon["observation_after"] = episode.observation
                 episode.evidence.append(horizon)
             return self._public_step(episode, action_kind=action.kind)
 
@@ -207,6 +225,8 @@ class SwesmithEpisodeManager:
             episode = self._episode(slot)
             return {
                 "schema": EPISODE_SCHEMA,
+                "audit_id": episode.audit_id,
+                "started_at": episode.started_at,
                 "data_idx": episode.record.data_idx,
                 "physical_index": episode.record.physical_index,
                 "instance_id": episode.record.instance_id,
@@ -222,7 +242,7 @@ class SwesmithEpisodeManager:
     def close(self, slot_id: int) -> dict[str, Any]:
         slot = self._slot(slot_id)
         with slot.lock:
-            self._close_episode(slot)
+            self._close_episode(slot, close_reason="client_close")
         with self._slots_lock:
             self._slots.pop(slot_id, None)
         return {"closed": True, "id": slot_id}
@@ -244,6 +264,11 @@ class SwesmithEpisodeManager:
             "tool_contract": "codex_shell_command_apply_patch_v1",
             "reward_contract": "terminal_full_resolution_binary_v1",
             "context_contract": "one_native_issue_continuous_episode_v1",
+            "private_audit_contract": (
+                "agentmemory_swesmith_private_episode_audit_v1"
+                if self.audit_sink is not None
+                else "disabled"
+            ),
         }
         metadata.update(self.runtime_metadata)
         return metadata
@@ -390,15 +415,43 @@ class SwesmithEpisodeManager:
             raise RuntimeError("SWE-smith slot must be reset before use")
         return slot.episode
 
-    def _close_episode(self, slot: _Slot) -> None:
+    def _close_episode(self, slot: _Slot, *, close_reason: str) -> None:
         episode = slot.episode
         slot.episode = None
         if episode is None:
             return
         try:
-            episode.sandbox.close()
+            if self.audit_sink is not None:
+                self.audit_sink.write(
+                    audit_id=episode.audit_id,
+                    payload={
+                        "episode_schema": EPISODE_SCHEMA,
+                        "closed_at": _utc_now(),
+                        "close_reason": close_reason,
+                        "started_at": episode.started_at,
+                        "data_idx": episode.record.data_idx,
+                        "physical_index": episode.record.physical_index,
+                        "instance_id": episode.record.instance_id,
+                        "dataset_shard_sha256": episode.record.shard_sha256,
+                        "problem_statement": episode.record.problem_statement,
+                        "initial_observation": episode.initial_observation,
+                        "step_count": episode.step_count,
+                        "done": episode.done,
+                        "reward": episode.reward,
+                        "runtime_metadata": dict(self.runtime_metadata),
+                        "evidence": list(episode.evidence),
+                        "grade": (
+                            None
+                            if episode.grade is None
+                            else episode.grade.as_private_dict()
+                        ),
+                    },
+                )
         finally:
-            self.materializer.close(episode.workspace)
+            try:
+                episode.sandbox.close()
+            finally:
+                self.materializer.close(episode.workspace)
 
 
 def _normalize_patch_path(raw: str) -> str:
@@ -408,6 +461,10 @@ def _normalize_patch_path(raw: str) -> str:
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise WorkspacePatchError(f"apply_patch path escapes the workspace: {raw!r}")
     return str(path)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _initial_observation(problem_statement: str) -> str:

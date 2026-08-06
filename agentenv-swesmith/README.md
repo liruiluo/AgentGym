@@ -15,3 +15,9 @@ The `/detail` endpoint is an audit-only route. It is disabled unless the server
 has `SWESMITH_DETAIL_TOKEN` and the caller supplies the matching
 `X-SWESMITH-Detail-Token` header, so hidden grader evidence never enters the
 policy-facing HTTP surface.
+
+Formal RL launches set `SWESMITH_AUDIT_ROOT` to a server-private directory. On
+episode close, the server atomically persists the exact observations, raw policy
+outputs, tool results, workspace diffs, terminal reward, and hidden F2P/P2P grade
+before deleting the episode workspace. The sink path and its contents are never
+returned by the policy-facing API.

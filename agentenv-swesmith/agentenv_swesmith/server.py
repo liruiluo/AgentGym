@@ -124,9 +124,17 @@ def detail(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.post("/close")
 def close(body: CloseRequest) -> dict[str, Any]:
     try:
         return manager().close(body.id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logging.exception("SWE-smith close failed")
+        raise HTTPException(
+            status_code=500,
+            detail="SWE-smith close failed closed; inspect server logs",
+        ) from exc
