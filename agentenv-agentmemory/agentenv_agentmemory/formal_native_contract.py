@@ -48,6 +48,11 @@ def infer_raw_action_op(raw_action: str) -> str:
     text = str(raw_action).strip()
     native = _NATIVE_ACTION_RE.fullmatch(text)
     if native is not None:
+        # The environment strips the bracket argument and rejects an empty
+        # value. Keep the reward ledger on the same INVALID branch instead of
+        # classifying ``search[ ]``/``click[\t]`` as executed native actions.
+        if not native.group(2).strip():
+            return "INVALID"
         return native.group(1).upper()
     memory = _MEMORY_ACTION_RE.fullmatch(text)
     if memory is not None:

@@ -14,6 +14,10 @@ from agentenv_agentmemory.memoryarena_webshop_env import (
     parse_mixed_action,
 )
 from agentenv_agentmemory.native_webshop_backend import NativePage, NativePurchase
+from agentenv_agentmemory.formal_native_contract import (
+    build_reward_components,
+    infer_raw_action_op,
+)
 from agentenv_agentmemory.reward_hierarchy import (
     EXACT_REPEAT_ACTION_PENALTY,
     FIRST_VALID_ADD_BONUS,
@@ -169,6 +173,24 @@ class MixedActionParserTests(unittest.TestCase):
             with self.subTest(action=action), self.assertRaises(InvalidNativeAction):
                 parse_mixed_action(action)
 
+    def test_rejects_blank_native_arguments(self) -> None:
+        for action in ("search[]", "search[ ]", "search[\t]", "click[ ]"):
+            with self.subTest(action=action), self.assertRaises(InvalidNativeAction):
+                parse_mixed_action(action)
+
+    def test_blank_native_arguments_bind_to_invalid_reward_operation(self) -> None:
+        for action in ("search[]", "search[ ]", "click[\t]"):
+            with self.subTest(action=action):
+                self.assertEqual(infer_raw_action_op(action), "INVALID")
+                components = build_reward_components(
+                    raw_action=action,
+                    reward=INVALID_ACTION_PENALTY,
+                    step=1,
+                    tool_ops=[],
+                )
+                self.assertEqual(components[0]["op"], "INVALID")
+                self.assertEqual(components[0]["name"], "invalid_action")
+
 
 class MemoryArenaWebShopEnvTests(unittest.TestCase):
     def make_env(
@@ -258,6 +280,24 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
             names=["search_transition"],
             step=1,
         )
+
+    def test_blank_native_search_is_invalid_and_has_no_tool_event(self) -> None:
+        env, _ = self.make_env()
+
+        _, reward, done, _, info = env.step("search[ ]")
+
+        self.assertEqual(reward, INVALID_ACTION_PENALTY)
+        self.assertFalse(done)
+        self.assertEqual(info["tool_ops"], [])
+        self.assert_reward_ledger(
+            reward=reward,
+            info=info,
+            op="INVALID",
+            names=["invalid_action"],
+            step=1,
+        )
+        component = info["reward_components"][0]
+        self.assertEqual(component["raw_action"], "search[ ]")
 
         _, reward, done, _, info = env.step(f"click[{TARGETS[0]}]")
 
