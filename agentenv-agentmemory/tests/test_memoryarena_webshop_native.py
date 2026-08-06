@@ -220,7 +220,8 @@ class MemoryArenaWebShopEnvTests(unittest.TestCase):
     def test_info_reports_phase_and_subtask_counts_across_lifecycle(self) -> None:
         env, _ = self.make_env()
 
-        _, reset_info = env.reset()
+        _, reset_info = env.reset(data_idx=5)
+        self.assertEqual(reset_info["data_idx"], 5)
         self.assertEqual(reset_info["phase_count"], 6)
         self.assertEqual(reset_info["subtask_count"], 6)
         self.assertEqual(reset_info["current_subtask_index"], 0)

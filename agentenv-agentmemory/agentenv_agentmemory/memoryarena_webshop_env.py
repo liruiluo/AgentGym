@@ -296,6 +296,7 @@ class MemoryArenaWebShopEnv:
         subtask_count = len(bundle.target_asins)
         return {
             "task_id": bundle.task_id,
+            "data_idx": self.data_idx,
             "task_family": "bundled_shopping",
             "split": bundle.split,
             "source": "memoryarena_original_webshop",
