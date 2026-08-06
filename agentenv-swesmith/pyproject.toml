@@ -1,0 +1,21 @@
+[project]
+name = "agentenv_swesmith"
+version = "0.0.1"
+description = "Native SWE-smith environment for AgentMemoryGym RL."
+authors = [
+    {name = "Lirui Luo"},
+]
+dependencies = [
+    "fastapi",
+    "uvicorn",
+]
+requires-python = ">=3.10"
+readme = "README.md"
+license = {text = "MIT"}
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[project.scripts]
+swesmith = "agentenv_swesmith:launch"

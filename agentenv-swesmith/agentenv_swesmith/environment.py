@@ -1,0 +1,450 @@
+from __future__ import annotations
+
+import threading
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Mapping, Protocol
+
+from agentenv_agentmemory.workspace_patch import (
+    WorkspacePatchError,
+    apply_workspace_patch_touched_transaction,
+    parse_workspace_patch,
+)
+
+from .actions import ParsedPolicyAction, parse_policy_action
+from .dataset import SwesmithDataset, SwesmithRecord
+from .grader import SwesmithGradeResult, SwesmithHiddenGrader
+from .profile import SwesmithProfileBinding
+from .sandbox import (
+    LinuxNamespaceEpisodeSandbox,
+    SwesmithSandboxError,
+    snapshot_workspace_tree,
+)
+from .workspace import SwesmithWorkspace, SwesmithWorkspaceMaterializer
+
+
+EPISODE_SCHEMA = "agentmemory_swesmith_native_episode_v1"
+
+
+class ProfileResolver(Protocol):
+    def resolve(self, instance: Mapping[str, Any]) -> SwesmithProfileBinding: ...
+
+
+class SandboxFactory(Protocol):
+    def __call__(
+        self,
+        record: SwesmithRecord,
+        profile: SwesmithProfileBinding,
+    ) -> LinuxNamespaceEpisodeSandbox: ...
+
+
+@dataclass(frozen=True)
+class EpisodeStep:
+    observation: str
+    reward: float
+    done: bool
+    info: Mapping[str, Any]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "observation": self.observation,
+            "state": self.observation,
+            "reward": self.reward,
+            "done": self.done,
+            "info": dict(self.info),
+        }
+
+
+@dataclass
+class _Episode:
+    record: SwesmithRecord
+    profile: SwesmithProfileBinding
+    workspace: SwesmithWorkspace
+    sandbox: LinuxNamespaceEpisodeSandbox
+    observation: str
+    step_count: int = 0
+    done: bool = False
+    reward: float = 0.0
+    evidence: list[dict[str, Any]] = field(default_factory=list)
+    grade: SwesmithGradeResult | None = None
+
+
+@dataclass
+class _Slot:
+    episode: _Episode | None = None
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+class SwesmithEpisodeManager:
+    """Own one persistent repository workspace per native SWE-smith episode."""
+
+    def __init__(
+        self,
+        *,
+        dataset: SwesmithDataset,
+        materializer: SwesmithWorkspaceMaterializer,
+        profile_resolver: ProfileResolver,
+        sandbox_factory: SandboxFactory,
+        grader: SwesmithHiddenGrader,
+        max_steps: int = 60,
+        runtime_metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        if type(max_steps) is not int or max_steps <= 0:
+            raise ValueError("SWE-smith max_steps must be a positive integer")
+        self.dataset = dataset
+        self.materializer = materializer
+        self.profile_resolver = profile_resolver
+        self.sandbox_factory = sandbox_factory
+        self.grader = grader
+        self.max_steps = max_steps
+        self.runtime_metadata = dict(runtime_metadata or {})
+        self._slots: dict[int, _Slot] = {}
+        self._next_slot = 0
+        self._slots_lock = threading.Lock()
+
+    def create(self) -> int:
+        with self._slots_lock:
+            slot_id = self._next_slot
+            self._next_slot += 1
+            self._slots[slot_id] = _Slot()
+        return slot_id
+
+    def reset(self, slot_id: int, data_idx: int) -> EpisodeStep:
+        slot = self._slot(slot_id)
+        with slot.lock:
+            self._close_episode(slot)
+            record = self.dataset[data_idx]
+            profile = self.profile_resolver.resolve(record.instance)
+            sandbox: LinuxNamespaceEpisodeSandbox | None = None
+            workspace: SwesmithWorkspace | None = None
+            try:
+                sandbox = self.sandbox_factory(record, profile)
+                workspace = self.materializer.materialize(
+                    record.instance,
+                    test_paths=profile.all_test_paths,
+                    model_uid=sandbox.model_uid,
+                    model_gid=sandbox.model_gid,
+                )
+                initial_snapshot = sandbox.attach_workspace(workspace.policy_root)
+                observation = _initial_observation(record.problem_statement)
+                episode = _Episode(
+                    record=record,
+                    profile=profile,
+                    workspace=workspace,
+                    sandbox=sandbox,
+                    observation=observation,
+                )
+                episode.evidence.append(
+                    {
+                        "event": "reset",
+                        "data_idx": record.data_idx,
+                        "physical_index": record.physical_index,
+                        "instance_id": record.instance_id,
+                        "dataset_shard_sha256": record.shard_sha256,
+                        "profile": profile.as_private_metadata(),
+                        "workspace_contract": workspace.contract,
+                        "workspace_initial": initial_snapshot.as_summary(),
+                        "sandbox": dict(sandbox.metadata),
+                    }
+                )
+                slot.episode = episode
+                return self._public_step(episode, action_kind="reset")
+            except Exception:
+                if workspace is not None:
+                    self.materializer.close(workspace)
+                if sandbox is not None:
+                    sandbox.close()
+                raise
+
+    def step(self, slot_id: int, raw_output: str) -> EpisodeStep:
+        slot = self._slot(slot_id)
+        with slot.lock:
+            episode = self._episode(slot)
+            if episode.done:
+                raise RuntimeError("SWE-smith episode is already terminal")
+            episode.step_count += 1
+            action = parse_policy_action(raw_output)
+            evidence: dict[str, Any] = {
+                "event": "policy_step",
+                "step": episode.step_count,
+                "action": action.as_evidence(),
+            }
+            if action.kind == "parser_error":
+                episode.observation = _parser_error_observation(action)
+                evidence["result"] = {"parser_error": action.error}
+            elif action.kind == "shell_command":
+                self._run_shell(episode, action, evidence)
+            elif action.kind == "apply_patch":
+                self._run_patch(episode, action, evidence)
+            elif action.kind == "final":
+                self._grade_terminal(episode, evidence, termination_reason="final")
+            else:  # pragma: no cover - action parser owns the closed kind set.
+                raise RuntimeError(f"unsupported SWE-smith action kind: {action.kind}")
+            episode.evidence.append(evidence)
+
+            if not episode.done and episode.step_count >= self.max_steps:
+                horizon: dict[str, Any] = {
+                    "event": "terminal_submission",
+                    "step": episode.step_count,
+                    "action": {"kind": "horizon"},
+                }
+                self._grade_terminal(
+                    episode,
+                    horizon,
+                    termination_reason="max_steps",
+                )
+                episode.evidence.append(horizon)
+            return self._public_step(episode, action_kind=action.kind)
+
+    def observation(self, slot_id: int) -> str:
+        slot = self._slot(slot_id)
+        with slot.lock:
+            return self._episode(slot).observation
+
+    def detail(self, slot_id: int) -> dict[str, Any]:
+        slot = self._slot(slot_id)
+        with slot.lock:
+            episode = self._episode(slot)
+            return {
+                "schema": EPISODE_SCHEMA,
+                "data_idx": episode.record.data_idx,
+                "physical_index": episode.record.physical_index,
+                "instance_id": episode.record.instance_id,
+                "step_count": episode.step_count,
+                "done": episode.done,
+                "reward": episode.reward,
+                "evidence": list(episode.evidence),
+                "grade": (
+                    None if episode.grade is None else episode.grade.as_private_dict()
+                ),
+            }
+
+    def close(self, slot_id: int) -> dict[str, Any]:
+        slot = self._slot(slot_id)
+        with slot.lock:
+            self._close_episode(slot)
+        with self._slots_lock:
+            self._slots.pop(slot_id, None)
+        return {"closed": True, "id": slot_id}
+
+    def metadata(self) -> dict[str, Any]:
+        provenance = self.dataset.provenance
+        metadata = {
+            "schema": EPISODE_SCHEMA,
+            "task_count": len(self.dataset),
+            "dataset_id": provenance.dataset_id,
+            "dataset_role": provenance.role,
+            "upstream_repository": provenance.upstream_repository,
+            "dataset_revision": provenance.upstream_revision,
+            # Compatibility alias; new launchers should use dataset_revision.
+            "upstream_revision": provenance.upstream_revision,
+            "dataset_manifest_sha256": provenance.manifest_sha256,
+            "selection_mode": provenance.selection_mode,
+            "max_steps": self.max_steps,
+            "tool_contract": "codex_shell_command_apply_patch_v1",
+            "reward_contract": "terminal_full_resolution_binary_v1",
+            "context_contract": "one_native_issue_continuous_episode_v1",
+        }
+        metadata.update(self.runtime_metadata)
+        return metadata
+
+    def _run_shell(
+        self,
+        episode: _Episode,
+        action: ParsedPolicyAction,
+        evidence: dict[str, Any],
+    ) -> None:
+        assert action.arguments is not None
+        timeout_ms = action.arguments.get(
+            "timeout_ms", episode.sandbox.limits.default_timeout_ms
+        )
+        try:
+            execution = episode.sandbox.run(
+                command=str(action.arguments["command"]),
+                workdir=str(action.arguments["workdir"]),
+                timeout_ms=int(timeout_ms),
+            )
+        except SwesmithSandboxError as exc:
+            poisoned = episode.sandbox.poisoned_reason
+            evidence["result"] = {
+                "error": f"{type(exc).__name__}: {exc}",
+                "poisoned": poisoned,
+            }
+            episode.observation = f"shell_command failed: {exc}"
+            if poisoned is not None:
+                episode.done = True
+                episode.reward = 0.0
+            return
+        result = execution.result
+        stdout = result.stdout.decode("utf-8", errors="replace")
+        stderr = result.stderr.decode("utf-8", errors="replace")
+        evidence["result"] = {
+            "exit_code": result.exit_code,
+            "elapsed_ms": result.elapsed_ms,
+            "timed_out": result.timed_out,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdout_truncated": result.stdout_truncated,
+            "stderr_truncated": result.stderr_truncated,
+            "termination_reason": result.termination_reason,
+            "workspace_diff": execution.workspace_diff.as_dict(),
+        }
+        episode.observation = _shell_observation(
+            exit_code=result.exit_code,
+            elapsed_ms=result.elapsed_ms,
+            timed_out=result.timed_out,
+            stdout=stdout,
+            stderr=stderr,
+            changed_paths=execution.workspace_diff.changed_paths,
+        )
+
+    def _run_patch(
+        self,
+        episode: _Episode,
+        action: ParsedPolicyAction,
+        evidence: dict[str, Any],
+    ) -> None:
+        assert action.patch is not None
+        try:
+            operations = parse_workspace_patch(action.patch)
+            result = apply_workspace_patch_touched_transaction(
+                episode.workspace.policy_root,
+                operations,
+                normalize_path=_normalize_patch_path,
+                validate_tree=lambda root: snapshot_workspace_tree(
+                    root, episode.sandbox.limits
+                ),
+            )
+            diff = episode.sandbox.refresh_after_host_mutation()
+        except (WorkspacePatchError, SwesmithSandboxError) as exc:
+            evidence["result"] = {"error": f"{type(exc).__name__}: {exc}"}
+            episode.observation = f"apply_patch failed: {exc}"
+            if episode.sandbox.poisoned_reason is not None:
+                episode.done = True
+                episode.reward = 0.0
+            return
+        evidence["result"] = {
+            "changed_paths": list(result.changed_paths),
+            "added_paths": list(result.added_paths),
+            "updated_paths": list(result.updated_paths),
+            "deleted_paths": list(result.deleted_paths),
+            "workspace_diff": diff.as_dict(),
+        }
+        episode.observation = (
+            "apply_patch succeeded. Changed paths: "
+            + (", ".join(result.changed_paths) if result.changed_paths else "none")
+        )
+
+    def _grade_terminal(
+        self,
+        episode: _Episode,
+        evidence: dict[str, Any],
+        *,
+        termination_reason: str,
+    ) -> None:
+        grade = self.grader.grade(
+            instance=episode.record.instance,
+            profile=episode.profile,
+            workspace=episode.workspace,
+            sandbox=episode.sandbox,
+        )
+        episode.grade = grade
+        episode.done = True
+        episode.reward = grade.reward
+        episode.observation = (
+            "Submission accepted and graded. "
+            + ("The issue is resolved." if grade.resolved else "The issue is not resolved.")
+        )
+        evidence["termination_reason"] = termination_reason
+        evidence["result"] = {
+            "reward": grade.reward,
+            "resolved": grade.resolved,
+            "grader_error": grade.error,
+        }
+
+    def _public_step(self, episode: _Episode, *, action_kind: str) -> EpisodeStep:
+        return EpisodeStep(
+            observation=episode.observation,
+            reward=episode.reward,
+            done=episode.done,
+            info={
+                "schema": EPISODE_SCHEMA,
+                "step": episode.step_count,
+                "action_kind": action_kind,
+                "terminal": episode.done,
+            },
+        )
+
+    def _slot(self, slot_id: int) -> _Slot:
+        if isinstance(slot_id, bool) or not isinstance(slot_id, int):
+            raise KeyError("SWE-smith slot id must be an integer")
+        with self._slots_lock:
+            try:
+                return self._slots[slot_id]
+            except KeyError as exc:
+                raise KeyError(f"unknown SWE-smith slot id: {slot_id}") from exc
+
+    @staticmethod
+    def _episode(slot: _Slot) -> _Episode:
+        if slot.episode is None:
+            raise RuntimeError("SWE-smith slot must be reset before use")
+        return slot.episode
+
+    def _close_episode(self, slot: _Slot) -> None:
+        episode = slot.episode
+        slot.episode = None
+        if episode is None:
+            return
+        try:
+            episode.sandbox.close()
+        finally:
+            self.materializer.close(episode.workspace)
+
+
+def _normalize_patch_path(raw: str) -> str:
+    if not isinstance(raw, str) or not raw or "\x00" in raw:
+        raise WorkspacePatchError("apply_patch path must be non-empty text")
+    path = PurePosixPath(raw)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise WorkspacePatchError(f"apply_patch path escapes the workspace: {raw!r}")
+    return str(path)
+
+
+def _initial_observation(problem_statement: str) -> str:
+    return (
+        "Repair the repository in /testbed for this issue. The same workspace persists "
+        "for the whole episode. Use exactly one action per turn.\n\n"
+        "Available actions:\n"
+        'shell_command {"command":"...","workdir":".","timeout_ms":120000}\n'
+        "apply_patch\n*** Begin Patch\n...\n*** End Patch\n"
+        "A normal text response submits the current workspace for hidden grading.\n\n"
+        "Issue:\n" + problem_statement.strip()
+    )
+
+
+def _parser_error_observation(action: ParsedPolicyAction) -> str:
+    return (
+        f"Invalid action syntax: {action.error}. Use exactly one canonical "
+        "shell_command JSON call, one complete apply_patch payload, or a normal final response."
+    )
+
+
+def _shell_observation(
+    *,
+    exit_code: int,
+    elapsed_ms: int,
+    timed_out: bool,
+    stdout: str,
+    stderr: str,
+    changed_paths: tuple[str, ...],
+) -> str:
+    return (
+        f"shell_command exit_code={exit_code} elapsed_ms={elapsed_ms} "
+        f"timed_out={str(timed_out).lower()}\n"
+        "stdout:\n"
+        + (stdout if stdout else "<empty>")
+        + "\nstderr:\n"
+        + (stderr if stderr else "<empty>")
+        + "\nworkspace changed paths: "
+        + (", ".join(changed_paths) if changed_paths else "none")
+    )

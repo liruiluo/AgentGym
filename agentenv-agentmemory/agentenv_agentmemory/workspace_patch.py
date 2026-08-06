@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -210,6 +211,234 @@ def apply_workspace_patch_transaction(
         )
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+def apply_workspace_patch_touched_transaction(
+    root: Path,
+    operations: Sequence[PatchOperation],
+    *,
+    normalize_path: Callable[[str], str],
+    validate_tree: Callable[[Path], None],
+) -> WorkspacePatchResult:
+    """Apply a patch in place while transactionally backing up touched files.
+
+    Coding workspaces can contain thousands of files, so copying the entire tree
+    for every ``apply_patch`` call is needlessly expensive. This variant freezes
+    and validates the complete touched-path set before mutation, keeps private
+    byte-for-byte backups of existing files, and rolls every touched path back if
+    either patch application or whole-tree validation fails.
+    """
+
+    root = Path(root).resolve()
+    if not root.is_dir() or root.is_symlink():
+        raise WorkspacePatchError("workspace root must be a real directory")
+    root_info = os.stat(root, follow_symlinks=False)
+    normalized = _normalize_patch_operations(operations, normalize_path)
+    _prevalidate_touched_operations(root, normalized)
+
+    touched = sorted(
+        {
+            path
+            for operation in normalized
+            for path in (operation.path, operation.destination)
+            if path is not None
+        }
+    )
+    parent = root.parent
+    backup_root = Path(tempfile.mkdtemp(prefix=".agentmemory-patch-backup-", dir=parent))
+    backups: dict[str, tuple[bool, Path | None, int | None]] = {}
+    try:
+        for index, relative in enumerate(touched):
+            path = root / relative
+            if path.exists():
+                _require_regular_file(root, path, relative)
+                backup = backup_root / str(index)
+                shutil.copyfile(path, backup, follow_symlinks=False)
+                backups[relative] = (True, backup, stat.S_IMODE(os.stat(path).st_mode))
+            elif path.is_symlink():
+                raise WorkspacePatchError(
+                    f"patch target must not be a symlink: {relative}"
+                )
+            else:
+                backups[relative] = (False, None, None)
+
+        added: list[str] = []
+        updated: list[str] = []
+        deleted: list[str] = []
+        try:
+            for operation in normalized:
+                source = operation.path
+                if operation.kind == "add":
+                    _apply_add(root, source, operation.content_lines)
+                    added.append(source)
+                elif operation.kind == "delete":
+                    _apply_delete(root, source)
+                    deleted.append(source)
+                elif operation.kind == "update":
+                    destination = operation.destination
+                    source_mode = backups[source][2]
+                    _apply_update(root, source, destination, operation.hunks)
+                    target = source if destination is None else destination
+                    if source_mode is not None:
+                        os.chmod(root / target, source_mode)
+                    if destination is None or destination == source:
+                        updated.append(source)
+                    else:
+                        deleted.append(source)
+                        added.append(destination)
+                else:  # pragma: no cover - parser owns the closed operation set.
+                    raise WorkspacePatchError(
+                        f"unsupported parsed patch operation: {operation.kind}"
+                    )
+            _restore_touched_owner(
+                root,
+                touched,
+                uid=root_info.st_uid,
+                gid=root_info.st_gid,
+            )
+            validate_tree(root)
+        except Exception:
+            _rollback_touched_paths(
+                root,
+                backups,
+                uid=root_info.st_uid,
+                gid=root_info.st_gid,
+            )
+            validate_tree(root)
+            raise
+
+        changed = sorted(set(added) | set(updated) | set(deleted))
+        return WorkspacePatchResult(
+            changed_paths=tuple(changed),
+            added_paths=tuple(sorted(set(added))),
+            updated_paths=tuple(sorted(set(updated))),
+            deleted_paths=tuple(sorted(set(deleted))),
+        )
+    finally:
+        shutil.rmtree(backup_root, ignore_errors=True)
+
+
+def _normalize_patch_operations(
+    operations: Sequence[PatchOperation],
+    normalize_path: Callable[[str], str],
+) -> tuple[PatchOperation, ...]:
+    normalized: list[PatchOperation] = []
+    seen: set[str] = set()
+    for operation in operations:
+        source = normalize_path(operation.path)
+        destination = (
+            None
+            if operation.destination is None
+            else normalize_path(operation.destination)
+        )
+        for path in (source, destination):
+            if path is None:
+                continue
+            if path in seen:
+                raise WorkspacePatchError(
+                    f"apply_patch touches the same normalized path more than once: {path}"
+                )
+            seen.add(path)
+        normalized.append(
+            PatchOperation(
+                kind=operation.kind,
+                path=source,
+                destination=destination,
+                content_lines=operation.content_lines,
+                hunks=operation.hunks,
+            )
+        )
+    return tuple(normalized)
+
+
+def _prevalidate_touched_operations(
+    root: Path,
+    operations: Sequence[PatchOperation],
+) -> None:
+    for operation in operations:
+        source = root / operation.path
+        _require_contained(root, source)
+        _require_real_parent_chain(root, source.parent)
+        if operation.kind == "add":
+            if source.exists() or source.is_symlink():
+                raise WorkspacePatchError(
+                    f"Add File target already exists: {operation.path}"
+                )
+        elif operation.kind in {"delete", "update"}:
+            _require_regular_file(root, source, operation.path)
+        else:
+            raise WorkspacePatchError(
+                f"unsupported parsed patch operation: {operation.kind}"
+            )
+        if operation.destination is not None:
+            destination = root / operation.destination
+            _require_contained(root, destination)
+            _require_real_parent_chain(root, destination.parent)
+            if destination.exists() or destination.is_symlink():
+                raise WorkspacePatchError(
+                    f"Move destination already exists: {operation.destination}"
+                )
+
+
+def _require_real_parent_chain(root: Path, parent: Path) -> None:
+    _require_contained(root, parent)
+    cursor = root
+    for part in parent.relative_to(root).parts:
+        cursor = cursor / part
+        if cursor.is_symlink() or (cursor.exists() and not cursor.is_dir()):
+            raise WorkspacePatchError(
+                "apply_patch parent is not a real directory"
+            )
+
+
+def _restore_touched_owner(
+    root: Path,
+    touched: Sequence[str],
+    *,
+    uid: int,
+    gid: int,
+) -> None:
+    parents: set[Path] = set()
+    for relative in touched:
+        path = root / relative
+        if path.exists() and not path.is_symlink():
+            os.chown(path, uid, gid, follow_symlinks=False)
+        parent = path.parent
+        while parent != root:
+            parents.add(parent)
+            parent = parent.parent
+    for parent in sorted(parents, key=lambda item: len(item.parts), reverse=True):
+        if parent.exists() and not parent.is_symlink():
+            os.chown(parent, uid, gid, follow_symlinks=False)
+
+
+def _rollback_touched_paths(
+    root: Path,
+    backups: dict[str, tuple[bool, Path | None, int | None]],
+    *,
+    uid: int,
+    gid: int,
+) -> None:
+    for relative in sorted(backups, key=lambda value: len(Path(value).parts), reverse=True):
+        path = root / relative
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.exists():
+            raise WorkspacePatchError(
+                f"cannot roll back non-file patch target: {relative}"
+            )
+    for relative, (existed, backup, mode) in backups.items():
+        path = root / relative
+        if not existed:
+            _remove_empty_parents(root, path.parent)
+            continue
+        if backup is None or mode is None:  # pragma: no cover - internal invariant.
+            raise WorkspacePatchError("patch backup metadata is incomplete")
+        _create_real_parents(root, path.parent)
+        shutil.copyfile(backup, path, follow_symlinks=False)
+        os.chmod(path, mode)
+        os.chown(path, uid, gid, follow_symlinks=False)
+    _restore_touched_owner(root, tuple(backups), uid=uid, gid=gid)
 
 
 def _apply_add(root: Path, relative: str, content_lines: Sequence[str]) -> None:
