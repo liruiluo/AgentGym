@@ -62,12 +62,15 @@ class LocalSandbox(LinuxNamespaceEpisodeSandbox):
             rg_fingerprint=ExecutableFingerprint(0, 0, 0, 0, 0, 0),
             binaries={},
             uid_lease_context=self.lease,
-            model_uid=os.getuid(),
+            # The production policy identity must never be root.  The remote
+            # test container itself runs as root, so use a deterministic
+            # unprivileged UID for the host-side chown contract.
+            model_uid=(1000 if os.getuid() == 0 else os.getuid()),
         )
 
     @property
     def model_gid(self) -> int:
-        return os.getgid()
+        return 1000 if os.getgid() == 0 else os.getgid()
 
     def _run_namespace(
         self,
