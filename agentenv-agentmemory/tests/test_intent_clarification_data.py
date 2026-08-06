@@ -274,6 +274,7 @@ class IntentClarificationRuntimeTests(unittest.TestCase):
             self.assertLess(reward, 0.0)
             self.assertFalse(done)
             self.assertFalse(info["ask_completed"])
+            self.assertEqual(info["reward_components"][0]["op"], "INVALID")
         finally:
             env.close()
 
@@ -335,12 +336,40 @@ class IntentClarificationFilesystemRuntimeTests(unittest.TestCase):
             self.assertFalse(done)
             self.assertEqual(info["current_subtask_index"], 0)
             self.assertEqual(info["reward_components"][0]["name"], "invalid_action")
+            self.assertEqual(info["reward_components"][0]["op"], "CLICK")
             self.assertFalse(info["ask_completed"])
 
-            _, reward, done, _, info = env.step("ASK not-json")
-            self.assertLess(reward, 0.0)
-            self.assertFalse(done)
-            self.assertFalse(info["ask_completed"])
+            malformed_actions = (
+                "ASK not-json",
+                "ASK {bad json}",
+                "ASK [1]",
+                "shell_command {bad json}",
+                "apply_patch *** Begin Patch",
+            )
+            for action in malformed_actions:
+                with self.subTest(action=action):
+                    _, reward, done, _, info = env.step(action)
+                    self.assertLess(reward, 0.0)
+                    self.assertFalse(done)
+                    self.assertFalse(info["ask_completed"])
+                    self.assertEqual(
+                        info["reward_components"][0]["name"], "invalid_action"
+                    )
+                    self.assertEqual(info["reward_components"][0]["op"], "INVALID")
+
+            failed_ask_attempts = (
+                "ASK {}",
+                'ASK {"field":""}',
+                'ASK {"field":"wrong"}',
+                'ASK {"field":"color","extra":true}',
+            )
+            for action in failed_ask_attempts:
+                with self.subTest(action=action):
+                    _, reward, done, _, info = env.step(action)
+                    self.assertLess(reward, 0.0)
+                    self.assertFalse(done)
+                    self.assertFalse(info["ask_completed"])
+                    self.assertEqual(info["reward_components"][0]["op"], "ASK")
 
             env.step(f'ASK {{"field":"{task.clarification_field}"}}')
             _, reward, done, _, info = env.step(
@@ -349,6 +378,7 @@ class IntentClarificationFilesystemRuntimeTests(unittest.TestCase):
             self.assertLess(reward, 0.0)
             self.assertFalse(done)
             self.assertEqual(info["reward_components"][0]["name"], "invalid_action")
+            self.assertEqual(info["reward_components"][0]["op"], "ASK")
         finally:
             env.close()
 

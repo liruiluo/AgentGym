@@ -26,6 +26,21 @@ INTENT_CLARIFICATION_FILESYSTEM_SURFACE = (
 _ASK_RE = re.compile(r"\AASK\s+(\{.*\})\Z", re.DOTALL)
 
 
+def _parse_ask_object(action_text: str) -> dict[str, Any]:
+    match = _ASK_RE.fullmatch(action_text)
+    if match is None:
+        raise InvalidNativeAction(
+            'ASK requires exactly one JSON object, for example ASK {"field":"color"}.'
+        )
+    try:
+        payload = json.loads(match.group(1))
+    except json.JSONDecodeError as exc:
+        raise InvalidNativeAction(f"ASK payload is invalid JSON: {exc.msg}.") from exc
+    if not isinstance(payload, dict):
+        raise InvalidNativeAction("ASK payload must be a JSON object.")
+    return payload
+
+
 class IntentClarificationWebShopEnv(MemoryArenaWebShopEnv):
     """Native WebShop runtime with one first-session clarification action."""
 
@@ -129,21 +144,16 @@ class IntentClarificationWebShopEnv(MemoryArenaWebShopEnv):
                 False,
                 self.build_info(),
             )
-        match = _ASK_RE.fullmatch(action_text)
-        if match is None:
-            return self._invalid_clarification_action(
-                action_text,
-                'ASK requires exactly one JSON object, for example ASK {"field":"color"}.',
-            )
         try:
-            payload = json.loads(match.group(1))
-        except json.JSONDecodeError as exc:
+            payload = _parse_ask_object(action_text)
+        except InvalidNativeAction as exc:
             return self._invalid_clarification_action(
                 action_text,
-                f"ASK payload is invalid JSON: {exc.msg}.",
+                str(exc),
+                attempted_op="INVALID",
             )
         bundle = self._require_bundle()
-        if not isinstance(payload, dict) or set(payload) != {"field"}:
+        if set(payload) != {"field"}:
             return self._invalid_clarification_action(
                 action_text,
                 "ASK expects exactly the field property.",
@@ -271,7 +281,8 @@ class IntentClarificationFilesystemWebShopEnv(PersistentWorkspaceWebShopEnv):
                 "The customer must clarify the requested field before purchase."
             )
         if action_text.startswith("ASK"):
-            return ParsedAction(op="ASK", raw_action=action_text, payload={})
+            payload = _parse_ask_object(action_text)
+            return ParsedAction(op="ASK", raw_action=action_text, payload=payload)
         return super()._parse_action(action)
 
     def _step_memory(self, parsed: ParsedAction) -> tuple[str, float, bool]:
@@ -280,17 +291,9 @@ class IntentClarificationFilesystemWebShopEnv(PersistentWorkspaceWebShopEnv):
         return super()._step_memory(parsed)
 
     def _step_ask(self, action_text: str) -> tuple[str, float, bool]:
-        match = _ASK_RE.fullmatch(action_text)
-        if match is None:
-            raise InvalidNativeAction(
-                'ASK requires exactly one JSON object, for example ASK {"field":"color"}.'
-            )
-        try:
-            payload = json.loads(match.group(1))
-        except json.JSONDecodeError as exc:
-            raise InvalidNativeAction(f"ASK payload is invalid JSON: {exc.msg}.") from exc
+        payload = _parse_ask_object(action_text)
         bundle = self._require_bundle()
-        if not isinstance(payload, dict) or set(payload) != {"field"}:
+        if set(payload) != {"field"}:
             raise InvalidNativeAction("ASK expects exactly the field property.")
         if payload.get("field") != bundle.clarification_field:
             raise InvalidNativeAction(
