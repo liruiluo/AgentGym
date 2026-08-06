@@ -7,6 +7,7 @@ authors = [
 ]
 dependencies = [
     "fastapi",
+    "unidiff",
     "uvicorn",
 ]
 requires-python = ">=3.10"
