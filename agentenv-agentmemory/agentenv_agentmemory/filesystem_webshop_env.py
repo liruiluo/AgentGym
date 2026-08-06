@@ -227,6 +227,8 @@ class PersistentWorkspaceWebShopEnv(MemoryArenaWebShopEnv):
                 "workspace_causal_arm": self.workspace.causal_arm,
                 "workspace_control_event": self.workspace.control_event,
                 "workspace_snapshot": snapshot,
+                "workspace_seed_manifest": self.workspace.seed_manifest,
+                "workspace_provenance": self.workspace.provenance_summary,
                 "workspace_audit_event_count": len(self.workspace.audit_events),
                 "workspace_latest_event": workspace_ops[0] if workspace_ops else None,
                 "reward_contract": self.reward_contract(),

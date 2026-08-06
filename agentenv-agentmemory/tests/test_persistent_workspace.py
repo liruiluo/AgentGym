@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agentenv_agentmemory.persistent_workspace import (
+    WORKSPACE_STATE_SCHEMA,
     WORKSPACE_TOOL_CONTRACT,
     WORKSPACE_TOOL_NAMES,
     PersistentWorkspace,
@@ -262,6 +263,121 @@ class PersistentWorkspaceTests(unittest.TestCase):
         current_root = self.workspace.host_root
         self.workspace.close()
         self.assertFalse(current_root.exists())
+
+    def test_harness_seed_files_are_ordinary_files_with_separate_provenance(self) -> None:
+        manifest = self.workspace.install_seed_files(
+            {
+                ".agent_memory/inbox/profile-02.md": "other customer: gray\n",
+                ".agent_memory/inbox/profile-01.md": "old preference: black\n",
+            },
+            source_label="distractor_orbit:7",
+        )
+        self.assertEqual(
+            [item["path"] for item in manifest["files"]],
+            [
+                ".agent_memory/inbox/profile-01.md",
+                ".agent_memory/inbox/profile-02.md",
+            ],
+        )
+        self.assertEqual(self.workspace.audit_events, ())
+        self.assertEqual(self.workspace.snapshot()["file_count"], 2)
+        provenance = self.workspace.provenance_summary
+        self.assertTrue(provenance["contains_harness_seed"])
+        self.assertFalse(provenance["policy_authored"])
+        self.assertEqual(provenance["seed_file_count"], 2)
+        self.assertEqual(len(provenance["unchanged_seed_paths"]), 2)
+
+        result = self.apply(
+            "apply_patch\n"
+            "*** Begin Patch\n"
+            "*** Add File: .agent_memory/MEMORY.md\n"
+            "+current preference: green\n"
+            "*** End Patch"
+        )
+        self.assertEqual(result.op, "APPLY_PATCH")
+        provenance = self.workspace.provenance_summary
+        self.assertTrue(provenance["policy_authored"])
+        self.assertEqual(
+            provenance["policy_created_paths"],
+            [".agent_memory/MEMORY.md"],
+        )
+
+    def test_seed_state_survives_export_and_intervention_without_becoming_policy_seed(self) -> None:
+        self.workspace.install_seed_files(
+            {"notes/distractor.md": "archived preference: gray\n"},
+            source_label="distractor_task:clean-pair",
+        )
+        self.apply(
+            "apply_patch\n"
+            "*** Begin Patch\n"
+            "*** Add File: notes/current.md\n"
+            "+current preference: black\n"
+            "*** End Patch"
+        )
+        state = self.workspace.export_state()
+        self.assertEqual(state["schema"], WORKSPACE_STATE_SCHEMA)
+        self.assertEqual(
+            state["seed_manifest"]["manifest_sha256"],
+            self.workspace.seed_manifest["manifest_sha256"],
+        )
+
+        target = PersistentWorkspace(
+            "seed-target",
+            shell_sandbox=InProcessTestShellSandbox(),
+            root_parent=self.parent,
+        )
+        try:
+            target.reset_episode("target-episode")
+            target.install_causal_intervention("correct", state=state)
+            self.assertEqual(target.seed_manifest, state["seed_manifest"])
+            self.assertEqual(target.audit_events, ())
+            provenance = target.provenance_summary
+            self.assertTrue(provenance["contains_harness_seed"])
+            self.assertTrue(provenance["policy_authored"])
+            self.assertEqual(
+                provenance["policy_created_paths"],
+                ["notes/current.md"],
+            )
+        finally:
+            target.close()
+
+    def test_seed_install_is_one_shot_before_policy_and_blank_clears_provenance(self) -> None:
+        self.workspace.install_seed_files(
+            {"seed.md": "distractor\n"},
+            source_label="fixture",
+        )
+        with self.assertRaisesRegex(WorkspaceActionError, "only once"):
+            self.workspace.install_seed_files(
+                {"second.md": "x\n"},
+                source_label="fixture-2",
+            )
+        self.workspace.install_causal_intervention("blank")
+        self.assertIsNone(self.workspace.seed_manifest)
+        self.assertFalse(self.workspace.provenance_summary["contains_harness_seed"])
+
+        self.workspace.reset_episode("episode-policy-first")
+        self.apply(
+            "apply_patch\n*** Begin Patch\n*** Add File: note.md\n+x\n*** End Patch"
+        )
+        with self.assertRaisesRegex(WorkspaceActionError, "precede policy"):
+            self.workspace.install_seed_files(
+                {"seed.md": "late\n"},
+                source_label="late",
+            )
+
+    def test_tampered_seed_manifest_is_rejected_transactionally(self) -> None:
+        self.workspace.install_seed_files(
+            {"seed.md": "distractor\n"},
+            source_label="fixture",
+        )
+        state = self.workspace.export_state()
+        tampered = deepcopy(state)
+        tampered["seed_manifest"]["source_label"] = "changed"
+        before = self.workspace.snapshot()
+        with self.assertRaisesRegex(WorkspaceActionError, "manifest digest"):
+            self.workspace.install_causal_intervention("correct", state=tampered)
+        self.assertEqual(self.workspace.snapshot(), before)
+        self.assertIsNone(self.workspace.causal_arm)
 
     def test_genuine_no_workspace_arm_has_no_host_directory(self) -> None:
         old_root = self.workspace.host_root

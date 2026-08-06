@@ -44,7 +44,9 @@ def render_intent_clarification_question(
             "The current request alone cannot identify a unique listing.\n\n"
             + listings
             + "Before purchasing, ask the customer to clarify this missing "
-            f"preference with ASK {{\"field\":\"{recipe.axis}\"}}. Then purchase "
+            "preference with the generic ASK {\"field\":\"...\"} action. "
+            "Infer the missing field from the request and candidate attributes; "
+            "the action schema does not reveal it. Then purchase "
             "the listing that matches the clarification."
         )
     else:

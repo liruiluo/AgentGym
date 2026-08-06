@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from dataclasses import replace
 
 from agentenv_agentmemory.intent_clarification import (
@@ -12,12 +14,14 @@ from agentenv_agentmemory.intent_clarification import (
     verify_intent_clarification_orbit,
 )
 from agentenv_agentmemory.intent_clarification_webshop_env import (
+    IntentClarificationFilesystemWebShopEnv,
     IntentClarificationWebShopEnv,
 )
 from tests.test_recency_override_data import (
     _FakeRecencyNativeBackend,
     make_fixture_pool,
 )
+from tests.workspace_test_support import InProcessTestShellSandbox
 
 
 class IntentClarificationGeneratorTests(unittest.TestCase):
@@ -195,6 +199,11 @@ class IntentClarificationRuntimeTests(unittest.TestCase):
         fact = task.canonical_memory
         try:
             self.assertIn("Intent clarification action", observation)
+            self.assertIn('- ASK {"field":"..."}', observation)
+            self.assertNotIn(
+                f'ASK {{"field":"{task.clarification_field}"}}',
+                observation,
+            )
             _, reward, done, _, info = env.step(
                 f'ASK {{"field":"{task.clarification_field}"}}'
             )
@@ -254,6 +263,81 @@ class IntentClarificationRuntimeTests(unittest.TestCase):
             self.assertLess(reward, 0.0)
             self.assertFalse(done)
             self.assertFalse(info["ask_completed"])
+        finally:
+            env.close()
+
+
+class IntentClarificationFilesystemRuntimeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.pool = make_fixture_pool()
+        self.generator = IntentClarificationGenerator(pool=self.pool, seed=233)
+        self.provider = VerifiedIntentClarificationBundleProvider(
+            generator=self.generator,
+            split="train",
+            task_count=2,
+        )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def _make_env(self, branch: int = 0):
+        task = self.generator.generate_orbit(0, split="train").tasks[branch]
+        backend = _FakeRecencyNativeBackend(task.source_task)
+        env = IntentClarificationFilesystemWebShopEnv(
+            provider=self.provider,
+            backend=backend,
+            env_uid=f"clarification-filesystem-{branch}",
+            shell_sandbox=InProcessTestShellSandbox(),
+            workspace_root_parent=Path(self.temporary.name),
+        )
+        observation, info = env.reset(data_idx=branch)
+        return env, backend, task, observation, info
+
+    def test_ask_is_only_path_specific_to_intent_surface(self) -> None:
+        env, backend, task, observation, info = self._make_env()
+        try:
+            self.assertIn('- ASK {"field":"..."}', observation)
+            self.assertNotIn(
+                f'ASK {{"field":"{task.clarification_field}"}}',
+                observation,
+            )
+            self.assertNotIn("ltm_inventory_mode", info)
+            _, reward, done, _, info = env.step(
+                f'ASK {{"field":"{task.clarification_field}"}}'
+            )
+            self.assertEqual(reward, 0.0)
+            self.assertFalse(done)
+            self.assertTrue(info["ask_completed"])
+            self.assertEqual(info["tool_ops"][0]["op"], "CLARIFY")
+            self.assertEqual(len(backend.sessions), 1)
+        finally:
+            env.close()
+
+    def test_unclarified_purchase_is_normal_invalid_action_and_ask_repeats_fail(self) -> None:
+        env, _, task, _, _ = self._make_env(1)
+        try:
+            env.step("search[product]")
+            env.step(f"click[{task.target_asins[0]}]")
+            _, reward, done, _, info = env.step("click[Buy Now]")
+            self.assertLess(reward, 0.0)
+            self.assertFalse(done)
+            self.assertEqual(info["current_subtask_index"], 0)
+            self.assertEqual(info["reward_components"][0]["name"], "invalid_action")
+            self.assertFalse(info["ask_completed"])
+
+            _, reward, done, _, info = env.step("ASK not-json")
+            self.assertLess(reward, 0.0)
+            self.assertFalse(done)
+            self.assertFalse(info["ask_completed"])
+
+            env.step(f'ASK {{"field":"{task.clarification_field}"}}')
+            _, reward, done, _, info = env.step(
+                f'ASK {{"field":"{task.clarification_field}"}}'
+            )
+            self.assertLess(reward, 0.0)
+            self.assertFalse(done)
+            self.assertEqual(info["reward_components"][0]["name"], "invalid_action")
         finally:
             env.close()
 

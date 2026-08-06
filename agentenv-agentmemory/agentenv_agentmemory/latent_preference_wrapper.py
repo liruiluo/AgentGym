@@ -9,8 +9,15 @@ from .latent_preference import (
     load_preference_product_pool,
 )
 from .latent_preference_webshop_env import (
+    LATENT_PREFERENCE_FILESYSTEM_SURFACE,
     LATENT_PREFERENCE_SURFACE,
+    LatentPreferenceFilesystemWebShopEnv,
     LatentPreferenceWebShopEnv,
+)
+from .env_wrapper import NATURAL_FILESYSTEM_PROMPT_MODE
+from .filesystem_wrapper import (
+    FilesystemAgentMemoryWrapperMixin,
+    WORKSPACE_PROMPT_FAMILY_LATENT_PREFERENCE,
 )
 from .procedural_wrapper import (
     ProceduralAgentMemoryWrapper,
@@ -31,6 +38,15 @@ class LatentPreferenceAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
     environment_type = LatentPreferenceWebShopEnv
 
     def __init__(self) -> None:
+        self._initialize_latent_preference_runtime(
+            expected_prompt_mode=LATENT_PREFERENCE_PROMPT_MODE,
+        )
+
+    def _initialize_latent_preference_runtime(
+        self,
+        *,
+        expected_prompt_mode: str,
+    ) -> None:
         self._initialize_native_training_runtime(
             forbidden_env_keys=(
                 "AGENTMEMORY_MEMORYARENA_RAW_PATH",
@@ -40,10 +56,10 @@ class LatentPreferenceAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
                 "AGENTMEMORY_PROCEDURAL_PRODUCT_POOL_SHA256",
             )
         )
-        if self.memory_prompt_mode != LATENT_PREFERENCE_PROMPT_MODE:
+        if self.memory_prompt_mode != expected_prompt_mode:
             raise RuntimeError(
                 "The latent-preference surface requires "
-                f"memory_prompt_mode={LATENT_PREFERENCE_PROMPT_MODE!r}."
+                f"memory_prompt_mode={expected_prompt_mode!r}."
             )
         pool = load_preference_product_pool(
             _required_file("AGENTMEMORY_LATENT_PREFERENCE_PRODUCT_POOL"),
@@ -85,3 +101,21 @@ class LatentPreferenceAgentMemoryWrapper(ProceduralAgentMemoryWrapper):
             ),
         )
         self._initialize_wrapper_state()
+
+
+class LatentPreferenceFilesystemAgentMemoryWrapper(
+    FilesystemAgentMemoryWrapperMixin,
+    LatentPreferenceAgentMemoryWrapper,
+):
+    """Hidden-preference tasks backed by the shared Codex workspace."""
+
+    surface = LATENT_PREFERENCE_FILESYSTEM_SURFACE
+    environment_type = LatentPreferenceFilesystemWebShopEnv
+    workspace_intervention_boundary_index = 1
+    workspace_prompt_family = WORKSPACE_PROMPT_FAMILY_LATENT_PREFERENCE
+
+    def __init__(self) -> None:
+        self._initialize_latent_preference_runtime(
+            expected_prompt_mode=NATURAL_FILESYSTEM_PROMPT_MODE,
+        )
+        self._initialize_filesystem_runtime()

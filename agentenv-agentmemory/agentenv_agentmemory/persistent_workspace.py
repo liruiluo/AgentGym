@@ -29,7 +29,9 @@ from .workspace_sandbox import (
 WORKSPACE_TOOL_NAMES = ("shell_command", "apply_patch")
 WORKSPACE_TOOL_OPS = ("SHELL_COMMAND", "APPLY_PATCH")
 WORKSPACE_TOOL_CONTRACT = "codex_shell_command_apply_patch_v1"
-WORKSPACE_STATE_SCHEMA = "agentmemory_workspace_transfer_state_v1"
+WORKSPACE_STATE_SCHEMA_V1 = "agentmemory_workspace_transfer_state_v1"
+WORKSPACE_STATE_SCHEMA = "agentmemory_workspace_transfer_state_v2"
+WORKSPACE_SEED_MANIFEST_SCHEMA = "agentmemory_workspace_seed_manifest_v1"
 WORKSPACE_CAUSAL_ARMS = (
     "correct",
     "blank",
@@ -129,6 +131,7 @@ class PersistentWorkspace:
     _event_counter: int = field(default=0, init=False)
     _causal_arm: str | None = field(default=None, init=False, repr=False)
     _control_event: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _seed_manifest: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.workspace_id, str) or not self.workspace_id.strip():
@@ -174,6 +177,55 @@ class PersistentWorkspace:
             return None
         return _deepcopy_json(self._control_event)
 
+    @property
+    def seed_manifest(self) -> dict[str, Any] | None:
+        if self._seed_manifest is None:
+            return None
+        return _deepcopy_json(self._seed_manifest)
+
+    @property
+    def provenance_summary(self) -> dict[str, Any]:
+        snapshot = self.snapshot()
+        seeded = {
+            item["path"]: item
+            for item in (self._seed_manifest or {}).get("files", [])
+        }
+        current = {item["path"]: item for item in snapshot["files"]}
+        unchanged_seed_paths = sorted(
+            path
+            for path in seeded.keys() & current.keys()
+            if seeded[path]["sha256"] == current[path]["sha256"]
+        )
+        modified_seed_paths = sorted(
+            path
+            for path in seeded.keys() & current.keys()
+            if seeded[path]["sha256"] != current[path]["sha256"]
+        )
+        deleted_seed_paths = sorted(seeded.keys() - current.keys())
+        policy_created_paths = sorted(current.keys() - seeded.keys())
+        policy_authored = bool(
+            self._audit_events
+            or modified_seed_paths
+            or deleted_seed_paths
+            or policy_created_paths
+        )
+        return {
+            "schema": "agentmemory_workspace_provenance_summary_v1",
+            "contains_harness_seed": self._seed_manifest is not None,
+            "seed_manifest_sha256": (
+                None
+                if self._seed_manifest is None
+                else self._seed_manifest["manifest_sha256"]
+            ),
+            "seed_file_count": len(seeded),
+            "unchanged_seed_paths": unchanged_seed_paths,
+            "modified_seed_paths": modified_seed_paths,
+            "deleted_seed_paths": deleted_seed_paths,
+            "policy_created_paths": policy_created_paths,
+            "policy_action_count": len(self._audit_events),
+            "policy_authored": policy_authored,
+        }
+
     def reset_episode(self, episode_id: str, *, enabled: bool = True) -> None:
         if not isinstance(episode_id, str) or not episode_id.strip():
             raise ValueError("episode_id must be a non-empty string")
@@ -186,6 +238,7 @@ class PersistentWorkspace:
         self._event_counter = 0
         self._causal_arm = None
         self._control_event = None
+        self._seed_manifest = None
         if not enabled:
             return
         prefix = "agentmemory-" + _safe_component(self.workspace_id) + "-"
@@ -207,8 +260,91 @@ class PersistentWorkspace:
         self._event_counter = 0
         self._causal_arm = None
         self._control_event = None
+        self._seed_manifest = None
         if root is not None and root.exists():
             shutil.rmtree(root)
+
+    def install_seed_files(
+        self,
+        files: Mapping[str, str | bytes],
+        *,
+        source_label: str,
+    ) -> dict[str, Any]:
+        """Install harness-authored ordinary files before the policy acts."""
+
+        if not self.enabled:
+            raise WorkspaceActionError("cannot seed an unavailable workspace")
+        if self._causal_arm is not None:
+            raise WorkspaceActionError("cannot seed a workspace after an intervention")
+        if self._seed_manifest is not None:
+            raise WorkspaceActionError("workspace seed files may be installed only once")
+        if self._audit_events:
+            raise WorkspaceActionError("workspace seed files must precede policy actions")
+        if self.snapshot()["file_count"] or self.snapshot()["directory_count"]:
+            raise WorkspaceActionError("workspace must be empty before seed files are installed")
+        source_label = _require_nonempty_string(source_label, "source_label")
+        if not isinstance(files, Mapping) or not files:
+            raise WorkspaceActionError("workspace seed files must be a non-empty mapping")
+
+        decoded: list[tuple[str, bytes]] = []
+        for raw_path, raw_data in files.items():
+            path = _normalize_relative_path(raw_path, limits=self.limits)
+            if isinstance(raw_data, str):
+                try:
+                    data = raw_data.encode("utf-8")
+                except UnicodeEncodeError as exc:
+                    raise WorkspaceActionError(
+                        "workspace seed text must be valid UTF-8"
+                    ) from exc
+            elif isinstance(raw_data, bytes):
+                data = raw_data
+            else:
+                raise WorkspaceActionError(
+                    "workspace seed file content must be text or bytes"
+                )
+            if len(data) > self.limits.max_file_bytes:
+                raise WorkspaceActionError(
+                    f"seed file cannot exceed {self.limits.max_file_bytes} bytes"
+                )
+            decoded.append((path, data))
+        decoded.sort(key=lambda item: item[0])
+        if len({path for path, _ in decoded}) != len(decoded):
+            raise WorkspaceActionError("workspace seed paths must be unique")
+
+        root = self.host_root
+        staging = Path(
+            tempfile.mkdtemp(prefix=".agentmemory-seed-", dir=root.parent)
+        )
+        candidate = staging / "workspace"
+        try:
+            candidate.mkdir(mode=0o700)
+            for relative, data in decoded:
+                path = candidate / relative
+                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                _write_private_regular_file(path, data)
+            snapshot = self._snapshot_root(candidate)
+            replace_workspace_directory(root, candidate)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+        manifest_payload = {
+            "schema": WORKSPACE_SEED_MANIFEST_SCHEMA,
+            "source_label": source_label,
+            "seed_tree_sha256": snapshot["tree_sha256"],
+            "files": [
+                {
+                    "path": path,
+                    "bytes": len(data),
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                }
+                for path, data in decoded
+            ],
+        }
+        self._seed_manifest = {
+            **manifest_payload,
+            "manifest_sha256": _canonical_sha256(manifest_payload),
+        }
+        return self.seed_manifest or {}
 
     def export_state(self) -> dict[str, Any]:
         """Export one validated workspace tree for an evaluator intervention."""
@@ -244,6 +380,7 @@ class PersistentWorkspace:
             "directories": list(snapshot["directories"]),
             "files": files,
             "tree_sha256": snapshot["tree_sha256"],
+            "seed_manifest": self.seed_manifest,
         }
 
     def install_causal_intervention(
@@ -269,7 +406,9 @@ class PersistentWorkspace:
                 "workspace causal intervention may be installed only once per episode"
             )
         before = self.snapshot()
+        before_seed_manifest = self.seed_manifest
         source_tree_sha256: str | None = None
+        installed_seed_manifest: dict[str, Any] | None = None
 
         if arm == "no_workspace":
             if state is not None:
@@ -293,6 +432,7 @@ class PersistentWorkspace:
                     f"{arm} intervention requires an exported workspace state"
                 )
             decoded = _decode_workspace_state(state, limits=self.limits)
+            installed_seed_manifest = decoded["seed_manifest"]
             source_tree_sha256 = str(state["tree_sha256"])
             if arm == "blank" and source_tree_sha256 != _empty_snapshot()["tree_sha256"]:
                 raise WorkspaceActionError(
@@ -326,6 +466,7 @@ class PersistentWorkspace:
         self._audit_events = []
         self._event_counter = 0
         self._causal_arm = arm
+        self._seed_manifest = installed_seed_manifest
         self._control_event = {
             "schema": "agentmemory_workspace_causal_intervention_v1",
             "arm": arm,
@@ -333,6 +474,16 @@ class PersistentWorkspace:
             "source_tree_sha256": source_tree_sha256,
             "workspace_tree_sha256_before": before["tree_sha256"],
             "workspace_tree_sha256_after": after["tree_sha256"],
+            "seed_manifest_sha256_before": (
+                None
+                if before_seed_manifest is None
+                else before_seed_manifest["manifest_sha256"]
+            ),
+            "seed_manifest_sha256_after": (
+                None
+                if installed_seed_manifest is None
+                else installed_seed_manifest["manifest_sha256"]
+            ),
             "workspace_enabled_after": self.enabled,
             "policy_action": False,
             "task_reward": 0.0,
@@ -701,6 +852,7 @@ def _empty_workspace_state() -> dict[str, Any]:
         "directories": [],
         "files": [],
         "tree_sha256": snapshot["tree_sha256"],
+        "seed_manifest": None,
     }
 
 
@@ -709,8 +861,12 @@ def _decode_workspace_state(
     *,
     limits: WorkspaceLimits,
 ) -> dict[str, Any]:
-    if not isinstance(state, Mapping) or state.get("schema") != WORKSPACE_STATE_SCHEMA:
+    if not isinstance(state, Mapping) or state.get("schema") not in {
+        WORKSPACE_STATE_SCHEMA_V1,
+        WORKSPACE_STATE_SCHEMA,
+    }:
         raise WorkspaceActionError("workspace intervention state has an invalid schema")
+    state_schema = state.get("schema")
     raw_directories = state.get("directories")
     raw_files = state.get("files")
     if not isinstance(raw_directories, list) or not isinstance(raw_files, list):
@@ -793,7 +949,91 @@ def _decode_workspace_state(
         raise WorkspaceActionError(
             "workspace intervention manifest counts, bytes, or tree digest are invalid"
         )
-    return {"directories": directories, "files": files}
+    seed_manifest = None
+    if state_schema == WORKSPACE_STATE_SCHEMA:
+        seed_manifest = _decode_seed_manifest(
+            state.get("seed_manifest"),
+            limits=limits,
+        )
+    return {
+        "directories": directories,
+        "files": files,
+        "seed_manifest": seed_manifest,
+    }
+
+
+def _decode_seed_manifest(
+    raw_manifest: Any,
+    *,
+    limits: WorkspaceLimits,
+) -> dict[str, Any] | None:
+    if raw_manifest is None:
+        return None
+    if not isinstance(raw_manifest, Mapping):
+        raise WorkspaceActionError("workspace seed manifest must be an object")
+    required = {
+        "schema",
+        "source_label",
+        "seed_tree_sha256",
+        "files",
+        "manifest_sha256",
+    }
+    if set(raw_manifest) != required:
+        raise WorkspaceActionError("workspace seed manifest has invalid fields")
+    if raw_manifest.get("schema") != WORKSPACE_SEED_MANIFEST_SCHEMA:
+        raise WorkspaceActionError("workspace seed manifest has an invalid schema")
+    source_label = _require_nonempty_string(
+        raw_manifest.get("source_label"),
+        "seed source_label",
+    )
+    seed_tree_sha256 = raw_manifest.get("seed_tree_sha256")
+    if (
+        not isinstance(seed_tree_sha256, str)
+        or _SHA256_RE.fullmatch(seed_tree_sha256) is None
+    ):
+        raise WorkspaceActionError("workspace seed tree digest is invalid")
+    raw_files = raw_manifest.get("files")
+    if not isinstance(raw_files, list) or not raw_files:
+        raise WorkspaceActionError("workspace seed manifest requires files")
+    files: list[dict[str, Any]] = []
+    total_bytes = 0
+    for item in raw_files:
+        if not isinstance(item, Mapping) or set(item) != {"path", "bytes", "sha256"}:
+            raise WorkspaceActionError("workspace seed file record is invalid")
+        raw_path = item.get("path")
+        path = _normalize_relative_path(raw_path, limits=limits)
+        size = item.get("bytes")
+        digest = item.get("sha256")
+        if (
+            path != raw_path
+            or type(size) is not int
+            or size < 0
+            or size > limits.max_file_bytes
+            or not isinstance(digest, str)
+            or _SHA256_RE.fullmatch(digest) is None
+        ):
+            raise WorkspaceActionError("workspace seed file metadata is invalid")
+        files.append({"path": path, "bytes": size, "sha256": digest})
+        total_bytes += size
+    paths = [item["path"] for item in files]
+    if paths != sorted(set(paths)):
+        raise WorkspaceActionError("workspace seed paths must be sorted and unique")
+    if len(files) > limits.max_files or total_bytes > limits.max_total_bytes:
+        raise WorkspaceActionError("workspace seed manifest exceeds workspace limits")
+    payload = {
+        "schema": WORKSPACE_SEED_MANIFEST_SCHEMA,
+        "source_label": source_label,
+        "seed_tree_sha256": seed_tree_sha256,
+        "files": files,
+    }
+    manifest_sha256 = raw_manifest.get("manifest_sha256")
+    if (
+        not isinstance(manifest_sha256, str)
+        or _SHA256_RE.fullmatch(manifest_sha256) is None
+        or manifest_sha256 != _canonical_sha256(payload)
+    ):
+        raise WorkspaceActionError("workspace seed manifest digest is invalid")
+    return {**payload, "manifest_sha256": manifest_sha256}
 
 
 def _write_private_regular_file(path: Path, data: bytes) -> None:
@@ -882,6 +1122,17 @@ def _require_nonnegative_int(value: Any, name: str) -> int:
 def _safe_component(value: str) -> str:
     normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip())
     return normalized[:48] or "workspace"
+
+
+def _canonical_sha256(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _deepcopy_json(value: Any) -> Any:

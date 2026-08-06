@@ -21,12 +21,15 @@ from agentenv_agentmemory.compositional_recall_webshop_env import (
     COMPOSITIONAL_RECALL_SURFACE,
 )
 from agentenv_agentmemory.distractor_robustness_webshop_env import (
+    DISTRACTOR_ROBUSTNESS_FILESYSTEM_SURFACE,
     DISTRACTOR_ROBUSTNESS_SURFACE,
 )
 from agentenv_agentmemory.intent_clarification_webshop_env import (
+    INTENT_CLARIFICATION_FILESYSTEM_SURFACE,
     INTENT_CLARIFICATION_SURFACE,
 )
 from agentenv_agentmemory.latent_preference_webshop_env import (
+    LATENT_PREFERENCE_FILESYSTEM_SURFACE,
     LATENT_PREFERENCE_SURFACE,
 )
 from agentenv_agentmemory.negative_constraint_webshop_env import (
@@ -37,6 +40,7 @@ from agentenv_agentmemory.recency_override_webshop_env import (
 )
 from agentenv_agentmemory.procedural_webshop_env import PROCEDURAL_SURFACE
 from agentenv_agentmemory.selective_memory_use_webshop_env import (
+    SELECTIVE_MEMORY_USE_FILESYSTEM_SURFACE,
     SELECTIVE_MEMORY_USE_SURFACE,
 )
 from agentenv_agentmemory.launch import launch
@@ -466,9 +470,33 @@ class DomainLaunchTest(unittest.TestCase):
     def test_new_filesystem_surfaces_bind_their_own_data_and_zero_shaping(self):
         cases = (
             (
+                LATENT_PREFERENCE_FILESYSTEM_SURFACE,
+                "latent_preference",
+                "AGENTMEMORY_LATENT_PREFERENCE",
+                10_000,
+            ),
+            (
+                DISTRACTOR_ROBUSTNESS_FILESYSTEM_SURFACE,
+                "distractor_robustness",
+                "AGENTMEMORY_DISTRACTOR_ROBUSTNESS",
+                10_000,
+            ),
+            (
                 COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE,
                 "compositional_recall",
                 "AGENTMEMORY_COMPOSITIONAL_RECALL",
+                10_000,
+            ),
+            (
+                INTENT_CLARIFICATION_FILESYSTEM_SURFACE,
+                "intent_clarification",
+                "AGENTMEMORY_INTENT_CLARIFICATION",
+                10_000,
+            ),
+            (
+                SELECTIVE_MEMORY_USE_FILESYSTEM_SURFACE,
+                "selective_memory_use",
+                "AGENTMEMORY_SELECTIVE_MEMORY_USE",
                 10_000,
             ),
             (

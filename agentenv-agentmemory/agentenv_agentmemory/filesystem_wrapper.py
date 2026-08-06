@@ -23,14 +23,29 @@ from .workspace_sandbox import LinuxNamespaceShellSandbox
 
 
 SOURCE_PAIRING_XOR_LSB = "xor_lsb_within_orbit_v1"
+SOURCE_PAIRING_XOR_DISTRACTOR_CONDITION = (
+    "xor_distractor_condition_within_orbit_v1"
+)
+SOURCE_PAIRING_XOR_PREFERENCE_COORDINATE = (
+    "xor_preference_coordinate_within_factorial_v1"
+)
 SOURCE_PAIRING_CYCLIC_NEXT = "cyclic_next_within_orbit_v1"
 SOURCE_PAIRING_CONTRACTS = frozenset(
-    {SOURCE_PAIRING_XOR_LSB, SOURCE_PAIRING_CYCLIC_NEXT}
+    {
+        SOURCE_PAIRING_XOR_LSB,
+        SOURCE_PAIRING_XOR_DISTRACTOR_CONDITION,
+        SOURCE_PAIRING_XOR_PREFERENCE_COORDINATE,
+        SOURCE_PAIRING_CYCLIC_NEXT,
+    }
 )
 WORKSPACE_PROMPT_FAMILY_NATURAL = "natural_attribute_chain_filesystem_v2"
+WORKSPACE_PROMPT_FAMILY_LATENT_PREFERENCE = "latent_preference_filesystem_v2"
 WORKSPACE_PROMPT_FAMILY_RECENCY = "recency_override_filesystem_v2"
 WORKSPACE_PROMPT_FAMILY_COMPOSITIONAL = "compositional_recall_filesystem_v2"
 WORKSPACE_PROMPT_FAMILY_NEGATIVE = "negative_constraint_filesystem_v2"
+WORKSPACE_PROMPT_FAMILY_DISTRACTOR = "distractor_robustness_filesystem_v2"
+WORKSPACE_PROMPT_FAMILY_INTENT = "intent_clarification_filesystem_v2"
+WORKSPACE_PROMPT_FAMILY_SELECTIVE = "selective_memory_use_filesystem_v2"
 
 
 def resolve_workspace_source_data_idx(
@@ -53,10 +68,19 @@ def resolve_workspace_source_data_idx(
 
     orbit_start = data_idx - (data_idx % tasks_per_orbit)
     offset = data_idx - orbit_start
-    if source_pairing == SOURCE_PAIRING_XOR_LSB:
+    if source_pairing in {
+        SOURCE_PAIRING_XOR_LSB,
+        SOURCE_PAIRING_XOR_DISTRACTOR_CONDITION,
+    }:
         if tasks_per_orbit % 2:
             raise ValueError("xor_lsb pairing requires an even tasks_per_orbit")
         source_offset = offset ^ 1
+    elif source_pairing == SOURCE_PAIRING_XOR_PREFERENCE_COORDINATE:
+        if tasks_per_orbit != 4:
+            raise ValueError(
+                "preference-coordinate pairing requires exactly four tasks per orbit"
+            )
+        source_offset = offset ^ 2
     else:
         source_offset = (offset + 1) % tasks_per_orbit
     source_data_idx = orbit_start + source_offset
@@ -73,6 +97,9 @@ class FilesystemAgentMemoryWrapperMixin:
     workspace_source_pairing = SOURCE_PAIRING_XOR_LSB
     workspace_tasks_per_orbit = 2
     workspace_prompt_family = WORKSPACE_PROMPT_FAMILY_NATURAL
+    workspace_intervention_source_state = "policy_authored_workspace_only"
+    workspace_seed_contract = "none"
+    workspace_evaluation_contract = "directional_counterfactual_separation_v1"
 
     def _initialize_filesystem_runtime(self) -> None:
         if self.memory_prompt_mode != NATURAL_FILESYSTEM_PROMPT_MODE:
@@ -253,12 +280,15 @@ class FilesystemAgentMemoryWrapperMixin:
         with lock:
             self._validate_intervention_boundary(environment, label="export")
             state = environment.workspace.export_state()
+            provenance = environment.workspace.provenance_summary
             return {
                 "schema": "agentmemory_workspace_authenticated_export_v1",
                 "id": env_id,
                 "data_idx": environment.data_idx,
                 "workspace_state": state,
-                "policy_authored": True,
+                "policy_authored": provenance["policy_authored"],
+                "contains_harness_seed": provenance["contains_harness_seed"],
+                "workspace_provenance": provenance,
                 "hidden_answer_injection": False,
             }
 
@@ -304,6 +334,10 @@ class FilesystemAgentMemoryWrapperMixin:
                 "source_pairing": self.workspace_source_pairing,
                 "tasks_per_orbit": self.workspace_tasks_per_orbit,
                 "workspace_prompt_family": self.workspace_prompt_family,
+                "workspace_seed_contract": self.workspace_seed_contract,
+                "workspace_evaluation_contract": (
+                    self.workspace_evaluation_contract
+                ),
                 "workspace_episode_isolation": True,
                 "workspace_shell_enabled": True,
                 "workspace_apply_patch_enabled": True,
@@ -319,7 +353,7 @@ class FilesystemAgentMemoryWrapperMixin:
                     "boundary_session_index": (
                         self.workspace_intervention_boundary_index
                     ),
-                    "source_state": "policy_authored_workspace_only",
+                    "source_state": self.workspace_intervention_source_state,
                     "authenticated_export": True,
                     "hidden_answer_injection": False,
                     "token_sha256": (

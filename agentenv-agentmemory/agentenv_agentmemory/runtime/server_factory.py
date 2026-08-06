@@ -26,12 +26,30 @@ from ..compositional_recall_wrapper import (
     CompositionalRecallAgentMemoryWrapper,
     CompositionalRecallFilesystemAgentMemoryWrapper,
 )
-from ..distractor_robustness_webshop_env import DISTRACTOR_ROBUSTNESS_SURFACE
-from ..distractor_robustness_wrapper import DistractorRobustnessAgentMemoryWrapper
-from ..intent_clarification_webshop_env import INTENT_CLARIFICATION_SURFACE
-from ..intent_clarification_wrapper import IntentClarificationAgentMemoryWrapper
-from ..latent_preference_webshop_env import LATENT_PREFERENCE_SURFACE
-from ..latent_preference_wrapper import LatentPreferenceAgentMemoryWrapper
+from ..distractor_robustness_webshop_env import (
+    DISTRACTOR_ROBUSTNESS_FILESYSTEM_SURFACE,
+    DISTRACTOR_ROBUSTNESS_SURFACE,
+)
+from ..distractor_robustness_wrapper import (
+    DistractorRobustnessAgentMemoryWrapper,
+    DistractorRobustnessFilesystemAgentMemoryWrapper,
+)
+from ..intent_clarification_webshop_env import (
+    INTENT_CLARIFICATION_FILESYSTEM_SURFACE,
+    INTENT_CLARIFICATION_SURFACE,
+)
+from ..intent_clarification_wrapper import (
+    IntentClarificationAgentMemoryWrapper,
+    IntentClarificationFilesystemAgentMemoryWrapper,
+)
+from ..latent_preference_webshop_env import (
+    LATENT_PREFERENCE_FILESYSTEM_SURFACE,
+    LATENT_PREFERENCE_SURFACE,
+)
+from ..latent_preference_wrapper import (
+    LatentPreferenceAgentMemoryWrapper,
+    LatentPreferenceFilesystemAgentMemoryWrapper,
+)
 from ..procedural_webshop_env import PROCEDURAL_SURFACE
 from ..procedural_wrapper import ProceduralAgentMemoryWrapper
 from ..recency_override_webshop_env import (
@@ -42,8 +60,14 @@ from ..recency_override_wrapper import (
     RecencyOverrideAgentMemoryWrapper,
     RecencyOverrideFilesystemAgentMemoryWrapper,
 )
-from ..selective_memory_use_webshop_env import SELECTIVE_MEMORY_USE_SURFACE
-from ..selective_memory_use_wrapper import SelectiveMemoryUseAgentMemoryWrapper
+from ..selective_memory_use_webshop_env import (
+    SELECTIVE_MEMORY_USE_FILESYSTEM_SURFACE,
+    SELECTIVE_MEMORY_USE_SURFACE,
+)
+from ..selective_memory_use_wrapper import (
+    SelectiveMemoryUseAgentMemoryWrapper,
+    SelectiveMemoryUseFilesystemAgentMemoryWrapper,
+)
 from ..negative_constraint_webshop_env import (
     NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
     NEGATIVE_CONSTRAINT_SURFACE,
@@ -77,20 +101,28 @@ def build_server():
         return ProceduralFilesystemAgentMemoryWrapper()
     if surface == LATENT_PREFERENCE_SURFACE:
         return LatentPreferenceAgentMemoryWrapper()
+    if surface == LATENT_PREFERENCE_FILESYSTEM_SURFACE:
+        return LatentPreferenceFilesystemAgentMemoryWrapper()
     if surface == RECENCY_OVERRIDE_SURFACE:
         return RecencyOverrideAgentMemoryWrapper()
     if surface == RECENCY_OVERRIDE_FILESYSTEM_SURFACE:
         return RecencyOverrideFilesystemAgentMemoryWrapper()
     if surface == DISTRACTOR_ROBUSTNESS_SURFACE:
         return DistractorRobustnessAgentMemoryWrapper()
+    if surface == DISTRACTOR_ROBUSTNESS_FILESYSTEM_SURFACE:
+        return DistractorRobustnessFilesystemAgentMemoryWrapper()
     if surface == COMPOSITIONAL_RECALL_SURFACE:
         return CompositionalRecallAgentMemoryWrapper()
     if surface == COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE:
         return CompositionalRecallFilesystemAgentMemoryWrapper()
     if surface == INTENT_CLARIFICATION_SURFACE:
         return IntentClarificationAgentMemoryWrapper()
+    if surface == INTENT_CLARIFICATION_FILESYSTEM_SURFACE:
+        return IntentClarificationFilesystemAgentMemoryWrapper()
     if surface == SELECTIVE_MEMORY_USE_SURFACE:
         return SelectiveMemoryUseAgentMemoryWrapper()
+    if surface == SELECTIVE_MEMORY_USE_FILESYSTEM_SURFACE:
+        return SelectiveMemoryUseFilesystemAgentMemoryWrapper()
     if surface == NEGATIVE_CONSTRAINT_SURFACE:
         return NegativeConstraintAgentMemoryWrapper()
     if surface == NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE:

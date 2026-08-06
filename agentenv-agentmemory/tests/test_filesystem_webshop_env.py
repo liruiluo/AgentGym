@@ -15,7 +15,9 @@ from agentenv_agentmemory.filesystem_webshop_env import (
 from agentenv_agentmemory.filesystem_wrapper import (
     ProceduralFilesystemAgentMemoryWrapper,
     SOURCE_PAIRING_CYCLIC_NEXT,
+    SOURCE_PAIRING_XOR_DISTRACTOR_CONDITION,
     SOURCE_PAIRING_XOR_LSB,
+    SOURCE_PAIRING_XOR_PREFERENCE_COORDINATE,
     resolve_workspace_source_data_idx,
 )
 from agentenv_agentmemory.memoryarena_webshop_env import MemoryArenaWebShopEnv
@@ -152,7 +154,16 @@ class PersistentWorkspaceWebShopEnvTests(unittest.TestCase):
                 self.assertFalse(done)
                 self.assertIn("does not expose ADD", observation)
                 self.assertEqual(info["tool_ops"], [])
-                self.assertEqual(info["workspace_snapshot"]["file_count"], 0)
+            self.assertEqual(info["workspace_snapshot"]["file_count"], 0)
+
+    def test_non_intent_filesystem_surface_rejects_ask(self) -> None:
+        _, reward, done, _, info = self.env.step(
+            'ASK {"field":"color"}'
+        )
+        self.assertLess(reward, 0.0)
+        self.assertFalse(done)
+        self.assertEqual(info["reward_components"][0]["name"], "invalid_action")
+        self.assertEqual(info["workspace_snapshot"]["file_count"], 0)
 
     def test_malformed_workspace_action_is_invalid_without_mutation(self) -> None:
         _, reward, done, _, info = self.env.step(
@@ -253,6 +264,28 @@ class ProceduralFilesystemWrapperTests(unittest.TestCase):
                 for index in range(8)
             ],
             [1, 0, 3, 2, 5, 4, 7, 6],
+        )
+        self.assertEqual(
+            [
+                resolve_workspace_source_data_idx(
+                    index,
+                    source_pairing=SOURCE_PAIRING_XOR_DISTRACTOR_CONDITION,
+                    tasks_per_orbit=2,
+                )
+                for index in range(4)
+            ],
+            [1, 0, 3, 2],
+        )
+        self.assertEqual(
+            [
+                resolve_workspace_source_data_idx(
+                    index,
+                    source_pairing=SOURCE_PAIRING_XOR_PREFERENCE_COORDINATE,
+                    tasks_per_orbit=4,
+                )
+                for index in range(8)
+            ],
+            [2, 3, 0, 1, 6, 7, 4, 5],
         )
         self.assertEqual(
             [
@@ -375,6 +408,10 @@ class ProceduralFilesystemWrapperTests(unittest.TestCase):
         self.assertEqual(metadata["workspace_surface"], "codex_workspace_v2")
         self.assertEqual(metadata["source_pairing"], SOURCE_PAIRING_XOR_LSB)
         self.assertEqual(metadata["tasks_per_orbit"], 2)
+        self.assertEqual(
+            metadata["workspace_evaluation_contract"],
+            "directional_counterfactual_separation_v1",
+        )
         self.assertEqual(
             metadata["workspace_prompt_family"],
             "natural_attribute_chain_filesystem_v2",

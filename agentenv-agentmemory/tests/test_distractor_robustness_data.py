@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import shlex
+import tempfile
 import unittest
 from dataclasses import replace
+from pathlib import Path
 
 from agentenv_agentmemory.distractor_robustness import (
     PROVIDER_MODE_RESEEDED_STREAM,
@@ -12,12 +15,15 @@ from agentenv_agentmemory.distractor_robustness import (
     verify_distractor_robustness_orbit,
 )
 from agentenv_agentmemory.distractor_robustness_webshop_env import (
+    DISTRACTOR_ROBUSTNESS_FILESYSTEM_SURFACE,
+    DistractorRobustnessFilesystemWebShopEnv,
     DistractorRobustnessWebShopEnv,
 )
 from tests.test_recency_override_data import (
     _FakeRecencyNativeBackend,
     make_fixture_pool,
 )
+from tests.workspace_test_support import InProcessTestShellSandbox
 
 
 class DistractorRobustnessGeneratorTests(unittest.TestCase):
@@ -357,6 +363,121 @@ class DistractorRobustnessRuntimeTests(unittest.TestCase):
                 backend=backend,
                 retrieve_policy="standard",
             )
+
+
+class DistractorRobustnessFilesystemRuntimeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.pool = make_fixture_pool()
+        self.generator = DistractorRobustnessGenerator(pool=self.pool, seed=233)
+        self.provider = VerifiedDistractorRobustnessBundleProvider(
+            generator=self.generator,
+            split="train",
+            task_count=2,
+        )
+        self.envs = []
+
+    def tearDown(self) -> None:
+        for env in self.envs:
+            env.close()
+        self.temporary.cleanup()
+
+    def _make_env(self, branch: int):
+        task = self.generator.generate_orbit(0, split="train").tasks[branch]
+        backend = _FakeRecencyNativeBackend(task.source_task)
+        env = DistractorRobustnessFilesystemWebShopEnv(
+            provider=self.provider,
+            backend=backend,
+            env_uid=f"distractor-filesystem-{branch}",
+            shell_sandbox=InProcessTestShellSandbox(),
+            workspace_root_parent=Path(self.temporary.name),
+        )
+        self.envs.append(env)
+        observation, info = env.reset(data_idx=branch)
+        return env, backend, task, observation, info
+
+    @staticmethod
+    def _purchase(env, target_asin: str, expected_index: int):
+        env.step("search[product]")
+        env.step(f"click[{target_asin}]")
+        _, reward, done, truncated, info = env.step("click[Buy Now]")
+        assert not truncated
+        assert info["tool_ops"][0]["purchase_correct"] is True
+        assert info["current_subtask_index"] == expected_index + 1
+        assert reward == (2.0 if expected_index == 5 else 1.0)
+        return done, info
+
+    def test_clean_and_distracted_observations_match_while_seed_provenance_differs(self) -> None:
+        _, _, _, clean_observation, clean_info = self._make_env(0)
+        _, _, task, distracted_observation, distracted_info = self._make_env(1)
+        self.assertEqual(clean_observation, distracted_observation)
+        self.assertEqual(clean_info["surface"], DISTRACTOR_ROBUSTNESS_FILESYSTEM_SURFACE)
+        self.assertEqual(clean_info["workspace_snapshot"]["file_count"], 0)
+        self.assertIsNone(clean_info["workspace_seed_manifest"])
+        self.assertEqual(
+            distracted_info["workspace_snapshot"]["file_count"],
+            len(task.initial_memories),
+        )
+        self.assertTrue(
+            distracted_info["workspace_provenance"]["contains_harness_seed"]
+        )
+        self.assertFalse(
+            distracted_info["workspace_provenance"]["policy_authored"]
+        )
+        for item in task.initial_memories:
+            self.assertNotIn(item.value, distracted_observation)
+
+    def test_policy_authors_correct_file_and_finds_it_among_seeded_distractors(self) -> None:
+        env, backend, task, _, _ = self._make_env(1)
+        action = (
+            "apply_patch\n*** Begin Patch\n"
+            "*** Add File: .agent_memory/MEMORY.md\n"
+            f"+{task.canonical_memory_value}\n"
+            "*** End Patch"
+        )
+        _, reward, done, _, info = env.step(action)
+        self.assertEqual(reward, 0.0)
+        self.assertFalse(done)
+        self.assertEqual(
+            info["workspace_provenance"]["policy_created_paths"],
+            [".agent_memory/MEMORY.md"],
+        )
+
+        command = "rg -F -n -- " + shlex.quote(task.canonical_memory_value) + " ."
+        observation, reward, done, _, _ = env.step(
+            "shell_command "
+            + json.dumps(
+                {"command": command, "workdir": ".", "timeout_ms": 10_000},
+                separators=(",", ":"),
+            )
+        )
+        self.assertEqual(reward, 0.0)
+        self.assertFalse(done)
+        self.assertIn(task.canonical_memory_value, observation)
+        self.assertIn(".agent_memory/MEMORY.md", observation)
+
+        for phase_index, target_asin in enumerate(task.target_asins):
+            done, info = self._purchase(env, target_asin, phase_index)
+        self.assertTrue(done)
+        self.assertTrue(info["episode_success"])
+        self.assertEqual(backend.sessions, {})
+
+    def test_reset_discards_policy_file_and_reinstalls_same_seed_manifest(self) -> None:
+        env, _, task, _, info = self._make_env(1)
+        original_manifest = info["workspace_seed_manifest"]
+        env.step(
+            "apply_patch\n*** Begin Patch\n"
+            "*** Add File: .agent_memory/MEMORY.md\n"
+            f"+{task.canonical_memory_value}\n"
+            "*** End Patch"
+        )
+        _, reset_info = env.reset(data_idx=1)
+        self.assertEqual(reset_info["workspace_seed_manifest"], original_manifest)
+        self.assertEqual(
+            reset_info["workspace_snapshot"]["file_count"],
+            len(task.initial_memories),
+        )
+        self.assertFalse(reset_info["workspace_provenance"]["policy_authored"])
 
 
 if __name__ == "__main__":

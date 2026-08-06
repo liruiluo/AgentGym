@@ -23,12 +23,15 @@ from agentenv_agentmemory.compositional_recall_webshop_env import (
     COMPOSITIONAL_RECALL_SURFACE,
 )
 from agentenv_agentmemory.distractor_robustness_webshop_env import (
+    DISTRACTOR_ROBUSTNESS_FILESYSTEM_SURFACE,
     DISTRACTOR_ROBUSTNESS_SURFACE,
 )
 from agentenv_agentmemory.intent_clarification_webshop_env import (
+    INTENT_CLARIFICATION_FILESYSTEM_SURFACE,
     INTENT_CLARIFICATION_SURFACE,
 )
 from agentenv_agentmemory.latent_preference_webshop_env import (
+    LATENT_PREFERENCE_FILESYSTEM_SURFACE,
     LATENT_PREFERENCE_SURFACE,
 )
 from agentenv_agentmemory.negative_constraint_webshop_env import (
@@ -39,6 +42,7 @@ from agentenv_agentmemory.recency_override_webshop_env import (
 )
 from agentenv_agentmemory.procedural_webshop_env import PROCEDURAL_SURFACE
 from agentenv_agentmemory.selective_memory_use_webshop_env import (
+    SELECTIVE_MEMORY_USE_FILESYSTEM_SURFACE,
     SELECTIVE_MEMORY_USE_SURFACE,
 )
 from agentenv_agentmemory.domains.formal_reasoning import FROZEN_MEMORYARENA_COMMIT
@@ -127,8 +131,24 @@ class DomainServerFactoryTest(unittest.TestCase):
     def test_new_filesystem_surfaces_use_dedicated_wrappers(self):
         cases = (
             (
+                LATENT_PREFERENCE_FILESYSTEM_SURFACE,
+                "LatentPreferenceFilesystemAgentMemoryWrapper",
+            ),
+            (
+                DISTRACTOR_ROBUSTNESS_FILESYSTEM_SURFACE,
+                "DistractorRobustnessFilesystemAgentMemoryWrapper",
+            ),
+            (
                 COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE,
                 "CompositionalRecallFilesystemAgentMemoryWrapper",
+            ),
+            (
+                INTENT_CLARIFICATION_FILESYSTEM_SURFACE,
+                "IntentClarificationFilesystemAgentMemoryWrapper",
+            ),
+            (
+                SELECTIVE_MEMORY_USE_FILESYSTEM_SURFACE,
+                "SelectiveMemoryUseFilesystemAgentMemoryWrapper",
             ),
             (
                 NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,

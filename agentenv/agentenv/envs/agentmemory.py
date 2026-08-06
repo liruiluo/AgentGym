@@ -226,6 +226,10 @@ FILESYSTEM_JSON_ACTION_RE = re.compile(
     r"\Ashell_command\s+(\{.*\})\Z",
     flags=re.DOTALL,
 )
+FILESYSTEM_ASK_ACTION_RE = re.compile(
+    r"\AASK\s+(\{.*\})\Z",
+    flags=re.DOTALL,
+)
 FILESYSTEM_APPLY_PATCH_PREFIX = "apply_patch\n"
 FORMAL_SCHEMA_V3 = "agentmemory_formal_step_v3"
 WEBSHOP_V2_SURFACE = "memoryarena_webshop_native_v1"
@@ -238,6 +242,9 @@ PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE = (
 LATENT_PREFERENCE_WEBSHOP_SURFACE = (
     "agentmemory_webshop_latent_preference_train_v1"
 )
+LATENT_PREFERENCE_FILESYSTEM_WEBSHOP_SURFACE = (
+    "agentmemory_webshop_latent_preference_filesystem_v2"
+)
 RECENCY_OVERRIDE_WEBSHOP_SURFACE = (
     "agentmemory_webshop_recency_override_train_v1"
 )
@@ -246,6 +253,9 @@ RECENCY_OVERRIDE_FILESYSTEM_WEBSHOP_SURFACE = (
 )
 DISTRACTOR_ROBUSTNESS_WEBSHOP_SURFACE = (
     "agentmemory_webshop_distractor_robustness_top1_train_v1"
+)
+DISTRACTOR_ROBUSTNESS_FILESYSTEM_WEBSHOP_SURFACE = (
+    "agentmemory_webshop_distractor_robustness_filesystem_v2"
 )
 COMPOSITIONAL_RECALL_WEBSHOP_SURFACE = (
     "agentmemory_webshop_compositional_recall_top1_train_v1"
@@ -256,8 +266,14 @@ COMPOSITIONAL_RECALL_FILESYSTEM_WEBSHOP_SURFACE = (
 INTENT_CLARIFICATION_WEBSHOP_SURFACE = (
     "agentmemory_webshop_intent_clarification_train_v1"
 )
+INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE = (
+    "agentmemory_webshop_intent_clarification_filesystem_v2"
+)
 SELECTIVE_MEMORY_USE_WEBSHOP_SURFACE = (
     "agentmemory_webshop_selective_memory_use_top1_train_v1"
+)
+SELECTIVE_MEMORY_USE_FILESYSTEM_WEBSHOP_SURFACE = (
+    "agentmemory_webshop_selective_memory_use_filesystem_v2"
 )
 NEGATIVE_CONSTRAINT_WEBSHOP_SURFACE = (
     "agentmemory_webshop_negative_constraint_top1_train_v1"
@@ -266,7 +282,30 @@ NEGATIVE_CONSTRAINT_FILESYSTEM_WEBSHOP_SURFACE = (
     "agentmemory_webshop_negative_constraint_filesystem_v2"
 )
 PREFERENCE_WEBSHOP_SURFACES = frozenset(
-    {LATENT_PREFERENCE_WEBSHOP_SURFACE, RECENCY_OVERRIDE_WEBSHOP_SURFACE}
+    {
+        LATENT_PREFERENCE_WEBSHOP_SURFACE,
+        LATENT_PREFERENCE_FILESYSTEM_WEBSHOP_SURFACE,
+        RECENCY_OVERRIDE_WEBSHOP_SURFACE,
+        RECENCY_OVERRIDE_FILESYSTEM_WEBSHOP_SURFACE,
+    }
+)
+LATENT_PREFERENCE_WEBSHOP_SURFACES = frozenset(
+    {
+        LATENT_PREFERENCE_WEBSHOP_SURFACE,
+        LATENT_PREFERENCE_FILESYSTEM_WEBSHOP_SURFACE,
+    }
+)
+INTENT_CLARIFICATION_WEBSHOP_SURFACES = frozenset(
+    {
+        INTENT_CLARIFICATION_WEBSHOP_SURFACE,
+        INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE,
+    }
+)
+SELECTIVE_MEMORY_USE_WEBSHOP_SURFACES = frozenset(
+    {
+        SELECTIVE_MEMORY_USE_WEBSHOP_SURFACE,
+        SELECTIVE_MEMORY_USE_FILESYSTEM_WEBSHOP_SURFACE,
+    }
 )
 RECENCY_OVERRIDE_WEBSHOP_SURFACES = frozenset(
     {
@@ -278,8 +317,18 @@ FILESYSTEM_WEBSHOP_SURFACES = frozenset(
     {
         PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE,
         RECENCY_OVERRIDE_FILESYSTEM_WEBSHOP_SURFACE,
+        DISTRACTOR_ROBUSTNESS_FILESYSTEM_WEBSHOP_SURFACE,
         COMPOSITIONAL_RECALL_FILESYSTEM_WEBSHOP_SURFACE,
+        LATENT_PREFERENCE_FILESYSTEM_WEBSHOP_SURFACE,
+        INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE,
+        SELECTIVE_MEMORY_USE_FILESYSTEM_WEBSHOP_SURFACE,
         NEGATIVE_CONSTRAINT_FILESYSTEM_WEBSHOP_SURFACE,
+    }
+)
+DISTRACTOR_ROBUSTNESS_WEBSHOP_SURFACES = frozenset(
+    {
+        DISTRACTOR_ROBUSTNESS_WEBSHOP_SURFACE,
+        DISTRACTOR_ROBUSTNESS_FILESYSTEM_WEBSHOP_SURFACE,
     }
 )
 COMPOSITIONAL_RECALL_WEBSHOP_SURFACES = frozenset(
@@ -305,7 +354,8 @@ QUERY_TOP1_WEBSHOP_SURFACES = frozenset(
 )
 LATENT_PREFERENCE_SOP_WEBSHOP_SURFACES = frozenset(
     {
-        *PREFERENCE_WEBSHOP_SURFACES,
+        LATENT_PREFERENCE_WEBSHOP_SURFACE,
+        RECENCY_OVERRIDE_WEBSHOP_SURFACE,
         DISTRACTOR_ROBUSTNESS_WEBSHOP_SURFACE,
         COMPOSITIONAL_RECALL_WEBSHOP_SURFACE,
         INTENT_CLARIFICATION_WEBSHOP_SURFACE,
@@ -331,6 +381,20 @@ FILESYSTEM_SURFACE_CONTRACTS = {
         "source_pairing": "xor_lsb_within_orbit_v1",
         "boundary_session_index": 1,
         "prompt_family": "natural_attribute_chain_filesystem_v2",
+        "source_state": "policy_authored_workspace_only",
+        "seed_contract": "none",
+        "evaluation_contract": "directional_counterfactual_separation_v1",
+    },
+    LATENT_PREFERENCE_FILESYSTEM_WEBSHOP_SURFACE: {
+        "provider_schema": "agentmemory_verified_latent_preference_provider_v1",
+        "tasks_per_orbit": 2,
+        "candidate_count_per_phase": 2,
+        "source_pairing": "xor_lsb_within_orbit_v1",
+        "boundary_session_index": 1,
+        "prompt_family": "latent_preference_filesystem_v2",
+        "source_state": "policy_authored_workspace_only",
+        "seed_contract": "none",
+        "evaluation_contract": "directional_counterfactual_separation_v1",
     },
     RECENCY_OVERRIDE_FILESYSTEM_WEBSHOP_SURFACE: {
         "provider_schema": "agentmemory_verified_recency_override_provider_v1",
@@ -339,6 +403,20 @@ FILESYSTEM_SURFACE_CONTRACTS = {
         "source_pairing": "xor_lsb_within_orbit_v1",
         "boundary_session_index": 3,
         "prompt_family": "recency_override_filesystem_v2",
+        "source_state": "policy_authored_workspace_only",
+        "seed_contract": "none",
+        "evaluation_contract": "directional_counterfactual_separation_v1",
+    },
+    DISTRACTOR_ROBUSTNESS_FILESYSTEM_WEBSHOP_SURFACE: {
+        "provider_schema": "agentmemory_verified_distractor_robustness_provider_v1",
+        "tasks_per_orbit": 2,
+        "candidate_count_per_phase": 2,
+        "source_pairing": "xor_distractor_condition_within_orbit_v1",
+        "boundary_session_index": 1,
+        "prompt_family": "distractor_robustness_filesystem_v2",
+        "source_state": "policy_authored_current_record_plus_branch_distractors",
+        "seed_contract": "branch_conditioned_ordinary_profile_files_v1",
+        "evaluation_contract": "paired_distractor_robustness_v1",
     },
     COMPOSITIONAL_RECALL_FILESYSTEM_WEBSHOP_SURFACE: {
         "provider_schema": "agentmemory_verified_compositional_recall_provider_v1",
@@ -347,6 +425,33 @@ FILESYSTEM_SURFACE_CONTRACTS = {
         "source_pairing": "xor_lsb_within_orbit_v1",
         "boundary_session_index": 2,
         "prompt_family": "compositional_recall_filesystem_v2",
+        "source_state": "policy_authored_workspace_only",
+        "seed_contract": "none",
+        "evaluation_contract": "directional_counterfactual_separation_v1",
+    },
+    INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE: {
+        "provider_schema": "agentmemory_verified_intent_clarification_provider_v1",
+        "tasks_per_orbit": 2,
+        "candidate_count_per_phase": 2,
+        "source_pairing": "xor_lsb_within_orbit_v1",
+        "boundary_session_index": 1,
+        "prompt_family": "intent_clarification_filesystem_v2",
+        "source_state": "policy_authored_workspace_only",
+        "seed_contract": "none",
+        "evaluation_contract": "directional_counterfactual_separation_v1",
+    },
+    SELECTIVE_MEMORY_USE_FILESYSTEM_WEBSHOP_SURFACE: {
+        "provider_schema": "agentmemory_verified_selective_memory_use_provider_v1",
+        "tasks_per_orbit": 4,
+        "candidate_count_per_phase": 2,
+        "source_pairing": "xor_preference_coordinate_within_factorial_v1",
+        "boundary_session_index": 1,
+        "prompt_family": "selective_memory_use_filesystem_v2",
+        "source_state": "harness_seeded_branch_profile_with_optional_policy_edits",
+        "seed_contract": "branch_conditioned_initial_profile_files_v1",
+        "evaluation_contract": (
+            "selective_required_separation_not_required_invariance_v1"
+        ),
     },
     NEGATIVE_CONSTRAINT_FILESYSTEM_WEBSHOP_SURFACE: {
         "provider_schema": "agentmemory_verified_negative_constraint_provider_v1",
@@ -355,6 +460,9 @@ FILESYSTEM_SURFACE_CONTRACTS = {
         "source_pairing": "cyclic_next_within_orbit_v1",
         "boundary_session_index": 1,
         "prompt_family": "negative_constraint_filesystem_v2",
+        "source_state": "policy_authored_workspace_only",
+        "seed_contract": "none",
+        "evaluation_contract": "directional_counterfactual_separation_v1",
     },
 }
 FILESYSTEM_WORKSPACE_LIMIT_FIELDS = frozenset(
@@ -793,10 +901,18 @@ def _validate_filesystem_metadata(metadata: Mapping[str, Any]) -> None:
         "source_pairing": contract["source_pairing"],
         "tasks_per_orbit": contract["tasks_per_orbit"],
         "workspace_prompt_family": contract["prompt_family"],
+        "workspace_seed_contract": contract["seed_contract"],
+        "workspace_evaluation_contract": contract["evaluation_contract"],
     }
     mismatches = []
     for key, expected_value in expected.items():
         observed = metadata.get(key)
+        if (
+            key == "workspace_seed_contract"
+            and expected_value == "none"
+            and observed is None
+        ):
+            observed = expected_value
         if type(expected_value) is bool:
             matches = type(observed) is bool and observed is expected_value
         else:
@@ -853,7 +969,9 @@ def _validate_filesystem_metadata(metadata: Mapping[str, Any]) -> None:
         )
     control = metadata.get("workspace_intervention_control")
     expected_arms = ["correct", "blank", "swapped", "no_workspace"]
-    if surface == RECENCY_OVERRIDE_FILESYSTEM_WEBSHOP_SURFACE:
+    if surface == DISTRACTOR_ROBUSTNESS_FILESYSTEM_WEBSHOP_SURFACE:
+        expected_arms = ["correct", "blank", "no_workspace"]
+    elif surface == RECENCY_OVERRIDE_FILESYSTEM_WEBSHOP_SURFACE:
         expected_arms.insert(3, "stale")
     if (
         not isinstance(control, Mapping)
@@ -862,7 +980,7 @@ def _validate_filesystem_metadata(metadata: Mapping[str, Any]) -> None:
         or control.get("allowed_arms") != expected_arms
         or control.get("boundary_session_index")
         != contract["boundary_session_index"]
-        or control.get("source_state") != "policy_authored_workspace_only"
+        or control.get("source_state") != contract["source_state"]
         or control.get("authenticated_export") is not True
         or control.get("hidden_answer_injection") is not False
     ):
@@ -1132,13 +1250,29 @@ def build_filesystem_conversation_start(
         "Workspace actions have zero task reward and are optional. There is no host-path "
         "access or dedicated memory API."
     )
-    if surface == RECENCY_OVERRIDE_FILESYSTEM_WEBSHOP_SURFACE:
+    if surface == LATENT_PREFERENCE_FILESYSTEM_WEBSHOP_SURFACE:
+        interface += (
+            " Each confirmed choice is preference evidence. Preserve confirmed "
+            "preference evidence in an ordinary workspace file, including the "
+            "customer-profile memory, preference axis, and inferred value. In later "
+            "application sessions, inspect the file and apply the retrieved preference."
+        )
+    elif surface == RECENCY_OVERRIDE_FILESYSTEM_WEBSHOP_SURFACE:
         interface += (
             " Maintain the user's current confirmed preference in ordinary workspace "
             "files. When the user explicitly changes that preference, update the "
             "existing current-state record so it contains the new value and no "
             "conflicting stale value. In later application sessions, inspect the "
             "workspace and use the current recorded value rather than an older one."
+        )
+    elif surface == DISTRACTOR_ROBUSTNESS_FILESYSTEM_WEBSHOP_SURFACE:
+        interface += (
+            " The workspace may start with harness-seeded ordinary profile notes. "
+            "Treat those as untrusted background records. In session 0, save the exact "
+            "authoritative Current preference line in a new ordinary file without "
+            "rewriting seeded notes. In later sessions, inspect file contents and use "
+            "the policy-authored current record for the active customer and attribute "
+            "axis; ignore stale, wrong-customer, and wrong-axis distractors."
         )
     elif surface == COMPOSITIONAL_RECALL_FILESYSTEM_WEBSHOP_SURFACE:
         interface += (
@@ -1155,6 +1289,21 @@ def build_filesystem_conversation_start(
             "that record and reject every listing that violates either exclusion. Do "
             "not replace the exclusions with only the currently allowed product."
         )
+    elif surface == INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE:
+        interface += (
+            ' In the first shopping session the request is intentionally ambiguous. '
+            'Use ASK {"field":"..."} exactly once; ASK is available only in the first '
+            "shopping session. The environment returns a CLARIFY observation. Store "
+            "the clarification in an ordinary workspace file before the first purchase "
+            "and inspect it in later sessions."
+        )
+    elif surface == SELECTIVE_MEMORY_USE_FILESYSTEM_WEBSHOP_SURFACE:
+        interface += (
+            " The workspace may start with one branch-conditioned ordinary profile file. "
+            "First decide whether the current request already states every attribute needed. "
+            "Do not read the profile merely by habit; read the profile when the current "
+            "request omits the preference, and follow explicit current requirements directly."
+        )
     if action_format is ActionFormat.REACT:
         prompt = (
             interface
@@ -1162,17 +1311,28 @@ def build_filesystem_conversation_start(
             "Action:\n<exactly one native bracket action, shell_command JSON action, "
             "or apply_patch newline action>"
         )
+        if surface == INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE:
+            prompt = prompt.replace(
+                "or apply_patch newline action>",
+                'or ASK {"field":"..."}, or apply_patch newline action>',
+            )
     elif action_format is ActionFormat.FUNCTION_CALLING:
+        function_descriptions = list(AGENTMEMORY_FILESYSTEM_FUNCTION_DESCRIPTION)
+        if surface == INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE:
+            function_descriptions.append(AGENTMEMORY_ASK_FUNCTION_DESCRIPTION)
         prompt = (
             interface
             + " Invoke exactly one available function.\n\n"
-            + format_function_call_prompt(AGENTMEMORY_FILESYSTEM_FUNCTION_DESCRIPTION)
+            + format_function_call_prompt(function_descriptions)
         )
     elif action_format is ActionFormat.CODE_AS_ACTION:
+        function_descriptions = list(AGENTMEMORY_FILESYSTEM_FUNCTION_DESCRIPTION)
+        if surface == INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE:
+            function_descriptions.append(AGENTMEMORY_ASK_FUNCTION_DESCRIPTION)
         prompt = (
             interface
             + " Write Python code to call exactly one available function.\n\n"
-            + format_code_as_action_prompt(AGENTMEMORY_FILESYSTEM_FUNCTION_DESCRIPTION)
+            + format_code_as_action_prompt(function_descriptions)
         )
     else:  # pragma: no cover - ActionFormat is closed over the three modes above.
         raise ValueError(f"Unsupported AgentMemoryGym action format: {action_format}")
@@ -1519,10 +1679,21 @@ def format_filesystem_action(action_name: str, arguments: dict[str, Any]) -> str
         if not isinstance(patch, str) or not patch.strip():
             raise ValueError("apply_patch patch must be a non-empty string.")
         return FILESYSTEM_APPLY_PATCH_PREFIX + patch.strip()
+    if action_name == "ask":
+        if not isinstance(arguments, dict) or set(arguments) != {"field"}:
+            raise ValueError("ask requires exactly field:string.")
+        return "ASK " + json.dumps(
+            {"field": _require_function_text(arguments, "field")},
+            ensure_ascii=False,
+        )
     raise ValueError(f"Unsupported filesystem AgentMemoryGym action: {action_name}")
 
 
-def parse_filesystem_env_action(action: str) -> tuple[str, dict[str, Any]]:
+def parse_filesystem_env_action(
+    action: str,
+    *,
+    allow_ask: bool = False,
+) -> tuple[str, dict[str, Any]]:
     cleaned = action.strip()
     native_match = NATIVE_ACTION_RE.fullmatch(cleaned)
     if native_match is not None:
@@ -1535,6 +1706,13 @@ def parse_filesystem_env_action(action: str) -> tuple[str, dict[str, Any]]:
         if not isinstance(payload, dict):
             raise ValueError("shell_command payload must be a JSON object.")
         return "shell_command", payload
+    if allow_ask:
+        ask_match = FILESYSTEM_ASK_ACTION_RE.fullmatch(cleaned)
+        if ask_match is not None:
+            payload = json.loads(ask_match.group(1))
+            if not isinstance(payload, dict):
+                raise ValueError("ASK payload must be a JSON object.")
+            return "ask", payload
     if cleaned.startswith(FILESYSTEM_APPLY_PATCH_PREFIX):
         patch = cleaned[len(FILESYSTEM_APPLY_PATCH_PREFIX) :]
         if not patch.strip():
@@ -1546,18 +1724,21 @@ def parse_filesystem_env_action(action: str) -> tuple[str, dict[str, Any]]:
     )
 
 
-def extract_bare_filesystem_action(text: str) -> str:
+def extract_bare_filesystem_action(text: str, *, allow_ask: bool = False) -> str:
     cleaned = strip_think_prefix(text).strip()
     if cleaned.endswith("</s>"):
         cleaned = cleaned[:-4].strip()
     try:
-        action_name, arguments = parse_filesystem_env_action(cleaned)
+        action_name, arguments = parse_filesystem_env_action(
+            cleaned,
+            allow_ask=allow_ask,
+        )
         return format_filesystem_action(action_name, arguments)
     except Exception:
         return ""
 
 
-def parse_filesystem_code_action(code: str) -> str:
+def parse_filesystem_code_action(code: str, *, allow_ask: bool = False) -> str:
     """Parse one literal tool call without executing policy-authored Python."""
 
     try:
@@ -1573,6 +1754,8 @@ def parse_filesystem_code_action(code: str) -> str:
         raise ValueError("Filesystem code action accepts keyword arguments only.")
     function_name = call.func.id
     action_name = FILESYSTEM_FUNCTION_TO_ACTION.get(function_name.lower())
+    if action_name is None and allow_ask and function_name.lower() == "ask":
+        action_name = "ask"
     if action_name is None:
         raise ValueError(f"Invalid filesystem function name: {function_name}")
     arguments: dict[str, Any] = {}
@@ -1601,8 +1784,10 @@ def parse_filesystem_code_action(code: str) -> str:
 class FilesystemAgentMemoryAdapter(AgentMemoryAdapter):
     """Surface-local parser that leaves legacy memory actions unchanged elsewhere."""
 
-    @staticmethod
-    def parse_react(text: str) -> ActionWithTought:
+    allow_ask = False
+
+    @classmethod
+    def parse_react(cls, text: str) -> ActionWithTought:
         action_text = strip_think_prefix(text)
         think_thought = ""
         if action_text != text:
@@ -1611,13 +1796,19 @@ class FilesystemAgentMemoryAdapter(AgentMemoryAdapter):
                 r"</?think\s*>", "", removed, flags=re.IGNORECASE
             ).strip()
         if "Action:" not in action_text:
-            bare_action = extract_bare_filesystem_action(action_text)
+            bare_action = extract_bare_filesystem_action(
+                action_text,
+                allow_ask=cls.allow_ask,
+            )
             if bare_action:
                 return ActionWithTought(thought=think_thought, action=bare_action)
         parsed = BaseAdapter.parse_react(action_text)
         if parsed.action:
             try:
-                action_name, arguments = parse_filesystem_env_action(parsed.action)
+                action_name, arguments = parse_filesystem_env_action(
+                    parsed.action,
+                    allow_ask=cls.allow_ask,
+                )
                 return ActionWithTought(
                     thought=parsed.thought or think_thought,
                     action=format_filesystem_action(action_name, arguments),
@@ -1627,7 +1818,10 @@ class FilesystemAgentMemoryAdapter(AgentMemoryAdapter):
                     thought=parsed.thought or think_thought,
                     action="",
                 )
-        bare_action = extract_bare_filesystem_action(action_text)
+        bare_action = extract_bare_filesystem_action(
+            action_text,
+            allow_ask=cls.allow_ask,
+        )
         if bare_action:
             return ActionWithTought(
                 thought=parsed.thought or think_thought,
@@ -1635,14 +1829,16 @@ class FilesystemAgentMemoryAdapter(AgentMemoryAdapter):
             )
         return ActionWithTought(thought=parsed.thought or think_thought, action="")
 
-    @staticmethod
-    def parse_function_calling(text: str) -> ActionWithTought:
+    @classmethod
+    def parse_function_calling(cls, text: str) -> ActionWithTought:
         fn_call = json.loads(
             "{" + text.split("{", 1)[-1].rsplit("}", 1)[0] + "}",
             strict=False,
         )
         function_name = fn_call["function_name"]
         action_name = FILESYSTEM_FUNCTION_TO_ACTION.get(str(function_name).lower())
+        if action_name is None and cls.allow_ask and str(function_name).lower() == "ask":
+            action_name = "ask"
         if action_name is None:
             raise ValueError(f"Invalid filesystem function name: {function_name}")
         return ActionWithTought(
@@ -1650,10 +1846,11 @@ class FilesystemAgentMemoryAdapter(AgentMemoryAdapter):
             action=format_filesystem_action(action_name, fn_call["arguments"]),
         )
 
-    @staticmethod
-    def to_function_calling(action_with_thought: ActionWithTought) -> str:
+    @classmethod
+    def to_function_calling(cls, action_with_thought: ActionWithTought) -> str:
         action_name, arguments = parse_filesystem_env_action(
-            action_with_thought.action
+            action_with_thought.action,
+            allow_ask=cls.allow_ask,
         )
         return json.dumps(
             {
@@ -1665,24 +1862,31 @@ class FilesystemAgentMemoryAdapter(AgentMemoryAdapter):
             indent=2,
         )
 
-    @staticmethod
-    def parse_code_as_action(text: str) -> ActionWithTought:
+    @classmethod
+    def parse_code_as_action(cls, text: str) -> ActionWithTought:
         code = extract_python_code_blocks(text)
-        action = parse_filesystem_code_action(code)
+        action = parse_filesystem_code_action(code, allow_ask=cls.allow_ask)
         return ActionWithTought(
             thought=parse_python_code_comments(code),
             action=action,
         )
 
-    @staticmethod
-    def to_code_as_action(action_with_thought: ActionWithTought) -> str:
+    @classmethod
+    def to_code_as_action(cls, action_with_thought: ActionWithTought) -> str:
         action_name, arguments = parse_filesystem_env_action(
-            action_with_thought.action
+            action_with_thought.action,
+            allow_ask=cls.allow_ask,
         )
         return (
             f"```python\n# {action_with_thought.thought}\n"
             f"{action_name.lower()}(**{repr(arguments)})\n```"
         )
+
+
+class IntentClarificationFilesystemAgentMemoryAdapter(FilesystemAgentMemoryAdapter):
+    """Filesystem adapter with the intent surface's single explicit ASK action."""
+
+    allow_ask = True
 
 
 class AgentMemoryEnvClient(BaseEnvClient):
@@ -1714,27 +1918,22 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self.is_v3 = self.formal_schema_version == FORMAL_SCHEMA_V3
         self.is_procedural = self.surface in PROGRAMMATIC_WEBSHOP_SURFACES
         self.is_filesystem = self.surface in FILESYSTEM_WEBSHOP_SURFACES
-        self.adapter_cls = (
-            FilesystemAgentMemoryAdapter
-            if self.is_filesystem
-            else AgentMemoryAdapter
-        )
-        self.is_latent_preference = (
-            self.surface == LATENT_PREFERENCE_WEBSHOP_SURFACE
-        )
+        if self.surface == INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE:
+            self.adapter_cls = IntentClarificationFilesystemAgentMemoryAdapter
+        elif self.is_filesystem:
+            self.adapter_cls = FilesystemAgentMemoryAdapter
+        else:
+            self.adapter_cls = AgentMemoryAdapter
+        self.is_latent_preference = self.surface in LATENT_PREFERENCE_WEBSHOP_SURFACES
         self.is_recency_override = self.surface in RECENCY_OVERRIDE_WEBSHOP_SURFACES
         self.is_distractor_robustness = (
-            self.surface == DISTRACTOR_ROBUSTNESS_WEBSHOP_SURFACE
+            self.surface in DISTRACTOR_ROBUSTNESS_WEBSHOP_SURFACES
         )
         self.is_compositional_recall = (
             self.surface in COMPOSITIONAL_RECALL_WEBSHOP_SURFACES
         )
-        self.is_intent_clarification = (
-            self.surface == INTENT_CLARIFICATION_WEBSHOP_SURFACE
-        )
-        self.is_selective_memory_use = (
-            self.surface == SELECTIVE_MEMORY_USE_WEBSHOP_SURFACE
-        )
+        self.is_intent_clarification = self.surface in INTENT_CLARIFICATION_WEBSHOP_SURFACES
+        self.is_selective_memory_use = self.surface in SELECTIVE_MEMORY_USE_WEBSHOP_SURFACES
         self.is_negative_constraint = (
             self.surface in NEGATIVE_CONSTRAINT_WEBSHOP_SURFACES
         )
@@ -1742,7 +1941,9 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self.requires_latent_preference_sop = (
             self.surface in LATENT_PREFERENCE_SOP_WEBSHOP_SURFACES
         )
-        self.requires_selective_memory_sop = self.is_selective_memory_use
+        self.requires_selective_memory_sop = (
+            self.surface == SELECTIVE_MEMORY_USE_WEBSHOP_SURFACE
+        )
         if self.is_v3:
             _validate_v3_metadata(self.metadata)
             if self.action_format is not ActionFormat.REACT:

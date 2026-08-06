@@ -45,19 +45,28 @@ from .distractor_robustness import (
     PROVIDER_MODE_RESEEDED_STREAM as DISTRACTOR_PROVIDER_MODE_RESEEDED_STREAM,
     PROVIDER_MODES as DISTRACTOR_PROVIDER_MODES,
 )
-from .distractor_robustness_webshop_env import DISTRACTOR_ROBUSTNESS_SURFACE
+from .distractor_robustness_webshop_env import (
+    DISTRACTOR_ROBUSTNESS_FILESYSTEM_SURFACE,
+    DISTRACTOR_ROBUSTNESS_SURFACE,
+)
 from .intent_clarification import (
     PROVIDER_MODE_FIXED_WINDOW as INTENT_PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM as INTENT_PROVIDER_MODE_RESEEDED_STREAM,
     PROVIDER_MODES as INTENT_PROVIDER_MODES,
 )
-from .intent_clarification_webshop_env import INTENT_CLARIFICATION_SURFACE
+from .intent_clarification_webshop_env import (
+    INTENT_CLARIFICATION_FILESYSTEM_SURFACE,
+    INTENT_CLARIFICATION_SURFACE,
+)
 from .latent_preference import (
     PROVIDER_MODE_FIXED_WINDOW as LATENT_PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM as LATENT_PROVIDER_MODE_RESEEDED_STREAM,
     PROVIDER_MODES as LATENT_PROVIDER_MODES,
 )
-from .latent_preference_webshop_env import LATENT_PREFERENCE_SURFACE
+from .latent_preference_webshop_env import (
+    LATENT_PREFERENCE_FILESYSTEM_SURFACE,
+    LATENT_PREFERENCE_SURFACE,
+)
 from .recency_override import (
     PROVIDER_MODE_FIXED_WINDOW as RECENCY_PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM as RECENCY_PROVIDER_MODE_RESEEDED_STREAM,
@@ -73,7 +82,10 @@ from .selective_memory_use import (
     PROVIDER_MODES as SELECTIVE_PROVIDER_MODES,
     TASKS_PER_ORBIT as SELECTIVE_TASKS_PER_ORBIT,
 )
-from .selective_memory_use_webshop_env import SELECTIVE_MEMORY_USE_SURFACE
+from .selective_memory_use_webshop_env import (
+    SELECTIVE_MEMORY_USE_FILESYSTEM_SURFACE,
+    SELECTIVE_MEMORY_USE_SURFACE,
+)
 from .negative_constraint import (
     PROVIDER_MODE_FIXED_WINDOW as NEGATIVE_PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM as NEGATIVE_PROVIDER_MODE_RESEEDED_STREAM,
@@ -96,8 +108,12 @@ from .service_identity import SERVICE_ROLES
 NATIVE_SURFACE = "memoryarena_webshop_native_v1"
 FILESYSTEM_SURFACES = {
     PROCEDURAL_FILESYSTEM_SURFACE,
+    LATENT_PREFERENCE_FILESYSTEM_SURFACE,
     RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
+    DISTRACTOR_ROBUSTNESS_FILESYSTEM_SURFACE,
     COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE,
+    INTENT_CLARIFICATION_FILESYSTEM_SURFACE,
+    SELECTIVE_MEMORY_USE_FILESYSTEM_SURFACE,
     NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
 }
 
@@ -115,13 +131,17 @@ def launch() -> None:
             PROCEDURAL_SURFACE,
             PROCEDURAL_FILESYSTEM_SURFACE,
             LATENT_PREFERENCE_SURFACE,
+            LATENT_PREFERENCE_FILESYSTEM_SURFACE,
             RECENCY_OVERRIDE_SURFACE,
             RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
             DISTRACTOR_ROBUSTNESS_SURFACE,
+            DISTRACTOR_ROBUSTNESS_FILESYSTEM_SURFACE,
             COMPOSITIONAL_RECALL_SURFACE,
             COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE,
             INTENT_CLARIFICATION_SURFACE,
+            INTENT_CLARIFICATION_FILESYSTEM_SURFACE,
             SELECTIVE_MEMORY_USE_SURFACE,
+            SELECTIVE_MEMORY_USE_FILESYSTEM_SURFACE,
             NEGATIVE_CONSTRAINT_SURFACE,
             NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
             *V3_SURFACES,
@@ -547,7 +567,10 @@ def launch() -> None:
             configured["AGENTMEMORY_WORKSPACE_RG_SHA256"] = (
                 args.workspace_rg_sha256
             )
-    elif args.surface == LATENT_PREFERENCE_SURFACE:
+    elif args.surface in {
+        LATENT_PREFERENCE_SURFACE,
+        LATENT_PREFERENCE_FILESYSTEM_SURFACE,
+    }:
         _require_args(
             parser,
             args,
@@ -614,12 +637,16 @@ def launch() -> None:
                 "AGENTMEMORY_SPLIT": args.split,
                 "AGENTMEMORY_WEBSHOP_PRICE_SEED": str(args.price_seed),
                 "AGENTMEMORY_FIRST_VALID_ADD_REWARD": str(
-                    FIRST_VALID_ADD_BONUS
+                    0.0
+                    if args.surface == LATENT_PREFERENCE_FILESYSTEM_SURFACE
+                    else FIRST_VALID_ADD_BONUS
                     if args.memory_first_add_reward is None
                     else args.memory_first_add_reward
                 ),
                 "AGENTMEMORY_FIRST_VALID_LATER_SESSION_RETRIEVE_REWARD": str(
-                    FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS
+                    0.0
+                    if args.surface == LATENT_PREFERENCE_FILESYSTEM_SURFACE
+                    else FIRST_VALID_LATER_SESSION_RETRIEVE_BONUS
                     if args.memory_first_later_retrieve_reward is None
                     else args.memory_first_later_retrieve_reward
                 ),
@@ -631,6 +658,9 @@ def launch() -> None:
                 "AGENTMEMORY_ACTION_LISTING_MODE": args.action_listing_mode,
             }
         )
+        if args.surface == LATENT_PREFERENCE_FILESYSTEM_SURFACE:
+            configured["AGENTMEMORY_WORKSPACE_RG_BINARY"] = args.workspace_rg_binary
+            configured["AGENTMEMORY_WORKSPACE_RG_SHA256"] = args.workspace_rg_sha256
     elif args.surface in {
         RECENCY_OVERRIDE_SURFACE,
         RECENCY_OVERRIDE_FILESYSTEM_SURFACE,
@@ -731,7 +761,10 @@ def launch() -> None:
             configured["AGENTMEMORY_WORKSPACE_RG_SHA256"] = (
                 args.workspace_rg_sha256
             )
-    elif args.surface == DISTRACTOR_ROBUSTNESS_SURFACE:
+    elif args.surface in {
+        DISTRACTOR_ROBUSTNESS_SURFACE,
+        DISTRACTOR_ROBUSTNESS_FILESYSTEM_SURFACE,
+    }:
         configured.update(
             _configure_programmatic_memory_surface(
                 parser,
@@ -741,8 +774,18 @@ def launch() -> None:
                 tasks_per_orbit=2,
                 fixed_window_mode=DISTRACTOR_PROVIDER_MODE_FIXED_WINDOW,
                 reseeded_stream_mode=DISTRACTOR_PROVIDER_MODE_RESEEDED_STREAM,
+                zero_memory_rewards=(
+                    args.surface == DISTRACTOR_ROBUSTNESS_FILESYSTEM_SURFACE
+                ),
             )
         )
+        if args.surface == DISTRACTOR_ROBUSTNESS_FILESYSTEM_SURFACE:
+            configured["AGENTMEMORY_WORKSPACE_RG_BINARY"] = (
+                args.workspace_rg_binary
+            )
+            configured["AGENTMEMORY_WORKSPACE_RG_SHA256"] = (
+                args.workspace_rg_sha256
+            )
     elif args.surface in {
         COMPOSITIONAL_RECALL_SURFACE,
         COMPOSITIONAL_RECALL_FILESYSTEM_SURFACE,
@@ -768,7 +811,10 @@ def launch() -> None:
             configured["AGENTMEMORY_WORKSPACE_RG_SHA256"] = (
                 args.workspace_rg_sha256
             )
-    elif args.surface == INTENT_CLARIFICATION_SURFACE:
+    elif args.surface in {
+        INTENT_CLARIFICATION_SURFACE,
+        INTENT_CLARIFICATION_FILESYSTEM_SURFACE,
+    }:
         configured.update(
             _configure_programmatic_memory_surface(
                 parser,
@@ -778,9 +824,18 @@ def launch() -> None:
                 tasks_per_orbit=2,
                 fixed_window_mode=INTENT_PROVIDER_MODE_FIXED_WINDOW,
                 reseeded_stream_mode=INTENT_PROVIDER_MODE_RESEEDED_STREAM,
+                zero_memory_rewards=(
+                    args.surface == INTENT_CLARIFICATION_FILESYSTEM_SURFACE
+                ),
             )
         )
-    elif args.surface == SELECTIVE_MEMORY_USE_SURFACE:
+        if args.surface == INTENT_CLARIFICATION_FILESYSTEM_SURFACE:
+            configured["AGENTMEMORY_WORKSPACE_RG_BINARY"] = args.workspace_rg_binary
+            configured["AGENTMEMORY_WORKSPACE_RG_SHA256"] = args.workspace_rg_sha256
+    elif args.surface in {
+        SELECTIVE_MEMORY_USE_SURFACE,
+        SELECTIVE_MEMORY_USE_FILESYSTEM_SURFACE,
+    }:
         configured.update(
             _configure_programmatic_memory_surface(
                 parser,
@@ -793,6 +848,9 @@ def launch() -> None:
                 zero_memory_rewards=True,
             )
         )
+        if args.surface == SELECTIVE_MEMORY_USE_FILESYSTEM_SURFACE:
+            configured["AGENTMEMORY_WORKSPACE_RG_BINARY"] = args.workspace_rg_binary
+            configured["AGENTMEMORY_WORKSPACE_RG_SHA256"] = args.workspace_rg_sha256
     elif args.surface in {
         NEGATIVE_CONSTRAINT_SURFACE,
         NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
