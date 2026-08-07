@@ -311,6 +311,37 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIsNone(audit["grade"])
         self.assertEqual(audit["evidence"][1]["result"]["stdout"], "unfinished")
 
+    def test_policy_turn_horizon_grades_without_consuming_native_action(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+        self.manager.step(
+            slot,
+            "apply_patch\n"
+            "*** Begin Patch\n"
+            "*** Update File: src/value.py\n"
+            "@@\n"
+            "-bug\n"
+            "+fixed\n"
+            "*** End Patch",
+        )
+
+        horizon = self.manager.finalize_horizon(slot)
+        self.assertTrue(horizon.done)
+        self.assertEqual(horizon.reward, 1.0)
+        detail = self.manager.detail(slot)
+        self.assertEqual(detail["step_count"], 1)
+        self.assertEqual(
+            detail["evidence"][-1]["action"]["kind"],
+            "policy_turn_horizon",
+        )
+        self.assertEqual(
+            detail["evidence"][-1]["termination_reason"],
+            "policy_turn_horizon",
+        )
+        with self.assertRaisesRegex(RuntimeError, "already terminal"):
+            self.manager.finalize_horizon(slot)
+        self.manager.close(slot)
+
     def test_concurrent_episode_closes_write_unique_atomic_audits(self) -> None:
         slots = [self.manager.create(), self.manager.create()]
         for slot in slots:

@@ -86,6 +86,15 @@ class SwesmithEnvClient(BaseEnvClient):
             "GET", "detail", params={"id": self.env_id}, headers=headers
         )
 
+    def finalize_horizon(self) -> StepOutput:
+        response = self._request("POST", "horizon", json={"id": self.env_id})
+        self.info = response
+        return StepOutput(
+            state=str(response["observation"]),
+            reward=float(response["reward"]),
+            done=bool(response["done"]),
+        )
+
     def close(self) -> dict[str, Any]:
         return self._request("POST", "close", json={"id": self.env_id})
 

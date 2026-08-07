@@ -110,6 +110,22 @@ def observation(id: int) -> str:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.post("/horizon")
+def horizon(body: CloseRequest) -> dict[str, Any]:
+    try:
+        return manager().finalize_horizon(body.id).as_dict()
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logging.exception("SWE-smith horizon finalization failed")
+        raise HTTPException(
+            status_code=500,
+            detail="SWE-smith horizon finalization failed closed; inspect server logs",
+        ) from exc
+
+
 @app.get("/detail")
 def detail(
     id: int,

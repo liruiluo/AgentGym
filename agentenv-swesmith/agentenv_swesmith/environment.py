@@ -219,6 +219,34 @@ class SwesmithEpisodeManager:
         with slot.lock:
             return self._episode(slot).observation
 
+    def finalize_horizon(self, slot_id: int) -> EpisodeStep:
+        """Grade the current workspace when the unified policy budget expires.
+
+        The rollout owns the unified policy-step counter because model-authored
+        compactions consume steps without calling this native environment. This
+        control call therefore does not increment the native action counter.
+        """
+
+        slot = self._slot(slot_id)
+        with slot.lock:
+            episode = self._episode(slot)
+            if episode.done:
+                raise RuntimeError("SWE-smith episode is already terminal")
+            horizon: dict[str, Any] = {
+                "event": "terminal_submission",
+                "step": episode.step_count,
+                "observation_before": episode.observation,
+                "action": {"kind": "policy_turn_horizon"},
+            }
+            self._grade_terminal(
+                episode,
+                horizon,
+                termination_reason="policy_turn_horizon",
+            )
+            horizon["observation_after"] = episode.observation
+            episode.evidence.append(horizon)
+            return self._public_step(episode, action_kind="policy_turn_horizon")
+
     def detail(self, slot_id: int) -> dict[str, Any]:
         slot = self._slot(slot_id)
         with slot.lock:
@@ -264,6 +292,7 @@ class SwesmithEpisodeManager:
             "tool_contract": "codex_shell_command_apply_patch_v1",
             "reward_contract": "terminal_full_resolution_binary_v1",
             "context_contract": "one_native_issue_continuous_episode_v1",
+            "horizon_contract": "unified_policy_step_private_grade_v1",
             "private_audit_contract": (
                 "agentmemory_swesmith_private_episode_audit_v1"
                 if self.audit_sink is not None
@@ -320,6 +349,8 @@ class SwesmithEpisodeManager:
             timed_out=result.timed_out,
             stdout=stdout,
             stderr=stderr,
+            stdout_truncated=result.stdout_truncated,
+            stderr_truncated=result.stderr_truncated,
             changed_paths=execution.workspace_diff.changed_paths,
         )
 
@@ -493,11 +524,15 @@ def _shell_observation(
     timed_out: bool,
     stdout: str,
     stderr: str,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
     changed_paths: tuple[str, ...],
 ) -> str:
     return (
         f"shell_command exit_code={exit_code} elapsed_ms={elapsed_ms} "
-        f"timed_out={str(timed_out).lower()}\n"
+        f"timed_out={str(timed_out).lower()} "
+        f"stdout_truncated={str(stdout_truncated).lower()} "
+        f"stderr_truncated={str(stderr_truncated).lower()}\n"
         "stdout:\n"
         + (stdout if stdout else "<empty>")
         + "\nstderr:\n"
