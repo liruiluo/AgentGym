@@ -118,7 +118,8 @@ started the next shopping session; `session_handoff` means one optional
 policy-authored bridge row at that boundary; `context_compaction` means a
 policy-authored summary inside an otherwise continuous episode. Do not use
 `context_compaction` for a WebShop reset, and do not carry the old WebShop
-transcript into the fresh session prompt.
+transcript into the fresh session prompt. The serialized runtime values are
+`webshop_session_handoff` and `context_limit`, respectively.
 
 ## Runtime contract
 
