@@ -113,6 +113,13 @@ episode step while `native_environment_call_count` stays unchanged. This bridge
 must be reported separately from SWE-smith-style context compaction and must not
 be described as full-history reuse.
 
+The naming is normative: `session_reset` means that the native WebShop server
+started the next shopping session; `session_handoff` means one optional
+policy-authored bridge row at that boundary; `context_compaction` means a
+policy-authored summary inside an otherwise continuous episode. Do not use
+`context_compaction` for a WebShop reset, and do not carry the old WebShop
+transcript into the fresh session prompt.
+
 ## Runtime contract
 
 - Web Shopping keeps the original WebShop browser state machine. One episode is
