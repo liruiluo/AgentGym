@@ -96,6 +96,23 @@ Background evidence records exact workspace hashes and diffs, but shell use
 does not prove a specific file was read. Operation counts and temporal candidate
 chains are never treated as memory ability without the four-arm intervention.
 
+### WebShop session reset is not continuous-history compaction
+
+The six-session episode is a sequence of **native WebShop sessions**, not one
+continuous dialogue. After a correct `click[Buy Now]` advances the task, the
+native server clears the preceding session's page, cart/budget state, active
+context, and action/observation trace. The next session prompt must be built from
+fresh native observation; it must not contain the preceding session's transcript.
+The ordinary workspace is the only state that persists across this boundary.
+
+An optional policy-authored session handoff is a separate diagnostic policy
+step. It may preserve only a path or discovery route for a workspace note. The
+harness must not write a path, semantic summary, answer, or hidden state, and
+the handoff must not call the native WebShop server. It consumes one normal
+episode step while `native_environment_call_count` stays unchanged. This bridge
+must be reported separately from SWE-smith-style context compaction and must not
+be described as full-history reuse.
+
 ## Runtime contract
 
 - Web Shopping keeps the original WebShop browser state machine. One episode is
@@ -109,6 +126,10 @@ chains are never treated as memory ability without the four-arm intervention.
 - Native browser state, S* trace, and active C* context clear at a session
   boundary. Policy-authored long-term memory persists but remains hidden until
   `RETRIEVE`.
+- The filesystem-v2 session boundary has the same native reset: workspace files
+  persist, while the previous session's conversation and native trace do not.
+  Do not use a previous action/observation transcript as a substitute for a
+  filesystem read or discovery command.
 - `ADD` and `UPDATE` preserve policy-authored text verbatim.
 - Prices and purchases come from structured native WebShop state and are
   accumulated in integer cents. HTML parsing is not authoritative.
