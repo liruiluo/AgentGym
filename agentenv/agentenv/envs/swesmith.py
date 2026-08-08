@@ -24,6 +24,17 @@ SWE_CONTEXT_COMPACTION_REQUEST = (
     "environment. Include only information you choose to carry forward."
 )
 
+SWE_POLICY_SYSTEM_PROMPT = (
+    "You are a coding agent working on one persistent repository. Inspect, edit, "
+    "and test the workspace until the issue is fixed. Your responses are parsed as "
+    "a strict machine protocol. On every tool turn, byte zero of the response must "
+    "begin exactly with shell_command or apply_patch, using the grammar in the task "
+    "observation. Output one tool call and nothing else. Markdown fences, JSON "
+    "wrappers, reasoning, prose, and labels are not tool calls; they immediately "
+    "submit the current workspace for grading. Submit plain text only after you have "
+    "inspected, edited, and tested the fix."
+)
+
 
 class SwesmithEnvClient(BaseEnvClient):
     conversation_start = (
@@ -31,15 +42,7 @@ class SwesmithEnvClient(BaseEnvClient):
             {
                 "from": "human",
                 "loss": None,
-                "value": (
-                    "You are a coding agent working on one persistent repository. "
-                    "Inspect, edit, and test the workspace until the issue is fixed. "
-                    "Use the exact shell_command or apply_patch grammar shown in the "
-                    "task observation. On a tool turn, output only that tool call: do "
-                    "not place reasoning, prose, labels, or code fences before or after "
-                    "it. Any response that does not begin with an exact tool prefix is "
-                    "a final submission and immediately grades the workspace."
-                ),
+                "value": SWE_POLICY_SYSTEM_PROMPT,
             }
         ),
         ConversationMessage(
@@ -81,6 +84,27 @@ class SwesmithEnvClient(BaseEnvClient):
         self._policy_context_bound = False
         self._selected_policy_control: str | None = None
 
+    def policy_framing(self) -> list[dict[str, str]]:
+        return [{"role": "system", "content": SWE_POLICY_SYSTEM_PROMPT}]
+
+    def normalize_initial_policy_context(
+        self,
+        messages: Sequence[Mapping[str, str]],
+    ) -> list[dict[str, str]]:
+        normalized = _copy_policy_messages(messages)
+        observation = str(self.observe())
+        if (
+            not normalized
+            or normalized[-1]["role"] != "user"
+            or normalized[-1]["content"] != observation
+        ):
+            raise ValueError(
+                "SWE-smith initial policy context must end with the current observation"
+            )
+        return self.policy_framing() + [
+            {"role": "user", "content": observation}
+        ]
+
     def bind_policy_context(
         self,
         messages: Sequence[Mapping[str, str]],
@@ -89,6 +113,13 @@ class SwesmithEnvClient(BaseEnvClient):
     ) -> None:
         normalized = _copy_policy_messages(messages)
         if initial:
+            expected = self.policy_framing() + [
+                {"role": "user", "content": str(self.observe())}
+            ]
+            if normalized != expected:
+                raise ValueError(
+                    "SWE-smith initial policy context differs from its system framing"
+                )
             self._immutable_policy_context = deepcopy(normalized)
             self._policy_context_bound = True
         self._current_policy_context = normalized
