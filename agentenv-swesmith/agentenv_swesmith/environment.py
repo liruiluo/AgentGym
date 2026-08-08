@@ -60,6 +60,7 @@ class EpisodeStep:
 
 @dataclass
 class _Episode:
+    slot_id: int
     audit_id: str
     started_at: str
     record: SwesmithRecord
@@ -136,6 +137,7 @@ class SwesmithEpisodeManager:
                 initial_snapshot = sandbox.attach_workspace(workspace.policy_root)
                 observation = _initial_observation(record.problem_statement)
                 episode = _Episode(
+                    slot_id=slot_id,
                     audit_id=uuid.uuid4().hex,
                     started_at=_utc_now(),
                     record=record,
@@ -148,6 +150,7 @@ class SwesmithEpisodeManager:
                 episode.evidence.append(
                     {
                         "event": "reset",
+                        "slot_id": slot_id,
                         "audit_id": episode.audit_id,
                         "data_idx": record.data_idx,
                         "physical_index": record.physical_index,
@@ -253,6 +256,7 @@ class SwesmithEpisodeManager:
             episode = self._episode(slot)
             return {
                 "schema": EPISODE_SCHEMA,
+                "slot_id": episode.slot_id,
                 "audit_id": episode.audit_id,
                 "started_at": episode.started_at,
                 "data_idx": episode.record.data_idx,
@@ -261,6 +265,12 @@ class SwesmithEpisodeManager:
                 "step_count": episode.step_count,
                 "done": episode.done,
                 "reward": episode.reward,
+                "workspace": {
+                    "episode_root": str(episode.workspace.episode_root),
+                    "policy_root": str(episode.workspace.policy_root),
+                    "model_uid": episode.sandbox.model_uid,
+                    "model_gid": episode.sandbox.model_gid,
+                },
                 "evidence": list(episode.evidence),
                 "grade": (
                     None if episode.grade is None else episode.grade.as_private_dict()
@@ -277,6 +287,7 @@ class SwesmithEpisodeManager:
 
     def metadata(self) -> dict[str, Any]:
         provenance = self.dataset.provenance
+        slot_count, active_count = self._active_counts()
         metadata = {
             "schema": EPISODE_SCHEMA,
             "task_count": len(self.dataset),
@@ -293,6 +304,9 @@ class SwesmithEpisodeManager:
             "reward_contract": "terminal_full_resolution_binary_v1",
             "context_contract": "one_native_issue_continuous_episode_v1",
             "horizon_contract": "unified_policy_step_private_grade_v1",
+            "active_slot_count": slot_count,
+            "active_environment_count": active_count,
+            "active_workspace_count": active_count,
             "private_audit_contract": (
                 "agentmemory_swesmith_private_episode_audit_v1"
                 if self.audit_sink is not None
@@ -301,6 +315,15 @@ class SwesmithEpisodeManager:
         }
         metadata.update(self.runtime_metadata)
         return metadata
+
+    def _active_counts(self) -> tuple[int, int]:
+        with self._slots_lock:
+            slots = list(self._slots.values())
+        active_count = 0
+        for slot in slots:
+            with slot.lock:
+                active_count += int(slot.episode is not None)
+        return len(slots), active_count
 
     def _run_shell(
         self,
@@ -459,6 +482,7 @@ class SwesmithEpisodeManager:
                         "episode_schema": EPISODE_SCHEMA,
                         "closed_at": _utc_now(),
                         "close_reason": close_reason,
+                        "slot_id": episode.slot_id,
                         "started_at": episode.started_at,
                         "data_idx": episode.record.data_idx,
                         "physical_index": episode.record.physical_index,

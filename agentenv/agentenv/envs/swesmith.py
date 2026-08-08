@@ -180,7 +180,10 @@ class SwesmithEnvClient(BaseEnvClient):
                 session_epoch_after=self._session_epoch,
                 policy_step_before=policy_before,
                 policy_step_after=self._policy_step_count,
-                wrapper_evidence={"event": "native_action"},
+                wrapper_evidence={
+                    "event": "native_action",
+                    "workspace_continuity_id": self.env_id,
+                },
             ),
         )
 
@@ -273,7 +276,10 @@ class SwesmithEnvClient(BaseEnvClient):
                 session_epoch_after=self._session_epoch,
                 policy_step_before=self._policy_step_count,
                 policy_step_after=self._policy_step_count,
-                wrapper_evidence={"event": "horizon_finalization"},
+                wrapper_evidence={
+                    "event": "horizon_finalization",
+                    "workspace_continuity_id": self.env_id,
+                },
             ),
         )
 

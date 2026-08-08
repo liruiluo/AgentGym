@@ -3,8 +3,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import uvicorn
-
 from agentenv_agentmemory.workspace_sandbox import ShellSandboxLimits
 
 from .audit import SwesmithEpisodeAuditSink
@@ -50,6 +48,7 @@ def build_manager_from_environment() -> SwesmithEpisodeManager:
         if not audit_root_raw
         else SwesmithEpisodeAuditSink(Path(audit_root_raw).expanduser())
     )
+    runtime_source = _runtime_source_from_environment()
 
     def sandbox_factory(record, profile):
         del record
@@ -83,11 +82,14 @@ def build_manager_from_environment() -> SwesmithEpisodeManager:
             "source_revision": source_revision,
             "sandbox_contract": "swesmith_linux_namespace_oci_rootfs_v1",
             "profile_contract": "swesmith_official_repo_profile_v1",
+            **runtime_source,
         },
     )
 
 
 def launch() -> None:
+    import uvicorn
+
     from .server import app, configure
 
     configure(build_manager_from_environment())
@@ -145,6 +147,24 @@ def _required_revision(name: str) -> str:
     if len(value) != 40 or any(character not in "0123456789abcdef" for character in value):
         raise RuntimeError(f"{name} must be a full 40-character Git commit")
     return value
+
+
+def _runtime_source_from_environment() -> dict[str, object]:
+    names = ("SWESMITH_RUNTIME_OUTER_COMMIT", "SWESMITH_RUNTIME_INNER_COMMIT")
+    present = [bool(os.environ.get(name, "").strip()) for name in names]
+    if any(present) and not all(present):
+        raise RuntimeError("SWE-smith runtime outer/inner commits must be set together")
+    if not all(present):
+        return {}
+    outer = _required_revision(names[0])
+    inner = _required_revision(names[1])
+    return {
+        "runtime_source": {
+            "outer_commit": outer,
+            "inner_commit": inner,
+            "source_id": f"{outer}_{inner}",
+        }
+    }
 
 
 def _integer(name: str, default: int) -> int:

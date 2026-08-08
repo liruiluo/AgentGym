@@ -228,8 +228,26 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         path.write_text(content, encoding="utf-8")
 
     def test_continuous_workspace_patch_final_and_private_evidence(self) -> None:
+        self.assertEqual(
+            {
+                "active_slot_count": 0,
+                "active_environment_count": 0,
+                "active_workspace_count": 0,
+            },
+            {
+                key: self.manager.metadata()[key]
+                for key in (
+                    "active_slot_count",
+                    "active_environment_count",
+                    "active_workspace_count",
+                )
+            },
+        )
         slot = self.manager.create()
+        self.assertEqual(self.manager.metadata()["active_slot_count"], 1)
+        self.assertEqual(self.manager.metadata()["active_environment_count"], 0)
         reset = self.manager.reset(slot, 0)
+        self.assertEqual(self.manager.metadata()["active_environment_count"], 1)
         self.assertIn("Fix the public value", reset.observation)
         self.assertNotIn("SECRET_GOLD_PATCH", reset.observation)
         self.assertNotIn(self.instance_id, reset.observation)
@@ -263,16 +281,37 @@ class SwesmithEnvironmentTests(unittest.TestCase):
 
         detail = self.manager.detail(slot)
         self.assertEqual(detail["data_idx"], 0)
+        self.assertEqual(detail["slot_id"], slot)
         self.assertEqual(detail["instance_id"], self.instance_id)
+        self.assertEqual(
+            Path(detail["workspace"]["episode_root"]).parent,
+            self.episodes.resolve(),
+        )
+        self.assertEqual(
+            Path(detail["workspace"]["policy_root"]).parent,
+            Path(detail["workspace"]["episode_root"]),
+        )
+        self.assertEqual(
+            detail["workspace"]["model_uid"],
+            1000 if os.getuid() == 0 else os.getuid(),
+        )
+        self.assertEqual(
+            detail["workspace"]["model_gid"],
+            1000 if os.getgid() == 0 else os.getgid(),
+        )
         self.assertEqual(detail["evidence"][2]["result"]["stdout"], "persistent")
         closed = self.manager.close(slot)
         self.assertTrue(closed["closed"])
+        self.assertEqual(self.manager.metadata()["active_slot_count"], 0)
+        self.assertEqual(self.manager.metadata()["active_environment_count"], 0)
+        self.assertEqual(self.manager.metadata()["active_workspace_count"], 0)
         self.assertEqual(list(self.episodes.iterdir()), [])
         audits = list(self.audits.glob("episode-*.json"))
         self.assertEqual(len(audits), 1)
         audit = json.loads(audits[0].read_text(encoding="utf-8"))
         self.assertEqual(audit["schema"], AUDIT_SCHEMA)
         self.assertEqual(audit["close_reason"], "client_close")
+        self.assertEqual(audit["slot_id"], slot)
         self.assertEqual(audit["data_idx"], 0)
         self.assertEqual(audit["instance_id"], self.instance_id)
         self.assertEqual(audit["grade"]["reward"], 1.0)
