@@ -1,11 +1,28 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from copy import deepcopy
+from typing import Any, Mapping, Sequence
 
 import requests
 
 from agentenv.controller import BaseEnvClient, BaseTask
-from agentenv.controller.types import ConversationMessage, StepOutput
+from agentenv.controller.types import (
+    CONTEXT_OPERATION_REPLACE,
+    ConversationMessage,
+    POLICY_CONTINUATION_MARKER,
+    PolicyContextPressure,
+    StepOutput,
+    build_task_neutral_context_transition,
+    build_task_neutral_transition_info,
+)
+
+
+SWE_CONTEXT_COMPACTION_REQUEST = (
+    "The conversation is nearing its context limit. Write the continuation "
+    "state you want to retain after the earlier interaction is removed. Your "
+    "response will be preserved verbatim and will not be sent to the "
+    "environment. Include only information you choose to carry forward."
+)
 
 
 class SwesmithEnvClient(BaseEnvClient):
@@ -49,6 +66,72 @@ class SwesmithEnvClient(BaseEnvClient):
         self.env_id = int(created["id"])
         self.info = created
         self.metadata = metadata
+        self._reset_policy_transition_state()
+
+    def _reset_policy_transition_state(self) -> None:
+        self._policy_step_count = 0
+        self._native_call_count = 0
+        self._context_epoch = 0
+        self._session_epoch = 0
+        self._immutable_policy_context: list[dict[str, str]] | None = None
+        self._current_policy_context: list[dict[str, str]] | None = None
+        self._policy_context_bound = False
+        self._selected_policy_control: str | None = None
+
+    def bind_policy_context(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        initial: bool = False,
+    ) -> None:
+        normalized = _copy_policy_messages(messages)
+        if initial:
+            self._immutable_policy_context = deepcopy(normalized)
+            self._policy_context_bound = True
+        self._current_policy_context = normalized
+
+    def policy_turn_candidate(self) -> str | None:
+        if not self._policy_context_bound:
+            return None
+        return SWE_CONTEXT_COMPACTION_REQUEST
+
+    def prepare_policy_turn(
+        self, pressure: PolicyContextPressure | None
+    ) -> str | None:
+        self._selected_policy_control = None
+        if not self._policy_context_bound:
+            return None
+        if pressure is None:
+            raise RuntimeError(
+                "SWE-smith context compaction requires task-neutral token pressure"
+            )
+        capacity = pressure.effective_prompt_capacity
+        if (
+            pressure.action_prompt_tokens > capacity
+            or pressure.candidate_prompt_tokens > capacity
+        ):
+            raise RuntimeError(
+                "SWE-smith context reached the prompt cap before a trainable "
+                "compaction could be sampled"
+            )
+        request_tokens = (
+            pressure.candidate_prompt_tokens - pressure.action_prompt_tokens
+        )
+        if request_tokens <= 0:
+            raise RuntimeError(
+                "SWE-smith compaction request must extend the action prompt"
+            )
+        projected_next_request = (
+            pressure.action_prompt_tokens
+            + pressure.max_response_tokens
+            + pressure.max_observation_tokens
+            + pressure.action_observation_envelope_tokens
+            + request_tokens
+        )
+        if projected_next_request < capacity:
+            return None
+        self._selected_policy_control = "context_compaction"
+        return SWE_CONTEXT_COMPACTION_REQUEST
 
     def __len__(self) -> int:
         return self.data_len
@@ -57,16 +140,98 @@ class SwesmithEnvClient(BaseEnvClient):
         return str(self.info["observation"])
 
     def step(self, action: str) -> StepOutput:
+        if self._selected_policy_control == "context_compaction":
+            return self._complete_context_compaction(action)
+        return self._step_native_policy_action(action)
+
+    def _step_native_policy_action(self, action: str) -> StepOutput:
+        native_before = self._native_call_count
+        policy_before = self._policy_step_count
+        context_before = self._context_epoch
+        session_before = self._session_epoch
         response = self._request(
             "POST",
             "step",
             json={"id": self.env_id, "action": action},
         )
+        self._native_call_count += 1
+        self._policy_step_count += 1
         self.info = response
+        response_env_info = response.get("info", {})
+        after_step = response_env_info.get("step")
+        if after_step is not None and int(after_step) != self._native_call_count:
+            raise RuntimeError(
+                "SWE-smith native step counter drifted from wrapper dispatches"
+            )
         return StepOutput(
             state=str(response["observation"]),
             reward=float(response["reward"]),
             done=bool(response["done"]),
+            info=build_task_neutral_transition_info(
+                env_info=response_env_info,
+                action_submission={"raw_policy_output": action},
+                native_step_before=native_before,
+                native_step_after=self._native_call_count,
+                native_call_count_before=native_before,
+                native_call_count_after=self._native_call_count,
+                context_epoch_before=context_before,
+                context_epoch_after=self._context_epoch,
+                session_epoch_before=session_before,
+                session_epoch_after=self._session_epoch,
+                policy_step_before=policy_before,
+                policy_step_after=self._policy_step_count,
+                wrapper_evidence={"event": "native_action"},
+            ),
+        )
+
+    def _complete_context_compaction(self, action: str) -> StepOutput:
+        framing = self._immutable_policy_context
+        if framing is None:
+            raise RuntimeError("SWE-smith compaction lost its immutable task framing")
+        native_before = self._native_call_count
+        policy_before = self._policy_step_count
+        context_before = self._context_epoch
+        session_before = self._session_epoch
+        replacement = deepcopy(framing)
+        replacement.extend(
+            [
+                {"role": "assistant", "content": str(action)},
+                {"role": "user", "content": POLICY_CONTINUATION_MARKER},
+            ]
+        )
+        self._policy_step_count += 1
+        self._context_epoch += 1
+        self._selected_policy_control = None
+        return StepOutput(
+            state=str(self.info.get("observation", "")),
+            reward=0.0,
+            done=False,
+            info=build_task_neutral_transition_info(
+                env_info=self.info.get("info", {}),
+                action_submission={
+                    "raw_policy_output": action,
+                    "submitted_action": None,
+                    "parser_status": "policy_context_compaction",
+                },
+                native_step_before=native_before,
+                native_step_after=self._native_call_count,
+                native_call_count_before=native_before,
+                native_call_count_after=self._native_call_count,
+                context_epoch_before=context_before,
+                context_epoch_after=self._context_epoch,
+                session_epoch_before=session_before,
+                session_epoch_after=self._session_epoch,
+                policy_step_before=policy_before,
+                policy_step_after=self._policy_step_count,
+                context_transition=build_task_neutral_context_transition(
+                    CONTEXT_OPERATION_REPLACE,
+                    messages=replacement,
+                ),
+                wrapper_evidence={
+                    "event": "context_compaction",
+                    "workspace_continuity_id": self.env_id,
+                },
+            ),
         )
 
     def reset(self, idx: int = 0) -> dict[str, Any]:
@@ -76,6 +241,7 @@ class SwesmithEnvClient(BaseEnvClient):
             json={"id": self.env_id, "data_idx": idx},
         )
         self.info = response
+        self._reset_policy_transition_state()
         return response
 
     def detail(self, *, private_token: str | None = None) -> dict[str, Any]:
@@ -89,11 +255,32 @@ class SwesmithEnvClient(BaseEnvClient):
     def finalize_horizon(self) -> StepOutput:
         response = self._request("POST", "horizon", json={"id": self.env_id})
         self.info = response
+        response_env_info = response.get("info", {})
         return StepOutput(
             state=str(response["observation"]),
             reward=float(response["reward"]),
             done=bool(response["done"]),
+            info=build_task_neutral_transition_info(
+                env_info=response_env_info,
+                action_submission={"control_action": "horizon"},
+                native_step_before=self._native_call_count,
+                native_step_after=self._native_call_count,
+                native_call_count_before=self._native_call_count,
+                native_call_count_after=self._native_call_count,
+                context_epoch_before=self._context_epoch,
+                context_epoch_after=self._context_epoch,
+                session_epoch_before=self._session_epoch,
+                session_epoch_after=self._session_epoch,
+                policy_step_before=self._policy_step_count,
+                policy_step_after=self._policy_step_count,
+                wrapper_evidence={"event": "horizon_finalization"},
+            ),
         )
+
+    def finalize_policy_horizon(self) -> StepOutput:
+        """Expose horizon grading through the task-neutral wrapper contract."""
+
+        return self.finalize_horizon()
 
     def close(self) -> dict[str, Any]:
         return self._request("POST", "close", json={"id": self.env_id})
@@ -116,6 +303,25 @@ class SwesmithEnvClient(BaseEnvClient):
                 f"SWE-smith {method} /{path} returned a non-object response"
             )
         return value
+
+
+def _copy_policy_messages(
+    messages: Sequence[Mapping[str, str]],
+) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for index, message in enumerate(messages):
+        if not isinstance(message, Mapping):
+            raise TypeError(f"policy message {index} must be a mapping")
+        role = message.get("role")
+        content = message.get("content")
+        if role not in {"system", "user", "assistant"}:
+            raise ValueError(f"policy message {index} has invalid role: {role!r}")
+        if not isinstance(content, str):
+            raise TypeError(f"policy message {index} content must be text")
+        normalized.append({"role": role, "content": content})
+    if not normalized:
+        raise ValueError("policy context must not be empty")
+    return normalized
 
 
 class SwesmithTask(BaseTask):

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import ast
+from copy import deepcopy
 import hashlib
 import json
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import requests
 
@@ -20,8 +21,19 @@ from agentenv.controller import (
 from agentenv.controller.types import (
     ActionFormat,
     ActionWithTought,
+    CONTEXT_OPERATION_APPEND,
+    CONTEXT_OPERATION_PRESERVE,
+    CONTEXT_OPERATION_REPLACE,
     ConversationMessage,
+    POLICY_CONTINUATION_MARKER,
+    PolicyContextPressure,
     StepOutput,
+    build_task_neutral_context_transition,
+    build_task_neutral_transition_info,
+)
+from .webshop_handoff import (
+    WEBSHOP_SESSION_HANDOFF_REQUEST,
+    parse_webshop_session_handoff,
 )
 
 AGENTMEMORY_FUNCTION_DESCRIPTION = [
@@ -231,6 +243,90 @@ FILESYSTEM_ASK_ACTION_RE = re.compile(
     flags=re.DOTALL,
 )
 FILESYSTEM_APPLY_PATCH_PREFIX = "apply_patch\n"
+
+
+def _optional_transition_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("transition counters must not be boolean")
+    return int(value)
+
+
+def _copy_policy_messages(
+    messages: Sequence[Mapping[str, str]],
+) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for index, message in enumerate(messages):
+        if not isinstance(message, Mapping):
+            raise TypeError(f"policy message {index} must be a mapping")
+        role = message.get("role")
+        content = message.get("content")
+        if role not in {"system", "user", "assistant"}:
+            raise ValueError(f"policy message {index} has invalid role: {role!r}")
+        if not isinstance(content, str):
+            raise TypeError(f"policy message {index} content must be text")
+        normalized.append({"role": role, "content": content})
+    if not normalized:
+        raise ValueError("policy context must not be empty")
+    return normalized
+
+
+def _reported_webshop_session(info: Mapping[str, Any], fallback: int) -> int:
+    value = info.get("current_subtask_index")
+    if value is None:
+        return fallback
+    if isinstance(value, bool):
+        raise ValueError("current_subtask_index must not be boolean")
+    result = int(value)
+    if result < 0:
+        raise ValueError("current_subtask_index must be non-negative")
+    return result
+
+
+def _validate_webshop_session_advance(
+    info: Mapping[str, Any],
+    *,
+    before: int,
+    after: int,
+    done: bool,
+) -> bool:
+    if after not in {before, before + 1}:
+        raise RuntimeError(
+            "WebShop session index must stay fixed or advance by exactly one"
+        )
+    tool_ops = info.get("tool_ops", ())
+    if not isinstance(tool_ops, Sequence) or isinstance(tool_ops, (str, bytes)):
+        raise RuntimeError("WebShop transition evidence must contain a tool_ops list")
+    advances = [
+        item
+        for item in tool_ops
+        if isinstance(item, Mapping) and item.get("session_advanced") is True
+    ]
+    advanced = after == before + 1
+    if advanced:
+        if len(advances) != 1:
+            raise RuntimeError(
+                "WebShop session advance requires exactly one authoritative BUY record"
+            )
+        buy = advances[0]
+        if (
+            str(buy.get("op", "")).upper() != "BUY"
+            or buy.get("committed") is not True
+            or buy.get("purchase_correct") is not True
+        ):
+            raise RuntimeError("WebShop session advance has invalid BUY evidence")
+        if not done and info.get("session_trace") != []:
+            raise RuntimeError(
+                "WebShop session advance must clear the native session trace"
+            )
+    elif advances:
+        raise RuntimeError(
+            "WebShop tool evidence claims a session advance without an index change"
+        )
+    return advanced
+
+
 FORMAL_SCHEMA_V3 = "agentmemory_formal_step_v3"
 WEBSHOP_V2_SURFACE = "memoryarena_webshop_native_v1"
 PROCEDURAL_WEBSHOP_SURFACE = (
@@ -2045,6 +2141,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
             "metadata": self.metadata,
         }
         self.last_action_submission: dict[str, str] | None = None
+        self._reset_policy_transition_state(created.get("info", {}))
         self.conversation_start = (
             build_v3_conversation_start(self.metadata)
             if self.is_v3
@@ -2059,6 +2156,66 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 self.memory_prompt_mode,
             )
         )
+
+    def _reset_policy_transition_state(self, env_info: Mapping[str, Any]) -> None:
+        self._policy_step_count = 0
+        self._native_call_count = 0
+        self._context_epoch = 0
+        self._session_epoch = _optional_transition_int(
+            env_info.get("current_subtask_index")
+        ) or 0
+        self._immutable_policy_context: list[dict[str, str]] | None = None
+        self._current_policy_context: list[dict[str, str]] | None = None
+        self._policy_context_bound = False
+        self._pending_session_handoff: dict[str, Any] | None = None
+        self._selected_policy_control: str | None = None
+
+    def bind_policy_context(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        initial: bool = False,
+    ) -> None:
+        normalized = _copy_policy_messages(messages)
+        if initial:
+            framing = list(normalized)
+            if (
+                framing
+                and framing[-1]["role"] == "user"
+                and framing[-1]["content"] == str(self.observe())
+            ):
+                framing.pop()
+            if not framing:
+                raise ValueError("AgentMemory policy framing must not be empty")
+            self._immutable_policy_context = framing
+            self._policy_context_bound = True
+        self._current_policy_context = normalized
+
+    def policy_turn_candidate(self) -> str | None:
+        if self._pending_session_handoff is None:
+            return None
+        return WEBSHOP_SESSION_HANDOFF_REQUEST
+
+    def prepare_policy_turn(
+        self, pressure: PolicyContextPressure | None
+    ) -> str | None:
+        self._selected_policy_control = None
+        if self._pending_session_handoff is None:
+            return None
+        if not self._policy_context_bound or self._current_policy_context is None:
+            raise RuntimeError(
+                "WebShop session handoff requires a bound policy context"
+            )
+        if pressure is None:
+            raise RuntimeError(
+                "WebShop session handoff requires task-neutral token pressure"
+            )
+        if pressure.candidate_prompt_tokens > pressure.effective_prompt_capacity:
+            raise RuntimeError(
+                "WebShop session handoff request exceeds the policy prompt capacity"
+            )
+        self._selected_policy_control = "webshop_session_handoff"
+        return WEBSHOP_SESSION_HANDOFF_REQUEST
 
     def __len__(self):
         return self.data_len
@@ -2081,6 +2238,23 @@ class AgentMemoryEnvClient(BaseEnvClient):
         return self.info["observation"]
 
     def step(self, action: str) -> StepOutput:
+        # A few offline adapters construct the client with ``__new__`` to
+        # exercise action parsing without opening an environment server.  Keep
+        # that legacy fixture contract compatible with the lifecycle state.
+        if not hasattr(self, "_policy_step_count"):
+            self._reset_policy_transition_state({})
+        if not hasattr(self, "is_filesystem"):
+            self.is_filesystem = False
+        if self._selected_policy_control == "webshop_session_handoff":
+            return self._complete_session_handoff(action)
+        if self._pending_session_handoff is not None:
+            raise RuntimeError(
+                "WebShop session handoff is pending; prepare the wrapper control "
+                "turn before submitting another native action"
+            )
+        return self._step_native_policy_action(action)
+
+    def _step_native_policy_action(self, action: str) -> StepOutput:
         raw_policy_output = action
         parser_status = "server_native_v3"
         if action.endswith("</s>"):
@@ -2103,7 +2277,13 @@ class AgentMemoryEnvClient(BaseEnvClient):
             if not isinstance(parsed_action, str) or not parsed_action.strip():
                 parsed_action = action
                 parser_status = "raw_fallback"
+        native_before = self._native_call_count
+        policy_before = self._policy_step_count
+        context_before = self._context_epoch
+        session_before = self._session_epoch
         response = self.post("step", {"action": parsed_action})
+        self._native_call_count += 1
+        self._policy_step_count += 1
         self.last_action_submission = {
             "raw_policy_output": raw_policy_output,
             "submitted_action": parsed_action,
@@ -2116,11 +2296,139 @@ class AgentMemoryEnvClient(BaseEnvClient):
             "env_info": response.get("info", {}),
             "metadata": self.metadata,
         }
+        response_env_info = response.get("info", {})
+        if not isinstance(response_env_info, Mapping):
+            response_env_info = {}
+        session_after = session_before
+        session_advanced = False
+        if self.is_filesystem:
+            session_after = _reported_webshop_session(
+                response_env_info, session_before
+            )
+            session_advanced = _validate_webshop_session_advance(
+                response_env_info,
+                before=session_before,
+                after=session_after,
+                done=bool(response["done"]),
+            )
+        self._session_epoch = session_after
+
+        context_transition = build_task_neutral_context_transition(
+            CONTEXT_OPERATION_APPEND
+        )
+        if self._policy_context_bound and not bool(response["done"]):
+            if self.is_filesystem and session_advanced:
+                self._pending_session_handoff = {
+                    "fresh_observation": str(response["observation"]),
+                    "session_before": session_before,
+                    "session_after": session_after,
+                    "native_call_count": self._native_call_count,
+                }
+                context_transition = build_task_neutral_context_transition(
+                    CONTEXT_OPERATION_PRESERVE
+                )
         return StepOutput(
             state=response["observation"],
             reward=response["reward"],
             done=response["done"],
+            info=build_task_neutral_transition_info(
+                env_info=response_env_info,
+                action_submission=self.last_action_submission,
+                native_step_before=native_before,
+                native_step_after=self._native_call_count,
+                native_call_count_before=native_before,
+                native_call_count_after=self._native_call_count,
+                context_epoch_before=context_before,
+                context_epoch_after=self._context_epoch,
+                session_epoch_before=session_before,
+                session_epoch_after=self._session_epoch,
+                policy_step_before=policy_before,
+                policy_step_after=self._policy_step_count,
+                context_transition=context_transition,
+                wrapper_evidence={
+                    "event": "native_action",
+                    "session_advanced": session_advanced,
+                },
+            ),
         )
+
+    def _complete_session_handoff(self, action: str) -> StepOutput:
+        pending = self._pending_session_handoff
+        if pending is None:
+            raise RuntimeError("WebShop session handoff was selected without a boundary")
+        if self._immutable_policy_context is None:
+            raise RuntimeError("WebShop session handoff lost its immutable framing")
+        native_before = self._native_call_count
+        policy_before = self._policy_step_count
+        context_before = self._context_epoch
+        session_before = self._session_epoch
+        parse = parse_webshop_session_handoff(action)
+        locator = parse["forwarded_content"]
+        replacement = self._fresh_policy_context(
+            str(pending["fresh_observation"]),
+            locator=locator,
+        )
+        self._policy_step_count += 1
+        self._context_epoch += 1
+        self.last_action_submission = {
+            "raw_policy_output": action,
+            "submitted_action": None,
+            "parser_status": "webshop_session_handoff",
+        }
+        self._pending_session_handoff = None
+        self._selected_policy_control = None
+        context_transition = build_task_neutral_context_transition(
+            CONTEXT_OPERATION_REPLACE,
+            messages=replacement,
+        )
+        return StepOutput(
+            state=str(pending["fresh_observation"]),
+            reward=0.0,
+            done=False,
+            info=build_task_neutral_transition_info(
+                env_info=self.info.get("env_info", {}),
+                action_submission=self.last_action_submission,
+                native_step_before=native_before,
+                native_step_after=self._native_call_count,
+                native_call_count_before=native_before,
+                native_call_count_after=self._native_call_count,
+                context_epoch_before=context_before,
+                context_epoch_after=self._context_epoch,
+                session_epoch_before=session_before,
+                session_epoch_after=self._session_epoch,
+                policy_step_before=policy_before,
+                policy_step_after=self._policy_step_count,
+                context_transition=context_transition,
+                wrapper_evidence={
+                    "event": "webshop_session_handoff",
+                    "session_before": pending["session_before"],
+                    "session_after": pending["session_after"],
+                    "native_call_count": pending["native_call_count"],
+                    "raw_history_cleared": True,
+                    "handoff_parse": parse,
+                },
+            ),
+        )
+
+    def _fresh_policy_context(
+        self,
+        observation: str,
+        *,
+        locator: str | None,
+    ) -> list[dict[str, str]]:
+        framing = self._immutable_policy_context
+        if framing is None:
+            raise RuntimeError("AgentMemory policy context was not initialized")
+        messages = deepcopy(framing)
+        messages.append({"role": "user", "content": str(observation)})
+        if locator is not None:
+            messages.extend(
+                [
+                    {"role": "assistant", "content": str(locator)},
+                    {"role": "user", "content": POLICY_CONTINUATION_MARKER},
+                ]
+            )
+        return messages
 
     @property
     def sample_excluded(self) -> bool:
@@ -2136,6 +2444,10 @@ class AgentMemoryEnvClient(BaseEnvClient):
             "env_info": response.get("info", {}),
             "metadata": self.metadata,
         }
+        response_env_info = response.get("info", {})
+        if not isinstance(response_env_info, Mapping):
+            response_env_info = {}
+        self._reset_policy_transition_state(response_env_info)
         return response
 
     def close(self):

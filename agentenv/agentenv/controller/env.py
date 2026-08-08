@@ -1,6 +1,12 @@
 from abc import ABCMeta, abstractmethod
+from typing import Mapping, Sequence
 
-from .types import ActionFormat, ConversationMessage, StepOutput
+from .types import (
+    ActionFormat,
+    ConversationMessage,
+    PolicyContextPressure,
+    StepOutput,
+)
 
 
 class BaseEnvClient(metaclass=ABCMeta):
@@ -32,3 +38,40 @@ class BaseEnvClient(metaclass=ABCMeta):
         """
         Reset the environment.
         """
+
+    def policy_turn_candidate(self) -> str | None:
+        """Return a wrapper-owned control request that the runner may measure."""
+
+        return None
+
+    def bind_policy_context(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        initial: bool = False,
+    ) -> None:
+        """Expose the current policy context to a wrapper state machine.
+
+        ``initial=True`` binds the immutable task framing once per reset. Later
+        calls expose the exact current prompt without changing that framing.
+        """
+
+        del messages, initial
+
+    def prepare_policy_turn(
+        self, pressure: PolicyContextPressure | None
+    ) -> str | None:
+        """Choose whether the next policy row uses the measured control request."""
+
+        del pressure
+        return None
+
+    def finalize_policy_horizon(self) -> StepOutput | None:
+        """Optionally grade a workspace when the shared policy budget expires.
+
+        The method is a wrapper-owned lifecycle hook.  It does not consume a
+        sampled policy row; the shared runner only applies the returned reward
+        and receipt to the final row already sampled at the horizon.
+        """
+
+        return None
