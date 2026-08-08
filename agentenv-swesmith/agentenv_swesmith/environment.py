@@ -529,11 +529,21 @@ def _initial_observation(problem_statement: str) -> str:
         "as a strict machine protocol: the first character of your response must belong "
         "to the tool call, with no explanation, label, or code fence before or after it.\n\n"
         "Available tool actions:\n"
-        'shell_command {"command":"...","workdir":".","timeout_ms":120000}\n'
-        "apply_patch\n*** Begin Patch\n...\n*** End Patch\n"
+        "Exact shell example (replace the command; do not copy it literally):\n"
+        'shell_command {"command":"sed -n \'1,200p\' path/to/file.py",'
+        '"workdir":".","timeout_ms":120000}\n'
+        "Exact patch shape (replace the path and lines):\n"
+        "apply_patch\n"
+        "*** Begin Patch\n"
+        "*** Update File: path/to/file.py\n"
+        "@@\n"
+        "-old line\n"
+        "+new line\n"
+        "*** End Patch\n"
         "Use . (or /testbed) as the repository root. A response beginning any other "
         "way is a final submission and immediately grades the current workspace. Only "
-        "submit plain text after you have inspected, edited, and tested the fix.\n\n"
+        "submit plain text after you have inspected git diff and run the relevant "
+        "tests. If you still need a tool, invoke it without describing it.\n\n"
         "Issue:\n"
         + problem_statement.strip()
         + "\n\nAction reminder: for a tool turn, output only one exact shell_command JSON "
@@ -544,7 +554,12 @@ def _initial_observation(problem_statement: str) -> str:
 def _parser_error_observation(action: ParsedPolicyAction) -> str:
     return (
         f"Invalid action syntax: {action.error}. Use exactly one canonical "
-        "shell_command JSON call, one complete apply_patch payload, or a normal final response."
+        "shell_command JSON call, one complete apply_patch payload, or a normal final "
+        "response. Exact shell shape: "
+        'shell_command {"command":"pwd","workdir":".","timeout_ms":120000}. '
+        "Exact patch headers: apply_patch, then *** Begin Patch, *** Update File: "
+        "relative/path.py, @@, changed lines, and *** End Patch on separate lines. "
+        "Do not include analysis, Markdown fences, or a wrapper around the action."
     )
 
 

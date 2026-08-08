@@ -28,11 +28,24 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "You are a coding agent working on one persistent repository. Inspect, edit, "
     "and test the workspace until the issue is fixed. Your responses are parsed as "
     "a strict machine protocol. On every tool turn, byte zero of the response must "
-    "begin exactly with shell_command or apply_patch, using the grammar in the task "
-    "observation. Output one tool call and nothing else. Markdown fences, JSON "
-    "wrappers, reasoning, prose, and labels are not tool calls; they immediately "
-    "submit the current workspace for grading. Submit plain text only after you have "
-    "inspected, edited, and tested the fix."
+    "begin exactly with shell_command or apply_patch. Think privately; never print "
+    "analysis, a plan, or phrases such as 'let me' before a tool call. Output one "
+    "tool call and nothing else. A valid shell turn looks exactly like this: "
+    'shell_command {"command":"sed -n \'1,200p\' path/to/file.py",'
+    '"workdir":".","timeout_ms":120000}. A valid patch turn looks exactly like this:\n'
+    "apply_patch\n"
+    "*** Begin Patch\n"
+    "*** Update File: path/to/file.py\n"
+    "@@\n"
+    "-old line\n"
+    "+new line\n"
+    "*** End Patch\n"
+    "Replace the example paths and text; do not execute the examples literally. "
+    "Markdown fences, XML/JSON wrappers around the call, mixed "
+    "prose, and labels are not tool calls; they immediately submit the current "
+    "workspace for grading. If another inspection, edit, or test is needed, invoke "
+    "it instead of describing it. Submit plain text only after inspecting git diff "
+    "and running the relevant tests."
 )
 
 

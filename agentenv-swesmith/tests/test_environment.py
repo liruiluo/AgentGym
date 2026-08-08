@@ -251,6 +251,12 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("Fix the public value", reset.observation)
         self.assertIn("Do not prepend reasoning or prose", reset.observation)
         self.assertIn("Use . (or /testbed) as the repository root", reset.observation)
+        self.assertIn(
+            'shell_command {"command":"sed -n \'1,200p\' path/to/file.py",'
+            '"workdir":".","timeout_ms":120000}',
+            reset.observation,
+        )
+        self.assertIn("*** Update File: path/to/file.py", reset.observation)
         self.assertNotIn("SECRET_GOLD_PATCH", reset.observation)
         self.assertNotIn(self.instance_id, reset.observation)
 
@@ -322,6 +328,21 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertEqual(audits[0].stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.audits.stat().st_mode & 0o777, 0o700)
         self.assertEqual(list(self.audits.glob(".*.tmp")), [])
+
+    def test_parser_error_repeats_exact_action_shapes(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+
+        result = self.manager.step(slot, "shell_command pwd")
+
+        self.assertFalse(result.done)
+        self.assertIn(
+            'shell_command {"command":"pwd","workdir":".","timeout_ms":120000}',
+            result.observation,
+        )
+        self.assertIn("*** Update File: relative/path.py", result.observation)
+        self.assertIn("Do not include analysis", result.observation)
+        self.manager.close(slot)
 
     def test_reset_replaces_previous_episode_with_pristine_workspace(self) -> None:
         slot = self.manager.create()
