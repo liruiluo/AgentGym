@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+import os
+import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from agentenv_swesmith.workspace import (
     SwesmithWorkspaceError,
@@ -110,6 +114,59 @@ class SwesmithWorkspaceTests(unittest.TestCase):
                         test_paths=test_paths,
                     )
                 self.assertEqual(list(self.episodes.iterdir()), [])
+
+    def test_materializer_scopes_every_git_call_to_the_exact_mirror(self) -> None:
+        real_git = shutil.which("git")
+        self.assertIsNotNone(real_git)
+        shim_dir = self.root / "git-shim"
+        shim_dir.mkdir()
+        audit_path = self.root / "git-invocations.jsonl"
+        shim = shim_dir / "git"
+        shim.write_text(
+            """#!/usr/bin/env python3
+import json
+import os
+import sys
+
+with open(os.environ["SWESMITH_GIT_AUDIT"], "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(sys.argv[1:]) + "\\n")
+real_git = os.environ["SWESMITH_REAL_GIT"]
+os.execv(real_git, [real_git, *sys.argv[1:]])
+""",
+            encoding="utf-8",
+        )
+        shim.chmod(0o755)
+
+        environment = {
+            "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+            "SWESMITH_GIT_AUDIT": str(audit_path),
+            "SWESMITH_REAL_GIT": str(real_git),
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "safe.directory",
+            "GIT_CONFIG_VALUE_0": str(self.root / "unrelated-repository"),
+        }
+        with mock.patch.dict(os.environ, environment):
+            workspace = self.materializer.materialize(
+                self.instance,
+                test_paths=["tests/test_fix.py", "tests/test_keep.py"],
+            )
+        self.materializer.close(workspace)
+
+        invocations = [
+            json.loads(line)
+            for line in audit_path.read_text(encoding="utf-8").splitlines()
+        ]
+        expected_prefix = [
+            "-c",
+            f"safe.directory={self.mirror.resolve()}",
+            "-C",
+            str(self.mirror.resolve()),
+        ]
+        self.assertGreaterEqual(len(invocations), 8)
+        self.assertTrue(
+            all(arguments[:4] == expected_prefix for arguments in invocations),
+            invocations,
+        )
 
 
 if __name__ == "__main__":

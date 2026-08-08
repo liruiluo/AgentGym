@@ -184,7 +184,10 @@ def _resolve_instance_commit(mirror_root: Path, instance_id: str) -> str:
     found: list[str] = []
     for candidate in candidates:
         completed = subprocess.run(
-            ["git", "-C", str(mirror_root), "rev-parse", "--verify", f"{candidate}^{{commit}}"],
+            _git_command(
+                mirror_root,
+                ["rev-parse", "--verify", f"{candidate}^{{commit}}"],
+            ),
             capture_output=True,
             text=True,
         )
@@ -203,7 +206,7 @@ def _resolve_instance_commit(mirror_root: Path, instance_id: str) -> str:
 
 def _export_git_tree(mirror_root: Path, commit: str, destination: Path) -> None:
     process = subprocess.Popen(
-        ["git", "-C", str(mirror_root), "archive", "--format=tar", commit],
+        _git_command(mirror_root, ["archive", "--format=tar", commit]),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
@@ -370,9 +373,21 @@ def _git_text(root: Path, arguments: Sequence[str], *, label: str) -> str:
     return _git_bytes(root, arguments, label=label).decode("utf-8").strip()
 
 
+def _git_command(root: Path, arguments: Sequence[str]) -> list[str]:
+    resolved_root = root.resolve(strict=True)
+    return [
+        "git",
+        "-c",
+        f"safe.directory={resolved_root}",
+        "-C",
+        str(resolved_root),
+        *arguments,
+    ]
+
+
 def _git_bytes(root: Path, arguments: Sequence[str], *, label: str) -> bytes:
     completed = subprocess.run(
-        ["git", "-C", str(root), *arguments],
+        _git_command(root, arguments),
         capture_output=True,
     )
     if completed.returncode != 0:
