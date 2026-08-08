@@ -525,12 +525,19 @@ def _utc_now() -> str:
 def _initial_observation(problem_statement: str) -> str:
     return (
         "Repair the repository in /testbed for this issue. The same workspace persists "
-        "for the whole episode. Use exactly one action per turn.\n\n"
-        "Available actions:\n"
+        "for the whole episode. Use exactly one action per turn. Tool turns are parsed "
+        "as a strict machine protocol: the first character of your response must belong "
+        "to the tool call, with no explanation, label, or code fence before or after it.\n\n"
+        "Available tool actions:\n"
         'shell_command {"command":"...","workdir":".","timeout_ms":120000}\n'
         "apply_patch\n*** Begin Patch\n...\n*** End Patch\n"
-        "A normal text response submits the current workspace for hidden grading.\n\n"
-        "Issue:\n" + problem_statement.strip()
+        "Use . (or /testbed) as the repository root. A response beginning any other "
+        "way is a final submission and immediately grades the current workspace. Only "
+        "submit plain text after you have inspected, edited, and tested the fix.\n\n"
+        "Issue:\n"
+        + problem_statement.strip()
+        + "\n\nAction reminder: for a tool turn, output only one exact shell_command JSON "
+        "call or one complete apply_patch payload. Do not prepend reasoning or prose."
     )
 
 

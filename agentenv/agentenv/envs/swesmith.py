@@ -35,7 +35,10 @@ class SwesmithEnvClient(BaseEnvClient):
                     "You are a coding agent working on one persistent repository. "
                     "Inspect, edit, and test the workspace until the issue is fixed. "
                     "Use the exact shell_command or apply_patch grammar shown in the "
-                    "task observation. A normal text response submits the workspace."
+                    "task observation. On a tool turn, output only that tool call: do "
+                    "not place reasoning, prose, labels, or code fences before or after "
+                    "it. Any response that does not begin with an exact tool prefix is "
+                    "a final submission and immediately grades the workspace."
                 ),
             }
         ),

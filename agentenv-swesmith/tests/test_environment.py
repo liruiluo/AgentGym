@@ -249,6 +249,8 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         reset = self.manager.reset(slot, 0)
         self.assertEqual(self.manager.metadata()["active_environment_count"], 1)
         self.assertIn("Fix the public value", reset.observation)
+        self.assertIn("Do not prepend reasoning or prose", reset.observation)
+        self.assertIn("Use . (or /testbed) as the repository root", reset.observation)
         self.assertNotIn("SECRET_GOLD_PATCH", reset.observation)
         self.assertNotIn(self.instance_id, reset.observation)
 

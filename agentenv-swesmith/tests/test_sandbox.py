@@ -330,9 +330,22 @@ class WorkdirTests(unittest.TestCase):
     def test_accepts_root_and_normalized_relative_paths(self) -> None:
         self.assertEqual(_normalize_workdir("."), ".")
         self.assertEqual(_normalize_workdir("src/pkg"), "src/pkg")
+        self.assertEqual(_normalize_workdir("/testbed"), ".")
+        self.assertEqual(_normalize_workdir("/testbed/src/pkg"), "src/pkg")
 
     def test_rejects_absolute_parent_and_noncanonical_paths(self) -> None:
-        for value in ("", "/tmp", "../src", "src/../pkg", "./src", "src//pkg"):
+        for value in (
+            "",
+            "/tmp",
+            "/testbed2",
+            "/testbed/../tmp",
+            "/testbed/./src",
+            "/testbed/src//pkg",
+            "../src",
+            "src/../pkg",
+            "./src",
+            "src//pkg",
+        ):
             with self.subTest(value=value), self.assertRaises(SwesmithSandboxError):
                 _normalize_workdir(value)
 

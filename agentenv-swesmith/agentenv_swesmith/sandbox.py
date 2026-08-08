@@ -855,16 +855,17 @@ def _require_workspace_root(path: Path) -> Path:
 def _normalize_workdir(raw: str) -> str:
     if not isinstance(raw, str) or not raw or "\x00" in raw:
         raise SwesmithSandboxError("shell_command workdir must be non-empty text")
-    if raw == ".":
-        return raw
-    path = PurePosixPath(raw)
+    if raw in {".", "/testbed"}:
+        return "."
+    relative = raw.removeprefix("/testbed/") if raw.startswith("/testbed/") else raw
+    path = PurePosixPath(relative)
     if (
         path.is_absolute()
-        or str(path) != raw
+        or str(path) != relative
         or any(part in {"", ".", ".."} for part in path.parts)
     ):
         raise SwesmithSandboxError(
-            "shell_command workdir must be a normalized workspace-relative path"
+            "shell_command workdir must be . or a normalized path inside /testbed"
         )
     return str(path)
 
