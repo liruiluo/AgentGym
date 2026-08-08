@@ -2010,6 +2010,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self.contract_id = self.metadata.get("contract_id")
         self.contract_sha256 = self.metadata.get("contract_sha256")
         self.system_prompt_sha256 = self.metadata.get("system_prompt_sha256")
+        self._policy_system_prompt: str | None = None
         self.memory_prompt_mode: str | None = None
         self.is_v3 = self.formal_schema_version == FORMAL_SCHEMA_V3
         self.is_procedural = self.surface in PROGRAMMATIC_WEBSHOP_SURFACES
@@ -2157,6 +2158,52 @@ class AgentMemoryEnvClient(BaseEnvClient):
             )
         )
 
+    def configure_policy_system_prompt(self, prompt: str) -> None:
+        """Bind the exact formal prompt resolved by the training adapter."""
+
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("AgentMemory policy system prompt must not be empty")
+        normalized = prompt.strip()
+        server_prompt = getattr(self, "system_prompt", None)
+        if self.is_v3 and isinstance(server_prompt, str):
+            if normalized != server_prompt.strip():
+                raise ValueError(
+                    "AgentMemory v3 policy prompt differs from server metadata"
+                )
+        expected_sha256 = getattr(self, "system_prompt_sha256", None)
+        if isinstance(expected_sha256, str):
+            observed = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+            if observed != expected_sha256:
+                raise ValueError(
+                    "AgentMemory policy prompt SHA-256 differs from server metadata"
+                )
+        self._policy_system_prompt = normalized
+
+    def policy_framing(self) -> list[dict[str, str]]:
+        if self._policy_system_prompt is None:
+            raise RuntimeError(
+                "AgentMemory formal policy system prompt was not configured"
+            )
+        return [{"role": "system", "content": self._policy_system_prompt}]
+
+    def normalize_initial_policy_context(
+        self,
+        messages: Sequence[Mapping[str, str]],
+    ) -> list[dict[str, str]]:
+        normalized = _copy_policy_messages(messages)
+        if not normalized or normalized[-1]["role"] != "user":
+            raise ValueError(
+                "AgentMemory initial policy context must end with an observation"
+            )
+        observation = str(self.observe())
+        if normalized[-1]["content"] != observation:
+            raise ValueError(
+                "AgentMemory initial policy context does not end with the current observation"
+            )
+        return self.policy_framing() + [
+            {"role": "user", "content": observation}
+        ]
+
     def _reset_policy_transition_state(self, env_info: Mapping[str, Any]) -> None:
         self._policy_step_count = 0
         self._native_call_count = 0
@@ -2187,6 +2234,10 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 framing.pop()
             if not framing:
                 raise ValueError("AgentMemory policy framing must not be empty")
+            if framing != self.policy_framing():
+                raise ValueError(
+                    "AgentMemory initial policy framing differs from the formal prompt"
+                )
             self._immutable_policy_context = framing
             self._policy_context_bound = True
         self._current_policy_context = normalized
@@ -2327,6 +2378,14 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 context_transition = build_task_neutral_context_transition(
                     CONTEXT_OPERATION_PRESERVE
                 )
+            else:
+                context_transition = build_task_neutral_context_transition(
+                    CONTEXT_OPERATION_REPLACE,
+                    messages=self._fresh_policy_context(
+                        str(response["observation"]),
+                        locator=None,
+                    ),
+                )
         return StepOutput(
             state=response["observation"],
             reward=response["reward"],
@@ -2356,6 +2415,11 @@ class AgentMemoryEnvClient(BaseEnvClient):
                     "context_epoch_after": self._context_epoch,
                     "session_epoch_before": session_before,
                     "session_epoch_after": self._session_epoch,
+                    "successor_context_policy": self.rollout_context_policy,
+                    "raw_history_cleared": (
+                        context_transition["operation"]
+                        == CONTEXT_OPERATION_REPLACE
+                    ),
                 },
             ),
         )

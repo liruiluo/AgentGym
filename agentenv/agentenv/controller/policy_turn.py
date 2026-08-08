@@ -29,7 +29,8 @@ def bind_initial_policy_context(
     client: BaseEnvClient,
     messages: Sequence[Mapping[str, str]],
 ) -> list[PolicyMessage]:
-    normalized = _normalize_messages(messages)
+    prepared = client.normalize_initial_policy_context(deepcopy(list(messages)))
+    normalized = _normalize_messages(prepared)
     client.bind_policy_context(deepcopy(normalized), initial=True)
     return normalized
 

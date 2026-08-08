@@ -44,6 +44,24 @@ class BaseEnvClient(metaclass=ABCMeta):
 
         return None
 
+    def policy_framing(self) -> Sequence[Mapping[str, str]] | None:
+        """Return wrapper-owned immutable policy framing when one is configured.
+
+        Most environments keep using the dataset conversation start. Wrappers
+        with a formal runtime prompt can expose it here so dataset bootstrap and
+        online rollout bind the same framing.
+        """
+
+        return None
+
+    def normalize_initial_policy_context(
+        self,
+        messages: Sequence[Mapping[str, str]],
+    ) -> Sequence[Mapping[str, str]]:
+        """Normalize the first online context before it is bound to the wrapper."""
+
+        return messages
+
     def bind_policy_context(
         self,
         messages: Sequence[Mapping[str, str]],
