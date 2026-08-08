@@ -554,7 +554,8 @@ class PersistentWorkspace:
             [
                 "Persistent workspace tools:",
                 "The private workspace persists across shopping sessions in this episode.",
-                'shell_command {"command":"rg -n pattern .","workdir":".","timeout_ms":10000}',
+                'Canonical shell form: shell_command {"command":"rg -n pattern .","workdir":".","timeout_ms":10000}',
+                "The literal shell_command prefix and one separating space are required; a bare JSON object, markdown code fence, or explanation is invalid.",
                 "apply_patch followed on the next line by one *** Begin Patch ... *** End Patch patch.",
                 "shell_command runs in a networkless, resource-bounded workspace sandbox.",
                 "apply_patch supports Add File, Update File, Delete File, and Move to.",

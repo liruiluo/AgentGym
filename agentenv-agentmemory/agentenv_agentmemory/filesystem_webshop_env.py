@@ -140,7 +140,15 @@ class PersistentWorkspaceWebShopEnv(MemoryArenaWebShopEnv):
                     else dict(workspace_action.arguments)
                 ),
             )
-        parsed = parse_mixed_action(action)
+        try:
+            parsed = parse_mixed_action(action)
+        except InvalidNativeAction as exc:
+            raise InvalidNativeAction(
+                "Expected one native search[...] / click[...] action, or one canonical "
+                "workspace action: shell_command {JSON} with the literal prefix and one "
+                "space, or apply_patch followed by a newline patch. Bare JSON, markdown "
+                "code fences, and explanations are invalid."
+            ) from exc
         if parsed.payload is not None:
             raise InvalidNativeAction(
                 "This filesystem-v2 surface does not expose ADD, RETRIEVE, or other memory-specific tools."

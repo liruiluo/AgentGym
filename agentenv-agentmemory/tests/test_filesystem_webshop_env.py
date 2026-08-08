@@ -174,6 +174,17 @@ class PersistentWorkspaceWebShopEnvTests(unittest.TestCase):
         self.assertEqual(info["workspace_snapshot"]["file_count"], 0)
         self.assertEqual(info["workspace_audit_event_count"], 0)
 
+    def test_bare_json_gets_workspace_specific_format_feedback(self) -> None:
+        observation, reward, done, _, info = self.env.step(
+            '{"command":"pwd","workdir":".","timeout_ms":10000}'
+        )
+        self.assertEqual(reward, INVALID_ACTION_PENALTY)
+        self.assertFalse(done)
+        self.assertIn("canonical workspace action", observation)
+        self.assertIn("shell_command {JSON}", observation)
+        self.assertIn("bare JSON", observation)
+        self.assertEqual(info["workspace_audit_event_count"], 0)
+
     def test_reset_replaces_workspace_and_removes_prior_episode(self) -> None:
         self.env.step(
             "apply_patch\n*** Begin Patch\n*** Add File: notes.md\n+old episode\n*** End Patch"

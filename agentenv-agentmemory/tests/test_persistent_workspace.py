@@ -58,6 +58,8 @@ class PersistentWorkspaceTests(unittest.TestCase):
         )
         rendered = self.workspace.render_contract()
         self.assertIn('shell_command {"command":', rendered)
+        self.assertIn("literal shell_command prefix", rendered)
+        self.assertIn("bare JSON object", rendered)
         self.assertIn("apply_patch", rendered)
         for stale in ("Read {", "Write {", "Edit {", "Grep {", "Glob {"):
             self.assertNotIn(stale, rendered)
