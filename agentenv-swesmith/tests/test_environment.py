@@ -257,6 +257,10 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             reset.observation,
         )
         self.assertIn("*** Update File: path/to/file.py", reset.observation)
+        self.assertIn("use a relative path, never /testbed/", reset.observation)
+        self.assertIn("shell_command may also edit files", reset.observation)
+        self.assertIn("workspace intentionally has no .git directory", reset.observation)
+        self.assertIn("If no path changed, edit the workspace", reset.observation)
         self.assertNotIn("SECRET_GOLD_PATCH", reset.observation)
         self.assertNotIn(self.instance_id, reset.observation)
 
@@ -341,6 +345,8 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             result.observation,
         )
         self.assertIn("*** Update File: relative/path.py", result.observation)
+        self.assertIn("unchanged lines start with one space", result.observation)
+        self.assertIn("You may instead edit with one canonical shell_command", result.observation)
         self.assertIn("Do not include analysis", result.observation)
         self.manager.close(slot)
 

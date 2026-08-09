@@ -540,10 +540,20 @@ def _initial_observation(problem_statement: str) -> str:
         "-old line\n"
         "+new line\n"
         "*** End Patch\n"
+        "For apply_patch, use a relative path, never /testbed/...; prefix every "
+        "unchanged hunk line with one literal space, every deleted line with -, and "
+        "every added line with +. Never include source line numbers or -- separators. "
+        "Prefer one minimal exact replacement hunk. shell_command may also edit files.\n"
+        "Exact shell edit example (replace the path and text):\n"
+        'shell_command {"command":"sed -i \'s/old/new/\' relative/path.py",'
+        '"workdir":"/testbed","timeout_ms":120000}\n'
         "Use . (or /testbed) as the repository root. A response beginning any other "
         "way is a final submission and immediately grades the current workspace. Only "
-        "submit plain text after you have inspected git diff and run the relevant "
-        "tests. If you still need a tool, invoke it without describing it.\n\n"
+        "submit plain text after an edit succeeded and the relevant tests ran. This "
+        "workspace intentionally has no .git directory; an apply_patch succeeded "
+        "observation or a shell observation listing workspace changed paths confirms "
+        "an edit. If no path changed, edit the workspace instead of describing the "
+        "diagnosis. If you still need a tool, invoke it without describing it.\n\n"
         "Issue:\n"
         + problem_statement.strip()
         + "\n\nAction reminder: for a tool turn, output only one exact shell_command JSON "
@@ -559,6 +569,9 @@ def _parser_error_observation(action: ParsedPolicyAction) -> str:
         'shell_command {"command":"pwd","workdir":".","timeout_ms":120000}. '
         "Exact patch headers: apply_patch, then *** Begin Patch, *** Update File: "
         "relative/path.py, @@, changed lines, and *** End Patch on separate lines. "
+        "The patch path must be relative; unchanged lines start with one space, "
+        "deleted lines with -, and added lines with +. Do not include line numbers "
+        "or -- separators. You may instead edit with one canonical shell_command. "
         "Do not include analysis, Markdown fences, or a wrapper around the action."
     )
 

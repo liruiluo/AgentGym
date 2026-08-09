@@ -40,12 +40,22 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "-old line\n"
     "+new line\n"
     "*** End Patch\n"
+    "For apply_patch, use a relative path, never /testbed/...; prefix every "
+    "unchanged hunk line with one literal space, every deleted line with -, and "
+    "every added line with +. Never include source line numbers or -- separators. "
+    "Prefer one minimal exact replacement hunk. shell_command may also edit files. "
+    "For example, a valid shell edit is: "
+    'shell_command {"command":"sed -i \'s/old/new/\' relative/path.py",'
+    '"workdir":"/testbed","timeout_ms":120000}. '
     "Replace the example paths and text; do not execute the examples literally. "
     "Markdown fences, XML/JSON wrappers around the call, mixed "
     "prose, and labels are not tool calls; they immediately submit the current "
     "workspace for grading. If another inspection, edit, or test is needed, invoke "
-    "it instead of describing it. Submit plain text only after inspecting git diff "
-    "and running the relevant tests."
+    "it instead of describing it. This workspace intentionally has no .git directory. "
+    "An apply_patch succeeded observation or a shell observation listing workspace "
+    "changed paths confirms an edit. Never submit plain text until at least one edit "
+    "has succeeded and the relevant tests have run. If you diagnosed the bug but no "
+    "path changed, edit the workspace instead of explaining the diagnosis."
 )
 
 
