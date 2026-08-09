@@ -549,9 +549,11 @@ def _initial_observation(problem_statement: str) -> str:
         "Exact shell edit example (replace the path and text):\n"
         'shell_command {"command":"sed -i \'s/old/new/\' relative/path.py",'
         '"workdir":"/testbed","timeout_ms":120000}\n'
-        "Use . (or /testbed) as the repository root. A response beginning any other "
-        "way is a final submission and immediately grades the current workspace. Only "
-        "submit plain text after an edit succeeded and the relevant tests ran. This "
+        "Use . (or /testbed) as the repository root. Plain prose without an embedded "
+        "tool payload is a final submission and immediately grades the current workspace. "
+        "Mixed prose around a tool payload is a parser error: nothing is executed, no "
+        "reward is given, and the turn is consumed. Only submit plain text after an edit "
+        "succeeded and the relevant tests ran. This "
         "workspace intentionally has no .git directory; an apply_patch succeeded "
         "observation or a shell observation listing workspace changed paths confirms "
         "an edit. If no path changed, edit the workspace instead of describing the "
@@ -562,7 +564,8 @@ def _initial_observation(problem_statement: str) -> str:
         "call or one complete apply_patch payload. Do not prepend reasoning or prose. "
         "When you think 'I found the bug', 'I see the issue', or 'let me fix this', "
         "keep that thought private: delete those words and make the response begin at "
-        "byte zero with apply_patch or shell_command."
+        "byte zero with apply_patch or shell_command. A mixed tool attempt will be "
+        "rejected with non-terminal parser feedback, never executed as a tool."
     )
 
 

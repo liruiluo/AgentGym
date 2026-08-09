@@ -254,6 +254,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn('"./" is invalid', reset.observation)
         self.assertIn("delete those words", reset.observation)
         self.assertIn("begin at byte zero with apply_patch", reset.observation)
+        self.assertIn("Mixed prose around a tool payload is a parser error", reset.observation)
         self.assertIn(
             'shell_command {"command":"sed -n \'1,200p\' path/to/file.py",'
             '"workdir":".","timeout_ms":120000}',
@@ -351,6 +352,24 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("unchanged lines start with one space", result.observation)
         self.assertIn("You may instead edit with one canonical shell_command", result.observation)
         self.assertIn("Do not include analysis", result.observation)
+        self.manager.close(slot)
+
+    def test_embedded_tool_payload_does_not_submit_or_execute(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+
+        result = self.manager.step(
+            slot,
+            "I found the bug. Let me fix it.\n\n"
+            'shell_command {"command":"printf changed > notes.txt"}',
+        )
+
+        self.assertFalse(result.done)
+        self.assertEqual(result.info["action_kind"], "parser_error")
+        self.assertIn("Invalid action syntax", result.observation)
+        self.assertEqual(self.grader.calls, 0)
+        detail = self.manager.detail(slot)
+        self.assertFalse(Path(detail["workspace"]["policy_root"], "notes.txt").exists())
         self.manager.close(slot)
 
     def test_reset_replaces_previous_episode_with_pristine_workspace(self) -> None:

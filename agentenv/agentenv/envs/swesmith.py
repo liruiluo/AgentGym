@@ -50,9 +50,10 @@ SWE_POLICY_SYSTEM_PROMPT = (
     'shell_command {"command":"sed -i \'s/old/new/\' relative/path.py",'
     '"workdir":"/testbed","timeout_ms":120000}. '
     "Replace the example paths and text; do not execute the examples literally. "
-    "Markdown fences, XML/JSON wrappers around the call, mixed "
-    "prose, and labels are not tool calls; they immediately submit the current "
-    "workspace for grading. If another inspection, edit, or test is needed, invoke "
+    "Markdown fences, XML/JSON wrappers around the call, mixed prose, and labels are "
+    "invalid tool attempts: nothing is executed, no reward is given, and the turn is "
+    "consumed with parser feedback. Plain prose without an embedded tool payload submits "
+    "the current workspace for grading. If another inspection, edit, or test is needed, invoke "
     "it instead of describing it. This workspace intentionally has no .git directory. "
     "An apply_patch succeeded observation or a shell observation listing workspace "
     "changed paths confirms an edit. Never submit plain text until at least one edit "
@@ -60,7 +61,8 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "path changed, edit the workspace instead of explaining the diagnosis. When you "
     "think 'I found the bug', 'I see the issue', or 'let me fix this', keep that thought "
     "private: delete those words and make the next response begin at byte zero with "
-    "apply_patch or shell_command."
+    "apply_patch or shell_command. A mixed tool attempt will be rejected with "
+    "non-terminal parser feedback, never executed as a tool."
 )
 
 

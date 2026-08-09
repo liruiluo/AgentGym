@@ -23,6 +23,14 @@ _FENCED_TOOLISH_RE = re.compile(
     r"(?:shell[\s_-]*command|apply[\s_-]*patch)\b",
     re.IGNORECASE,
 )
+_EMBEDDED_SHELL_ATTEMPT_RE = re.compile(
+    r"\bshell_command\s+\{",
+    re.IGNORECASE,
+)
+_EMBEDDED_PATCH_ATTEMPT_RE = re.compile(
+    r"(?:<tool_call>\s*)?apply_patch\s*\r?\n\s*\*\*\* Begin Patch",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -271,6 +279,14 @@ def _infer_toolish_attempt(text: str) -> str | None:
     if _TOOLISH_PREFIX_RE.match(text) or _FENCED_TOOLISH_RE.match(text):
         lowered = text.lower()
         return "apply_patch" if "apply" in lowered[:80] else "shell_command"
+    embedded_patch = _EMBEDDED_PATCH_ATTEMPT_RE.search(text)
+    embedded_shell = _EMBEDDED_SHELL_ATTEMPT_RE.search(text)
+    if embedded_patch is not None and (
+        embedded_shell is None or embedded_patch.start() < embedded_shell.start()
+    ):
+        return "apply_patch"
+    if embedded_shell is not None:
+        return "shell_command"
     if text.startswith("{"):
         try:
             payload = json.loads(text)

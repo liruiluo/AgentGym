@@ -57,6 +57,32 @@ class SwesmithActionParserTests(unittest.TestCase):
         )
         self.assertEqual(parsed.kind, "final")
 
+    def test_embedded_tool_payloads_are_nonterminal_parser_errors(self) -> None:
+        attempts = (
+            (
+                "I found the bug. Let me inspect it.\n\n"
+                'shell_command {"command":"sed -n \'1,20p\' src/value.py"}',
+                "shell_command",
+            ),
+            (
+                "I found the bug. Let me fix it.\n\n"
+                "apply_patch\n*** Begin Patch\n*** Update File: src/value.py\n"
+                "@@\n-old\n+new\n*** End Patch",
+                "apply_patch",
+            ),
+            (
+                "Found it.\n<tool_call>apply_patch\n*** Begin Patch\n"
+                "*** Update File: src/value.py\n@@\n-old\n+new\n*** End Patch",
+                "apply_patch",
+            ),
+        )
+        for output, tool_hint in attempts:
+            with self.subTest(output=output):
+                parsed = parse_policy_action(output)
+                self.assertEqual(parsed.kind, "parser_error")
+                self.assertEqual(parsed.tool_hint, tool_hint)
+                self.assertFalse(parsed.terminates_episode)
+
     def test_toolish_malformed_outputs_are_not_final_submissions(self) -> None:
         invalid = (
             "shell_command {bad json}",
