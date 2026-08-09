@@ -249,31 +249,13 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         reset = self.manager.reset(slot, 0)
         self.assertEqual(self.manager.metadata()["active_environment_count"], 1)
         self.assertIn("Fix the public value", reset.observation)
-        self.assertIn("Do not prepend reasoning or prose", reset.observation)
-        self.assertIn("Use . (or /testbed) as the repository root", reset.observation)
-        self.assertIn("delete those words", reset.observation)
-        self.assertIn("begin at byte zero with <tool_call>", reset.observation)
-        self.assertIn("Mixed prose around a tool payload is a parser error", reset.observation)
-        self.assertIn("<tool_call><function=...>", reset.observation)
-        self.assertIn("parameter=command", reset.observation)
-        self.assertIn("parameter=patch", reset.observation)
-        self.assertIn("*** Begin Patch ... *** End Patch", reset.observation)
-        self.assertIn(
-            "<function=shell_command>\n<parameter=command>", reset.observation
-        )
-        self.assertIn(
-            "<function=apply_patch>\n<parameter=patch>\n*** Begin Patch",
-            reset.observation,
-        )
-        self.assertIn("*** Update File: path/to/file.py", reset.observation)
-        self.assertIn(
-            "no workdir, timeout_ms, command, or second parameter",
-            reset.observation,
-        )
-        self.assertIn("never use --- a/path.py or +++ b/path.py", reset.observation)
-        self.assertIn("bare </think>", reset.observation)
-        self.assertIn("workspace intentionally has no .git directory", reset.observation)
-        self.assertIn("If no path changed, edit the workspace", reset.observation)
+        self.assertIn("system message defines the two native tools", reset.observation)
+        self.assertIn("prefer shell_command", reset.observation)
+        self.assertIn("one complete <tool_call> block", reset.observation)
+        self.assertIn("real *** Begin Patch ... *** End Patch", reset.observation)
+        self.assertIn("never add shell parameters", reset.observation)
+        self.assertIn("has no .git directory", reset.observation)
+        self.assertIn("Do not submit plain text until", reset.observation)
         self.assertNotIn("SECRET_GOLD_PATCH", reset.observation)
         self.assertNotIn(self.instance_id, reset.observation)
 
@@ -353,12 +335,12 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         result = self.manager.step(slot, "shell_command pwd")
 
         self.assertFalse(result.done)
-        self.assertIn("<function=shell_command>", result.observation)
-        self.assertIn("<parameter=command>", result.observation)
+        self.assertIn("<tool_call>", result.observation)
+        self.assertIn("one command parameter", result.observation)
         self.assertIn("function=apply_patch", result.observation)
-        self.assertIn("unchanged lines start with one space", result.observation)
-        self.assertIn("Do not include analysis", result.observation)
-        self.assertIn("any text outside the tool_call block", result.observation)
+        self.assertIn("one real *** Begin Patch", result.observation)
+        self.assertIn("No reasoning", result.observation)
+        self.assertIn("text outside the block", result.observation)
         self.manager.close(slot)
 
     def test_embedded_tool_payload_does_not_submit_or_execute(self) -> None:
