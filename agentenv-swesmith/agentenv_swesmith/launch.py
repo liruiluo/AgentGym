@@ -8,6 +8,7 @@ from agentenv_agentmemory.workspace_sandbox import ShellSandboxLimits
 from .audit import SwesmithEpisodeAuditSink
 from .dataset import SwesmithDataset
 from .environment import (
+    DEFAULT_MAX_OBSERVATION_BYTES,
     DEFAULT_TRAINING_MAX_POLICY_TURNS,
     SwesmithEpisodeManager,
 )
@@ -39,7 +40,16 @@ def build_manager_from_environment() -> SwesmithEpisodeManager:
         mirrors_root=_required_path("SWESMITH_MIRRORS_ROOT", file=False),
         episodes_root=_required_path("SWESMITH_EPISODES_ROOT", file=False, create=True),
     )
-    limits = _limits_from_environment()
+    max_observation_tokens = _integer("SWESMITH_MAX_OBSERVATION_TOKENS", 8192)
+    max_observation_bytes = _integer(
+        "SWESMITH_MAX_OBSERVATION_BYTES",
+        min(DEFAULT_MAX_OBSERVATION_BYTES, max_observation_tokens - 1),
+    )
+    if max_observation_bytes >= max_observation_tokens:
+        raise ValueError(
+            "SWESMITH_MAX_OBSERVATION_BYTES must stay below the token budget"
+        )
+    limits = _limits_from_environment(max_observation_bytes)
     oci_cache_root = _required_path("SWESMITH_OCI_CACHE_ROOT", file=False)
     rg_binary = _required_path("SWESMITH_RG_BINARY", file=True)
     rg_sha256 = _required_text("SWESMITH_RG_SHA256")
@@ -82,12 +92,15 @@ def build_manager_from_environment() -> SwesmithEpisodeManager:
             "SWESMITH_MAX_STEPS",
             DEFAULT_TRAINING_MAX_POLICY_TURNS,
         ),
+        max_observation_bytes=max_observation_bytes,
         runtime_metadata={
             "image_manifest": images.public_metadata(),
             "dataset_revision": dataset_revision,
             "source_revision": source_revision,
             "sandbox_contract": "swesmith_linux_namespace_oci_rootfs_v1",
             "profile_contract": "swesmith_official_repo_profile_v1",
+            "max_observation_tokens": max_observation_tokens,
+            "max_observation_bytes": max_observation_bytes,
             **runtime_source,
         },
     )
@@ -107,9 +120,25 @@ def launch() -> None:
     )
 
 
-def _limits_from_environment() -> ShellSandboxLimits:
+def _limits_from_environment(max_observation_bytes: int | None = None) -> ShellSandboxLimits:
     gib = 1024**3
     mib = 1024**2
+    if max_observation_bytes is None:
+        max_observation_bytes = _integer(
+            "SWESMITH_MAX_OBSERVATION_BYTES",
+            DEFAULT_MAX_OBSERVATION_BYTES,
+        )
+    if type(max_observation_bytes) is not int or max_observation_bytes <= 0:
+        raise ValueError("max_observation_bytes must be a positive integer")
+    stdout_bytes = _integer("SWESMITH_STDOUT_BYTES", max_observation_bytes // 2)
+    stderr_bytes = _integer(
+        "SWESMITH_STDERR_BYTES",
+        max_observation_bytes - stdout_bytes,
+    )
+    if stdout_bytes + stderr_bytes > max_observation_bytes:
+        raise ValueError(
+            "SWE-smith stdout/stderr caps must fit the combined observation budget"
+        )
     return ShellSandboxLimits(
         workspace_bytes=_integer("SWESMITH_WORKSPACE_BYTES", 2 * gib),
         workspace_inodes=_integer("SWESMITH_WORKSPACE_INODES", 250_000),
@@ -123,8 +152,8 @@ def _limits_from_environment() -> ShellSandboxLimits:
         address_space_bytes=_integer("SWESMITH_ADDRESS_SPACE_BYTES", 32 * gib),
         max_processes=_integer("SWESMITH_MAX_PROCESSES", 512),
         max_open_files=_integer("SWESMITH_MAX_OPEN_FILES", 4096),
-        stdout_bytes=_integer("SWESMITH_STDOUT_BYTES", 2 * mib),
-        stderr_bytes=_integer("SWESMITH_STDERR_BYTES", 2 * mib),
+        stdout_bytes=stdout_bytes,
+        stderr_bytes=stderr_bytes,
         tmp_bytes=_integer("SWESMITH_TMP_BYTES", 4 * gib),
         tmp_inodes=_integer("SWESMITH_TMP_INODES", 100_000),
     )

@@ -29,6 +29,7 @@ from .workspace import SwesmithWorkspace, SwesmithWorkspaceMaterializer
 EPISODE_SCHEMA = "agentmemory_swesmith_native_episode_v1"
 DEFAULT_TRAINING_MAX_POLICY_TURNS = 75
 UPSTREAM_REFERENCE_MAX_POLICY_TURNS = 250
+DEFAULT_MAX_OBSERVATION_BYTES = 6144
 
 
 class ProfileResolver(Protocol):
@@ -97,10 +98,15 @@ class SwesmithEpisodeManager:
         grader: SwesmithHiddenGrader,
         audit_sink: SwesmithEpisodeAuditSink | None = None,
         max_steps: int = DEFAULT_TRAINING_MAX_POLICY_TURNS,
+        max_observation_bytes: int = DEFAULT_MAX_OBSERVATION_BYTES,
         runtime_metadata: Mapping[str, Any] | None = None,
     ) -> None:
         if type(max_steps) is not int or max_steps <= 0:
             raise ValueError("SWE-smith max_steps must be a positive integer")
+        if type(max_observation_bytes) is not int or max_observation_bytes <= 0:
+            raise ValueError(
+                "SWE-smith max_observation_bytes must be a positive integer"
+            )
         self.dataset = dataset
         self.materializer = materializer
         self.profile_resolver = profile_resolver
@@ -108,6 +114,7 @@ class SwesmithEpisodeManager:
         self.grader = grader
         self.audit_sink = audit_sink
         self.max_steps = max_steps
+        self.max_observation_bytes = max_observation_bytes
         self.runtime_metadata = dict(runtime_metadata or {})
         self._slots: dict[int, _Slot] = {}
         self._next_slot = 0
@@ -309,6 +316,8 @@ class SwesmithEpisodeManager:
             ),
             "tool_contract": "codex_shell_command_apply_patch_v1",
             "tool_serialization": "qwen35_native_single_function_v1",
+            "observation_contract": "bounded_combined_shell_output_v1",
+            "max_observation_bytes": self.max_observation_bytes,
             "reward_contract": "terminal_full_resolution_binary_v1",
             "context_contract": "one_native_issue_continuous_episode_v1",
             "horizon_contract": "unified_policy_step_private_grade_v1",
@@ -371,6 +380,10 @@ class SwesmithEpisodeManager:
             "stderr": stderr,
             "stdout_truncated": result.stdout_truncated,
             "stderr_truncated": result.stderr_truncated,
+            "observation_output_budget_bytes": self.max_observation_bytes,
+            "observation_output_truncated": bool(
+                result.stdout_truncated or result.stderr_truncated
+            ),
             "termination_reason": result.termination_reason,
             "workspace_diff": execution.workspace_diff.as_dict(),
         }
@@ -383,6 +396,7 @@ class SwesmithEpisodeManager:
             stdout_truncated=result.stdout_truncated,
             stderr_truncated=result.stderr_truncated,
             changed_paths=execution.workspace_diff.changed_paths,
+            max_observation_bytes=self.max_observation_bytes,
         )
 
     def _run_patch(
@@ -576,16 +590,62 @@ def _shell_observation(
     stdout_truncated: bool,
     stderr_truncated: bool,
     changed_paths: tuple[str, ...],
+    max_observation_bytes: int = DEFAULT_MAX_OBSERVATION_BYTES,
 ) -> str:
+    if type(max_observation_bytes) is not int or max_observation_bytes <= 0:
+        raise ValueError("max_observation_bytes must be a positive integer")
+    # Bound the combined visible output below the 8192-token contract.  The
+    # fixed receipt text and workspace path list retain additional headroom.
+    stdout_limit = max(1, max_observation_bytes // 2)
+    stderr_limit = max(1, max_observation_bytes - stdout_limit)
+    visible_stdout, stdout_was_bounded = _bound_shell_output(
+        stdout,
+        limit=stdout_limit,
+        truncated=stdout_truncated,
+        label="stdout",
+    )
+    visible_stderr, stderr_was_bounded = _bound_shell_output(
+        stderr,
+        limit=stderr_limit,
+        truncated=stderr_truncated,
+        label="stderr",
+    )
     return (
         f"shell_command exit_code={exit_code} elapsed_ms={elapsed_ms} "
         f"timed_out={str(timed_out).lower()} "
         f"stdout_truncated={str(stdout_truncated).lower()} "
-        f"stderr_truncated={str(stderr_truncated).lower()}\n"
+        f"stderr_truncated={str(stderr_truncated).lower()} "
+        f"visible_output_truncated={str(stdout_was_bounded or stderr_was_bounded).lower()} "
+        f"visible_output_budget_bytes={max_observation_bytes}\n"
         "stdout:\n"
-        + (stdout if stdout else "<empty>")
+        + (visible_stdout if visible_stdout else "<empty>")
         + "\nstderr:\n"
-        + (stderr if stderr else "<empty>")
+        + (visible_stderr if visible_stderr else "<empty>")
         + "\nworkspace changed paths: "
         + (", ".join(changed_paths) if changed_paths else "none")
     )
+
+
+def _bound_shell_output(
+    text: str,
+    *,
+    limit: int,
+    truncated: bool,
+    label: str,
+) -> tuple[str, bool]:
+    """Keep visible tool output bounded while retaining both ends of a log."""
+
+    raw = text.encode("utf-8", errors="replace")
+    marker = f"\n[{label} truncated: visible output budget reached]\n".encode(
+        "utf-8"
+    )
+    if not truncated and len(raw) <= limit:
+        return text, False
+    if limit <= len(marker):
+        return marker[:limit].decode("utf-8", errors="ignore"), True
+    payload_limit = limit - len(marker)
+    head_limit = (payload_limit + 1) // 2
+    tail_limit = payload_limit - head_limit
+    head = raw[:head_limit].decode("utf-8", errors="ignore")
+    tail = raw[-tail_limit:].decode("utf-8", errors="ignore") if tail_limit else ""
+    return head + marker.decode("utf-8") + tail, True

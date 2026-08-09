@@ -17,6 +17,7 @@ from agentenv_agentmemory.workspace_sandbox import (
 from agentenv_swesmith.dataset import SwesmithDataset
 from agentenv_swesmith.audit import AUDIT_SCHEMA, SwesmithEpisodeAuditSink
 from agentenv_swesmith.environment import SwesmithEpisodeManager
+from agentenv_swesmith.environment import _shell_observation
 from agentenv_swesmith.grader import SwesmithGradeResult
 from agentenv_swesmith.profile import SwesmithProfileBinding
 from agentenv_swesmith.sandbox import LinuxNamespaceEpisodeSandbox
@@ -248,6 +249,11 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.manager.metadata()["active_environment_count"], 0)
         self.assertEqual(self.manager.metadata()["max_steps"], 8)
         self.assertEqual(self.manager.metadata()["configured_max_policy_turns"], 8)
+        self.assertEqual(
+            self.manager.metadata()["observation_contract"],
+            "bounded_combined_shell_output_v1",
+        )
+        self.assertEqual(self.manager.metadata()["max_observation_bytes"], 6144)
         self.assertEqual(self.manager.metadata()["training_max_policy_turns"], 75)
         self.assertEqual(
             self.manager.metadata()["upstream_reference_max_policy_turns"],
@@ -354,6 +360,25 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("no XML tags", result.observation)
         self.assertIn("surrounding text", result.observation)
         self.manager.close(slot)
+
+    def test_oversized_shell_output_is_bounded_with_a_visible_marker(self) -> None:
+        observation = _shell_observation(
+            exit_code=0,
+            elapsed_ms=1,
+            timed_out=False,
+            stdout="A" * 10_000,
+            stderr="B" * 10_000,
+            stdout_truncated=True,
+            stderr_truncated=True,
+            changed_paths=(),
+            max_observation_bytes=128,
+        )
+
+        self.assertIn("visible_output_truncated=true", observation)
+        self.assertIn("[stdout truncated: visible output budget reached]", observation)
+        self.assertIn("[stderr truncated: visible output budget reached]", observation)
+        self.assertNotIn("A" * 10_000, observation)
+        self.assertNotIn("B" * 10_000, observation)
 
     def test_embedded_tool_payload_does_not_submit_or_execute(self) -> None:
         slot = self.manager.create()
