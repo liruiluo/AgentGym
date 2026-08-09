@@ -543,9 +543,11 @@ def _initial_observation(problem_statement: str) -> str:
         '{"command":"ls","workdir":"."}. Start at byte zero and output only the '
         "action, without XML, prose, Markdown, or a <think> tag. apply_patch is optional "
         "and starts with the literal line apply_patch followed by one complete "
-        "*** Begin Patch ... *** End Patch payload. The workspace persists for the whole "
-        "episode and has no .git directory. Do not submit plain text until a source path "
-        "changed and the relevant tests ran.\n\n"
+        "*** Begin Patch ... *** End Patch payload. Keep edits localized: never paste or "
+        "rewrite an entire existing file in one action. Use a small patch around the "
+        "changed lines or a bounded shell command, and stay below the response limit. "
+        "The workspace persists for the whole episode and has no .git directory. Do not "
+        "submit plain text until a source path changed and the relevant tests ran.\n\n"
         "Issue:\n"
         + problem_statement.strip()
         + "\n\nBegin with a real shell action in the exact one-line form above."
@@ -558,8 +560,9 @@ def _parser_error_observation(action: ParsedPolicyAction) -> str:
         'like shell_command {"command":"pwd","workdir":"."} on one line. '
         "For a patch, start with the literal line apply_patch, then one complete "
         "*** Begin Patch ... *** End Patch payload. Output only one action, with no XML "
-        "tags, reasoning, Markdown, second action, or surrounding text. Submit plain "
-        "text only after editing and testing."
+        "tags, reasoning, Markdown, second action, or surrounding text. Keep the edit "
+        "localized instead of pasting or rewriting an entire existing file. Submit "
+        "plain text only after editing and testing."
     )
 
 
