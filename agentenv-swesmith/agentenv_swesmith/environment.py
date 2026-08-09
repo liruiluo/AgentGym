@@ -452,6 +452,11 @@ class SwesmithEpisodeManager:
                 "step": episode.step_count,
                 "action_kind": action_kind,
                 "terminal": episode.done,
+                "episode_success": bool(
+                    episode.done
+                    and episode.grade is not None
+                    and episode.grade.resolved
+                ),
             },
         )
 

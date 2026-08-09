@@ -247,6 +247,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.manager.metadata()["active_slot_count"], 1)
         self.assertEqual(self.manager.metadata()["active_environment_count"], 0)
         reset = self.manager.reset(slot, 0)
+        self.assertIs(reset.info["episode_success"], False)
         self.assertEqual(self.manager.metadata()["active_environment_count"], 1)
         self.assertIn("Fix the public value", reset.observation)
         self.assertIn("Use shell_command", reset.observation)
@@ -264,6 +265,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             'shell_command {"command":"printf persistent > notes.txt"}',
         )
         self.assertFalse(created.done)
+        self.assertIs(created.info["episode_success"], False)
         read = self.manager.step(
             slot,
             'shell_command {"command":"cat notes.txt"}',
@@ -284,6 +286,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         final = self.manager.step(slot, "Implemented the fix.")
         self.assertTrue(final.done)
         self.assertEqual(final.reward, 1.0)
+        self.assertIs(final.info["episode_success"], True)
         self.assertEqual(self.grader.calls, 1)
 
         detail = self.manager.detail(slot)
@@ -445,6 +448,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         horizon = self.manager.finalize_horizon(slot)
         self.assertTrue(horizon.done)
         self.assertEqual(horizon.reward, 1.0)
+        self.assertIs(horizon.info["episode_success"], True)
         detail = self.manager.detail(slot)
         self.assertEqual(detail["step_count"], 1)
         self.assertEqual(
