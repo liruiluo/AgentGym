@@ -12,6 +12,12 @@ _SHELL_PREFIX = "shell_command "
 _PATCH_PREFIX = "apply_patch\n"
 _PATCH_BEGIN = "*** Begin Patch"
 _PATCH_END = "*** End Patch"
+_NATIVE_TOOL_START = "<tool_call>"
+_NATIVE_TOOL_END = "</tool_call>"
+_NATIVE_FUNCTION_END = "</function>"
+_NATIVE_PARAMETER_END = "</parameter>"
+_NATIVE_FUNCTION_RE = re.compile(r"\A<function=([a-z][a-z0-9_]*)>\Z")
+_NATIVE_PARAMETER_RE = re.compile(r"\A<parameter=([a-z][a-z0-9_]*)>\Z")
 _THINK_START_RE = re.compile(r"\A<think\s*>", re.IGNORECASE)
 _THINK_END_RE = re.compile(r"</think\s*>", re.IGNORECASE)
 _TOOLISH_PREFIX_RE = re.compile(
@@ -104,6 +110,8 @@ def parse_policy_action(raw_output: str) -> ParsedPolicyAction:
         return _parse_shell_command(raw_output, action_text, thought)
     if action_text.startswith(_PATCH_PREFIX):
         return _parse_apply_patch(raw_output, action_text, thought)
+    if action_text.startswith(_NATIVE_TOOL_START):
+        return _parse_native_tool_call(raw_output, action_text, thought)
 
     tool_hint = _infer_toolish_attempt(action_text)
     if tool_hint is not None:
@@ -147,6 +155,15 @@ def _parse_shell_command(
             "shell_command payload must be a JSON object",
             tool_hint="shell_command",
         )
+    return _build_shell_command(raw_output, action_text, thought, payload)
+
+
+def _build_shell_command(
+    raw_output: str,
+    action_text: str,
+    thought: str,
+    payload: Mapping[str, Any],
+) -> ParsedPolicyAction:
     allowed = {"command", "workdir", "timeout_ms"}
     unexpected = sorted(set(payload) - allowed)
     missing = sorted({"command"} - set(payload))
@@ -213,6 +230,15 @@ def _parse_apply_patch(
     thought: str,
 ) -> ParsedPolicyAction:
     patch = action_text[len(_PATCH_PREFIX) :]
+    return _build_apply_patch(raw_output, action_text, thought, patch)
+
+
+def _build_apply_patch(
+    raw_output: str,
+    action_text: str,
+    thought: str,
+    patch: str,
+) -> ParsedPolicyAction:
     lines = patch.splitlines()
     if (
         not lines
@@ -247,6 +273,123 @@ def _parse_apply_patch(
     )
 
 
+def _parse_native_tool_call(
+    raw_output: str,
+    action_text: str,
+    thought: str,
+) -> ParsedPolicyAction:
+    lines = action_text.splitlines()
+    if (
+        len(lines) < 6
+        or lines[0] != _NATIVE_TOOL_START
+        or lines[-1] != _NATIVE_TOOL_END
+        or lines[-2] != _NATIVE_FUNCTION_END
+    ):
+        return _parser_error(
+            raw_output,
+            action_text,
+            thought,
+            "native tool call must contain one complete tool_call/function block",
+            tool_hint=_native_tool_hint(action_text),
+        )
+    function_match = _NATIVE_FUNCTION_RE.fullmatch(lines[1])
+    if function_match is None:
+        return _parser_error(
+            raw_output,
+            action_text,
+            thought,
+            "native tool call has an invalid function opening tag",
+            tool_hint=_native_tool_hint(action_text),
+        )
+    function_name = function_match.group(1)
+    if function_name not in {"shell_command", "apply_patch"}:
+        return _parser_error(
+            raw_output,
+            action_text,
+            thought,
+            f"unsupported native tool function: {function_name}",
+            tool_hint=function_name,
+        )
+
+    parameters: dict[str, str] = {}
+    cursor = 2
+    while cursor < len(lines) - 2:
+        parameter_match = _NATIVE_PARAMETER_RE.fullmatch(lines[cursor])
+        if parameter_match is None:
+            return _parser_error(
+                raw_output,
+                action_text,
+                thought,
+                "native tool call has content outside a parameter block",
+                tool_hint=function_name,
+            )
+        name = parameter_match.group(1)
+        if name in parameters:
+            return _parser_error(
+                raw_output,
+                action_text,
+                thought,
+                f"native tool call repeats parameter {name!r}",
+                tool_hint=function_name,
+            )
+        cursor += 1
+        value_start = cursor
+        while cursor < len(lines) - 2 and lines[cursor] != _NATIVE_PARAMETER_END:
+            if _NATIVE_PARAMETER_RE.fullmatch(lines[cursor]):
+                return _parser_error(
+                    raw_output,
+                    action_text,
+                    thought,
+                    "native tool call contains a nested parameter block",
+                    tool_hint=function_name,
+                )
+            cursor += 1
+        if cursor >= len(lines) - 2:
+            return _parser_error(
+                raw_output,
+                action_text,
+                thought,
+                f"native tool parameter {name!r} is not closed",
+                tool_hint=function_name,
+            )
+        parameters[name] = "\n".join(lines[value_start:cursor])
+        cursor += 1
+
+    if function_name == "shell_command":
+        payload: dict[str, Any] = dict(parameters)
+        if "timeout_ms" in payload:
+            raw_timeout = str(payload["timeout_ms"]).strip()
+            if not raw_timeout.isdecimal():
+                return _parser_error(
+                    raw_output,
+                    action_text,
+                    thought,
+                    "shell_command timeout_ms must be a positive integer",
+                    tool_hint=function_name,
+                )
+            payload["timeout_ms"] = int(raw_timeout)
+        return _build_shell_command(raw_output, action_text, thought, payload)
+
+    unexpected = sorted(set(parameters) - {"patch"})
+    if "patch" not in parameters or unexpected:
+        detail = "missing patch" if "patch" not in parameters else ""
+        if unexpected:
+            detail += ("; " if detail else "") + "unexpected " + ", ".join(unexpected)
+        return _parser_error(
+            raw_output,
+            action_text,
+            thought,
+            "apply_patch arguments are invalid: " + detail,
+            tool_hint=function_name,
+        )
+    return _build_apply_patch(
+        raw_output,
+        action_text,
+        thought,
+        parameters["patch"],
+    )
+
+
 def _split_thinking(raw_output: str) -> tuple[str, str, str | None]:
     text = raw_output.strip()
     start = _THINK_START_RE.match(text)
@@ -276,6 +419,8 @@ def _strip_single_eos(text: str) -> str:
 
 
 def _infer_toolish_attempt(text: str) -> str | None:
+    if _NATIVE_TOOL_START in text or "<function=" in text:
+        return _native_tool_hint(text)
     if _TOOLISH_PREFIX_RE.match(text) or _FENCED_TOOLISH_RE.match(text):
         lowered = text.lower()
         return "apply_patch" if "apply" in lowered[:80] else "shell_command"
@@ -299,6 +444,18 @@ def _infer_toolish_attempt(text: str) -> str | None:
                 if normalized in {"shell_command", "apply_patch"}:
                     return normalized
     return None
+
+
+def _native_tool_hint(text: str) -> str:
+    match = re.search(r"<function=([a-z][a-z0-9_]*)>", text)
+    if match is not None:
+        return match.group(1)
+    native_prefix = text[text.find(_NATIVE_TOOL_START) :][:160].lower()
+    if "apply_patch" in native_prefix:
+        return "apply_patch"
+    if "shell_command" in native_prefix:
+        return "shell_command"
+    return "native_tool"
 
 
 def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

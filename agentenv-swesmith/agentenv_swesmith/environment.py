@@ -301,6 +301,7 @@ class SwesmithEpisodeManager:
             "selection_mode": provenance.selection_mode,
             "max_steps": self.max_steps,
             "tool_contract": "codex_shell_command_apply_patch_v1",
+            "tool_serialization": "qwen35_native_single_function_v1",
             "reward_contract": "terminal_full_resolution_binary_v1",
             "context_contract": "one_native_issue_continuous_episode_v1",
             "horizon_contract": "unified_policy_step_private_grade_v1",
@@ -525,30 +526,12 @@ def _utc_now() -> str:
 def _initial_observation(problem_statement: str) -> str:
     return (
         "Repair the repository in /testbed for this issue. The same workspace persists "
-        "for the whole episode. Use exactly one action per turn. Tool turns are parsed "
-        "as a strict machine protocol: the first character of your response must belong "
-        "to the tool call, with no explanation, label, or code fence before or after it.\n\n"
-        "Available tool actions:\n"
-        "Exact shell example (replace the command; do not copy it literally):\n"
-        'shell_command {"command":"sed -n \'1,200p\' path/to/file.py",'
-        '"workdir":".","timeout_ms":120000}\n'
-        'For shell_command, workdir must be exactly "." or a normalized absolute '
-        'path inside /testbed; "./" is invalid.\n'
-        "Exact patch shape (replace the path and lines):\n"
-        "apply_patch\n"
-        "*** Begin Patch\n"
-        "*** Update File: path/to/file.py\n"
-        "@@\n"
-        "-old line\n"
-        "+new line\n"
-        "*** End Patch\n"
-        "For apply_patch, use a relative path, never /testbed/...; prefix every "
-        "unchanged hunk line with one literal space, every deleted line with -, and "
-        "every added line with +. Never include source line numbers or -- separators. "
-        "Prefer one minimal exact replacement hunk. shell_command may also edit files.\n"
-        "Exact shell edit example (replace the path and text):\n"
-        'shell_command {"command":"sed -i \'s/old/new/\' relative/path.py",'
-        '"workdir":"/testbed","timeout_ms":120000}\n'
+        "for the whole episode. Use exactly one action per turn. Use one native "
+        "<tool_call> block for shell_command or apply_patch, exactly as specified in "
+        "the system tool contract. Do not put explanation, labels, or code fences before "
+        "or after the block. For shell_command, provide parameter=command and optionally "
+        "parameter=workdir and parameter=timeout_ms. For apply_patch, provide exactly "
+        "parameter=patch containing one complete *** Begin Patch ... *** End Patch patch. "
         "Use . (or /testbed) as the repository root. Plain prose without an embedded "
         "tool payload is a final submission and immediately grades the current workspace. "
         "Mixed prose around a tool payload is a parser error: nothing is executed, no "
@@ -560,27 +543,28 @@ def _initial_observation(problem_statement: str) -> str:
         "diagnosis. If you still need a tool, invoke it without describing it.\n\n"
         "Issue:\n"
         + problem_statement.strip()
-        + "\n\nAction reminder: for a tool turn, output only one exact shell_command JSON "
-        "call or one complete apply_patch payload. Do not prepend reasoning or prose. "
+        + "\n\nAction reminder: for a tool turn, output only one complete native "
+        "<tool_call><function=...> block. Do not prepend reasoning or prose. "
         "When you think 'I found the bug', 'I see the issue', or 'let me fix this', "
         "keep that thought private: delete those words and make the response begin at "
-        "byte zero with apply_patch or shell_command. A mixed tool attempt will be "
+        "byte zero with <tool_call>. A mixed tool attempt will be "
         "rejected with non-terminal parser feedback, never executed as a tool."
     )
 
 
 def _parser_error_observation(action: ParsedPolicyAction) -> str:
     return (
-        f"Invalid action syntax: {action.error}. Use exactly one canonical "
-        "shell_command JSON call, one complete apply_patch payload, or a normal final "
-        "response. Exact shell shape: "
-        'shell_command {"command":"pwd","workdir":".","timeout_ms":120000}. '
-        "Exact patch headers: apply_patch, then *** Begin Patch, *** Update File: "
-        "relative/path.py, @@, changed lines, and *** End Patch on separate lines. "
+        f"Invalid action syntax: {action.error}. Use exactly one native <tool_call> "
+        "block or a normal final response. Exact shell structure: <tool_call>, then "
+        "<function=shell_command>, one <parameter=command> value </parameter>, optional "
+        "workdir and timeout_ms parameter blocks, </function>, and </tool_call>, each "
+        "tag on its own line. For a patch use function=apply_patch with exactly one "
+        "parameter=patch whose value starts with *** Begin Patch and ends with "
+        "*** End Patch. "
         "The patch path must be relative; unchanged lines start with one space, "
         "deleted lines with -, and added lines with +. Do not include line numbers "
-        "or -- separators. You may instead edit with one canonical shell_command. "
-        "Do not include analysis, Markdown fences, or a wrapper around the action."
+        "or -- separators. Do not include analysis, Markdown fences, a second call, "
+        "or any text outside the tool_call block."
     )
 
 

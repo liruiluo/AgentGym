@@ -251,18 +251,13 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("Fix the public value", reset.observation)
         self.assertIn("Do not prepend reasoning or prose", reset.observation)
         self.assertIn("Use . (or /testbed) as the repository root", reset.observation)
-        self.assertIn('"./" is invalid', reset.observation)
         self.assertIn("delete those words", reset.observation)
-        self.assertIn("begin at byte zero with apply_patch", reset.observation)
+        self.assertIn("begin at byte zero with <tool_call>", reset.observation)
         self.assertIn("Mixed prose around a tool payload is a parser error", reset.observation)
-        self.assertIn(
-            'shell_command {"command":"sed -n \'1,200p\' path/to/file.py",'
-            '"workdir":".","timeout_ms":120000}',
-            reset.observation,
-        )
-        self.assertIn("*** Update File: path/to/file.py", reset.observation)
-        self.assertIn("use a relative path, never /testbed/", reset.observation)
-        self.assertIn("shell_command may also edit files", reset.observation)
+        self.assertIn("<tool_call><function=...>", reset.observation)
+        self.assertIn("parameter=command", reset.observation)
+        self.assertIn("parameter=patch", reset.observation)
+        self.assertIn("*** Begin Patch ... *** End Patch", reset.observation)
         self.assertIn("workspace intentionally has no .git directory", reset.observation)
         self.assertIn("If no path changed, edit the workspace", reset.observation)
         self.assertNotIn("SECRET_GOLD_PATCH", reset.observation)
@@ -344,14 +339,12 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         result = self.manager.step(slot, "shell_command pwd")
 
         self.assertFalse(result.done)
-        self.assertIn(
-            'shell_command {"command":"pwd","workdir":".","timeout_ms":120000}',
-            result.observation,
-        )
-        self.assertIn("*** Update File: relative/path.py", result.observation)
+        self.assertIn("<function=shell_command>", result.observation)
+        self.assertIn("<parameter=command>", result.observation)
+        self.assertIn("function=apply_patch", result.observation)
         self.assertIn("unchanged lines start with one space", result.observation)
-        self.assertIn("You may instead edit with one canonical shell_command", result.observation)
         self.assertIn("Do not include analysis", result.observation)
+        self.assertIn("any text outside the tool_call block", result.observation)
         self.manager.close(slot)
 
     def test_embedded_tool_payload_does_not_submit_or_execute(self) -> None:
@@ -370,6 +363,45 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.grader.calls, 0)
         detail = self.manager.detail(slot)
         self.assertFalse(Path(detail["workspace"]["policy_root"], "notes.txt").exists())
+        self.manager.close(slot)
+
+    def test_native_shell_and_patch_use_the_existing_execution_paths(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+
+        shell = self.manager.step(
+            slot,
+            "<tool_call>\n"
+            "<function=shell_command>\n"
+            "<parameter=command>\n"
+            "printf native > notes.txt\n"
+            "</parameter>\n"
+            "<parameter=workdir>\n"
+            ".\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>",
+        )
+        self.assertEqual(shell.info["action_kind"], "shell_command")
+        self.assertIn("notes.txt", shell.observation)
+
+        patched = self.manager.step(
+            slot,
+            "<tool_call>\n"
+            "<function=apply_patch>\n"
+            "<parameter=patch>\n"
+            "*** Begin Patch\n"
+            "*** Update File: src/value.py\n"
+            "@@\n"
+            "-bug\n"
+            "+fixed\n"
+            "*** End Patch\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>",
+        )
+        self.assertEqual(patched.info["action_kind"], "apply_patch")
+        self.assertIn("apply_patch succeeded", patched.observation)
         self.manager.close(slot)
 
     def test_reset_replaces_previous_episode_with_pristine_workspace(self) -> None:

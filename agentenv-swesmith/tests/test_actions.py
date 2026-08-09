@@ -40,6 +40,53 @@ class SwesmithActionParserTests(unittest.TestCase):
         self.assertEqual(parsed.patch, patch)
         self.assertFalse(parsed.terminates_episode)
 
+    def test_parses_qwen_native_shell_command(self) -> None:
+        parsed = parse_policy_action(
+            "<tool_call>\n"
+            "<function=shell_command>\n"
+            "<parameter=command>\n"
+            "python -m pytest tests/test_value.py -q\n"
+            "</parameter>\n"
+            "<parameter=workdir>\n"
+            "/testbed\n"
+            "</parameter>\n"
+            "<parameter=timeout_ms>\n"
+            "120000\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>"
+        )
+        self.assertEqual(parsed.kind, "shell_command")
+        self.assertEqual(
+            parsed.arguments,
+            {
+                "command": "python -m pytest tests/test_value.py -q",
+                "workdir": "/testbed",
+                "timeout_ms": 120000,
+            },
+        )
+
+    def test_parses_qwen_native_apply_patch(self) -> None:
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: src/value.py\n"
+            "@@\n"
+            "-old\n"
+            "+new\n"
+            "*** End Patch"
+        )
+        parsed = parse_policy_action(
+            "<tool_call>\n"
+            "<function=apply_patch>\n"
+            "<parameter=patch>\n"
+            f"{patch}\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>"
+        )
+        self.assertEqual(parsed.kind, "apply_patch")
+        self.assertEqual(parsed.patch, patch)
+
     def test_plain_response_is_terminal_submission(self) -> None:
         parsed = parse_policy_action(
             "Implemented the fix and added regression coverage."
@@ -99,6 +146,15 @@ class SwesmithActionParserTests(unittest.TestCase):
             "apply_patch\n*** Begin Patch\n*** End Patch",
             "apply_patch\n*** Begin Patch\n*** Add File: x\n+x",
             '{"function_name":"shell_command","arguments":{"command":"pwd"}}',
+            "<tool_call>\n<function=shell_command>\n"
+            "<parameter=command>\npwd\n</parameter>\n</tool_call>",
+            "<tool_call>\n<function=shell_command>\n"
+            "<parameter=command>\npwd\n</parameter>\n"
+            "<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>",
+            "<tool_call>\n<function=shell_command>\n"
+            "<parameter=command>\npwd\n</parameter>\n</function>\n</tool_call>\n"
+            "<tool_call>\n<function=shell_command>\n"
+            "<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>",
         )
         for output in invalid:
             with self.subTest(output=output):
