@@ -258,6 +258,20 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("parameter=command", reset.observation)
         self.assertIn("parameter=patch", reset.observation)
         self.assertIn("*** Begin Patch ... *** End Patch", reset.observation)
+        self.assertIn(
+            "<function=shell_command>\n<parameter=command>", reset.observation
+        )
+        self.assertIn(
+            "<function=apply_patch>\n<parameter=patch>\n*** Begin Patch",
+            reset.observation,
+        )
+        self.assertIn("*** Update File: path/to/file.py", reset.observation)
+        self.assertIn(
+            "no workdir, timeout_ms, command, or second parameter",
+            reset.observation,
+        )
+        self.assertIn("never use --- a/path.py or +++ b/path.py", reset.observation)
+        self.assertIn("bare </think>", reset.observation)
         self.assertIn("workspace intentionally has no .git directory", reset.observation)
         self.assertIn("If no path changed, edit the workspace", reset.observation)
         self.assertNotIn("SECRET_GOLD_PATCH", reset.observation)
