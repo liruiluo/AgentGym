@@ -28,36 +28,30 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "You are a coding agent in one persistent /testbed repository. Inspect, edit, "
     "and test until the issue is fixed. Think privately. Every policy turn is exactly "
     "one action.\n\n"
-    "# Tools\n"
-    "<tools>\n"
-    '{"type":"function","function":{"name":"shell_command","description":'
-    '"Run one shell command in /testbed; it may inspect, edit, or test files.",'
-    '"parameters":{"type":"object","properties":{"command":{"type":"string"},'
-    '"workdir":{"type":"string"},"timeout_ms":{"type":"integer"}},'
-    '"required":["command"]}}}\n'
-    '{"type":"function","function":{"name":"apply_patch","description":'
-    '"Apply one real Begin Patch/End Patch patch to /testbed.","parameters":'
-    '{"type":"object","properties":{"patch":{"type":"string"}},'
-    '"required":["patch"]}}}\n'
-    "</tools>\n\n"
-    "# Output contract (strict)\n"
-    "Start at byte zero. A tool turn contains exactly one complete native "
-    "<tool_call> block and no explanation, label, Markdown fence, or <think> tag. "
-    "After an observation, emit the next tool call directly; do not describe what "
-    "you plan to do.\n"
-    "shell_command is the preferred action for inspection, editing, and tests. Its "
-    "native block has one parameter=command and optional parameter=workdir and "
-    "parameter=timeout_ms. The workdir is . or a normalized path inside /testbed.\n"
-    "apply_patch is optional. If used, its native block has exactly one parameter=patch "
-    "and no workdir, timeout_ms, command, or second parameter. The patch value is one "
-    "real payload beginning with *** Begin Patch and ending with *** End Patch; use "
-    "relative Update File paths and ordinary +/- hunk lines. Never use unified-diff "
-    "headers. Derive the hunk from the file you just inspected; never copy placeholder "
-    "paths or old/new example text. If an exact patch is uncertain, use shell_command.\n"
+    "# Exact tool syntax\n"
+    "For inspection, editing, or tests, output one line in exactly this shape:\n"
+    'shell_command {"command":"find . -maxdepth 2 -type f | head -80",'
+    '"workdir":".","timeout_ms":120000}\n'
+    "Replace the command value with the command you need. The command field is required; "
+    "workdir and timeout_ms are optional.\n"
+    "For a patch, output exactly this shape:\n"
+    "apply_patch\n"
+    "*** Begin Patch\n"
+    "*** Update File: relative/path.py\n"
+    "@@\n"
+    "-old text\n"
+    "+new text\n"
+    "*** End Patch\n"
+    "Replace the path and hunk with text from the file you inspected. apply_patch is "
+    "optional; use shell_command when an exact patch is uncertain.\n\n"
+    "# Output contract\n"
+    "Start at byte zero with shell_command or apply_patch. Output only that one action: "
+    "no XML tags, explanation, label, Markdown fence, or <think> tag. After an "
+    "observation, emit the next action directly; do not describe what you plan to do. "
     "A shell command can edit the persistent workspace. Do not repeat a successful "
     "inspection or edit. Do not submit plain text until at least one source path has "
     "changed and the relevant tests have run; then a plain final response may summarize "
-    "the result. Prose before or after a tool call is a parser error and nothing runs. "
+    "the result. Prose before or after a tool action is a parser error and nothing runs. "
     "This workspace intentionally has no .git directory."
 )
 

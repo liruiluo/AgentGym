@@ -526,29 +526,28 @@ def _utc_now() -> str:
 def _initial_observation(problem_statement: str) -> str:
     return (
         "Repair the persistent repository in /testbed for this issue. Use exactly one "
-        "action per turn. The system message defines the two native tools; prefer "
-        "shell_command for inspection, editing, and tests. A tool response must begin "
-        "at byte zero with one complete <tool_call> block, with no reasoning, prose, "
-        "Markdown, or <think> tag. For apply_patch, use only parameter=patch and one "
-        "real *** Begin Patch ... *** End Patch payload; never add shell parameters or "
-        "copy placeholder hunks. The workspace persists for the whole episode and has "
-        "no .git directory. Do not submit plain text until a source path changed and "
-        "the relevant tests ran.\n\n"
+        "action per turn. Use shell_command for inspection, editing, and tests. Its exact "
+        "form is one line such as shell_command "
+        '{"command":"ls","workdir":"."}. Start at byte zero and output only the '
+        "action, without XML, prose, Markdown, or a <think> tag. apply_patch is optional "
+        "and starts with the literal line apply_patch followed by one complete "
+        "*** Begin Patch ... *** End Patch payload. The workspace persists for the whole "
+        "episode and has no .git directory. Do not submit plain text until a source path "
+        "changed and the relevant tests ran.\n\n"
         "Issue:\n"
         + problem_statement.strip()
-        + "\n\nNext response: emit the tool call itself, not a description of it."
+        + "\n\nBegin with a real shell action in the exact one-line form above."
     )
 
 
 def _parser_error_observation(action: ParsedPolicyAction) -> str:
     return (
-        f"Invalid action syntax: {action.error}. Retry with exactly one native "
-        "<tool_call> block, starting at byte zero, or submit a final response only "
-        "after editing and testing. Prefer shell_command: one command parameter and "
-        "optional workdir/timeout_ms. Retry function=apply_patch with exactly one patch parameter, "
-        "containing one real *** Begin Patch ... *** End Patch payload; do not add "
-        "shell parameters or placeholder hunks. No reasoning, Markdown, second call, "
-        "or text outside the block."
+        f"Invalid action syntax: {action.error}. Start at byte zero and retry exactly "
+        'like shell_command {"command":"pwd","workdir":"."} on one line. '
+        "For a patch, start with the literal line apply_patch, then one complete "
+        "*** Begin Patch ... *** End Patch payload. Output only one action, with no XML "
+        "tags, reasoning, Markdown, second action, or surrounding text. Submit plain "
+        "text only after editing and testing."
     )
 
 
