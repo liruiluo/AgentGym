@@ -7,7 +7,10 @@ from agentenv_agentmemory.workspace_sandbox import ShellSandboxLimits
 
 from .audit import SwesmithEpisodeAuditSink
 from .dataset import SwesmithDataset
-from .environment import SwesmithEpisodeManager
+from .environment import (
+    DEFAULT_TRAINING_MAX_POLICY_TURNS,
+    SwesmithEpisodeManager,
+)
 from .grader import SwesmithHiddenGrader
 from .image_manifest import SwesmithImageManifest
 from .profile import OfficialSwesmithProfileResolver
@@ -75,7 +78,10 @@ def build_manager_from_environment() -> SwesmithEpisodeManager:
         sandbox_factory=sandbox_factory,
         grader=SwesmithHiddenGrader(timeout_ms=grader_timeout),
         audit_sink=audit_sink,
-        max_steps=_integer("SWESMITH_MAX_STEPS", 60),
+        max_steps=_integer(
+            "SWESMITH_MAX_STEPS",
+            DEFAULT_TRAINING_MAX_POLICY_TURNS,
+        ),
         runtime_metadata={
             "image_manifest": images.public_metadata(),
             "dataset_revision": dataset_revision,

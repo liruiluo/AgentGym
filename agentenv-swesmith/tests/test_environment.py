@@ -246,6 +246,13 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         slot = self.manager.create()
         self.assertEqual(self.manager.metadata()["active_slot_count"], 1)
         self.assertEqual(self.manager.metadata()["active_environment_count"], 0)
+        self.assertEqual(self.manager.metadata()["max_steps"], 8)
+        self.assertEqual(self.manager.metadata()["configured_max_policy_turns"], 8)
+        self.assertEqual(self.manager.metadata()["training_max_policy_turns"], 75)
+        self.assertEqual(
+            self.manager.metadata()["upstream_reference_max_policy_turns"],
+            250,
+        )
         reset = self.manager.reset(slot, 0)
         self.assertIs(reset.info["episode_success"], False)
         self.assertEqual(self.manager.metadata()["active_environment_count"], 1)

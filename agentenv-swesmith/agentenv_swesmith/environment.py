@@ -27,6 +27,8 @@ from .workspace import SwesmithWorkspace, SwesmithWorkspaceMaterializer
 
 
 EPISODE_SCHEMA = "agentmemory_swesmith_native_episode_v1"
+DEFAULT_TRAINING_MAX_POLICY_TURNS = 75
+UPSTREAM_REFERENCE_MAX_POLICY_TURNS = 250
 
 
 class ProfileResolver(Protocol):
@@ -94,7 +96,7 @@ class SwesmithEpisodeManager:
         sandbox_factory: SandboxFactory,
         grader: SwesmithHiddenGrader,
         audit_sink: SwesmithEpisodeAuditSink | None = None,
-        max_steps: int = 60,
+        max_steps: int = DEFAULT_TRAINING_MAX_POLICY_TURNS,
         runtime_metadata: Mapping[str, Any] | None = None,
     ) -> None:
         if type(max_steps) is not int or max_steps <= 0:
@@ -300,6 +302,11 @@ class SwesmithEpisodeManager:
             "dataset_manifest_sha256": provenance.manifest_sha256,
             "selection_mode": provenance.selection_mode,
             "max_steps": self.max_steps,
+            "configured_max_policy_turns": self.max_steps,
+            "training_max_policy_turns": DEFAULT_TRAINING_MAX_POLICY_TURNS,
+            "upstream_reference_max_policy_turns": (
+                UPSTREAM_REFERENCE_MAX_POLICY_TURNS
+            ),
             "tool_contract": "codex_shell_command_apply_patch_v1",
             "tool_serialization": "qwen35_native_single_function_v1",
             "reward_contract": "terminal_full_resolution_binary_v1",

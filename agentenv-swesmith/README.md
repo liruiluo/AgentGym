@@ -21,3 +21,17 @@ episode close, the server atomically persists the exact observations, raw policy
 outputs, tool results, workspace diffs, terminal reward, and hidden F2P/P2P grade
 before deleting the episode workspace. The sink path and its contents are never
 returned by the policy-facing API.
+
+## Interaction budget
+
+AgentMemoryGym training uses at most 75 policy turns per SWE-smith episode.
+Every sampled policy output consumes one turn, including `shell_command`,
+`apply_patch`, final submission, parser errors, and policy-authored context
+compaction. Successful submissions terminate early. This is a bounded training
+contract, not the upstream benchmark default.
+
+The pinned Mini-SWE-Agent SWE-bench configuration at commit
+`a83fcae82d2a08f0ee0c688f9d137b3566c097f8` uses `step_limit: 250` in
+`src/minisweagent/config/benchmarks/swebench.yaml`. Held-out native evaluation
+uses that 250-turn reference limit so training-budget exhaustion is not reported
+as a coding-capability failure. Runtime metadata reports both values.
