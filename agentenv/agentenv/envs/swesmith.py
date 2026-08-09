@@ -32,7 +32,9 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "analysis, a plan, or phrases such as 'let me' before a tool call. Output one "
     "tool call and nothing else. A valid shell turn looks exactly like this: "
     'shell_command {"command":"sed -n \'1,200p\' path/to/file.py",'
-    '"workdir":".","timeout_ms":120000}. A valid patch turn looks exactly like this:\n'
+    '"workdir":".","timeout_ms":120000}. For shell_command, workdir must be '
+    'exactly "." or a normalized absolute path inside /testbed; "./" is invalid. '
+    "A valid patch turn looks exactly like this:\n"
     "apply_patch\n"
     "*** Begin Patch\n"
     "*** Update File: path/to/file.py\n"
@@ -55,7 +57,10 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "An apply_patch succeeded observation or a shell observation listing workspace "
     "changed paths confirms an edit. Never submit plain text until at least one edit "
     "has succeeded and the relevant tests have run. If you diagnosed the bug but no "
-    "path changed, edit the workspace instead of explaining the diagnosis."
+    "path changed, edit the workspace instead of explaining the diagnosis. When you "
+    "think 'I found the bug', 'I see the issue', or 'let me fix this', keep that thought "
+    "private: delete those words and make the next response begin at byte zero with "
+    "apply_patch or shell_command."
 )
 
 

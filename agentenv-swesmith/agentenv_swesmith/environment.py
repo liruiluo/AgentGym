@@ -532,6 +532,8 @@ def _initial_observation(problem_statement: str) -> str:
         "Exact shell example (replace the command; do not copy it literally):\n"
         'shell_command {"command":"sed -n \'1,200p\' path/to/file.py",'
         '"workdir":".","timeout_ms":120000}\n'
+        'For shell_command, workdir must be exactly "." or a normalized absolute '
+        'path inside /testbed; "./" is invalid.\n'
         "Exact patch shape (replace the path and lines):\n"
         "apply_patch\n"
         "*** Begin Patch\n"
@@ -557,7 +559,10 @@ def _initial_observation(problem_statement: str) -> str:
         "Issue:\n"
         + problem_statement.strip()
         + "\n\nAction reminder: for a tool turn, output only one exact shell_command JSON "
-        "call or one complete apply_patch payload. Do not prepend reasoning or prose."
+        "call or one complete apply_patch payload. Do not prepend reasoning or prose. "
+        "When you think 'I found the bug', 'I see the issue', or 'let me fix this', "
+        "keep that thought private: delete those words and make the response begin at "
+        "byte zero with apply_patch or shell_command."
     )
 
 

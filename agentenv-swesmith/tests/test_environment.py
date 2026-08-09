@@ -251,6 +251,9 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("Fix the public value", reset.observation)
         self.assertIn("Do not prepend reasoning or prose", reset.observation)
         self.assertIn("Use . (or /testbed) as the repository root", reset.observation)
+        self.assertIn('"./" is invalid', reset.observation)
+        self.assertIn("delete those words", reset.observation)
+        self.assertIn("begin at byte zero with apply_patch", reset.observation)
         self.assertIn(
             'shell_command {"command":"sed -n \'1,200p\' path/to/file.py",'
             '"workdir":".","timeout_ms":120000}',
