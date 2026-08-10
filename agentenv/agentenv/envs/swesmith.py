@@ -25,6 +25,7 @@ SWE_CONTEXT_COMPACTION_REQUEST = (
 )
 
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
+ACTION_PROGRESS_SCHEMA = "swesmith_action_progress_v1"
 _POSITIVE_ACTOR_CREDIT_BASES = {
     "shell_executed",
     "workspace_changed",
@@ -35,6 +36,7 @@ _INELIGIBLE_ACTOR_CREDIT_BASES = {
     "parser_rejected",
     "executor_rejected",
     "no_workspace_change",
+    "zero_progress_repeat",
 }
 
 
@@ -70,6 +72,43 @@ def _validate_actor_credit_receipt(value: Any) -> dict[str, Any]:
         "positive_eligible": positive_eligible,
         "basis": str(basis),
     }
+
+
+def _validate_action_progress_receipt(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise RuntimeError("SWE-smith shell response is missing action progress")
+    expected_keys = {
+        "schema",
+        "action_fingerprint",
+        "result_fingerprint",
+        "workspace_changed",
+    }
+    if set(value) != expected_keys:
+        raise RuntimeError(
+            "SWE-smith action-progress receipt has unexpected fields: "
+            f"{sorted(set(value) - expected_keys)}"
+        )
+    if value.get("schema") != ACTION_PROGRESS_SCHEMA:
+        raise RuntimeError("SWE-smith action-progress receipt schema drifted")
+    normalized: dict[str, Any] = {"schema": ACTION_PROGRESS_SCHEMA}
+    for key in ("action_fingerprint", "result_fingerprint"):
+        fingerprint = value.get(key)
+        if (
+            not isinstance(fingerprint, str)
+            or len(fingerprint) != 64
+            or any(character not in "0123456789abcdef" for character in fingerprint)
+        ):
+            raise RuntimeError(
+                f"SWE-smith action-progress {key} must be lowercase SHA256"
+            )
+        normalized[key] = fingerprint
+    workspace_changed = value.get("workspace_changed")
+    if type(workspace_changed) is not bool:
+        raise RuntimeError(
+            "SWE-smith action-progress workspace_changed must be boolean"
+        )
+    normalized["workspace_changed"] = workspace_changed
+    return normalized
 
 SWE_POLICY_SYSTEM_PROMPT = (
     "You are a coding agent in one persistent /testbed repository. Inspect, edit, "
@@ -155,6 +194,28 @@ class SwesmithEnvClient(BaseEnvClient):
         self._current_policy_context: list[dict[str, str]] | None = None
         self._policy_context_bound = False
         self._selected_policy_control: str | None = None
+        self._zero_progress_shell_receipts: set[tuple[str, str]] = set()
+
+    def _classify_shell_actor_credit(
+        self,
+        actor_credit: Mapping[str, Any],
+        action_progress: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if action_progress["workspace_changed"]:
+            self._zero_progress_shell_receipts.clear()
+            return dict(actor_credit)
+        key = (
+            str(action_progress["action_fingerprint"]),
+            str(action_progress["result_fingerprint"]),
+        )
+        if key in self._zero_progress_shell_receipts:
+            return {
+                "schema": ACTOR_CREDIT_SCHEMA,
+                "positive_eligible": False,
+                "basis": "zero_progress_repeat",
+            }
+        self._zero_progress_shell_receipts.add(key)
+        return dict(actor_credit)
 
     def policy_framing(self) -> list[dict[str, str]]:
         return [{"role": "system", "content": SWE_POLICY_SYSTEM_PROMPT}]
@@ -269,6 +330,21 @@ class SwesmithEnvClient(BaseEnvClient):
             if isinstance(response_env_info, Mapping)
             else None
         )
+        action_progress = None
+        if actor_credit["basis"] == "shell_executed":
+            action_progress = _validate_action_progress_receipt(
+                response_env_info.get("action_progress")
+            )
+            actor_credit = self._classify_shell_actor_credit(
+                actor_credit,
+                action_progress,
+            )
+        elif response_env_info.get("action_progress") is not None:
+            raise RuntimeError(
+                "SWE-smith action progress appeared on a non-executed shell action"
+            )
+        if actor_credit["basis"] == "workspace_changed":
+            self._zero_progress_shell_receipts.clear()
         after_step = response_env_info.get("step")
         if after_step is not None and int(after_step) != self._native_call_count:
             raise RuntimeError(
@@ -295,6 +371,7 @@ class SwesmithEnvClient(BaseEnvClient):
                     "event": "native_action",
                     "workspace_continuity_id": self.env_id,
                     "actor_credit": actor_credit,
+                    "action_progress": action_progress,
                 },
             ),
         )
@@ -317,6 +394,7 @@ class SwesmithEnvClient(BaseEnvClient):
         self._policy_step_count += 1
         self._context_epoch += 1
         self._selected_policy_control = None
+        self._zero_progress_shell_receipts.clear()
         return StepOutput(
             state=str(self.info.get("observation", "")),
             reward=0.0,

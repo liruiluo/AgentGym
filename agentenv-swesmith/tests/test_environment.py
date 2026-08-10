@@ -452,6 +452,50 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("apply_patch succeeded", patched.observation)
         self.manager.close(slot)
 
+    def test_shell_progress_fingerprint_ignores_runtime_and_tracks_mutation(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+
+        direct = self.manager.step(
+            slot,
+            'shell_command {"command":"cat src/value.py","workdir":"."}',
+        )
+        native = self.manager.step(
+            slot,
+            "<tool_call>\n"
+            "<function=shell_command>\n"
+            "<parameter=command>\n"
+            "cat src/value.py\n"
+            "</parameter>\n"
+            "<parameter=workdir>\n"
+            ".\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>",
+        )
+
+        self.assertEqual(
+            direct.info["action_progress"],
+            native.info["action_progress"],
+        )
+        self.assertEqual(
+            set(direct.info["action_progress"]),
+            {
+                "schema",
+                "action_fingerprint",
+                "result_fingerprint",
+                "workspace_changed",
+            },
+        )
+        self.assertFalse(direct.info["action_progress"]["workspace_changed"])
+
+        mutation = self.manager.step(
+            slot,
+            'shell_command {"command":"printf changed > notes.txt","workdir":"."}',
+        )
+        self.assertTrue(mutation.info["action_progress"]["workspace_changed"])
+        self.manager.close(slot)
+
     def test_rejected_patch_is_not_eligible_for_positive_actor_credit(self) -> None:
         slot = self.manager.create()
         self.manager.reset(slot, 0)

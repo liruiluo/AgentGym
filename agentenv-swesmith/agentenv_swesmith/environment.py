@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -31,6 +33,7 @@ DEFAULT_TRAINING_MAX_POLICY_TURNS = 75
 UPSTREAM_REFERENCE_MAX_POLICY_TURNS = 250
 DEFAULT_MAX_OBSERVATION_BYTES = 6144
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
+ACTION_PROGRESS_SCHEMA = "swesmith_action_progress_v1"
 
 
 class ProfileResolver(Protocol):
@@ -91,6 +94,54 @@ def _actor_credit(positive_eligible: bool, basis: str) -> dict[str, Any]:
         "schema": ACTOR_CREDIT_SCHEMA,
         "positive_eligible": positive_eligible,
         "basis": basis,
+    }
+
+
+def _stable_json_sha256(value: Mapping[str, Any]) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _shell_action_progress(
+    action: ParsedPolicyAction,
+    *,
+    result: Mapping[str, Any],
+) -> dict[str, Any]:
+    workspace_diff = result.get("workspace_diff")
+    if not isinstance(workspace_diff, Mapping):
+        raise RuntimeError("SWE-smith shell result lost its workspace diff")
+    action_payload = {
+        "kind": action.kind,
+        "arguments": dict(action.arguments or {}),
+    }
+    result_payload = {
+        key: result.get(key)
+        for key in (
+            "exit_code",
+            "timed_out",
+            "stdout",
+            "stderr",
+            "stdout_truncated",
+            "stderr_truncated",
+            "termination_reason",
+        )
+    }
+    result_payload.update(
+        {
+            "before_tree_sha256": workspace_diff.get("before_tree_sha256"),
+            "after_tree_sha256": workspace_diff.get("after_tree_sha256"),
+        }
+    )
+    return {
+        "schema": ACTION_PROGRESS_SCHEMA,
+        "action_fingerprint": _stable_json_sha256(action_payload),
+        "result_fingerprint": _stable_json_sha256(result_payload),
+        "workspace_changed": bool(workspace_diff.get("changed_paths")),
     }
 
 
@@ -240,6 +291,7 @@ class SwesmithEpisodeManager:
                 episode,
                 action_kind=action.kind,
                 actor_credit=actor_credit,
+                action_progress=evidence.get("action_progress"),
             )
 
     def observation(self, slot_id: int) -> str:
@@ -403,6 +455,10 @@ class SwesmithEpisodeManager:
             "termination_reason": result.termination_reason,
             "workspace_diff": execution.workspace_diff.as_dict(),
         }
+        evidence["action_progress"] = _shell_action_progress(
+            action,
+            result=evidence["result"],
+        )
         episode.observation = _shell_observation(
             exit_code=result.exit_code,
             elapsed_ms=result.elapsed_ms,
@@ -489,6 +545,7 @@ class SwesmithEpisodeManager:
         *,
         action_kind: str,
         actor_credit: Mapping[str, Any] | None = None,
+        action_progress: Mapping[str, Any] | None = None,
     ) -> EpisodeStep:
         info: dict[str, Any] = {
             "schema": EPISODE_SCHEMA,
@@ -503,6 +560,8 @@ class SwesmithEpisodeManager:
         }
         if actor_credit is not None:
             info["actor_credit"] = dict(actor_credit)
+        if action_progress is not None:
+            info["action_progress"] = dict(action_progress)
         return EpisodeStep(
             observation=episode.observation,
             reward=episode.reward,
