@@ -1,0 +1,806 @@
+{
+  "schema": "agentmemory_literesearcher_coverage_v1",
+  "dataset": "simplex-ai-inc/LiteResearcher-Data",
+  "config": "stage1",
+  "data_revision": "fff6b0cfef718859543a16f542ea248d30d1ac34",
+  "upstream_commit": "779e7d5f6a043d4100149ba0992a39507f69a974",
+  "selection_contract": "train_indices_0_63_and_heldout_indices_64_71",
+  "page_fixture_contract": "deterministic_excerpt_fixture_v1",
+  "manifest_sha256": "4be0a0d7dc02631b873b8e9da13374c95c0152eca4c605e0773198be57b67038",
+  "train": [
+    {
+      "index": 0,
+      "question": "What is the call number assigned to the 1986 A Charlin release of Wolfgang Amadeus Mozart's 'Betulia liberata: oratorio en deux parties de Pietro Metastasio, KV 118' at the CMU Audio and Visual 1st Floor location?",
+      "targets": [
+        "CAD 3340"
+      ],
+      "mask_url": "https://www.discogs.com/release/10605708-Wolfgang-Amadeus-Mozart-Orchestra-DellAngelicum-Di-Milano-Carlo-Felice-Cillario-Betulia-Liberata?srsltid=AfmBOop-6ISbksfj2pap5Zi9mYev0bhSiktphwXNZQZpowExVZIG0vd0)",
+      "public_url": "https://literesearcher.local/page/00000",
+      "page_title": "Frozen research source 00000",
+      "page_text": "Frozen source excerpt for intake row 0. The source evidence supports the requested answer: CAD 3340."
+    },
+    {
+      "index": 1,
+      "question": "What was the highest position reached by Lionel Richie's album 'Tuskegee' on the US Billboard 200 chart upon its release in March 2012?",
+      "targets": [
+        "number one"
+      ],
+      "mask_url": "https://en.wikipedia.org/wiki/Tuskegee_(album))",
+      "public_url": "https://literesearcher.local/page/00001",
+      "page_title": "Frozen research source 00001",
+      "page_text": "Frozen source excerpt for intake row 1. The source evidence supports the requested answer: number one."
+    },
+    {
+      "index": 2,
+      "question": "What was the total number of times Richard Nixon visited the Bahamas between 1960 and 1962, according to the text?",
+      "targets": [
+        "Three times"
+      ],
+      "mask_url": "https://whcacannonball.blogspot.com/2024/02/president-nixons-private-retreat-in.html)",
+      "public_url": "https://literesearcher.local/page/00002",
+      "page_title": "Frozen research source 00002",
+      "page_text": "Frozen source excerpt for intake row 2. The source evidence supports the requested answer: Three times."
+    },
+    {
+      "index": 3,
+      "question": "What is the official name of the virus that causes infectious mononucleosis, and which human herpesvirus type does it belong to?",
+      "targets": [
+        "The official name of the virus that causes infectious mononucleosis is Epstein-Barr virus (EBV), and it belongs to Human herpesvirus 4 (HHV 4)."
+      ],
+      "mask_url": "https://zh.wikipedia.org/zh-cn/%E5%82%B3%E6%9F%93%E6%80%A7%E5%96%AE%E6%A0%B8%E7%99%BD%E8%A1%80%E7%90%83%E5%A2%9E%E5%A4%9A%E7%97%87)",
+      "public_url": "https://literesearcher.local/page/00003",
+      "page_title": "Frozen research source 00003",
+      "page_text": "Frozen source excerpt for intake row 3. The source evidence supports the requested answer: The official name of the virus that causes infectious mononucleosis is Epstein-Barr virus (EBV), and it belongs to Human herpesvirus 4 (HHV 4).."
+    },
+    {
+      "index": 4,
+      "question": "What was the main span length of the Williamsburg Bridge, which spans the East River between Manhattan and Brooklyn in New York City, in meters?",
+      "targets": [
+        "488 m"
+      ],
+      "mask_url": "https://en.wikipedia.org/wiki/Williamsburg_Bridge)",
+      "public_url": "https://literesearcher.local/page/00004",
+      "page_title": "Frozen research source 00004",
+      "page_text": "Frozen source excerpt for intake row 4. The source evidence supports the requested answer: 488 m."
+    },
+    {
+      "index": 5,
+      "question": "In what year did the Russian American Company establish a monopoly over the fur trade in coastal Alaska?",
+      "targets": [
+        "1799"
+      ],
+      "mask_url": "https://en.wikipedia.org/wiki/Russian-American_Company)",
+      "public_url": "https://literesearcher.local/page/00005",
+      "page_title": "Frozen research source 00005",
+      "page_text": "Frozen source excerpt for intake row 5. The source evidence supports the requested answer: 1799."
+    },
+    {
+      "index": 6,
+      "question": "What is the full official name and mailing address of the American Society of Hematology as listed on its official website?",
+      "targets": [
+        "American Society of Hematology, 2021 L Street NW, Suite 900, Washington, DC 20036"
+      ],
+      "mask_url": "https://www.hematology.org/contact-us)",
+      "public_url": "https://literesearcher.local/page/00006",
+      "page_title": "Frozen research source 00006",
+      "page_text": "Frozen source excerpt for intake row 6. The source evidence supports the requested answer: American Society of Hematology, 2021 L Street NW, Suite 900, Washington, DC 20036."
+    },
+    {
+      "index": 7,
+      "question": "What was the title of the book published by Welsh educator David Greenslade based on his research into Welsh settlements in the United States?",
+      "targets": [
+        "Welsh Fever"
+      ],
+      "mask_url": "https://wpgs.org/product/00286-welsh-fever-welsh-activities-in-the-united-states-and-canada-today/)",
+      "public_url": "https://literesearcher.local/page/00007",
+      "page_title": "Frozen research source 00007",
+      "page_text": "Frozen source excerpt for intake row 7. The source evidence supports the requested answer: Welsh Fever."
+    },
+    {
+      "index": 8,
+      "question": "在2023年6月发布的《Anaerobe》期刊第81卷中，北欧厌氧菌AST研究组开展的*Bacteroides*物种纸片扩散法抗菌药物敏感性测试研究中，哌拉西林-他唑巴坦的测试结果在哪些类型的菌株中出现最多的假敏感结果？",
+      "targets": [
+        "*cfiA*阳性菌株"
+      ],
+      "mask_url": "https://pubmed.ncbi.nlm.nih.gov/37253399/)",
+      "public_url": "https://literesearcher.local/page/00008",
+      "page_title": "Frozen research source 00008",
+      "page_text": "Frozen source excerpt for intake row 8. The source evidence supports the requested answer: *cfiA*阳性菌株."
+    },
+    {
+      "index": 9,
+      "question": "In the *Cable & Deadpool* story arc titled *The Domino Principle*, what country was Flag-Smasher ruling as its dictator when Cable hired Deadpool to remove him?",
+      "targets": [
+        "Rumekistan"
+      ],
+      "mask_url": "https://marvel.fandom.com/wiki/The_Domino_Principle)",
+      "public_url": "https://literesearcher.local/page/00009",
+      "page_title": "Frozen research source 00009",
+      "page_text": "Frozen source excerpt for intake row 9. The source evidence supports the requested answer: Rumekistan."
+    },
+    {
+      "index": 10,
+      "question": "What was the primary religious tradition that played a central role in the Iranian Revolution, with protest movements increasingly framed under the banner of Shiʿi Islam and the rallying cry 'Allāhu akbar'?",
+      "targets": [
+        "Shiʿi Islam"
+      ],
+      "mask_url": "https://www.britannica.com/event/Iranian-Revolution)",
+      "public_url": "https://literesearcher.local/page/00010",
+      "page_title": "Frozen research source 00010",
+      "page_text": "Frozen source excerpt for intake row 10. The source evidence supports the requested answer: Shiʿi Islam."
+    },
+    {
+      "index": 11,
+      "question": "What is the ISBN number of the print edition of Pretty Deadly, Vol. 3: The Rat TP, released on March 18, 2020, by Image Comics?",
+      "targets": [
+        "9781534315198"
+      ],
+      "mask_url": "https://www.amazon.com/Pretty-Deadly-Kelly-Sue-DeConnick/dp/1534315195)",
+      "public_url": "https://literesearcher.local/page/00011",
+      "page_title": "Frozen research source 00011",
+      "page_text": "Frozen source excerpt for intake row 11. The source evidence supports the requested answer: 9781534315198."
+    },
+    {
+      "index": 12,
+      "question": "What was the name of the bill introduced by Oregon State Senator Brian Boquist in January 2015 that sought to establish the International System of Units as the official units of measurement within the State of Oregon?",
+      "targets": [
+        "Oregon Senate Bill 166"
+      ],
+      "mask_url": "https://olis.oregonlegislature.gov/liz/2015R1/Downloads/MeasureDocument/SB166/Introduced)",
+      "public_url": "https://literesearcher.local/page/00012",
+      "page_title": "Frozen research source 00012",
+      "page_text": "Frozen source excerpt for intake row 12. The source evidence supports the requested answer: Oregon Senate Bill 166."
+    },
+    {
+      "index": 13,
+      "question": "Which organisation is identified by the OrgID GB-CHC-1130001 in the Find that Charity database?",
+      "targets": [
+        "The Parochial Church Council of the Ecclesiastical Parish of Aldershot Saint Michael"
+      ],
+      "mask_url": "https://findthatcharity.uk/)",
+      "public_url": "https://literesearcher.local/page/00013",
+      "page_title": "Frozen research source 00013",
+      "page_text": "Frozen source excerpt for intake row 13. The source evidence supports the requested answer: The Parochial Church Council of the Ecclesiastical Parish of Aldershot Saint Michael."
+    },
+    {
+      "index": 14,
+      "question": "Debbie Reynolds, born Mary Frances Reynolds in El Paso, Texas, was raised in a strict Nazarene faith and moved to Burbank, California, in 1939—what was her father's occupation?",
+      "targets": [
+        "Carpenter for the Southern Pacific Railroad"
+      ],
+      "mask_url": "https://en.wikipedia.org/wiki/Debbie_Reynolds)",
+      "public_url": "https://literesearcher.local/page/00014",
+      "page_title": "Frozen research source 00014",
+      "page_text": "Frozen source excerpt for intake row 14. The source evidence supports the requested answer: Carpenter for the Southern Pacific Railroad."
+    },
+    {
+      "index": 15,
+      "question": "在2024年5月11日于瑞典马尔默举行的第68届欧洲歌唱大赛决赛中，克罗地亚代表贝比·拉桑娜（Baby Lasagna）获得了多少总分并位列第几名？",
+      "targets": [
+        "547分，第2名"
+      ],
+      "mask_url": "https://zh.wikipedia.org/zh-cn/2024%E5%B9%B4%E6%AD%90%E6%B4%B2%E6%AD%8C%E5%94%B1%E5%A4%A7%E8%B3%BD)",
+      "public_url": "https://literesearcher.local/page/00015",
+      "page_title": "Frozen research source 00015",
+      "page_text": "Frozen source excerpt for intake row 15. The source evidence supports the requested answer: 547分，第2名."
+    },
+    {
+      "index": 16,
+      "question": "Ariana Grande, born Ariana Grande-Butera in Boca Raton, Florida, starred in the 2008 musical '13' and later became a household name through her roles on Nickelodeon, including Cat Valentine in which sitcom that aired from 2010?",
+      "targets": [
+        "Victorious"
+      ],
+      "mask_url": "https://en.wikipedia.org/wiki/Sam_%26_Cat)",
+      "public_url": "https://literesearcher.local/page/00016",
+      "page_title": "Frozen research source 00016",
+      "page_text": "Frozen source excerpt for intake row 16. The source evidence supports the requested answer: Victorious."
+    },
+    {
+      "index": 17,
+      "question": "What is the Hawaiian word for taro, and what is the official state plant of Hawaii as designated in 2007?",
+      "targets": [
+        "Kalo, Kalo"
+      ],
+      "mask_url": "https://www.plant-ecology.com/article/2014/1005-264X/1005-264X-38-10-1135.shtml)",
+      "public_url": "https://literesearcher.local/page/00017",
+      "page_title": "Frozen research source 00017",
+      "page_text": "Frozen source excerpt for intake row 17. The source evidence supports the requested answer: Kalo, Kalo."
+    },
+    {
+      "index": 18,
+      "question": "Who directed the 'The Office' episode titled 'Business Trip' that aired on November 13, 2008, in the United States?",
+      "targets": [
+        "Randall Einhorn"
+      ],
+      "mask_url": "https://www.imdb.com/title/tt1248751/)",
+      "public_url": "https://literesearcher.local/page/00018",
+      "page_title": "Frozen research source 00018",
+      "page_text": "Frozen source excerpt for intake row 18. The source evidence supports the requested answer: Randall Einhorn."
+    },
+    {
+      "index": 19,
+      "question": "Alan Shearer, the all-time leading goal scorer in Premier League history, scored how many goals during his career with Blackburn Rovers and Newcastle United as of November 8, 2025?",
+      "targets": [
+        "260"
+      ],
+      "mask_url": "https://www.transfermarkt.us/alan-shearer/leistungsdatenverein/spieler/3110)",
+      "public_url": "https://literesearcher.local/page/00019",
+      "page_title": "Frozen research source 00019",
+      "page_text": "Frozen source excerpt for intake row 19. The source evidence supports the requested answer: 260."
+    },
+    {
+      "index": 20,
+      "question": "Who served as the Chief Minister of Karnataka from 2021 to 2023, and which political party did they belong to?",
+      "targets": [
+        "Basavaraj Bommai, Bharatiya Janata Party"
+      ],
+      "mask_url": "https://en.wikipedia.org/wiki/Chief_Minister_of_Karnataka)",
+      "public_url": "https://literesearcher.local/page/00020",
+      "page_title": "Frozen research source 00020",
+      "page_text": "Frozen source excerpt for intake row 20. The source evidence supports the requested answer: Basavaraj Bommai, Bharatiya Janata Party."
+    },
+    {
+      "index": 21,
+      "question": "What is the recommended method for reviving a maidenhair fern whose root ball has completely dried out?",
+      "targets": [
+        "Fully immerse the root ball in water and prune all dry fronds"
+      ],
+      "mask_url": "https://www.swoonworthy.co.uk/2019/05/6-secrets-maidenhair-fern.html/)",
+      "public_url": "https://literesearcher.local/page/00021",
+      "page_title": "Frozen research source 00021",
+      "page_text": "Frozen source excerpt for intake row 21. The source evidence supports the requested answer: Fully immerse the root ball in water and prune all dry fronds."
+    },
+    {
+      "index": 22,
+      "question": "Who was the editor of the 2011 Indian film *Delhi Belly*, directed by Abhinay Deo and produced by Aamir Khan Productions?",
+      "targets": [
+        "Huzefa Lokhandwala"
+      ],
+      "mask_url": "https://en.wikipedia.org/wiki/Delhi_Belly_(film))",
+      "public_url": "https://literesearcher.local/page/00022",
+      "page_title": "Frozen research source 00022",
+      "page_text": "Frozen source excerpt for intake row 22. The source evidence supports the requested answer: Huzefa Lokhandwala."
+    },
+    {
+      "index": 23,
+      "question": "What was the name of the corruption scandal in Brazil that involved the state-run oil company Petrobras and led to the investigation of Mossack Fonseca in February 2017?",
+      "targets": [
+        "Operation Carwash (Lava Jato)"
+      ],
+      "mask_url": "http://paper.people.com.cn/zgnyb/html/2014-11/24/content_1502781.htm)",
+      "public_url": "https://literesearcher.local/page/00023",
+      "page_title": "Frozen research source 00023",
+      "page_text": "Frozen source excerpt for intake row 23. The source evidence supports the requested answer: Operation Carwash (Lava Jato)."
+    },
+    {
+      "index": 24,
+      "question": "2025年11月17日，Leonids（狮子座流星雨）的ZHR、最大活动日期、辐射点赤经和赤纬、速度及辐射点位置分别是什么？",
+      "targets": [
+        "Leonids（狮子座流星雨）在2025年11月17日达到最大活动；其ZHR为15；辐射点赤经为235.4°，赤纬为+21.8°；流星体进入大气层的速度为69.7 km/s。"
+      ],
+      "mask_url": "https://starwalk.space/zh-Hans/news/meteor-shower-calendar)",
+      "public_url": "https://literesearcher.local/page/00024",
+      "page_title": "Frozen research source 00024",
+      "page_text": "Frozen source excerpt for intake row 24. The source evidence supports the requested answer: Leonids（狮子座流星雨）在2025年11月17日达到最大活动；其ZHR为15；辐射点赤经为235.4°，赤纬为+21.8°；流星体进入大气层的速度为69.7 km/s。."
+    },
+    {
+      "index": 25,
+      "question": "How many Pyrenees Cup titles did FC Barcelona win, and in which seasons were these victories achieved?",
+      "targets": [
+        "4 titles; 1909-10, 1910-11, 1911-12, 1912-13"
+      ],
+      "mask_url": "https://www.fcbarcelona.com/en/football/first-team/honours)",
+      "public_url": "https://literesearcher.local/page/00025",
+      "page_title": "Frozen research source 00025",
+      "page_text": "Frozen source excerpt for intake row 25. The source evidence supports the requested answer: 4 titles; 1909-10, 1910-11, 1911-12, 1912-13."
+    },
+    {
+      "index": 26,
+      "question": "What is the total number of genera and estimated species in the Iridaceae plant family, which is also known as the iris family and belongs to the order Asparagales?",
+      "targets": [
+        "66 genera and around 2,200 species"
+      ],
+      "mask_url": "https://en.wikipedia.org/wiki/Iridaceae)",
+      "public_url": "https://literesearcher.local/page/00026",
+      "page_title": "Frozen research source 00026",
+      "page_text": "Frozen source excerpt for intake row 26. The source evidence supports the requested answer: 66 genera and around 2,200 species."
+    },
+    {
+      "index": 27,
+      "question": "威廉·罗伯特·艾利森（Bob Allison）在其整个13年大联盟职业生涯中，总胜利贡献值（WAR）是多少？",
+      "targets": [
+        "34.1"
+      ],
+      "mask_url": "https://www.baseball-reference.com/players/a/allisbo01.shtml)",
+      "public_url": "https://literesearcher.local/page/00027",
+      "page_title": "Frozen research source 00027",
+      "page_text": "Frozen source excerpt for intake row 27. The source evidence supports the requested answer: 34.1."
+    },
+    {
+      "index": 28,
+      "question": "在2020年1月28日发表的《Res Synth Methods》期刊第11卷第2期中，Michael Gusenbauer与Neal R Haddaway共同研究的学术搜索系统评估中，共测试了多少个广泛使用的学术搜索系统？",
+      "targets": [
+        "28个"
+      ],
+      "mask_url": "https://pubmed.ncbi.nlm.nih.gov/31614060/)",
+      "public_url": "https://literesearcher.local/page/00028",
+      "page_title": "Frozen research source 00028",
+      "page_text": "Frozen source excerpt for intake row 28. The source evidence supports the requested answer: 28个."
+    },
+    {
+      "index": 29,
+      "question": "1983年4月，芝加哥首位非裔美国市长哈罗德·华盛顿宣誓就职后，他与哪个政治派别发生了激烈对抗？",
+      "targets": [
+        "“弗罗多亚克29人”派系"
+      ],
+      "mask_url": "https://www.thepaper.cn/newsDetail_forward_22561080?commTag=true)",
+      "public_url": "https://literesearcher.local/page/00029",
+      "page_title": "Frozen research source 00029",
+      "page_text": "Frozen source excerpt for intake row 29. The source evidence supports the requested answer: “弗罗多亚克29人”派系."
+    },
+    {
+      "index": 30,
+      "question": "Bernard Voorhoof在1937年4月18日于比利时布鲁塞尔的国王博杜安体育场对阵瑞士国家队的友谊赛中，攻入的进球使比利时队的比分变为多少？",
+      "targets": [
+        "1–2"
+      ],
+      "mask_url": "https://zh.wikipedia.org/zh-cn/%E5%B7%B4%E7%B4%8D%E7%89%B9%C2%B7%E7%A6%BE%E8%B3%80%E5%A4%AB)",
+      "public_url": "https://literesearcher.local/page/00030",
+      "page_title": "Frozen research source 00030",
+      "page_text": "Frozen source excerpt for intake row 30. The source evidence supports the requested answer: 1–2."
+    },
+    {
+      "index": 31,
+      "question": "In what year did Greer Garson win the Best Actress Oscar for *Mrs Miniver*, the film for which she delivered the previous longest acceptance speech?",
+      "targets": [
+        "1943"
+      ],
+      "mask_url": "https://www.oscars.org/oscars/ceremonies/1943)",
+      "public_url": "https://literesearcher.local/page/00031",
+      "page_title": "Frozen research source 00031",
+      "page_text": "Frozen source excerpt for intake row 31. The source evidence supports the requested answer: 1943."
+    },
+    {
+      "index": 32,
+      "question": "What was the total number of Premier League titles won by Blackburn Rovers during Alan Shearer's tenure at the club, and in which season did they win it?",
+      "targets": [
+        "One title, in the 1994–95 season"
+      ],
+      "mask_url": "https://en.wikipedia.org/wiki/1994%E2%80%9395_Blackburn_Rovers_F.C._season)",
+      "public_url": "https://literesearcher.local/page/00032",
+      "page_title": "Frozen research source 00032",
+      "page_text": "Frozen source excerpt for intake row 32. The source evidence supports the requested answer: One title, in the 1994–95 season."
+    },
+    {
+      "index": 33,
+      "question": "What was the total number of personnel in the Russian Armed Forces' reserve component as estimated by the IISS in 2010?",
+      "targets": [
+        "About 2,035,000"
+      ],
+      "mask_url": "https://www.iiss.org/publications/strategic-dossiers/russias-military-modernisation/)",
+      "public_url": "https://literesearcher.local/page/00033",
+      "page_title": "Frozen research source 00033",
+      "page_text": "Frozen source excerpt for intake row 33. The source evidence supports the requested answer: About 2,035,000."
+    },
+    {
+      "index": 34,
+      "question": "What is the publication date of the hardcover edition of the book 'Three Postwar Eras in Comparison: Western Europe 1918–1945–1989' with ISBN 978-0-333-72103-2?",
+      "targets": [
+        "14 December 2001"
+      ],
+      "mask_url": "https://www.amazon.com/Looseleaf-History-Europe-Modern-World/dp/126068721X)",
+      "public_url": "https://literesearcher.local/page/00034",
+      "page_title": "Frozen research source 00034",
+      "page_text": "Frozen source excerpt for intake row 34. The source evidence supports the requested answer: 14 December 2001."
+    },
+    {
+      "index": 35,
+      "question": "What improvement in LaToya Cantrell's health occurred after she moved from Los Angeles to Palmdale, California, with her grandmother?",
+      "targets": [
+        "She stopped needing weekly breathing treatments"
+      ],
+      "mask_url": "https://www.bhamwiki.com/w/LaToya_Cantrell)",
+      "public_url": "https://literesearcher.local/page/00035",
+      "page_title": "Frozen research source 00035",
+      "page_text": "Frozen source excerpt for intake row 35. The source evidence supports the requested answer: She stopped needing weekly breathing treatments."
+    },
+    {
+      "index": 36,
+      "question": "Which British textile manufacturing center experienced a protest on March 11, 1811, that led to the destruction of textile machinery by angry workers, marking the beginning of the Luddite disturbances?",
+      "targets": [
+        "Nottingham"
+      ],
+      "mask_url": "https://en.wikipedia.org/wiki/Luddite)",
+      "public_url": "https://literesearcher.local/page/00036",
+      "page_title": "Frozen research source 00036",
+      "page_text": "Frozen source excerpt for intake row 36. The source evidence supports the requested answer: Nottingham."
+    },
+    {
+      "index": 37,
+      "question": "How much of the independent expenditures made by the super PAC Americans for a Better Tomorrow, Tomorrow, Inc. in the 2012 election cycle was spent opposing Newt Gingrich?",
+      "targets": [
+        "$26,102"
+      ],
+      "mask_url": "https://www.fec.gov/data/committee/C00498097/)",
+      "public_url": "https://literesearcher.local/page/00037",
+      "page_title": "Frozen research source 00037",
+      "page_text": "Frozen source excerpt for intake row 37. The source evidence supports the requested answer: $26,102."
+    },
+    {
+      "index": 38,
+      "question": "In which year did Pope Leo XIII receive his doctorate in theology and doctorates in civil and canon law, and where did he study?",
+      "targets": [
+        "1836 in Rome"
+      ],
+      "mask_url": "https://baike.baidu.com/item/%E5%88%A9%E5%A5%A5%E5%8D%81%E4%B8%89%E4%B8%96/9730510)",
+      "public_url": "https://literesearcher.local/page/00038",
+      "page_title": "Frozen research source 00038",
+      "page_text": "Frozen source excerpt for intake row 38. The source evidence supports the requested answer: 1836 in Rome."
+    },
+    {
+      "index": 39,
+      "question": "1962年发行的《Jazz Jamboree '61》（波兰爵士系列第二卷）专辑中，Adam Jędrzejowski在《Jazz Outsiders》乐队中担任什么乐器演奏？",
+      "targets": [
+        "鼓"
+      ],
+      "mask_url": "https://en.apu.ac.jp/apconf/program/2025/Abstract_Book2025.pdf?v=251119)",
+      "public_url": "https://literesearcher.local/page/00039",
+      "page_title": "Frozen research source 00039",
+      "page_text": "Frozen source excerpt for intake row 39. The source evidence supports the requested answer: 鼓."
+    },
+    {
+      "index": 40,
+      "question": "1853年，英国数学家威廉·尚克斯计算出的圆周率π的正确小数位数是多少？",
+      "targets": [
+        "527"
+      ],
+      "mask_url": "https://zh.wikipedia.org/zh-cn/%E5%9C%93%E5%91%A8%E7%8E%87)",
+      "public_url": "https://literesearcher.local/page/00040",
+      "page_title": "Frozen research source 00040",
+      "page_text": "Frozen source excerpt for intake row 40. The source evidence supports the requested answer: 527."
+    },
+    {
+      "index": 41,
+      "question": "What was the name of the television crime drama series that Walter Winchell narrated from 1959 to 1963, which was set in the 1930s and focused on federal agents combating organized crime?",
+      "targets": [
+        "The Untouchables"
+      ],
+      "mask_url": "https://www.imdb.com/title/tt0052522/)",
+      "public_url": "https://literesearcher.local/page/00041",
+      "page_title": "Frozen research source 00041",
+      "page_text": "Frozen source excerpt for intake row 41. The source evidence supports the requested answer: The Untouchables."
+    },
+    {
+      "index": 42,
+      "question": "What is the average annual precipitation in the highest elevations of Arizona, based on the range reported for those areas?",
+      "targets": [
+        "65 to 76 centimeters (25 to 30 inches)"
+      ],
+      "mask_url": "https://geoalliance.asu.edu/sites/g/files/litvpz866/files/LessonFiles/Anderson/raindrops/AndersonRaindropsS.pdf)",
+      "public_url": "https://literesearcher.local/page/00042",
+      "page_title": "Frozen research source 00042",
+      "page_text": "Frozen source excerpt for intake row 42. The source evidence supports the requested answer: 65 to 76 centimeters (25 to 30 inches)."
+    },
+    {
+      "index": 43,
+      "question": "Who paid tribute to Jack Boothman by describing him as a 'gentleman' and 'very warm and courteous'?",
+      "targets": [
+        "Deputy First Minister Martin McGuinness"
+      ],
+      "mask_url": "https://www.bbc.com/news/uk-northern-ireland-36255603)",
+      "public_url": "https://literesearcher.local/page/00043",
+      "page_title": "Frozen research source 00043",
+      "page_text": "Frozen source excerpt for intake row 43. The source evidence supports the requested answer: Deputy First Minister Martin McGuinness."
+    },
+    {
+      "index": 44,
+      "question": "What was the name of the 1960 film in which Dolores del Rio played the Native American mother of Elvis Presley's character, marking her long-awaited return to Hollywood after nearly two decades?",
+      "targets": [
+        "Flaming Star"
+      ],
+      "mask_url": "https://www.imdb.com/title/tt0053825/)",
+      "public_url": "https://literesearcher.local/page/00044",
+      "page_title": "Frozen research source 00044",
+      "page_text": "Frozen source excerpt for intake row 44. The source evidence supports the requested answer: Flaming Star."
+    },
+    {
+      "index": 45,
+      "question": "The 2018 film 'The Predator' was filmed primarily in British Columbia, Canada, with principal photography beginning on February 20, 2017, and additional photography taking place in March 2018; what was the original planned theatrical release date for the film before it was delayed to September 14, 2018?",
+      "targets": [
+        "March 2, 2018"
+      ],
+      "mask_url": "https://en.wikipedia.org/wiki/The_Predator_(film))",
+      "public_url": "https://literesearcher.local/page/00045",
+      "page_title": "Frozen research source 00045",
+      "page_text": "Frozen source excerpt for intake row 45. The source evidence supports the requested answer: March 2, 2018."
+    },
+    {
+      "index": 46,
+      "question": "El Jaish SC在2017年4月15日的卡塔尔星级联赛第26轮比赛中，客场对阵Al-Sadd SC，最终比分为多少？",
+      "targets": [
+        "2-1"
+      ],
+      "mask_url": "https://www.xscores.com/soccer/match/al-sadd-vs-el-jaish/15-04-2017/943137)",
+      "public_url": "https://literesearcher.local/page/00046",
+      "page_title": "Frozen research source 00046",
+      "page_text": "Frozen source excerpt for intake row 46. The source evidence supports the requested answer: 2-1."
+    },
+    {
+      "index": 47,
+      "question": "What is the VAT identification number of MW Books Ltd., the seller of the second edition of 'Code for Classifiers - Principles Governing the Consistent Placing of Books in a System of Classification' published in 1939?",
+      "targets": [
+        "IE 6402786L"
+      ],
+      "mask_url": "https://books.google.com/books/about/Code_for_Classifiers.html?id=9sCdQ9JBxQQC)",
+      "public_url": "https://literesearcher.local/page/00047",
+      "page_title": "Frozen research source 00047",
+      "page_text": "Frozen source excerpt for intake row 47. The source evidence supports the requested answer: IE 6402786L."
+    },
+    {
+      "index": 48,
+      "question": "What was the Haitian population in Irvington, New Jersey as of the 2010 United States Census?",
+      "targets": [
+        "6,090"
+      ],
+      "mask_url": "https://en.wikipedia.org/wiki/Irvington,_New_Jersey)",
+      "public_url": "https://literesearcher.local/page/00048",
+      "page_title": "Frozen research source 00048",
+      "page_text": "Frozen source excerpt for intake row 48. The source evidence supports the requested answer: 6,090."
+    },
+    {
+      "index": 49,
+      "question": "What was the name of the drag queen character portrayed by Willow Pill in the Snatch Game challenge of RuPaul's Drag Race Season 14, which placed her in the bottom seven during that episode?",
+      "targets": [
+        "Drew Barrymore"
+      ],
+      "mask_url": "https://www.reddit.com/r/rupaulsdragrace/comments/tcj3sx/willows_snatch_game_character/)",
+      "public_url": "https://literesearcher.local/page/00049",
+      "page_title": "Frozen research source 00049",
+      "page_text": "Frozen source excerpt for intake row 49. The source evidence supports the requested answer: Drew Barrymore."
+    },
+    {
+      "index": 50,
+      "question": "Zooparc de Beauval在2022年4月公布的未来三年投资计划中，计划投资5000万欧元用于哪三个主要项目？",
+      "targets": [
+        "1. 一座高30米、占地1.6公顷的大型南美鸟类栖息地，预计2023至2024年开放；2. 一座全新的入口鸟类栖息地，包含一座新建筑和一条隧道，使游客可从停车场直接进入园区而不必穿越马路；3. 位于圣艾尼亚市中心原医院旧址的新酒店，拥有147间客房。"
+      ],
+      "mask_url": "https://www.parsisonline.uk/ent/)",
+      "public_url": "https://literesearcher.local/page/00050",
+      "page_title": "Frozen research source 00050",
+      "page_text": "Frozen source excerpt for intake row 50. The source evidence supports the requested answer: 1. 一座高30米、占地1.6公顷的大型南美鸟类栖息地，预计2023至2024年开放；2. 一座全新的入口鸟类栖息地，包含一座新建筑和一条隧道，使游客可从停车场直接进入园区而不必穿越马路；3. 位于圣艾尼亚市中心原医院旧址的新酒店，拥有147间客房。."
+    },
+    {
+      "index": 51,
+      "question": "Wendell M. Latimer和Worth H. Rodebush在1920年7月1日发表于《Journal of the American Chemical Society》第42卷第7期的论文《Polarity and Ionization from the Standpoint of the Lewis Theory of Valence》的DOI号是什么？",
+      "targets": [
+        "10.1021/ja01452a015"
+      ],
+      "mask_url": "https://pubs.acs.org/doi/10.1021/ja01452a015)",
+      "public_url": "https://literesearcher.local/page/00051",
+      "page_title": "Frozen research source 00051",
+      "page_text": "Frozen source excerpt for intake row 51. The source evidence supports the requested answer: 10.1021/ja01452a015."
+    },
+    {
+      "index": 52,
+      "question": "What was the purpose of the 'Route Confirmatory Sign' on national roads in Ireland, and at what distance from the exit is it typically located?",
+      "targets": [
+        "The 'Route Confirmatory Sign' is located 500 m following the exit and provides confirmation of the route ahead."
+      ],
+      "mask_url": "https://www.sabre-roads.org.uk/wiki/Route_Confirmation_Sign)",
+      "public_url": "https://literesearcher.local/page/00052",
+      "page_title": "Frozen research source 00052",
+      "page_text": "Frozen source excerpt for intake row 52. The source evidence supports the requested answer: The 'Route Confirmatory Sign' is located 500 m following the exit and provides confirmation of the route ahead.."
+    },
+    {
+      "index": 53,
+      "question": "Which song by British dream pop band Slowdive, released in June 2023 as part of their album *everything is alive*, was ranked #10 on the blogger's 100 Best Songs of 2023 list and described as a song about having a 'second act' in life?",
+      "targets": [
+        "kisses"
+      ],
+      "mask_url": "https://www.capradio.org/news/npr/story?storyid=1198625743)",
+      "public_url": "https://literesearcher.local/page/00053",
+      "page_title": "Frozen research source 00053",
+      "page_text": "Frozen source excerpt for intake row 53. The source evidence supports the requested answer: kisses."
+    },
+    {
+      "index": 54,
+      "question": "在CN1341589A专利的实施例4中，制备1,3,6-己烷三腈时，所用的丙烯腈在20毫升甲苯中的体积是多少毫升？",
+      "targets": [
+        "4ml"
+      ],
+      "mask_url": "https://patents.google.com/patent/CN1341589A/zh)",
+      "public_url": "https://literesearcher.local/page/00054",
+      "page_title": "Frozen research source 00054",
+      "page_text": "Frozen source excerpt for intake row 54. The source evidence supports the requested answer: 4ml."
+    },
+    {
+      "index": 55,
+      "question": "In which year was George H. Kerr's book 'Okinawa: The History of an Island People' reprinted by Tuttle with a new introduction and appendix by Okinawa history scholar Mitsugu Sakihara?",
+      "targets": [
+        "2000"
+      ],
+      "mask_url": "https://www.amazon.com/Okinawa-History-Island-George-Kerr/dp/4805314796)",
+      "public_url": "https://literesearcher.local/page/00055",
+      "page_title": "Frozen research source 00055",
+      "page_text": "Frozen source excerpt for intake row 55. The source evidence supports the requested answer: 2000."
+    },
+    {
+      "index": 56,
+      "question": "在1963年Cheves Walling和Earl S. Huyser发表于《有机反应》的综述中，AIBN（偶氮二异丁腈）在80°C下的分解半衰期约为多少小时？",
+      "targets": [
+        "约一小时"
+      ],
+      "mask_url": "https://patents.google.com/patent/CN101379091B/zh)",
+      "public_url": "https://literesearcher.local/page/00056",
+      "page_title": "Frozen research source 00056",
+      "page_text": "Frozen source excerpt for intake row 56. The source evidence supports the requested answer: 约一小时."
+    },
+    {
+      "index": 57,
+      "question": "What was the highest position reached by 'Hollaback Girl' on the UK Singles Chart in 2005, and what was its debut position?",
+      "targets": [
+        "Number eight; it debuted at number eight"
+      ],
+      "mask_url": "https://www.officialcharts.com/songs/gwen-stefani-hollaback-girl/)",
+      "public_url": "https://literesearcher.local/page/00057",
+      "page_title": "Frozen research source 00057",
+      "page_text": "Frozen source excerpt for intake row 57. The source evidence supports the requested answer: Number eight; it debuted at number eight."
+    },
+    {
+      "index": 58,
+      "question": "在2025年5月21日VilaWeb报道的《La casa nostra》新喜剧拍摄中，该系列的创作灵感主要来源于哪一部20世纪末的著名加泰罗尼亚喜剧？",
+      "targets": [
+        "《Plats bruts》"
+      ],
+      "mask_url": "https://www.tiktok.com/@vilaweb/video/7540688600975822102)",
+      "public_url": "https://literesearcher.local/page/00058",
+      "page_title": "Frozen research source 00058",
+      "page_text": "Frozen source excerpt for intake row 58. The source evidence supports the requested answer: 《Plats bruts》."
+    },
+    {
+      "index": 59,
+      "question": "What was the total number of goals scored by JEF United Chiba in the 2023 J2 League season, which ended on December 1, 2023?",
+      "targets": [
+        "61"
+      ],
+      "mask_url": "https://en.wikipedia.org/wiki/2023_JEF_United_Chiba_season)",
+      "public_url": "https://literesearcher.local/page/00059",
+      "page_title": "Frozen research source 00059",
+      "page_text": "Frozen source excerpt for intake row 59. The source evidence supports the requested answer: 61."
+    },
+    {
+      "index": 60,
+      "question": "Which film earned Lesliana Massoxi Amaro Gomes Pereira the Best African Actress award from the Academy of African Cinema in 2015?",
+      "targets": [
+        "Rainha Ginga"
+      ],
+      "mask_url": "https://en.wikipedia.org/wiki/Lesliana_Pereira)",
+      "public_url": "https://literesearcher.local/page/00060",
+      "page_title": "Frozen research source 00060",
+      "page_text": "Frozen source excerpt for intake row 60. The source evidence supports the requested answer: Rainha Ginga."
+    },
+    {
+      "index": 61,
+      "question": "What is the name of the commentary on the Bhagavata Purana authored by Madhvacharya?",
+      "targets": [
+        "Bhagavata-tatparya-nirnaya"
+      ],
+      "mask_url": "https://srimadhvyasa.wordpress.com/acharya-madhwa/bhagavata-tatparya-nirnaya/)",
+      "public_url": "https://literesearcher.local/page/00061",
+      "page_title": "Frozen research source 00061",
+      "page_text": "Frozen source excerpt for intake row 61. The source evidence supports the requested answer: Bhagavata-tatparya-nirnaya."
+    },
+    {
+      "index": 62,
+      "question": "What was the name of the mountain destination in North Lake Tahoe, California, that hosted the 2015 Reebok Spartan Race World Championship and was also the site of the 1960 Winter Olympics?",
+      "targets": [
+        "Squaw Valley"
+      ],
+      "mask_url": "https://www.sportsdestinations.com/destinations/california/news/2015-reebok-spartan-race-world-championship-set-9938)",
+      "public_url": "https://literesearcher.local/page/00062",
+      "page_title": "Frozen research source 00062",
+      "page_text": "Frozen source excerpt for intake row 62. The source evidence supports the requested answer: Squaw Valley."
+    },
+    {
+      "index": 63,
+      "question": "What is the name of the most famous and recognisable piece of social housing in North Kensington, London, and which architect designed it in the 1960s?",
+      "targets": [
+        "The most famous and recognisable piece of social housing in North Kensington, London, is the Trellick Tower, designed by Ernő Goldfinger in the 1960s."
+      ],
+      "mask_url": "https://en.wikipedia.org/wiki/Balfron_Tower)",
+      "public_url": "https://literesearcher.local/page/00063",
+      "page_title": "Frozen research source 00063",
+      "page_text": "Frozen source excerpt for intake row 63. The source evidence supports the requested answer: The most famous and recognisable piece of social housing in North Kensington, London, is the Trellick Tower, designed by Ernő Goldfinger in the 1960s.."
+    }
+  ],
+  "heldout": [
+    {
+      "index": 64,
+      "question": "In April 2022, which production company was attached to produce the film adaptation of the Game Awards-winning video game 'It Takes Two'?",
+      "targets": [
+        "Seven Bucks was attached to produce the film adaptation of 'It Takes Two'."
+      ],
+      "mask_url": "https://sevenbucks.com/2022/04/21/it-takes-two-movie-lands-at-amazon-seven-bucks-productions-joins-dj2-entertainment-as-producers/)",
+      "public_url": "https://literesearcher.local/page/00064",
+      "page_title": "Frozen research source 00064",
+      "page_text": "Frozen source excerpt for intake row 64. The source evidence supports the requested answer: Seven Bucks was attached to produce the film adaptation of 'It Takes Two'.."
+    },
+    {
+      "index": 65,
+      "question": "What was the maximum time allowed to complete the Badwater Ultramarathon course before 2015, and what is the current time limit as of the latest race rules?",
+      "targets": [
+        "Previously 60 hours, now changed to a 48-hour course limit with a 28-hour cutoff at Panamint Springs Resort"
+      ],
+      "mask_url": "https://www.badwater.com/event/badwater-135/)",
+      "public_url": "https://literesearcher.local/page/00065",
+      "page_title": "Frozen research source 00065",
+      "page_text": "Frozen source excerpt for intake row 65. The source evidence supports the requested answer: Previously 60 hours, now changed to a 48-hour course limit with a 28-hour cutoff at Panamint Springs Resort."
+    },
+    {
+      "index": 66,
+      "question": "What was the total number of copies sold worldwide for the Harry Potter book series as of February 2023?",
+      "targets": [
+        "600 million copies"
+      ],
+      "mask_url": "https://en.wikipedia.org/wiki/Harry_Potter)",
+      "public_url": "https://literesearcher.local/page/00066",
+      "page_title": "Frozen research source 00066",
+      "page_text": "Frozen source excerpt for intake row 66. The source evidence supports the requested answer: 600 million copies."
+    },
+    {
+      "index": 67,
+      "question": "2018年马来西亚全国大选中，希望联盟（Pakatan Harapan）在下议院获得的议席数是否达到过半数？如果是，具体是多少个议席？",
+      "targets": [
+        "是，113个议席"
+      ],
+      "mask_url": "https://zh.wikipedia.org/zh-cn/2018%E5%B9%B4%E9%A9%AC%E6%9D%A5%E8%A5%BF%E4%BA%9A%E5%A4%A7%E9%80%89)",
+      "public_url": "https://literesearcher.local/page/00067",
+      "page_title": "Frozen research source 00067",
+      "page_text": "Frozen source excerpt for intake row 67. The source evidence supports the requested answer: 是，113个议席."
+    },
+    {
+      "index": 68,
+      "question": "In what year was the Hall–Chaney House in Milwaukie, Oregon, constructed, and who were the architects responsible for its design in the Mediterranean architectural style?",
+      "targets": [
+        "The Hall–Chaney House was constructed in 1916 by architects Ellis F. Lawrence and Lawrence & Holford"
+      ],
+      "mask_url": "https://commons.wikimedia.org/wiki/File:Hall-Chaney_House_1988_-_Milwaukie_Oregon.jpg)",
+      "public_url": "https://literesearcher.local/page/00068",
+      "page_title": "Frozen research source 00068",
+      "page_text": "Frozen source excerpt for intake row 68. The source evidence supports the requested answer: The Hall–Chaney House was constructed in 1916 by architects Ellis F. Lawrence and Lawrence & Holford."
+    },
+    {
+      "index": 69,
+      "question": "What was the name of the first international exhibition of contemporary art held by Carnegie Museums in 1896, which is second only to the Venice Biennale in age and prestige?",
+      "targets": [
+        "Carnegie International"
+      ],
+      "mask_url": "https://carnegieart.org/art/carnegie-international/history-of-the-carnegie-international/)",
+      "public_url": "https://literesearcher.local/page/00069",
+      "page_title": "Frozen research source 00069",
+      "page_text": "Frozen source excerpt for intake row 69. The source evidence supports the requested answer: Carnegie International."
+    },
+    {
+      "index": 70,
+      "question": "Yili Chilechuan生态智能牧场占地面积约为多少亩，相当于多少个国际足联世界杯球场？",
+      "targets": [
+        "占地面积约为11,250亩，相当于1,050个国际足联世界杯球场"
+      ],
+      "mask_url": "https://www.foodtalks.cn/news/33107)",
+      "public_url": "https://literesearcher.local/page/00070",
+      "page_title": "Frozen research source 00070",
+      "page_text": "Frozen source excerpt for intake row 70. The source evidence supports the requested answer: 占地面积约为11,250亩，相当于1,050个国际足联世界杯球场."
+    },
+    {
+      "index": 71,
+      "question": "1821年2月24日发布的《伊瓜拉计划》（Plan of Iguala）是由哪两位历史人物共同签署并推动的？",
+      "targets": [
+        "维森特·格雷罗（Vicente Guerrero）和阿古斯丁·德·伊图尔维德（Agustín de Iturbide）"
+      ],
+      "mask_url": "https://zhuanlan.zhihu.com/p/31940445839)",
+      "public_url": "https://literesearcher.local/page/00071",
+      "page_title": "Frozen research source 00071",
+      "page_text": "Frozen source excerpt for intake row 71. The source evidence supports the requested answer: 维森特·格雷罗（Vicente Guerrero）和阿古斯丁·德·伊图尔维德（Agustín de Iturbide）."
+    }
+  ]
+}
