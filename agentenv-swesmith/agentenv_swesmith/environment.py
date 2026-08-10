@@ -30,6 +30,7 @@ EPISODE_SCHEMA = "agentmemory_swesmith_native_episode_v1"
 DEFAULT_TRAINING_MAX_POLICY_TURNS = 75
 UPSTREAM_REFERENCE_MAX_POLICY_TURNS = 250
 DEFAULT_MAX_OBSERVATION_BYTES = 6144
+ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
 
 
 class ProfileResolver(Protocol):
@@ -83,6 +84,14 @@ class _Episode:
 class _Slot:
     episode: _Episode | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+def _actor_credit(positive_eligible: bool, basis: str) -> dict[str, Any]:
+    return {
+        "schema": ACTOR_CREDIT_SCHEMA,
+        "positive_eligible": positive_eligible,
+        "basis": basis,
+    }
 
 
 class SwesmithEpisodeManager:
@@ -199,14 +208,17 @@ class SwesmithEpisodeManager:
             if action.kind == "parser_error":
                 episode.observation = _parser_error_observation(action)
                 evidence["result"] = {"parser_error": action.error}
+                actor_credit = _actor_credit(False, "parser_rejected")
             elif action.kind == "shell_command":
-                self._run_shell(episode, action, evidence)
+                actor_credit = self._run_shell(episode, action, evidence)
             elif action.kind == "apply_patch":
-                self._run_patch(episode, action, evidence)
+                actor_credit = self._run_patch(episode, action, evidence)
             elif action.kind == "final":
                 self._grade_terminal(episode, evidence, termination_reason="final")
+                actor_credit = _actor_credit(True, "terminal_submission")
             else:  # pragma: no cover - action parser owns the closed kind set.
                 raise RuntimeError(f"unsupported SWE-smith action kind: {action.kind}")
+            evidence["actor_credit"] = dict(actor_credit)
             evidence["observation_after"] = episode.observation
             episode.evidence.append(evidence)
 
@@ -224,7 +236,11 @@ class SwesmithEpisodeManager:
                 )
                 horizon["observation_after"] = episode.observation
                 episode.evidence.append(horizon)
-            return self._public_step(episode, action_kind=action.kind)
+            return self._public_step(
+                episode,
+                action_kind=action.kind,
+                actor_credit=actor_credit,
+            )
 
     def observation(self, slot_id: int) -> str:
         slot = self._slot(slot_id)
@@ -347,7 +363,7 @@ class SwesmithEpisodeManager:
         episode: _Episode,
         action: ParsedPolicyAction,
         evidence: dict[str, Any],
-    ) -> None:
+    ) -> Mapping[str, Any]:
         assert action.arguments is not None
         timeout_ms = action.arguments.get(
             "timeout_ms", episode.sandbox.limits.default_timeout_ms
@@ -368,7 +384,7 @@ class SwesmithEpisodeManager:
             if poisoned is not None:
                 episode.done = True
                 episode.reward = 0.0
-            return
+            return _actor_credit(False, "executor_rejected")
         result = execution.result
         stdout = result.stdout.decode("utf-8", errors="replace")
         stderr = result.stderr.decode("utf-8", errors="replace")
@@ -398,13 +414,14 @@ class SwesmithEpisodeManager:
             changed_paths=execution.workspace_diff.changed_paths,
             max_observation_bytes=self.max_observation_bytes,
         )
+        return _actor_credit(True, "shell_executed")
 
     def _run_patch(
         self,
         episode: _Episode,
         action: ParsedPolicyAction,
         evidence: dict[str, Any],
-    ) -> None:
+    ) -> Mapping[str, Any]:
         assert action.patch is not None
         try:
             operations = parse_workspace_patch(action.patch)
@@ -423,7 +440,7 @@ class SwesmithEpisodeManager:
             if episode.sandbox.poisoned_reason is not None:
                 episode.done = True
                 episode.reward = 0.0
-            return
+            return _actor_credit(False, "executor_rejected")
         evidence["result"] = {
             "changed_paths": list(result.changed_paths),
             "added_paths": list(result.added_paths),
@@ -435,6 +452,9 @@ class SwesmithEpisodeManager:
             "apply_patch succeeded. Changed paths: "
             + (", ".join(result.changed_paths) if result.changed_paths else "none")
         )
+        if not diff.changed_paths:
+            return _actor_credit(False, "no_workspace_change")
+        return _actor_credit(True, "workspace_changed")
 
     def _grade_terminal(
         self,
@@ -463,22 +483,31 @@ class SwesmithEpisodeManager:
             "grader_error": grade.error,
         }
 
-    def _public_step(self, episode: _Episode, *, action_kind: str) -> EpisodeStep:
+    def _public_step(
+        self,
+        episode: _Episode,
+        *,
+        action_kind: str,
+        actor_credit: Mapping[str, Any] | None = None,
+    ) -> EpisodeStep:
+        info: dict[str, Any] = {
+            "schema": EPISODE_SCHEMA,
+            "step": episode.step_count,
+            "action_kind": action_kind,
+            "terminal": episode.done,
+            "episode_success": bool(
+                episode.done
+                and episode.grade is not None
+                and episode.grade.resolved
+            ),
+        }
+        if actor_credit is not None:
+            info["actor_credit"] = dict(actor_credit)
         return EpisodeStep(
             observation=episode.observation,
             reward=episode.reward,
             done=episode.done,
-            info={
-                "schema": EPISODE_SCHEMA,
-                "step": episode.step_count,
-                "action_kind": action_kind,
-                "terminal": episode.done,
-                "episode_success": bool(
-                    episode.done
-                    and episode.grade is not None
-                    and episode.grade.resolved
-                ),
-            },
+            info=info,
         )
 
     def _slot(self, slot_id: int) -> _Slot:

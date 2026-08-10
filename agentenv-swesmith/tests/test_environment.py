@@ -354,6 +354,14 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         result = self.manager.step(slot, "shell_command pwd")
 
         self.assertFalse(result.done)
+        self.assertEqual(
+            result.info["actor_credit"],
+            {
+                "schema": "task_neutral_actor_credit_v1",
+                "positive_eligible": False,
+                "basis": "parser_rejected",
+            },
+        )
         self.assertIn('shell_command {"command":"pwd","workdir":"."}', result.observation)
         self.assertIn("literal line apply_patch", result.observation)
         self.assertIn("one complete *** Begin Patch", result.observation)
@@ -392,6 +400,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
 
         self.assertFalse(result.done)
         self.assertEqual(result.info["action_kind"], "parser_error")
+        self.assertFalse(result.info["actor_credit"]["positive_eligible"])
         self.assertIn("Invalid action syntax", result.observation)
         self.assertEqual(self.grader.calls, 0)
         detail = self.manager.detail(slot)
@@ -416,6 +425,8 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             "</tool_call>",
         )
         self.assertEqual(shell.info["action_kind"], "shell_command")
+        self.assertEqual(shell.info["actor_credit"]["basis"], "shell_executed")
+        self.assertTrue(shell.info["actor_credit"]["positive_eligible"])
         self.assertIn("notes.txt", shell.observation)
 
         patched = self.manager.step(
@@ -434,7 +445,67 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             "</tool_call>",
         )
         self.assertEqual(patched.info["action_kind"], "apply_patch")
+        self.assertEqual(
+            patched.info["actor_credit"]["basis"], "workspace_changed"
+        )
+        self.assertTrue(patched.info["actor_credit"]["positive_eligible"])
         self.assertIn("apply_patch succeeded", patched.observation)
+        self.manager.close(slot)
+
+    def test_rejected_patch_is_not_eligible_for_positive_actor_credit(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+
+        result = self.manager.step(
+            slot,
+            "apply_patch\n"
+            "*** Begin Patch\n"
+            "*** Update File: src/value.py\n"
+            "@@\n"
+            "-line that does not exist\n"
+            "+fixed\n"
+            "*** End Patch",
+        )
+
+        self.assertFalse(result.done)
+        self.assertIn("apply_patch failed", result.observation)
+        self.assertEqual(
+            result.info["actor_credit"],
+            {
+                "schema": "task_neutral_actor_credit_v1",
+                "positive_eligible": False,
+                "basis": "executor_rejected",
+            },
+        )
+        self.manager.close(slot)
+
+    def test_noop_patch_is_not_eligible_for_positive_actor_credit(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+
+        result = self.manager.step(
+            slot,
+            "apply_patch\n"
+            "*** Begin Patch\n"
+            "*** Update File: src/value.py\n"
+            "@@\n"
+            "-bug\n"
+            "+bug\n"
+            "*** End Patch",
+        )
+
+        self.assertFalse(result.done)
+        self.assertIn("apply_patch succeeded", result.observation)
+        self.assertEqual(
+            result.info["actor_credit"],
+            {
+                "schema": "task_neutral_actor_credit_v1",
+                "positive_eligible": False,
+                "basis": "no_workspace_change",
+            },
+        )
+        detail = self.manager.detail(slot)
+        self.assertEqual(detail["evidence"][-1]["result"]["workspace_diff"]["changed_paths"], [])
         self.manager.close(slot)
 
     def test_reset_replaces_previous_episode_with_pristine_workspace(self) -> None:

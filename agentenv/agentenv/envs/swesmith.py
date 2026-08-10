@@ -24,6 +24,53 @@ SWE_CONTEXT_COMPACTION_REQUEST = (
     "environment. Include only information you choose to carry forward."
 )
 
+ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
+_POSITIVE_ACTOR_CREDIT_BASES = {
+    "shell_executed",
+    "workspace_changed",
+    "terminal_submission",
+    "policy_context_compaction",
+}
+_INELIGIBLE_ACTOR_CREDIT_BASES = {
+    "parser_rejected",
+    "executor_rejected",
+    "no_workspace_change",
+}
+
+
+def _validate_actor_credit_receipt(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise RuntimeError("SWE-smith response is missing its actor-credit receipt")
+    expected_keys = {"schema", "positive_eligible", "basis"}
+    if set(value) != expected_keys:
+        raise RuntimeError(
+            "SWE-smith actor-credit receipt has unexpected fields: "
+            f"{sorted(set(value) - expected_keys)}"
+        )
+    if value.get("schema") != ACTOR_CREDIT_SCHEMA:
+        raise RuntimeError("SWE-smith actor-credit receipt schema drifted")
+    positive_eligible = value.get("positive_eligible")
+    if type(positive_eligible) is not bool:
+        raise RuntimeError(
+            "SWE-smith actor-credit positive_eligible must be boolean"
+        )
+    basis = value.get("basis")
+    allowed_bases = (
+        _POSITIVE_ACTOR_CREDIT_BASES
+        if positive_eligible
+        else _INELIGIBLE_ACTOR_CREDIT_BASES
+    )
+    if basis not in allowed_bases:
+        raise RuntimeError(
+            "SWE-smith actor-credit basis disagrees with positive_eligible: "
+            f"{basis!r}"
+        )
+    return {
+        "schema": ACTOR_CREDIT_SCHEMA,
+        "positive_eligible": positive_eligible,
+        "basis": str(basis),
+    }
+
 SWE_POLICY_SYSTEM_PROMPT = (
     "You are a coding agent in one persistent /testbed repository. Inspect, edit, "
     "and test until the issue is fixed. Think privately. Every policy turn is exactly "
@@ -217,6 +264,11 @@ class SwesmithEnvClient(BaseEnvClient):
         self._policy_step_count += 1
         self.info = response
         response_env_info = response.get("info", {})
+        actor_credit = _validate_actor_credit_receipt(
+            response_env_info.get("actor_credit")
+            if isinstance(response_env_info, Mapping)
+            else None
+        )
         after_step = response_env_info.get("step")
         if after_step is not None and int(after_step) != self._native_call_count:
             raise RuntimeError(
@@ -242,6 +294,7 @@ class SwesmithEnvClient(BaseEnvClient):
                 wrapper_evidence={
                     "event": "native_action",
                     "workspace_continuity_id": self.env_id,
+                    "actor_credit": actor_credit,
                 },
             ),
         )
@@ -292,6 +345,11 @@ class SwesmithEnvClient(BaseEnvClient):
                 wrapper_evidence={
                     "event": "context_compaction",
                     "workspace_continuity_id": self.env_id,
+                    "actor_credit": {
+                        "schema": ACTOR_CREDIT_SCHEMA,
+                        "positive_eligible": True,
+                        "basis": "policy_context_compaction",
+                    },
                 },
             ),
         )
