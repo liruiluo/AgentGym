@@ -53,6 +53,7 @@ class FrozenLiteResearchBackend:
         self,
         coverage: LiteResearcherCoverage,
         *,
+        split: str = "train",
         top_k: int = 5,
         failing_search_queries: Iterable[str] = (),
         failing_visit_urls: Iterable[str] = (),
@@ -60,20 +61,23 @@ class FrozenLiteResearchBackend:
         if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
             raise ValueError("top_k must be a positive integer")
         self.coverage = coverage
+        self.split = split
+        self.tasks = coverage.tasks_for_split(split)
         self.top_k = top_k
         self._fail_search = {str(item) for item in failing_search_queries}
         self._fail_visit = {str(item) for item in failing_visit_urls}
-        all_tasks = (*coverage.train, *coverage.heldout)
-        self._by_url = {task.public_url: task for task in all_tasks}
+        self._by_url = {task.public_url: task for task in self.tasks}
         self._search_tokens = {
             task.public_url: set(_tokens(task.question + " " + task.page_title))
-            for task in all_tasks
+            for task in self.tasks
         }
 
     def metadata(self) -> dict[str, Any]:
         return {
             "backend_contract": self.contract_id,
             "coverage_manifest_sha256": self.coverage.manifest_sha256,
+            "split": self.split,
+            "active_count": len(self.tasks),
             "train_count": self.coverage.task_count,
             "heldout_count": self.coverage.heldout_count,
             "search_result_url_namespace": "opaque_local_fixture_url_v1",
@@ -99,7 +103,7 @@ class FrozenLiteResearchBackend:
             raise LiteResearchBackendError("frozen search backend rejected the query")
         query_tokens = set(_tokens(query_text))
         scored: list[tuple[int, int, LiteResearcherTask]] = []
-        for task in (*self.coverage.train, *self.coverage.heldout):
+        for task in self.tasks:
             overlap = len(query_tokens & self._search_tokens[task.public_url])
             if overlap:
                 scored.append((-overlap, task.index, task))

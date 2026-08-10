@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from copy import deepcopy
@@ -11,14 +10,9 @@ from .contracts import LiteResearcherCoverage
 
 
 LITERESEARCHER_SURFACE = "agentmemory_literesearcher_stage1_rag_only_v1"
-_REPLACE_SCHEMA = "agentmemory_task_neutral_context_transition_v1"
 _APPEND_SCHEMA = "agentmemory_task_neutral_context_transition_v1"
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.IGNORECASE | re.DOTALL)
 _ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.IGNORECASE | re.DOTALL)
-_COMPACTION_RE = re.compile(
-    r"<context_compaction>\s*(.*?)\s*</context_compaction>",
-    re.IGNORECASE | re.DOTALL,
-)
 
 
 class WorkspaceAdapter(Protocol):
@@ -56,10 +50,10 @@ def _parse_tool_call(raw: str) -> tuple[str, dict[str, Any]] | None:
 class LiteResearcherWrapper:
     """HTTP-shaped wrapper for one continuous LiteResearcher episode.
 
-    There are no hand-authored sessions.  Every search, visit, workspace action,
-    answer, and policy-authored context compaction consumes one ordinary RL
-    policy step.  ``context_token_count`` is supplied by the rollout adapter;
-    this wrapper only decides whether the next row must be a compaction row.
+    There are no hand-authored sessions. Search, visit, workspace actions, and
+    answers are ordinary native actions. Policy-authored compaction is owned by
+    the task-neutral client wrapper because only that layer sees exact tokenizer
+    pressure; it deliberately does not call this server.
     """
 
     def __init__(
@@ -69,34 +63,27 @@ class LiteResearcherWrapper:
         *,
         workspace: WorkspaceAdapter | None = None,
         workspace_factory: Callable[[int], WorkspaceAdapter] | None = None,
+        workspace_runtime_metadata: Mapping[str, Any] | None = None,
         max_policy_steps: int = 40,
-        model_context_tokens: int = 32_768,
-        max_response_tokens: int = 2_048,
-        compaction_margin_tokens: int = 256,
+        split: str = "train",
     ) -> None:
         if backend.coverage is not coverage:
             raise ValueError("backend and wrapper must share the exact coverage object")
+        if backend.split != split:
+            raise ValueError("backend and wrapper must use the same LiteResearcher split")
         if workspace is not None and workspace_factory is not None:
             raise ValueError("provide workspace or workspace_factory, not both")
-        values = (
-            max_policy_steps,
-            model_context_tokens,
-            max_response_tokens,
-            compaction_margin_tokens,
-        )
-        if any(type(value) is not int or value <= 0 for value in values):
-            raise ValueError("LiteResearcher limits must be positive integers")
-        if max_response_tokens + compaction_margin_tokens >= model_context_tokens:
-            raise ValueError("response budget plus compaction margin must fit context")
+        if type(max_policy_steps) is not int or max_policy_steps <= 0:
+            raise ValueError("LiteResearcher max_policy_steps must be positive")
         self.coverage = coverage
         self.backend = backend
+        self.split = split
+        self.tasks = coverage.tasks_for_split(split)
         self._shared_workspace = workspace
         self._workspace_factory = workspace_factory
+        self._workspace_runtime_metadata = dict(workspace_runtime_metadata or {})
         self._workspaces: dict[int, WorkspaceAdapter] = {}
         self.max_policy_steps = max_policy_steps
-        self.model_context_tokens = model_context_tokens
-        self.max_response_tokens = max_response_tokens
-        self.compaction_margin_tokens = compaction_margin_tokens
         self._next_id = 0
         self._episodes: dict[int, dict[str, Any]] = {}
 
@@ -105,18 +92,21 @@ class LiteResearcherWrapper:
         metadata.update(
             {
                 "surface": LITERESEARCHER_SURFACE,
+                "domain_id": "literesearcher",
                 "backend": self.backend.metadata(),
+                "split": self.split,
+                "task_count": len(self.tasks),
                 "max_policy_steps": self.max_policy_steps,
-                "model_context_tokens": self.model_context_tokens,
-                "max_response_tokens": self.max_response_tokens,
-                "compaction_margin_tokens": self.compaction_margin_tokens,
-                "compaction_contract": "policy_authored_replace_messages_v1",
+                "max_policy_steps_enforced_by": "shared_policy_runner",
+                "server_native_action_safety_cap": self.max_policy_steps,
+                "compaction_contract": "task_neutral_client_replace_messages_v1",
                 "compaction_counts_as_env_step": True,
                 "compaction_calls_backend": False,
                 "reward_contract": "terminal_answer_only_binary_v1",
                 "judge_fallback": "forbidden_fail_closed",
                 "workspace_tool_contract": "codex_shell_command_apply_patch_v1",
                 "workspace_memory_reward": 0.0,
+                "workspace_runtime": deepcopy(self._workspace_runtime_metadata),
             }
         )
         return metadata
@@ -148,13 +138,10 @@ class LiteResearcherWrapper:
     def detail(self, env_id: int) -> dict[str, Any]:
         return deepcopy(self._require(env_id)["payload"])
 
-    def step(
-        self,
-        env_id: int,
-        action: str,
-        *,
-        context_token_count: int | None = None,
-    ) -> dict[str, Any]:
+    def observation(self, env_id: int) -> str:
+        return str(self._require(env_id)["payload"]["observation"])
+
+    def step(self, env_id: int, action: str) -> dict[str, Any]:
         episode = self._require(env_id)
         if episode["done"]:
             return deepcopy(episode["payload"])
@@ -172,61 +159,6 @@ class LiteResearcherWrapper:
                 action_submission={"raw_policy_output": str(action)},
                 transition=self._append_transition(episode, "Maximum policy-step budget reached."),
                 wrapper_evidence={"step": step, "max_policy_steps": self.max_policy_steps},
-            )
-
-        count = self._validate_context_count(context_token_count)
-        if count is not None:
-            episode["last_context_token_count"] = count
-        compaction_required = self._compaction_required(count)
-        episode["compaction_required"] = compaction_required
-        if compaction_required:
-            compaction = _COMPACTION_RE.search(str(action))
-            if compaction is None:
-                return self._ordinary_result(
-                    env_id,
-                    episode,
-                    observation=(
-                        "Context capacity is exhausted. Submit one policy-authored "
-                        "<context_compaction>summary</context_compaction> row before "
-                        "another search, visit, answer, or workspace action."
-                    ),
-                    status="compaction_required",
-                    action_submission={"raw_policy_output": str(action)},
-                    transition=self._append_transition(
-                        episode,
-                        "Context compaction required before the next domain action.",
-                    ),
-                    wrapper_evidence={
-                        "step": step,
-                        "compaction_required": True,
-                        "backend_call_count": 0,
-                    },
-                )
-            try:
-                return self._apply_compaction(
-                    env_id, episode, str(action), compaction.group(1)
-                )
-            except (TypeError, ValueError) as exc:
-                return self._ordinary_result(
-                    env_id,
-                    episode,
-                    observation=f"Invalid policy compaction: {exc}",
-                    status="invalid_compaction",
-                    action_submission={"raw_policy_output": str(action)},
-                    transition=self._append_transition(
-                        episode, f"Invalid policy compaction: {exc}"
-                    ),
-                    wrapper_evidence={"step": step, "invalid_compaction": True},
-                )
-        if _COMPACTION_RE.search(str(action)) is not None:
-            return self._ordinary_result(
-                env_id,
-                episode,
-                observation="Compaction is accepted only when context pressure requires it.",
-                status="invalid_compaction",
-                action_submission={"raw_policy_output": str(action)},
-                transition=self._append_transition(episode, "Invalid compaction row."),
-                wrapper_evidence={"step": step, "compaction_required": False},
             )
 
         try:
@@ -268,7 +200,7 @@ class LiteResearcherWrapper:
             )
 
     def _new_episode(self, env_id: int, data_idx: int) -> dict[str, Any]:
-        task = self.coverage.task(data_idx)
+        task = self.coverage.task(data_idx, split=self.split)
         old_episode = self._episodes.get(env_id)
         workspace = None if old_episode is None else old_episode.get("workspace")
         if workspace is not None:
@@ -289,16 +221,13 @@ class LiteResearcherWrapper:
             workspace.reset_episode(f"literesearcher:env{env_id}:episode", enabled=True)
         episode = {
             "env_id": env_id,
+            "data_idx": data_idx,
             "task": task,
             "step_count": 0,
             "done": False,
             "status": "active",
             "outcome": "continue",
             "sample_excluded": False,
-            "context_epoch": 0,
-            "compaction_count": 0,
-            "compaction_required": False,
-            "last_context_token_count": None,
             "backend_call_count": 0,
             "visited_urls": [],
             "payload": {},
@@ -313,91 +242,14 @@ class LiteResearcherWrapper:
         except KeyError as exc:
             raise KeyError(f"Unknown LiteResearcher environment id {env_id}") from exc
 
-    def _validate_context_count(self, value: int | None) -> int | None:
-        if value is None:
-            return None
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError("context_token_count must be a non-negative integer")
-        return value
-
-    def _compaction_required(self, count: int | None) -> bool:
-        if count is None:
-            return False
-        return (
-            count + self.max_response_tokens + self.compaction_margin_tokens
-            >= self.model_context_tokens
-        )
-
     def _append_transition(self, episode: dict[str, Any], observation: str) -> dict[str, Any]:
         return {
             "schema": _APPEND_SCHEMA,
             "operation": "append_messages",
-            "context_epoch_before": episode["context_epoch"],
-            "context_epoch_after": episode["context_epoch"],
+            "context_epoch_before": 0,
+            "context_epoch_after": 0,
             "messages": [{"role": "tool", "content": observation}],
         }
-
-    def _apply_compaction(
-        self,
-        env_id: int,
-        episode: dict[str, Any],
-        raw_action: str,
-        summary: str,
-    ) -> dict[str, Any]:
-        summary = summary.strip()
-        private_urls = {task.mask_url for task in (*self.coverage.train, *self.coverage.heldout)}
-        if not summary:
-            raise ValueError("policy-authored compaction summary must not be empty")
-        if any(url in summary for url in private_urls):
-            raise ValueError("compaction summary contains a server-private URL")
-        before = episode["context_epoch"]
-        after = before + 1
-        episode["context_epoch"] = after
-        episode["compaction_count"] += 1
-        episode["compaction_required"] = False
-        transition = {
-            "schema": _REPLACE_SCHEMA,
-            "operation": "replace_messages",
-            "context_epoch_before": before,
-            "context_epoch_after": after,
-            "continuity_id": episode["task"].task_id,
-            "workspace_path": ".agent_memory",
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "Continue the same LiteResearcher question with the frozen "
-                        "search/visit tools."
-                    ),
-                },
-                {"role": "user", "content": episode["task"].question},
-                {"role": "assistant", "content": summary},
-            ],
-            "policy_authored": True,
-        }
-        evidence = {
-            "step": episode["step_count"],
-            "event": "context_compaction",
-            "policy_authored": True,
-            "summary_sha256": hashlib.sha256(summary.encode("utf-8")).hexdigest(),
-            "summary_chars": len(summary),
-            "native_environment_call_count": 0,
-            "context_epoch_before": before,
-            "context_epoch_after": after,
-        }
-        return self._ordinary_result(
-            env_id,
-            episode,
-            observation="Context replaced by the policy-authored summary; continue research.",
-            status="context_compacted",
-            action_submission={
-                "raw_policy_output": raw_action,
-                "kind": "context_compaction",
-                "policy_authored": True,
-            },
-            transition=transition,
-            wrapper_evidence=evidence,
-        )
 
     def _apply_domain_tool(
         self,
@@ -606,7 +458,8 @@ class LiteResearcherWrapper:
             "domain_id": "literesearcher",
             "surface": LITERESEARCHER_SURFACE,
             "task_id": task.task_id,
-            "data_idx": task.index,
+            "data_idx": episode["data_idx"],
+            "source_data_idx": task.index,
             "status": episode["status"],
             "phase_index": 0,
             "phase_count": None,
@@ -618,9 +471,6 @@ class LiteResearcherWrapper:
             ),
             "wrapper_evidence": deepcopy(dict(wrapper_evidence or {})),
             "native_environment_call_count": int(episode["backend_call_count"]),
-            "compaction_count": int(episode["compaction_count"]),
-            "context_epoch": int(episode["context_epoch"]),
-            "compaction_required": bool(episode["compaction_required"]),
             "workspace_tools": ["shell_command", "apply_patch"],
             "reward_contract": "terminal_answer_only_binary_v1",
         }

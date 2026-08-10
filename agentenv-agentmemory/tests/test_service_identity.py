@@ -94,6 +94,31 @@ class ServiceIdentityTest(unittest.TestCase):
             third["service"]["fingerprint_sha256"],
         )
 
+    def test_literesearcher_fingerprint_binds_frozen_manifest(self):
+        metadata = {
+            "surface": "agentmemory_literesearcher_stage1_rag_only_v1",
+            "domain_id": "literesearcher",
+            "split": "train",
+            "task_count": 64,
+            "data_revision": "a" * 40,
+            "manifest_sha256": "b" * 64,
+            "compaction_contract": "task_neutral_client_replace_messages_v1",
+            "workspace_runtime": {"sandbox": {"ripgrep_sha256": "c" * 64}},
+            "backend": {
+                "backend_contract": "literesearcher_frozen_search_page_backend_v1",
+                "coverage_manifest_sha256": "b" * 64,
+            },
+        }
+        first = self._decorate(metadata)
+        changed = copy.deepcopy(metadata)
+        changed["manifest_sha256"] = "d" * 64
+        changed["backend"]["coverage_manifest_sha256"] = "d" * 64
+        second = self._decorate(changed)
+        self.assertNotEqual(
+            first["service"]["fingerprint_sha256"],
+            second["service"]["fingerprint_sha256"],
+        )
+
     def test_nonformal_roles_require_source_identity(self):
         for role in ("smoke", "intervention_eval"):
             with (

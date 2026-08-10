@@ -32,6 +32,7 @@ from agentenv_agentmemory.latent_preference_webshop_env import (
     LATENT_PREFERENCE_FILESYSTEM_SURFACE,
     LATENT_PREFERENCE_SURFACE,
 )
+from agentenv_agentmemory.literesearcher import LITERESEARCHER_SURFACE
 from agentenv_agentmemory.negative_constraint_webshop_env import (
     NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
 )
@@ -66,6 +67,53 @@ class DomainLaunchTest(unittest.TestCase):
             launch()
             configured = dict(os.environ)
         return configured, uvicorn.run
+
+    @staticmethod
+    def _literesearcher_arguments(*, split="train"):
+        return [
+            "--surface",
+            LITERESEARCHER_SURFACE,
+            "--run-id",
+            f"literesearcher-{split}-test",
+            "--split",
+            split,
+            "--literesearcher-coverage-manifest",
+            "/data/literesearcher-stage1.json",
+            "--literesearcher-max-policy-steps",
+            "40",
+            "--literesearcher-top-k",
+            "5",
+            "--workspace-rg-binary",
+            "/tools/rg",
+            "--workspace-rg-sha256",
+            "a" * 64,
+            "--workspace-root-parent",
+            "/runtime/literesearcher-workspaces",
+        ]
+
+    def test_literesearcher_launch_binds_only_native_research_inputs(self):
+        configured, uvicorn = self._launch(
+            self._literesearcher_arguments(split="test")
+        )
+        self.assertEqual(configured["AGENTMEMORY_SURFACE"], LITERESEARCHER_SURFACE)
+        self.assertEqual(configured["AGENTMEMORY_LITERESEARCHER_SPLIT"], "test")
+        self.assertEqual(
+            configured["AGENTMEMORY_LITERESEARCHER_COVERAGE_MANIFEST"],
+            "/data/literesearcher-stage1.json",
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_WORKSPACE_ROOT_PARENT"],
+            "/runtime/literesearcher-workspaces",
+        )
+        self.assertNotIn("MEMORYARENA_ROOT", configured)
+        self.assertNotIn("MEMORYARENA_BASE_COMMIT", configured)
+        uvicorn.assert_called_once()
+
+    def test_literesearcher_refuses_memory_shaping(self):
+        arguments = self._literesearcher_arguments()
+        arguments.extend(["--memory-first-add-reward", "0.1"])
+        with self.assertRaises(SystemExit):
+            self._launch(arguments)
 
     @staticmethod
     def _procedural_arguments(*, split="train"):

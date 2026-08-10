@@ -50,6 +50,13 @@ from ..latent_preference_wrapper import (
     LatentPreferenceAgentMemoryWrapper,
     LatentPreferenceFilesystemAgentMemoryWrapper,
 )
+from ..literesearcher import (
+    LITERESEARCHER_SURFACE,
+    FrozenLiteResearchBackend,
+    LiteResearcherWrapper,
+    load_coverage_manifest,
+)
+from ..persistent_workspace import PersistentWorkspace, WorkspaceLimits
 from ..procedural_webshop_env import PROCEDURAL_SURFACE
 from ..procedural_wrapper import ProceduralAgentMemoryWrapper
 from ..recency_override_webshop_env import (
@@ -68,6 +75,7 @@ from ..selective_memory_use_wrapper import (
     SelectiveMemoryUseAgentMemoryWrapper,
     SelectiveMemoryUseFilesystemAgentMemoryWrapper,
 )
+from ..workspace_sandbox import LinuxNamespaceShellSandbox
 from ..negative_constraint_webshop_env import (
     NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
     NEGATIVE_CONSTRAINT_SURFACE,
@@ -127,6 +135,8 @@ def build_server():
         return NegativeConstraintAgentMemoryWrapper()
     if surface == NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE:
         return NegativeConstraintFilesystemAgentMemoryWrapper()
+    if surface == LITERESEARCHER_SURFACE:
+        return _build_literesearcher_wrapper()
 
     factory = build_domain_registry().build(surface)
     first_add = _env_float("AGENTMEMORY_FIRST_ADD_REWARD", 0.0)
@@ -167,6 +177,52 @@ def build_server():
             exact_repeat=exact_repeat,
         ),
         invalid_action_penalty=invalid_action,
+    )
+
+
+def _build_literesearcher_wrapper() -> LiteResearcherWrapper:
+    coverage = load_coverage_manifest(
+        _required_file("AGENTMEMORY_LITERESEARCHER_COVERAGE_MANIFEST")
+    )
+    limits = WorkspaceLimits()
+    sandbox = LinuxNamespaceShellSandbox.from_environment(
+        limits=limits.shell_limits(),
+        rg_binary=_required_file("AGENTMEMORY_WORKSPACE_RG_BINARY"),
+        expected_rg_sha256=_required_env("AGENTMEMORY_WORKSPACE_RG_SHA256"),
+    )
+    root_parent_raw = os.environ.get("AGENTMEMORY_WORKSPACE_ROOT_PARENT")
+    root_parent = (
+        None
+        if not root_parent_raw or not root_parent_raw.strip()
+        else Path(root_parent_raw).expanduser().resolve()
+    )
+
+    def workspace_factory(env_id: int) -> PersistentWorkspace:
+        return PersistentWorkspace(
+            workspace_id=f"literesearcher-env-{env_id}",
+            shell_sandbox=sandbox,
+            root_parent=root_parent,
+            limits=limits,
+        )
+
+    split = _required_env("AGENTMEMORY_LITERESEARCHER_SPLIT")
+    if split not in {"train", "test"}:
+        raise RuntimeError("AGENTMEMORY_LITERESEARCHER_SPLIT must be train or test")
+    return LiteResearcherWrapper(
+        coverage,
+        FrozenLiteResearchBackend(
+            coverage,
+            split=split,
+            top_k=_env_int("AGENTMEMORY_LITERESEARCHER_TOP_K", 5),
+        ),
+        workspace_factory=workspace_factory,
+        workspace_runtime_metadata={
+            "sandbox": dict(sandbox.metadata),
+            "limits": limits.as_metadata(),
+            "host_root_exposed_to_policy": False,
+        },
+        max_policy_steps=_env_int("AGENTMEMORY_LITERESEARCHER_MAX_POLICY_STEPS", 40),
+        split=split,
     )
 
 
