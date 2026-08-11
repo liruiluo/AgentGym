@@ -28,10 +28,9 @@ def unified_to_codex_patch(unified: str, *, reverse: bool = False) -> str:
     """Convert a unified diff into the native ``apply_patch`` grammar.
 
     ``reverse=True`` swaps file endpoints and changes additions/deletions so a
-    bug-introduction diff can restore the pristine source. Hunk section
-    descriptions are intentionally discarded: the Codex patch parser accepts
-    a bare ``@@`` marker, while a descriptive unified section is not guaranteed
-    to be present in the current checkout.
+    bug-introduction diff can restore the pristine source. Preserve hunk
+    section descriptions when present: Codex uses them as search anchors, which
+    prevents a short repeated context from matching the wrong function or class.
     """
 
     parsed = PatchSet(unified)
@@ -56,7 +55,8 @@ def unified_to_codex_patch(unified: str, *, reverse: bool = False) -> str:
         if source != target:
             output.append(f"*** Move to: {target}")
         for hunk in file_patch:
-            output.append("@@")
+            section = str(hunk.section_header or "").strip()
+            output.append(f"@@ {section}" if section else "@@")
             for line in hunk:
                 if line.line_type in {" ", "+", "-"}:
                     line_type = line.line_type
