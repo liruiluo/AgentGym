@@ -27,6 +27,7 @@ def fixture_metadata() -> dict:
         "action_listing_mode": "separate",
         "memory_prompt_mode": "latent_preference_sop",
         "active_environment_count": 0,
+        "active_workspace_count": 0,
         "backend": {
             "surface": "memoryarena_webshop_native_v1",
             "price_seed": 233,
@@ -58,6 +59,7 @@ class ServiceIdentityTest(unittest.TestCase):
         first = self._decorate(fixture_metadata(), run_id="run-a")
         second_metadata = fixture_metadata()
         second_metadata["active_environment_count"] = 17
+        second_metadata["active_workspace_count"] = 17
         second = self._decorate(second_metadata, run_id="run-b")
 
         self.assertEqual(

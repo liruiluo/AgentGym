@@ -475,6 +475,8 @@ class LiteResearcherIntakeTests(unittest.TestCase):
         )
         first = wrapper.create(data_idx=0)
         second = wrapper.create(data_idx=1)
+        self.assertEqual(wrapper.metadata()["active_environment_count"], 2)
+        self.assertEqual(wrapper.metadata()["active_workspace_count"], 2)
         wrapper.step(first["id"], "shell_command {\"command\":\"pwd\"}")
         wrapper.step(second["id"], "shell_command {\"command\":\"pwd\"}")
         self.assertEqual(len(workspaces[0].actions), 1)
@@ -483,7 +485,11 @@ class LiteResearcherIntakeTests(unittest.TestCase):
         wrapper.close(first["id"])
         self.assertTrue(workspaces[0].closed)
         self.assertFalse(workspaces[1].closed)
+        self.assertEqual(wrapper.metadata()["active_environment_count"], 1)
+        self.assertEqual(wrapper.metadata()["active_workspace_count"], 1)
         wrapper.close(second["id"])
+        self.assertEqual(wrapper.metadata()["active_environment_count"], 0)
+        self.assertEqual(wrapper.metadata()["active_workspace_count"], 0)
 
     def test_server_rejects_compaction_rows_because_client_owns_them(self) -> None:
         wrapper = LiteResearcherWrapper(

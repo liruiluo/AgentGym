@@ -96,6 +96,8 @@ class LiteResearcherWrapper:
                 "backend": self.backend.metadata(),
                 "split": self.split,
                 "task_count": len(self.tasks),
+                "active_environment_count": len(self._episodes),
+                "active_workspace_count": len(self._workspaces),
                 "max_policy_steps": self.max_policy_steps,
                 "max_policy_steps_enforced_by": "shared_policy_runner",
                 "server_native_action_safety_cap": self.max_policy_steps,
