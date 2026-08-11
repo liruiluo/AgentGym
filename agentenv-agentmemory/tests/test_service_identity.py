@@ -105,7 +105,7 @@ class ServiceIdentityTest(unittest.TestCase):
             "compaction_contract": "task_neutral_client_replace_messages_v1",
             "workspace_runtime": {"sandbox": {"ripgrep_sha256": "c" * 64}},
             "backend": {
-                "backend_contract": "literesearcher_frozen_search_page_backend_v1",
+                "backend_contract": "literesearcher_frozen_search_page_backend_v2",
                 "coverage_manifest_sha256": "b" * 64,
             },
         }

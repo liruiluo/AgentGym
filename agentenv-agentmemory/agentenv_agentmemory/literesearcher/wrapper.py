@@ -281,19 +281,19 @@ class LiteResearcherWrapper:
                 },
             )
         if name == "visit":
-            urls = arguments.get("url")
-            if isinstance(urls, str):
-                urls = [urls]
-            if not isinstance(urls, list) or not urls or any(
-                not isinstance(url, str) for url in urls
-            ):
-                raise ValueError("visit arguments require a non-empty url string or list")
-            visited = [self.backend.visit(url, goal=str(arguments.get("goal", ""))) for url in urls]
-            episode["backend_call_count"] += len(visited)
-            for item in visited:
-                if item["url"] not in episode["visited_urls"]:
-                    episode["visited_urls"].append(item["url"])
-            observation = json.dumps({"tool": "visit", "pages": visited}, ensure_ascii=False)
+            url = arguments.get("url")
+            if not isinstance(url, str) or not url.strip():
+                raise ValueError("visit arguments require exactly one non-empty url string")
+            page = arguments.get("page", 1)
+            visited = self.backend.visit(
+                url,
+                goal=str(arguments.get("goal", "")),
+                page=page,
+            )
+            episode["backend_call_count"] += 1
+            if visited["url"] not in episode["visited_urls"]:
+                episode["visited_urls"].append(visited["url"])
+            observation = json.dumps({"tool": "visit", "page": visited}, ensure_ascii=False)
             return self._ordinary_result(
                 env_id,
                 episode,
@@ -307,7 +307,9 @@ class LiteResearcherWrapper:
                 transition=self._append_transition(episode, observation),
                 wrapper_evidence={
                     "step": episode["step_count"],
-                    "native_environment_call_count": len(visited),
+                    "native_environment_call_count": 1,
+                    "visit_page": visited["page"],
+                    "visit_page_count": visited["page_count"],
                 },
             )
         raise ValueError("only search and visit are available in the LiteResearcher gate")

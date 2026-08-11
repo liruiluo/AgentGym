@@ -53,6 +53,12 @@ indices are `2666, 4489, 5034, 5046, 5058, 5256, 5327, 5330, 5397, 5400,
 also labels `5815, 5905, 5909` as title/search-only-easy items, and the
 explicit held-out partition keeps them in train instead of held-out.
 
+The bounded-page audit keeps every reviewed evidence quote reachable. Public
+goal BM25 ranks the evidence-bearing window top-1 for `55/72`, top-3 for
+`65/72`, and top-5 for `72/72` rows. Pages use an 8,192-character window with
+1,024-character overlap; page counts range from 1 to 18 and the largest
+serialized visit response is 9,303 characters.
+
 The source snapshot is reproducible from the exact 7,076,368-byte Stage-1
 parquet (`SHA256=493f3d0cc87dc5f0f42340d3891d9df0f8b687d496c911847cd479250610371d`)
 with:
@@ -76,15 +82,17 @@ The model receives only:
 
 ```text
 <tool_call>{"name":"search","arguments":{"query":["..."]}}</tool_call>
-<tool_call>{"name":"visit","arguments":{"url":["https://literesearcher.local/page/00000"],"goal":"..."}}</tool_call>
+<tool_call>{"name":"visit","arguments":{"url":"https://literesearcher.local/page/00000","goal":"...","page":1}}</tool_call>
 <answer>...</answer>
 ```
 
-Search returns deterministic snippets with opaque local URLs. Visit returns
-the frozen page excerpt. `mask_url`, target aliases, and any source URL from
-the upstream row never appear in search results or service metadata. Unknown
-URLs, malformed requests, and backend failures fail closed; there is no live
-web fallback and no exact-match judge fallback on backend failure.
+Search returns deterministic snippets with opaque local URLs. Visit accepts
+exactly one URL and returns one bounded page plus `page`, `page_count`, and
+`next_page`; the policy follows `next_page` with the same URL and goal when it
+needs more evidence. Bulk-URL visits, out-of-range pages, unknown URLs,
+malformed requests, and backend failures fail closed. `mask_url`, target
+aliases, and upstream source URLs never enter policy observations or service
+metadata, and there is no live-web or judge fallback on backend failure.
 
 The initial reward contract is terminal-answer-only binary reward:
 
@@ -110,11 +118,8 @@ LiteResearcher timing branch. Capacity is derived from the active
 envelope rather than a second hard-coded prompt limit.
 
 Compaction is a normal trainable policy output and consumes one wrapper policy
-turn. The policy writes the summary:
-
-```text
-<context_compaction>model-authored continuity summary</context_compaction>
-```
+turn. No special tag is required: the sampled model response is preserved
+verbatim as the assistant continuity summary.
 
 The client wrapper does not author a summary, call search/visit, or write the
 workspace. Native research-call count stays unchanged while policy-step count
@@ -124,21 +129,19 @@ advances by one. It emits the task-neutral receipt:
 {
   "schema": "agentmemory_task_neutral_context_transition_v1",
   "operation": "replace_messages",
-    "continuity_id": "stage1:<dataset-row-index>",
-  "workspace_path": ".agent_memory",
   "messages": [
     {"role": "system", "content": "...tool contract..."},
     {"role": "user", "content": "...question..."},
-    {"role": "assistant", "content": "...policy summary..."}
-  ],
-  "policy_authored": true
+    {"role": "assistant", "content": "...policy summary..."},
+    {"role": "user", "content": "Continue the same task in the unchanged workspace."}
+  ]
 }
 ```
 
-`native_environment_call_count` remains unchanged for a compaction row. A
-summary containing a server-private URL is rejected without a backend call.
-The shared rollout only transports this opaque receipt; lifecycle timing and
-parsing remain wrapper-owned.
+`native_environment_call_count` remains unchanged for a compaction row. The
+shared rollout only transports this opaque receipt; lifecycle timing and
+parsing remain wrapper-owned. Server-private URLs never enter the policy
+context, so compaction does not add a second summary parser or filtering path.
 
 ## 1-3 update gate prerequisites
 
@@ -172,7 +175,7 @@ PYTHONPATH=. python3 -m unittest -q \
   tests/test_service_identity.py
 ```
 
-The focused CPU suite currently runs 87 tests with no external service, GPU, or
+The focused CPU suite currently runs 89 tests with no external service, GPU, or
 full-corpus dependency. It includes split-local search/visit, all-row top-1
 self-search, gold/wrong/tampered rewards, placeholder-text rejection, content
 tampering, and missing-source-provenance controls.

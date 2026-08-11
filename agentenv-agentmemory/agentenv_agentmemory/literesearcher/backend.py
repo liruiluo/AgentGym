@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+from collections import Counter
+import math
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
 from .contracts import LiteResearcherCoverage, LiteResearcherTask
+
+
+VISIT_PAGE_CHARS = 8192
+VISIT_PAGE_OVERLAP_CHARS = 1024
+_VISIT_PAGE_STRIDE_CHARS = VISIT_PAGE_CHARS - VISIT_PAGE_OVERLAP_CHARS
 
 
 class LiteResearchBackendError(RuntimeError):
@@ -39,6 +46,50 @@ def _tokens(text: str) -> tuple[str, ...]:
     )
 
 
+def _overlapping_windows(text: str) -> tuple[str, ...]:
+    return tuple(
+        text[start : start + VISIT_PAGE_CHARS]
+        for start in range(0, len(text), _VISIT_PAGE_STRIDE_CHARS)
+    )
+
+
+def _rank_windows_by_goal(text: str, goal: str) -> tuple[str, ...]:
+    windows = _overlapping_windows(text)
+    query_terms = set(_tokens(goal))
+    if len(windows) == 1 or not query_terms:
+        return windows
+
+    documents = [Counter(_tokens(window)) for window in windows]
+    average_length = sum(sum(document.values()) for document in documents) / len(documents)
+    document_frequency = {
+        term: sum(term in document for document in documents) for term in query_terms
+    }
+    k1 = 1.5
+    b = 0.75
+
+    def score(document: Counter[str]) -> float:
+        length = sum(document.values())
+        length_ratio = length / average_length if average_length else 0.0
+        total = 0.0
+        for term in query_terms:
+            frequency = document.get(term, 0)
+            if not frequency:
+                continue
+            frequency_docs = document_frequency[term]
+            inverse_frequency = math.log(
+                1.0 + (len(documents) - frequency_docs + 0.5) / (frequency_docs + 0.5)
+            )
+            denominator = frequency + k1 * (1.0 - b + b * length_ratio)
+            total += inverse_frequency * frequency * (k1 + 1.0) / denominator
+        return total
+
+    ranked_indices = sorted(
+        range(len(windows)),
+        key=lambda index: (-score(documents[index]), index),
+    )
+    return tuple(windows[index] for index in ranked_indices)
+
+
 class FrozenLiteResearchBackend:
     """Small deterministic search/page backend for the Stage-1 intake gate.
 
@@ -47,7 +98,7 @@ class FrozenLiteResearchBackend:
     ``search`` results or service metadata.
     """
 
-    contract_id = "literesearcher_frozen_search_page_backend_v1"
+    contract_id = "literesearcher_frozen_search_page_backend_v2"
 
     def __init__(
         self,
@@ -84,6 +135,10 @@ class FrozenLiteResearchBackend:
             "search_exposes_mask_url": False,
             "search_exposes_targets": False,
             "visit_exposes_mask_url": False,
+            "visit_pagination_contract": "goal_bm25_overlapping_chars_v1",
+            "visit_page_chars": VISIT_PAGE_CHARS,
+            "visit_page_overlap_chars": VISIT_PAGE_OVERLAP_CHARS,
+            "visit_page_order_public_inputs": ["goal", "page_text"],
             "live_network": False,
             "failure_mode": "fail_closed",
         }
@@ -124,9 +179,11 @@ class FrozenLiteResearchBackend:
             )
         return hits
 
-    def visit(self, url: str, *, goal: str = "") -> dict[str, Any]:
+    def visit(self, url: str, *, goal: str = "", page: int = 1) -> dict[str, Any]:
         if not isinstance(url, str) or not url.strip():
             raise LiteResearchRequestError("visit URL must be a non-empty string")
+        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+            raise LiteResearchRequestError("visit page must be a positive integer")
         url = url.strip()
         if url in self._fail_visit:
             raise LiteResearchBackendError("frozen page backend rejected the URL")
@@ -136,11 +193,20 @@ class FrozenLiteResearchBackend:
             raise LiteResearchRequestError(
                 "visit URL is outside the frozen corpus"
             ) from exc
+        goal_text = str(goal)
+        pages = _rank_windows_by_goal(task.page_text, goal_text)
+        if page > len(pages):
+            raise LiteResearchRequestError(
+                f"visit page {page} exceeds page_count {len(pages)}"
+            )
         return {
             "url": task.public_url,
             "title": task.page_title,
-            "content": task.page_text,
-            "goal": str(goal),
+            "content": pages[page - 1],
+            "goal": goal_text,
+            "page": page,
+            "page_count": len(pages),
+            "next_page": page + 1 if page < len(pages) else None,
         }
 
     def private_task(self, url: str) -> LiteResearcherTask:

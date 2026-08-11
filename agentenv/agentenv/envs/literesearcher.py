@@ -40,8 +40,10 @@ class LiteResearcherEnvClient(BaseEnvClient):
                     "the episode. Search with <tool_call>{\"name\":\"search\","
                     "\"arguments\":{\"query\":[\"...\"]}}</tool_call>; visit an "
                     "opaque result URL with <tool_call>{\"name\":\"visit\","
-                    "\"arguments\":{\"url\":[\"...\"],\"goal\":\"...\"}}"
-                    "</tool_call>. Use shell_command or apply_patch to maintain "
+                    "\"arguments\":{\"url\":\"...\",\"goal\":\"...\","
+                    "\"page\":1}}</tool_call>. A visit returns one bounded page; "
+                    "follow next_page with the same URL and goal when more evidence "
+                    "is needed. Use shell_command or apply_patch to maintain "
                     "ordinary workspace files when useful. Submit the final answer "
                     "as <answer>...</answer>. Emit exactly one action per turn."
                 ),

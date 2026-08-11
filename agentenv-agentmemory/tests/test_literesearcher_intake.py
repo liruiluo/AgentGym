@@ -275,10 +275,89 @@ class LiteResearcherIntakeTests(unittest.TestCase):
         self.assertNotIn(task.targets[0], json.dumps(results))
         self.assertTrue(results[0]["url"].startswith("https://literesearcher.local/page/"))
 
-        page = backend.visit(results[0]["url"], goal="answer the question")
+        page = backend.visit(results[0]["url"], goal=task.question)
         self.assertEqual(page["url"], results[0]["url"])
-        self.assertIn(task.targets[0], page["content"])
-        self.assertNotIn(task.mask_url, json.dumps(page))
+        pages = [page]
+        for page_number in range(2, page["page_count"] + 1):
+            pages.append(
+                backend.visit(results[0]["url"], goal=task.question, page=page_number)
+            )
+        self.assertTrue(any(task.targets[0] in item["content"] for item in pages))
+        self.assertNotIn(task.mask_url, json.dumps(pages))
+
+    def test_visit_pages_bound_observations_and_keep_reviewed_evidence_reachable(self) -> None:
+        audit = json.loads(SEMANTIC_AUDIT.read_text(encoding="utf-8"))
+        evidence_by_index = {
+            int(record["index"]): str(record["evidence_quote"])
+            for record in audit["approved"]
+        }
+        for split, tasks in (
+            ("train", self.coverage.train),
+            ("test", self.coverage.heldout),
+        ):
+            backend = FrozenLiteResearchBackend(self.coverage, split=split)
+            for task in tasks:
+                with self.subTest(split=split, index=task.index):
+                    first = backend.visit(task.public_url, goal=task.question, page=1)
+                    self.assertGreaterEqual(first["page_count"], 1)
+                    self.assertEqual(first["page"], 1)
+                    self.assertLessEqual(len(first["content"]), 8192)
+                    self.assertEqual(
+                        first["next_page"],
+                        2 if first["page_count"] > 1 else None,
+                    )
+
+                    pages = [first]
+                    for page_number in range(2, first["page_count"] + 1):
+                        pages.append(
+                            backend.visit(
+                                task.public_url,
+                                goal=task.question,
+                                page=page_number,
+                            )
+                        )
+                    self.assertEqual(
+                        [item["page"] for item in pages],
+                        list(range(1, first["page_count"] + 1)),
+                    )
+                    self.assertTrue(
+                        any(
+                            evidence_by_index[task.index] in item["content"]
+                            for item in pages
+                        )
+                    )
+                    serialized = json.dumps(pages, ensure_ascii=False)
+                    self.assertNotIn(task.mask_url, serialized)
+                    self.assertNotIn(task.resolved_url, serialized)
+
+                    with self.assertRaisesRegex(ValueError, "visit page"):
+                        backend.visit(
+                            task.public_url,
+                            goal=task.question,
+                            page=first["page_count"] + 1,
+                        )
+
+    def test_wrapper_visit_returns_one_bounded_page(self) -> None:
+        backend = FrozenLiteResearchBackend(self.coverage)
+        wrapper = LiteResearcherWrapper(self.coverage, backend)
+        task = self.coverage.train[0]
+        env_id = wrapper.create(data_idx=0)["id"]
+        result = wrapper.step(
+            env_id,
+            '<tool_call>{"name":"visit","arguments":{"url":"'
+            + task.public_url
+            + '","goal":"'
+            + task.question.replace('"', '\\"')
+            + '","page":1}}</tool_call>',
+        )
+        observation = json.loads(result["observation"])
+        self.assertFalse(result["done"])
+        self.assertEqual(result["info"]["status"], "active")
+        self.assertEqual(result["info"]["native_environment_call_count"], 1)
+        self.assertEqual(observation["tool"], "visit")
+        self.assertEqual(observation["page"]["page"], 1)
+        self.assertLessEqual(len(observation["page"]["content"]), 8192)
+        wrapper.close(env_id)
 
     def test_malformed_tool_and_unknown_visit_do_not_fallback_to_live_web(self) -> None:
         backend = FrozenLiteResearchBackend(self.coverage)
@@ -294,12 +373,20 @@ class LiteResearcherIntakeTests(unittest.TestCase):
 
         failed_visit = wrapper.step(
             env_id,
-            '<tool_call>{"name":"visit","arguments":{"url":["https://example.invalid/unknown"],"goal":"x"}}</tool_call>',
+            '<tool_call>{"name":"visit","arguments":{"url":"https://example.invalid/unknown","goal":"x","page":1}}</tool_call>',
         )
         self.assertFalse(failed_visit["done"])
         self.assertFalse(failed_visit["info"]["sample_excluded"])
         self.assertEqual(failed_visit["info"]["status"], "invalid_action")
         self.assertEqual(failed_visit["info"]["native_environment_call_count"], 0)
+
+        batched_visit = wrapper.step(
+            env_id,
+            '<tool_call>{"name":"visit","arguments":{"url":["https://literesearcher.local/page/one","https://literesearcher.local/page/two"],"goal":"x","page":1}}</tool_call>',
+        )
+        self.assertFalse(batched_visit["done"])
+        self.assertEqual(batched_visit["info"]["status"], "invalid_action")
+        self.assertEqual(batched_visit["info"]["native_environment_call_count"], 0)
         wrapper.close(env_id)
 
     def test_gold_wrong_and_tampered_answers_have_terminal_binary_reward(self) -> None:
