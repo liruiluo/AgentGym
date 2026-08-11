@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -12,9 +13,10 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 from agentenv_agentmemory.workspace_sandbox import (
     ExecutableFingerprint,
@@ -34,6 +36,14 @@ from agentenv_agentmemory.workspace_sandbox import (
 SWE_SHELL_SANDBOX_CONTRACT = "swesmith_linux_namespace_oci_rootfs_v1"
 OCI_ROOTFS_CACHE_SCHEMA = "swesmith_oci_rootfs_cache_v1"
 _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_LOCAL_SANDBOX_SCRATCH_ROOT = Path("/tmp")
+_SANDBOX_CLEANUP_TIMEOUT_SECONDS = 2.0
+_SANDBOX_CLEANUP_RETRY_SECONDS = 0.05
+_TRANSIENT_SANDBOX_CLEANUP_ERRNOS = {
+    errno.EBUSY,
+    errno.ENOENT,
+    errno.ENOTEMPTY,
+}
 
 
 class SwesmithSandboxError(ShellSandboxError):
@@ -493,13 +503,11 @@ class LinuxNamespaceEpisodeSandbox:
             )
         _attest_oci_rootfs_identity(identity)
         parent = workspace_root.parent
-        with tempfile.TemporaryDirectory(
-            prefix=".swesmith-sandbox-root-", dir=parent
-        ) as rootfs_raw, tempfile.TemporaryDirectory(
-            prefix=".swesmith-sandbox-output-", dir=parent
-        ) as output_raw:
-            rootfs = Path(rootfs_raw)
-            output = Path(output_raw)
+        with _temporary_sandbox_directory(
+            prefix=".swesmith-sandbox-root-"
+        ) as rootfs, _temporary_sandbox_directory(
+            prefix=".swesmith-sandbox-output-"
+        ) as output:
             self._prepare_rootfs(rootfs, output)
             started = time.monotonic()
             process = subprocess.Popen(
@@ -594,6 +602,55 @@ class LinuxNamespaceEpisodeSandbox:
         # from the training container: that would silently change dependencies.
         os.chmod(output, 0o700)
         os.chmod(rootfs, 0o700)
+
+
+@contextmanager
+def _temporary_sandbox_directory(*, prefix: str) -> Iterator[Path]:
+    # Namespace mountpoints and status files are control-plane scratch. Keeping
+    # them off the NFS episode tree avoids .nfs placeholders when a mount or
+    # file descriptor finishes closing just after the launcher exits.
+    path = Path(
+        tempfile.mkdtemp(prefix=prefix, dir=_LOCAL_SANDBOX_SCRATCH_ROOT)
+    )
+    try:
+        yield path
+    finally:
+        _remove_temporary_sandbox_directory(path)
+
+
+def _remove_temporary_sandbox_directory(
+    path: Path,
+    *,
+    timeout_seconds: float = _SANDBOX_CLEANUP_TIMEOUT_SECONDS,
+) -> None:
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    last_error: OSError | None = None
+    while True:
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            if not path.exists():
+                return
+            if exc.errno not in _TRANSIENT_SANDBOX_CLEANUP_ERRNOS:
+                raise SwesmithSandboxError(
+                    f"SWE-smith sandbox scratch cleanup failed for {path}: {exc}"
+                ) from exc
+            last_error = exc
+        else:
+            return
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            try:
+                residue = sorted(entry.name for entry in path.iterdir())[:16]
+            except OSError as exc:
+                residue = [f"<unreadable errno={exc.errno}>"]
+            raise SwesmithSandboxError(
+                "SWE-smith sandbox scratch cleanup stayed busy after "
+                f"{timeout_seconds:.3f}s: path={path} residue={residue} "
+                f"last_error={last_error}"
+            ) from last_error
+        time.sleep(min(_SANDBOX_CLEANUP_RETRY_SECONDS, remaining))
 
 
 def snapshot_workspace_tree(

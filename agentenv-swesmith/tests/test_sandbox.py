@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from agentenv_agentmemory.workspace_sandbox import (
     ExecutableFingerprint,
@@ -20,6 +22,8 @@ from agentenv_swesmith.sandbox import (
     SwesmithSandboxError,
     _attest_oci_rootfs_identity,
     _normalize_workdir,
+    _remove_temporary_sandbox_directory,
+    _temporary_sandbox_directory,
     diff_workspace_trees,
     load_oci_rootfs_identity,
     snapshot_workspace_tree,
@@ -101,6 +105,63 @@ class _FakeEpisodeSandbox(LinuxNamespaceEpisodeSandbox):
             sandbox_contract="test",
             model_uid=self.model_uid,
         )
+
+
+class SandboxScratchCleanupTests(unittest.TestCase):
+    def test_control_directory_uses_local_temp_root_and_is_removed(self) -> None:
+        with mock.patch(
+            "agentenv_swesmith.sandbox.tempfile.mkdtemp",
+            wraps=tempfile.mkdtemp,
+        ) as mkdtemp:
+            with _temporary_sandbox_directory(
+                prefix=".swesmith-sandbox-test-"
+            ) as path:
+                self.assertEqual(
+                    path.parent.resolve(),
+                    Path("/tmp").resolve(),
+                )
+                self.assertTrue(path.is_dir())
+            self.assertFalse(path.exists())
+        self.assertEqual(
+            Path(mkdtemp.call_args.kwargs["dir"]).resolve(),
+            Path("/tmp").resolve(),
+        )
+
+    def test_transient_nfs_cleanup_error_is_retried(self) -> None:
+        path = Path(tempfile.mkdtemp(prefix="swesmith-cleanup-test-"))
+        (path / ".nfs-placeholder").write_text("held", encoding="ascii")
+        actual_rmtree = shutil.rmtree
+        calls = 0
+
+        def flaky_rmtree(target: Path) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError(errno.ENOTEMPTY, "Directory not empty", target)
+            actual_rmtree(target)
+
+        with mock.patch(
+            "agentenv_swesmith.sandbox.shutil.rmtree",
+            side_effect=flaky_rmtree,
+        ):
+            _remove_temporary_sandbox_directory(path, timeout_seconds=0.2)
+        self.assertEqual(calls, 2)
+        self.assertFalse(path.exists())
+
+    def test_persistent_cleanup_failure_stays_fail_closed(self) -> None:
+        path = Path(tempfile.mkdtemp(prefix="swesmith-cleanup-test-"))
+        (path / ".nfs-placeholder").write_text("held", encoding="ascii")
+        try:
+            with mock.patch(
+                "agentenv_swesmith.sandbox.shutil.rmtree",
+                side_effect=OSError(errno.ENOTEMPTY, "Directory not empty", path),
+            ), self.assertRaisesRegex(
+                SwesmithSandboxError,
+                r"stayed busy.*\.nfs-placeholder",
+            ):
+                _remove_temporary_sandbox_directory(path, timeout_seconds=0.0)
+        finally:
+            shutil.rmtree(path)
 
 
 def _write_fake_oci_cache(parent: Path) -> tuple[Path, str, str, Path]:
