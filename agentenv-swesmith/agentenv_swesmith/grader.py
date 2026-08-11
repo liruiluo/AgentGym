@@ -26,6 +26,7 @@ class TestRunEvidence:
     stdout: str
     stderr: str
     status_map: Mapping[str, str]
+    status_source: str
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -38,6 +39,7 @@ class TestRunEvidence:
             "stdout": self.stdout,
             "stderr": self.stderr,
             "status_map": dict(self.status_map),
+            "status_source": self.status_source,
         }
 
 
@@ -172,22 +174,37 @@ class SwesmithHiddenGrader:
         stdout = execution.result.stdout.decode("utf-8", errors="replace")
         stderr = execution.result.stderr.decode("utf-8", errors="replace")
         combined = stdout + self.output_joiner + stderr
-        if execution.result.stdout_truncated or execution.result.stderr_truncated:
-            status_map: Mapping[str, str] = {}
+        output_truncated = (
+            execution.result.stdout_truncated or execution.result.stderr_truncated
+        )
+        if (
+            output_truncated
+            and execution.result.exit_code == 0
+            and not execution.result.timed_out
+        ):
+            # A successful, attested test command is stronger than its bounded
+            # human-readable stream: pytest's exit 0 means every test selected
+            # by this official command passed.  Reconstruct only the declared
+            # private test IDs; never infer a pass from a nonzero/timeout run.
+            status_map = _declared_pass_status(role, instance)
+            status_source = "exit_zero_declared_tests"
+        elif output_truncated:
+            status_map = {}
+            status_source = "unavailable_truncated_output"
         else:
             status_map = dict(profile.log_parser(combined))
+            status_source = "profile_log_parser"
         return TestRunEvidence(
             role=role,
             command=command,
             exit_code=execution.result.exit_code,
             timed_out=execution.result.timed_out,
-            output_truncated=(
-                execution.result.stdout_truncated or execution.result.stderr_truncated
-            ),
+            output_truncated=output_truncated,
             elapsed_ms=execution.result.elapsed_ms,
             stdout=stdout,
             stderr=stderr,
             status_map=status_map,
+            status_source=status_source,
         )
 
 
@@ -212,6 +229,19 @@ def _declared_f2p_passed(
     return isinstance(failures, Mapping) and not failures.get("failure", [])
 
 
+def _declared_pass_status(
+    role: str, instance: Mapping[str, Any]
+) -> dict[str, str]:
+    gold = _gold_results(instance)
+    if role == "F2P":
+        paths = gold["FAIL_TO_PASS"]
+    elif role == "P2P/full":
+        paths = [*gold["FAIL_TO_PASS"], *gold["PASS_TO_PASS"]]
+    else:
+        raise SwesmithGraderError(f"unknown test phase: {role!r}")
+    return {path: "PASSED" for path in paths}
+
+
 def _eval_report(
     profile: SwesmithProfileBinding,
     status_map: Mapping[str, str],
@@ -232,7 +262,7 @@ def _healthy(run: TestRunEvidence | None) -> bool:
         run is not None
         and run.exit_code == 0
         and not run.timed_out
-        and not run.output_truncated
+        and run.status_source in {"profile_log_parser", "exit_zero_declared_tests"}
     )
 
 

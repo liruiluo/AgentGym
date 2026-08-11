@@ -175,10 +175,45 @@ class HiddenGraderTests(unittest.TestCase):
             ("tests/test_fix.py", "tests/test_fix.py"),
         )
 
+    def test_truncated_exit_zero_uses_declared_test_receipt(self) -> None:
+        sandbox = FakeSandbox(
+            self.policy,
+            [
+                {
+                    "stdout": "pytest output omitted\n",
+                    "stdout_truncated": True,
+                },
+                {
+                    "stdout": "pytest output omitted\n",
+                    "stdout_truncated": True,
+                },
+            ],
+        )
+        result = self.grader.grade(
+            instance=self.instance,
+            profile=self.profile,
+            workspace=self.workspace,
+            sandbox=sandbox,
+        )
+        self.assertEqual(result.reward, 1.0)
+        self.assertEqual(result.f2p_run.status_source, "exit_zero_declared_tests")
+        self.assertEqual(result.full_run.status_source, "exit_zero_declared_tests")
+        self.assertEqual(
+            result.f2p_run.status_map,
+            {"tests/test_fix.py::test_fix": "PASSED"},
+        )
+        self.assertEqual(
+            result.full_run.status_map,
+            {
+                "tests/test_fix.py::test_fix": "PASSED",
+                "tests/test_keep.py::test_keep": "PASSED",
+            },
+        )
+
     def test_truncated_or_nonzero_full_run_fails_closed(self) -> None:
         for override in (
-            {"stdout_truncated": True},
             {"exit_code": 1},
+            {"stdout_truncated": True, "exit_code": 1},
         ):
             with self.subTest(override=override):
                 (self.policy / "tests/test_fix.py").write_text(
