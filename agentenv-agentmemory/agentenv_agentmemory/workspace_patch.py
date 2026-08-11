@@ -495,17 +495,33 @@ def _apply_hunks(text: str, hunks: Sequence[PatchHunk], relative: str) -> str:
     lines = text.splitlines()
     cursor = 0
     for hunk in hunks:
+        section_found = True
         if hunk.section_hint is not None:
-            cursor = _find_section(lines, hunk.section_hint, cursor, relative)
+            try:
+                cursor = _find_section(lines, hunk.section_hint, cursor, relative)
+            except WorkspacePatchError:
+                # Git may describe a function with a truncated signature, or
+                # the mutation may have removed the section line itself. In
+                # either case, permit only a globally unique context match.
+                section_found = False
         old_lines = [line[1:] for line in hunk.lines if line[0] in " -"]
         new_lines = [line[1:] for line in hunk.lines if line[0] in " +"]
         if old_lines:
-            index = _find_sequence(
-                lines,
-                old_lines,
-                cursor,
-                require_eof=hunk.end_of_file,
-            )
+            if section_found:
+                index = _find_sequence(
+                    lines,
+                    old_lines,
+                    cursor,
+                    require_eof=hunk.end_of_file,
+                )
+            else:
+                index = _find_unique_sequence(
+                    lines,
+                    old_lines,
+                    cursor,
+                    require_eof=hunk.end_of_file,
+                    relative=relative,
+                )
             if index is None:
                 raise WorkspacePatchError(
                     f"Update File context was not found in {relative}: "
@@ -527,10 +543,32 @@ def _find_section(
     start: int,
     relative: str,
 ) -> int:
-    for candidate in (hint, hint.strip()):
-        for index in range(start, len(lines)):
-            if lines[index] == candidate or lines[index].strip() == candidate:
-                return index + 1
+    candidates = (hint, hint.strip())
+    for candidate in candidates:
+        exact = [
+            index
+            for index in range(start, len(lines))
+            if lines[index] == candidate or lines[index].strip() == candidate
+        ]
+        if len(exact) == 1:
+            return exact[0] + 1
+        if len(exact) > 1:
+            raise WorkspacePatchError(
+                f"Update File section is ambiguous in {relative}: {hint!r}"
+            )
+    prefix = hint.strip()
+    if prefix:
+        matches = [
+            index
+            for index in range(start, len(lines))
+            if lines[index].strip().startswith(prefix)
+        ]
+        if len(matches) == 1:
+            return matches[0] + 1
+        if len(matches) > 1:
+            raise WorkspacePatchError(
+                f"Update File section is ambiguous in {relative}: {hint!r}"
+            )
     raise WorkspacePatchError(
         f"Update File section was not found in {relative}: {hint!r}"
     )
@@ -556,6 +594,40 @@ def _find_sequence(
         for index in indexes:
             if [normalize(value) for value in lines[index : index + len(pattern)]] == normalized_pattern:
                 return index
+    return None
+
+
+def _find_unique_sequence(
+    lines: Sequence[str],
+    pattern: Sequence[str],
+    start: int,
+    *,
+    require_eof: bool,
+    relative: str,
+) -> int | None:
+    last = len(lines) - len(pattern)
+    if last < start:
+        return None
+    for normalize in (
+        lambda value: value,
+        lambda value: value.rstrip(),
+        lambda value: value.strip(),
+    ):
+        normalized_pattern = [normalize(value) for value in pattern]
+        indexes = [last] if require_eof else range(start, last + 1)
+        matches = [
+            index
+            for index in indexes
+            if [normalize(value) for value in lines[index : index + len(pattern)]]
+            == normalized_pattern
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise WorkspacePatchError(
+                f"Update File context is ambiguous in {relative}: "
+                f"{pattern[0]!r}"
+            )
     return None
 
 

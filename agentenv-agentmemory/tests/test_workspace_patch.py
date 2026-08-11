@@ -98,6 +98,60 @@ class WorkspacePatchTests(unittest.TestCase):
             "header\nsection\nnew\ntail\nend\n",
         )
 
+    def test_truncated_section_hint_uses_unique_prefix(self) -> None:
+        (self.root / "note.py").write_text(
+            "def target(value: str, extra: int) -> str:\n"
+            "    return value\n",
+            encoding="utf-8",
+        )
+        self.apply(
+            "*** Begin Patch\n"
+            "*** Update File: note.py\n"
+            "@@ def target(value: str, extra: int) -> st\n"
+            "-    return value\n"
+            "+    return value.strip()\n"
+            "*** End Patch"
+        )
+        self.assertEqual(
+            (self.root / "note.py").read_text(encoding="utf-8"),
+            "def target(value: str, extra: int) -> str:\n"
+            "    return value.strip()\n",
+        )
+
+    def test_missing_section_hint_falls_back_to_unique_context(self) -> None:
+        (self.root / "note.py").write_text(
+            "def target(value):\n"
+            "    return value\n",
+            encoding="utf-8",
+        )
+        self.apply(
+            "*** Begin Patch\n"
+            "*** Update File: note.py\n"
+            "@@ removed_wrapper\n"
+            "-    return value\n"
+            "+    return value.strip()\n"
+            "*** End Patch"
+        )
+        self.assertIn("return value.strip()", (self.root / "note.py").read_text())
+
+    def test_missing_section_with_repeated_context_fails_closed(self) -> None:
+        (self.root / "note.py").write_text(
+            "def first(value):\n"
+            "    return value\n\n"
+            "def second(value):\n"
+            "    return value\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(WorkspacePatchError, "ambiguous"):
+            self.apply(
+                "*** Begin Patch\n"
+                "*** Update File: note.py\n"
+                "@@ removed_wrapper\n"
+                "-    return value\n"
+                "+    return value.strip()\n"
+                "*** End Patch"
+            )
+
     def test_move_updates_content_and_removes_empty_parent(self) -> None:
         source_dir = self.root / "old"
         source_dir.mkdir()
