@@ -755,22 +755,25 @@ def _is_contained(root: Path, path: Path) -> bool:
 
 
 def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
         return
-    try:
-        process.wait(timeout=0.5)
-        return
-    except subprocess.TimeoutExpired:
-        pass
+    if process.poll() is None:
+        try:
+            process.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            pass
+    else:
+        # The group leader may exit before descendants that inherited its
+        # output pipes. Give TERM a short grace period, then reap the group.
+        time.sleep(0.05)
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         return
-    process.wait(timeout=2.0)
+    if process.poll() is None:
+        process.wait(timeout=2.0)
 
 
 def _collect_bounded_output(
@@ -807,6 +810,8 @@ def _collect_bounded_output(
                 process_finished_at = time.monotonic()
             elif process.poll() is not None and process_finished_at is None:
                 process_finished_at = now
+                if selector.get_map():
+                    _terminate_process_group(process)
 
             if process_finished_at is not None and now - process_finished_at > 1.0:
                 # A pipe still held open after the namespace launcher exits is

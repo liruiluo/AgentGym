@@ -258,6 +258,23 @@ def main() -> None:
         time.sleep(0.2)
         _require(not _host_process_contains(marker), "detached descendant cleanup")
 
+        normal_exit_marker = "agentmemory-normal-exit-" + uuid.uuid4().hex
+        _, result = run(
+            "normal_exit_cleanup",
+            "setsid bash -c 'trap \"\" TERM; while :; do sleep 1; done' "
+            + shlex.quote(normal_exit_marker)
+            + " & printf done",
+        )
+        _require(
+            result.exit_code == 0 and result.stdout == b"done",
+            "normal-exit descendant cleanup",
+        )
+        time.sleep(0.2)
+        _require(
+            not _host_process_contains(normal_exit_marker),
+            "normal-exit detached descendant cleanup",
+        )
+
         concurrent_roots = [fresh(f"concurrent-{index}") for index in range(8)]
 
         def concurrent_run(index: int) -> ShellExecutionResult:
