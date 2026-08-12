@@ -199,8 +199,6 @@ def _write_fake_oci_cache(parent: Path) -> tuple[Path, str, str, Path]:
         "run",
         "bin",
         "usr/bin",
-        "opt/miniconda3/bin",
-        "opt/miniconda3/envs/testbed/bin",
     ):
         (rootfs / relative).mkdir(parents=True, exist_ok=True)
     source = Path(sys.executable).resolve()
@@ -211,8 +209,6 @@ def _write_fake_oci_cache(parent: Path) -> tuple[Path, str, str, Path]:
         "usr/bin/env",
         "bin/sleep",
         "usr/bin/cut",
-        "opt/miniconda3/bin/python3.12",
-        "opt/miniconda3/envs/testbed/bin/python",
     ):
         destination = rootfs / relative
         shutil.copyfile(source, destination)
@@ -228,7 +224,6 @@ def _write_fake_oci_cache(parent: Path) -> tuple[Path, str, str, Path]:
             "bytes": 1,
             "regular_files": 8,
             "bash_sha256": executable_sha,
-            "python312_sha256": executable_sha,
         },
     }
     (cache_dir / "manifest.json").write_bytes(manifest_bytes)
@@ -264,6 +259,7 @@ class OciRootfsIdentityTests(unittest.TestCase):
         self.assertEqual(identity.digest, self.digest)
         self.assertEqual(identity.image, self.image)
         self.assertEqual(identity.working_dir, "/testbed")
+        self.assertNotIn("python_sha256", identity.as_metadata())
         _attest_oci_rootfs_identity(identity)
 
     def test_incomplete_or_wrong_profile_cache_fails_closed(self) -> None:

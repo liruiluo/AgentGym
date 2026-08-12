@@ -71,7 +71,6 @@ class OciRootfsIdentity:
     rootfs_bytes: int
     rootfs_regular_files: int
     bash_sha256: str
-    python_sha256: str
     key_fingerprints: tuple[tuple[str, ExecutableFingerprint], ...]
 
     def as_metadata(self) -> dict[str, Any]:
@@ -89,7 +88,6 @@ class OciRootfsIdentity:
             "bytes": self.rootfs_bytes,
             "regular_files": self.rootfs_regular_files,
             "bash_sha256": self.bash_sha256,
-            "python_sha256": self.python_sha256,
             "key_fingerprints": {
                 path: fingerprint.as_metadata()
                 for path, fingerprint in self.key_fingerprints
@@ -1051,18 +1049,13 @@ def load_oci_rootfs_identity(
         "/usr/bin/env",
         "/bin/sleep",
         "/usr/bin/cut",
-        "/opt/miniconda3/bin/python3.12",
-        "/opt/miniconda3/envs/testbed/bin/python",
     )
     resolved_paths: list[tuple[str, Path]] = []
     for relative in required_paths:
         resolved_paths.append((relative, _resolve_rootfs_file(rootfs, relative)))
     bash_sha256 = executable_sha256(resolved_paths[0][1])
-    python_sha256 = executable_sha256(resolved_paths[-2][1])
     if bash_sha256 != rootfs_meta.get("bash_sha256"):
         raise SwesmithSandboxError("OCI rootfs /bin/bash hash does not match metadata")
-    if python_sha256 != rootfs_meta.get("python312_sha256"):
-        raise SwesmithSandboxError("OCI rootfs base Python 3.12 hash does not match metadata")
     key_fingerprints = tuple(
         (relative, executable_fingerprint(path)) for relative, path in resolved_paths
     )
@@ -1079,7 +1072,6 @@ def load_oci_rootfs_identity(
         rootfs_bytes=rootfs_bytes,
         rootfs_regular_files=rootfs_regular_files,
         bash_sha256=bash_sha256,
-        python_sha256=python_sha256,
         key_fingerprints=key_fingerprints,
     )
 
