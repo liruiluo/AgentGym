@@ -6,6 +6,18 @@ Each episode exposes one unchanged issue and one persistent repository through
 Codex-style `shell_command` and `apply_patch` actions. The policy receives no
 gold patch, hidden test list, verifier command, or dedicated memory API.
 
+The policy has two complementary memory mechanisms. Near the context limit it
+writes a short continuation state that replaces the earlier conversation. For
+details that should survive repeated lossy compaction, it may maintain ordinary
+workspace files containing debugging hypotheses, attempted commands and tests,
+exact evidence, failed approaches, partial results, and next checks. It chooses
+the paths, structure, write cadence, and read cadence. On a long debugging path,
+the policy updates this ledger at meaningful evidence changes rather than waiting
+until the compaction request, which cannot execute a file action. After compaction it must
+rediscover and read any needed files with normal shell commands; the harness
+does not author, enumerate, summarize, or restore their contents. Neither a
+compaction nor a file action receives a separate task reward.
+
 The runtime separately attests the Hugging Face dataset revision and the pinned
 SWE-smith source revision. A formal launch also requires an OCI image manifest
 that records both identities; a dataset snapshot SHA is never reused as a

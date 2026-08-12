@@ -254,6 +254,10 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             "bounded_combined_shell_output_v1",
         )
         self.assertEqual(self.manager.metadata()["max_observation_bytes"], 6144)
+        self.assertEqual(
+            self.manager.metadata()["memory_contract"],
+            "policy_compaction_plus_optional_durable_filesystem_v1",
+        )
         self.assertEqual(self.manager.metadata()["training_max_policy_turns"], 75)
         self.assertEqual(
             self.manager.metadata()["upstream_reference_max_policy_turns"],

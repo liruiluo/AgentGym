@@ -21,11 +21,16 @@ SWE_CONTEXT_COMPACTION_REQUEST = (
     "The conversation is nearing its context limit. Write the continuation "
     "state you want to retain after the earlier interaction is removed. Your "
     "response will be preserved verbatim and will not be sent to the "
-    "environment. Include only information you choose to carry forward."
+    "environment. Include only information you choose to carry forward. Keep "
+    "this response short: retain the immediate objective, decisive current "
+    "state, next action, and the path/search key of any durable notes you "
+    "already wrote. Do not claim that this response executed a shell command "
+    "or changed a file."
 )
 
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
 ACTION_PROGRESS_SCHEMA = "swesmith_action_progress_v1"
+SWE_MEMORY_CONTRACT = "policy_compaction_plus_optional_durable_filesystem_v1"
 _POSITIVE_ACTOR_CREDIT_BASES = {
     "shell_executed",
     "workspace_changed",
@@ -135,6 +140,38 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "inspecting the exact target lines. Do not use cat > or a here-document to rewrite "
     "an existing source file. If a patch fails, re-inspect the small target region and "
     "retry a bounded patch or short shell edit; do not replace the whole file.\n\n"
+    "# Durable debugging notes\n"
+    "This is a long-running debugging task. The persistent workspace can hold ordinary "
+    "files that you create and maintain with the same shell_command and apply_patch "
+    "actions. For a debugging path that may span context compactions, maintain a "
+    "concise evidence ledger incrementally instead of waiting for the compaction "
+    "request. Update it at meaningful state changes: a hypothesis is introduced or "
+    "ruled out, a command or test changes the evidence, a root cause or partial fix is "
+    "verified, a regression is found, or the next branch is chosen. Record high-volume "
+    "state that may outlive the visible "
+    "conversation: hypotheses, commands or tests already tried, exact observations, "
+    "failed approaches and why they failed, successful partial results, and unresolved "
+    "next checks. Choose a safe relative path and organization; no filename or note "
+    "format is prescribed, and a short task may not need notes at all. Keep notes "
+    "separate from source code when practical.\n"
+    "Before context compaction, make sure important detailed evidence needed later is "
+    "already in an ordinary file. The compaction response is only a short "
+    "working-state handoff: include the locator of notes you already wrote, not the "
+    "whole debugging history. That response is not executed by the environment. After "
+    "compaction, rediscover and read the notes with normal commands such as find, rg, "
+    "grep, sed, head, tail, or cat before taking an action that depends on them. The "
+    "harness will not create, list, summarize, or restore note contents for you.\n"
+    "Illustrative pattern only (do not copy its content as a task answer): one turn may "
+    "append a concise entry to a relative debugging file, a later turn may search or "
+    "read that file, and a subsequent patch may use the recovered evidence. For example, "
+    "a first action could be `shell_command {\"command\":\"mkdir -p .agent_memory && "
+    "printf '%s\\n' 'hypothesis: parser state is stale' 'evidence: test output ...' "
+    ">> .agent_memory/debugging.md\",\"workdir\":\".\"}`, followed in a later "
+    "action by `shell_command {\"command\":\"rg -n 'hypothesis|evidence|next check' "
+    ".agent_memory\",\"workdir\":\".\"}`. This is only a syntax illustration: "
+    "do not assume this filename, content, or timing is useful for the current issue. "
+    "Writing or reading a note has no separate reward; the native task result is the "
+    "objective.\n\n"
     "# Output contract\n"
     "Start at byte zero with shell_command or apply_patch. Output only that one action: "
     "no XML tags, explanation, label, Markdown fence, or <think> tag. After an "
@@ -173,6 +210,12 @@ class SwesmithEnvClient(BaseEnvClient):
         self.env_server_base = env_server_base.rstrip("/")
         self.timeout = timeout
         metadata = self._request("GET", "metadata")
+        memory_contract = metadata.get("memory_contract")
+        if memory_contract != SWE_MEMORY_CONTRACT:
+            raise RuntimeError(
+                "SWE-smith endpoint memory contract mismatch: "
+                f"expected {SWE_MEMORY_CONTRACT!r}, got {memory_contract!r}"
+            )
         task_count = int(metadata["task_count"])
         if data_len is not None and int(data_len) > task_count:
             raise ValueError(

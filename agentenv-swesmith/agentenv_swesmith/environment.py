@@ -388,6 +388,9 @@ class SwesmithEpisodeManager:
             "max_observation_bytes": self.max_observation_bytes,
             "reward_contract": "terminal_full_resolution_binary_v1",
             "context_contract": "one_native_issue_continuous_episode_v1",
+            "memory_contract": (
+                "policy_compaction_plus_optional_durable_filesystem_v1"
+            ),
             "horizon_contract": "unified_policy_step_private_grade_v1",
             "active_slot_count": slot_count,
             "active_environment_count": active_count,
