@@ -51,10 +51,13 @@ from ..latent_preference_wrapper import (
     LatentPreferenceFilesystemAgentMemoryWrapper,
 )
 from ..literesearcher import (
+    LITERESEARCHER_FULLPOOL_SURFACE,
     LITERESEARCHER_SURFACE,
     FrozenLiteResearchBackend,
     LiteResearcherWrapper,
+    SQLiteFTSLiteResearchBackend,
     load_coverage_manifest,
+    load_full_pool,
 )
 from ..persistent_workspace import PersistentWorkspace, WorkspaceLimits
 from ..procedural_webshop_env import PROCEDURAL_SURFACE
@@ -135,8 +138,8 @@ def build_server():
         return NegativeConstraintAgentMemoryWrapper()
     if surface == NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE:
         return NegativeConstraintFilesystemAgentMemoryWrapper()
-    if surface == LITERESEARCHER_SURFACE:
-        return _build_literesearcher_wrapper()
+    if surface in {LITERESEARCHER_SURFACE, LITERESEARCHER_FULLPOOL_SURFACE}:
+        return _build_literesearcher_wrapper(surface)
 
     factory = build_domain_registry().build(surface)
     first_add = _env_float("AGENTMEMORY_FIRST_ADD_REWARD", 0.0)
@@ -180,10 +183,7 @@ def build_server():
     )
 
 
-def _build_literesearcher_wrapper() -> LiteResearcherWrapper:
-    coverage = load_coverage_manifest(
-        _required_file("AGENTMEMORY_LITERESEARCHER_COVERAGE_MANIFEST")
-    )
+def _build_literesearcher_wrapper(surface: str) -> LiteResearcherWrapper:
     limits = WorkspaceLimits()
     sandbox = LinuxNamespaceShellSandbox.from_environment(
         limits=limits.shell_limits(),
@@ -208,13 +208,29 @@ def _build_literesearcher_wrapper() -> LiteResearcherWrapper:
     split = _required_env("AGENTMEMORY_LITERESEARCHER_SPLIT")
     if split not in {"train", "test"}:
         raise RuntimeError("AGENTMEMORY_LITERESEARCHER_SPLIT must be train or test")
-    return LiteResearcherWrapper(
-        coverage,
-        FrozenLiteResearchBackend(
-            coverage,
+    if surface == LITERESEARCHER_FULLPOOL_SURFACE:
+        task_source = load_full_pool(
+            _required_file("AGENTMEMORY_LITERESEARCHER_FULL_POOL_MANIFEST"),
+            _required_file("AGENTMEMORY_LITERESEARCHER_FULL_POOL_ROWS"),
+            _required_directory("AGENTMEMORY_LITERESEARCHER_SOURCE_ROOT"),
+        )
+        backend = SQLiteFTSLiteResearchBackend(
+            task_source,
+            _required_file("AGENTMEMORY_LITERESEARCHER_FTS_DATABASE"),
+            top_k=_env_int("AGENTMEMORY_LITERESEARCHER_TOP_K", 5),
+        )
+    else:
+        task_source = load_coverage_manifest(
+            _required_file("AGENTMEMORY_LITERESEARCHER_COVERAGE_MANIFEST")
+        )
+        backend = FrozenLiteResearchBackend(
+            task_source,
             split=split,
             top_k=_env_int("AGENTMEMORY_LITERESEARCHER_TOP_K", 5),
-        ),
+        )
+    return LiteResearcherWrapper(
+        task_source,
+        backend,
         workspace_factory=workspace_factory,
         workspace_runtime_metadata={
             "sandbox": dict(sandbox.metadata),
@@ -223,6 +239,7 @@ def _build_literesearcher_wrapper() -> LiteResearcherWrapper:
         },
         max_policy_steps=_env_int("AGENTMEMORY_LITERESEARCHER_MAX_POLICY_STEPS", 40),
         split=split,
+        surface=surface,
     )
 
 

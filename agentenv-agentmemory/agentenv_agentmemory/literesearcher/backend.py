@@ -112,6 +112,7 @@ class FrozenLiteResearchBackend:
         if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
             raise ValueError("top_k must be a positive integer")
         self.coverage = coverage
+        self.tasks_source = coverage
         self.split = split
         self.tasks = coverage.tasks_for_split(split)
         self.top_k = top_k
@@ -143,7 +144,14 @@ class FrozenLiteResearchBackend:
             "failure_mode": "fail_closed",
         }
 
-    def search(self, query: str | list[str], *, top_k: int | None = None) -> list[dict[str, Any]]:
+    def search(
+        self,
+        query: str | list[str],
+        *,
+        top_k: int | None = None,
+        mask_url: str = "",
+    ) -> list[dict[str, Any]]:
+        del mask_url
         queries = [query] if isinstance(query, str) else query
         if not isinstance(queries, list) or not queries or any(
             not isinstance(item, str) for item in queries

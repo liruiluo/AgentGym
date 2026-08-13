@@ -5,11 +5,13 @@ import re
 from copy import deepcopy
 from typing import Any, Callable, Mapping, Protocol
 
-from .backend import FrozenLiteResearchBackend, LiteResearchBackendError
-from .contracts import LiteResearcherCoverage
+from .backend import LiteResearchBackendError
 
 
 LITERESEARCHER_SURFACE = "agentmemory_literesearcher_stage1_rag_only_v1"
+LITERESEARCHER_FULLPOOL_SURFACE = (
+    "agentmemory_literesearcher_fullpool_lexical_fallback_v1"
+)
 _APPEND_SCHEMA = "agentmemory_task_neutral_context_transition_v1"
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.IGNORECASE | re.DOTALL)
 _ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.IGNORECASE | re.DOTALL)
@@ -58,27 +60,31 @@ class LiteResearcherWrapper:
 
     def __init__(
         self,
-        coverage: LiteResearcherCoverage,
-        backend: FrozenLiteResearchBackend,
+        task_source,
+        backend,
         *,
         workspace: WorkspaceAdapter | None = None,
         workspace_factory: Callable[[int], WorkspaceAdapter] | None = None,
         workspace_runtime_metadata: Mapping[str, Any] | None = None,
         max_policy_steps: int = 40,
         split: str = "train",
+        surface: str = LITERESEARCHER_SURFACE,
     ) -> None:
-        if backend.coverage is not coverage:
-            raise ValueError("backend and wrapper must share the exact coverage object")
+        if backend.tasks_source is not task_source:
+            raise ValueError("backend and wrapper must share the exact task source")
         if backend.split != split:
             raise ValueError("backend and wrapper must use the same LiteResearcher split")
         if workspace is not None and workspace_factory is not None:
             raise ValueError("provide workspace or workspace_factory, not both")
         if type(max_policy_steps) is not int or max_policy_steps <= 0:
             raise ValueError("LiteResearcher max_policy_steps must be positive")
-        self.coverage = coverage
+        if surface not in {LITERESEARCHER_SURFACE, LITERESEARCHER_FULLPOOL_SURFACE}:
+            raise ValueError("unsupported LiteResearcher surface")
+        self.task_source = task_source
         self.backend = backend
         self.split = split
-        self.tasks = coverage.tasks_for_split(split)
+        self.surface = surface
+        self.tasks = task_source.tasks_for_split(split)
         self._shared_workspace = workspace
         self._workspace_factory = workspace_factory
         self._workspace_runtime_metadata = dict(workspace_runtime_metadata or {})
@@ -88,10 +94,10 @@ class LiteResearcherWrapper:
         self._episodes: dict[int, dict[str, Any]] = {}
 
     def metadata(self) -> dict[str, Any]:
-        metadata = self.coverage.public_metadata()
+        metadata = self.task_source.public_metadata()
         metadata.update(
             {
-                "surface": LITERESEARCHER_SURFACE,
+                "surface": self.surface,
                 "domain_id": "literesearcher",
                 "backend": self.backend.metadata(),
                 "split": self.split,
@@ -202,7 +208,7 @@ class LiteResearcherWrapper:
             )
 
     def _new_episode(self, env_id: int, data_idx: int) -> dict[str, Any]:
-        task = self.coverage.task(data_idx, split=self.split)
+        task = self.task_source.task(data_idx, split=self.split)
         old_episode = self._episodes.get(env_id)
         workspace = None if old_episode is None else old_episode.get("workspace")
         if workspace is not None:
@@ -263,7 +269,7 @@ class LiteResearcherWrapper:
         name, arguments = parsed
         if name == "search":
             query = arguments.get("query")
-            result = self.backend.search(query)
+            result = self.backend.search(query, mask_url=episode["task"].mask_url)
             observation = json.dumps({"tool": "search", "results": result}, ensure_ascii=False)
             episode["backend_call_count"] += 1
             return self._ordinary_result(
@@ -460,7 +466,7 @@ class LiteResearcherWrapper:
         info = {
             "formal_schema_version": "agentmemory_formal_step_v3",
             "domain_id": "literesearcher",
-            "surface": LITERESEARCHER_SURFACE,
+            "surface": self.surface,
             "task_id": task.task_id,
             "data_idx": episode["data_idx"],
             "source_data_idx": task.index,

@@ -18,13 +18,21 @@ from .contracts import (
     load_coverage_manifest,
 )
 from .wrapper import (
+    LITERESEARCHER_FULLPOOL_SURFACE,
     LITERESEARCHER_SURFACE,
     LiteResearcherWrapper,
 )
+from .full_pool import (
+    FullPoolLiteResearcherTask,
+    FullPoolLiteResearcherTasks,
+    load_full_pool,
+)
+from .lexical_backend import SQLiteFTSLiteResearchBackend
 
 __all__ = [
     "FrozenLiteResearchBackend",
     "LITERESEARCHER_DATA_REVISION",
+    "LITERESEARCHER_FULLPOOL_SURFACE",
     "LITERESEARCHER_UPSTREAM_COMMIT",
     "LITERESEARCHER_SURFACE",
     "LiteResearchBackendError",
@@ -32,5 +40,9 @@ __all__ = [
     "LiteResearcherCoverage",
     "LiteResearcherTask",
     "LiteResearcherWrapper",
+    "FullPoolLiteResearcherTask",
+    "FullPoolLiteResearcherTasks",
+    "SQLiteFTSLiteResearchBackend",
+    "load_full_pool",
     "load_coverage_manifest",
 ]

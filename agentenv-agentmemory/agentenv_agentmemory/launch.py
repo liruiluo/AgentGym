@@ -67,7 +67,7 @@ from .latent_preference_webshop_env import (
     LATENT_PREFERENCE_FILESYSTEM_SURFACE,
     LATENT_PREFERENCE_SURFACE,
 )
-from .literesearcher import LITERESEARCHER_SURFACE
+from .literesearcher import LITERESEARCHER_FULLPOOL_SURFACE, LITERESEARCHER_SURFACE
 from .recency_override import (
     PROVIDER_MODE_FIXED_WINDOW as RECENCY_PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM as RECENCY_PROVIDER_MODE_RESEEDED_STREAM,
@@ -146,6 +146,7 @@ def launch() -> None:
             NEGATIVE_CONSTRAINT_SURFACE,
             NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
             LITERESEARCHER_SURFACE,
+            LITERESEARCHER_FULLPOOL_SURFACE,
             *V3_SURFACES,
         ],
         required=True,
@@ -194,6 +195,10 @@ def launch() -> None:
     parser.add_argument("--workspace-root-parent")
     parser.add_argument("--workspace-intervention-token-file")
     parser.add_argument("--literesearcher-coverage-manifest")
+    parser.add_argument("--literesearcher-full-pool-manifest")
+    parser.add_argument("--literesearcher-full-pool-rows")
+    parser.add_argument("--literesearcher-source-root")
+    parser.add_argument("--literesearcher-fts-database")
     parser.add_argument("--literesearcher-max-policy-steps", type=int, default=40)
     parser.add_argument("--literesearcher-top-k", type=int, default=5)
     parser.add_argument("--latent-preference-product-pool")
@@ -334,14 +339,27 @@ def launch() -> None:
         INTENT_CLARIFICATION_SURFACE,
         NEGATIVE_CONSTRAINT_SURFACE,
     }
-    if args.surface == LITERESEARCHER_SURFACE:
+    literesearcher_surfaces = {LITERESEARCHER_SURFACE, LITERESEARCHER_FULLPOOL_SURFACE}
+    if args.surface in literesearcher_surfaces:
         _require_args(
             parser,
             args,
             "workspace_rg_binary",
             "workspace_rg_sha256",
-            "literesearcher_coverage_manifest",
         )
+        if args.surface == LITERESEARCHER_SURFACE:
+            _require_args(parser, args, "literesearcher_coverage_manifest")
+        else:
+            _require_args(
+                parser,
+                args,
+                "literesearcher_full_pool_manifest",
+                "literesearcher_full_pool_rows",
+                "literesearcher_source_root",
+                "literesearcher_fts_database",
+            )
+            if args.split != "train":
+                parser.error("LiteResearcher full-pool formal currently requires --split train")
         if args.split not in {"train", "test"}:
             parser.error("LiteResearcher requires --split train or --split test")
         if args.literesearcher_max_policy_steps < 1:
@@ -438,7 +456,7 @@ def launch() -> None:
         "AGENTMEMORY_RUN_ID": args.run_id,
         "AGENTMEMORY_SERVICE_ROLE": args.service_role,
     }
-    if args.surface != LITERESEARCHER_SURFACE:
+    if args.surface not in literesearcher_surfaces:
         _require_args(parser, args, "memoryarena_root", "memoryarena_base_commit")
         configured.update(
             {
@@ -470,11 +488,10 @@ def launch() -> None:
                 "workspace intervention token must contain at least 32 non-whitespace characters"
             )
         configured["AGENTMEMORY_WORKSPACE_INTERVENTION_TOKEN"] = token
-    if args.surface == LITERESEARCHER_SURFACE:
-        configured.update(
-            {
+    if args.surface in literesearcher_surfaces:
+        configured.update({
                 "AGENTMEMORY_LITERESEARCHER_COVERAGE_MANIFEST": (
-                    args.literesearcher_coverage_manifest
+                    args.literesearcher_coverage_manifest or ""
                 ),
                 "AGENTMEMORY_LITERESEARCHER_SPLIT": args.split,
                 "AGENTMEMORY_LITERESEARCHER_MAX_POLICY_STEPS": str(
@@ -485,8 +502,14 @@ def launch() -> None:
                 ),
                 "AGENTMEMORY_WORKSPACE_RG_BINARY": args.workspace_rg_binary,
                 "AGENTMEMORY_WORKSPACE_RG_SHA256": args.workspace_rg_sha256,
-            }
-        )
+        })
+        if args.surface == LITERESEARCHER_FULLPOOL_SURFACE:
+            configured.update({
+                "AGENTMEMORY_LITERESEARCHER_FULL_POOL_MANIFEST": args.literesearcher_full_pool_manifest,
+                "AGENTMEMORY_LITERESEARCHER_FULL_POOL_ROWS": args.literesearcher_full_pool_rows,
+                "AGENTMEMORY_LITERESEARCHER_SOURCE_ROOT": args.literesearcher_source_root,
+                "AGENTMEMORY_LITERESEARCHER_FTS_DATABASE": args.literesearcher_fts_database,
+            })
     elif args.surface == NATIVE_SURFACE:
         _require_args(
             parser,
