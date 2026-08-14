@@ -61,6 +61,10 @@ class LiteResearcherJudgeTests(unittest.TestCase):
         self.assertGreaterEqual(result.latency_seconds, 0.0)
         sent = json.loads(urlopen.call_args.args[0].data)
         self.assertEqual(sent["model"], "qwen")
+        self.assertEqual(
+            sent["chat_template_kwargs"],
+            {"enable_thinking": False},
+        )
         self.assertIn("PSX (digital video recorder)", sent["messages"][0]["content"])
 
     def test_upstream_judge_parses_incorrect_without_correct_substring_bug(self) -> None:

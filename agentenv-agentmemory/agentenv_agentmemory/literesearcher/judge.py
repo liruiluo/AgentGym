@@ -174,6 +174,7 @@ class UpstreamCompatibleLLMJudge:
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.0,
                 "max_tokens": 512,
+                "chat_template_kwargs": {"enable_thinking": False},
             }
         ).encode("utf-8")
         headers = {"Content-Type": "application/json"}
