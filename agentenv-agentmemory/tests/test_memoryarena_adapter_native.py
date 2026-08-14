@@ -221,6 +221,61 @@ class NativeAgentMemoryAdapterTests(unittest.TestCase):
         self.assertEqual(client.info["env_info"]["step"], 4)
         self.assertEqual(client.info["env_info"]["reward_components"], [component])
 
+    def test_native_buy_reports_session_advance_in_wrapper_receipt(self) -> None:
+        client = AgentMemoryEnvClient.__new__(AgentMemoryEnvClient)
+        client.adapter_cls = AgentMemoryAdapter
+        client.action_format = ActionFormat.REACT
+        client.is_v3 = True
+        client.is_filesystem = False
+        client.surface = "memoryarena_webshop_native_v1"
+        client.metadata = {"surface": client.surface}
+        client.info = {
+            "observation": "session 0",
+            "reward": 0.0,
+            "done": False,
+            "env_info": {
+                "current_subtask_index": 0,
+                "tool_ops": [],
+                "session_trace": [],
+            },
+            "metadata": client.metadata,
+        }
+        client._reset_policy_transition_state(client.info["env_info"])
+
+        def post(path, data):
+            self.assertEqual(path, "step")
+            self.assertEqual(data, {"action": "click[Buy Now]"})
+            return {
+                "observation": "session 1",
+                "reward": 1.0,
+                "done": False,
+                "info": {
+                    "current_subtask_index": 1,
+                    "tool_ops": [
+                        {
+                            "op": "BUY",
+                            "committed": True,
+                            "purchase_correct": True,
+                            "session_advanced": True,
+                        }
+                    ],
+                    "session_trace": [],
+                },
+            }
+
+        client.post = post
+        output = client.step("click[Buy Now]")
+
+        self.assertTrue(output.info["wrapper_evidence"]["session_advanced"])
+        self.assertEqual(
+            (
+                output.info["session_epoch_before"],
+                output.info["session_epoch_after"],
+            ),
+            (0, 1),
+        )
+        self.assertIsNone(client._pending_session_handoff)
+
 
 if __name__ == "__main__":
     unittest.main()

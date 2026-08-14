@@ -2288,6 +2288,20 @@ class AgentMemoryEnvClient(BaseEnvClient):
     def observe(self) -> str:
         return self.info["observation"]
 
+    def _tracks_webshop_session_progress(self) -> bool:
+        surface = getattr(self, "surface", None)
+        if not isinstance(surface, str):
+            metadata = getattr(self, "metadata", None)
+            if isinstance(metadata, Mapping):
+                surface = metadata.get("surface")
+        return bool(getattr(self, "is_filesystem", False)) or (
+            isinstance(surface, str)
+            and (
+                surface == WEBSHOP_V2_SURFACE
+                or surface in PROGRAMMATIC_WEBSHOP_SURFACES
+            )
+        )
+
     def step(self, action: str) -> StepOutput:
         # A few offline adapters construct the client with ``__new__`` to
         # exercise action parsing without opening an environment server.  Keep
@@ -2352,7 +2366,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
             response_env_info = {}
         session_after = session_before
         session_advanced = False
-        if self.is_filesystem:
+        if self._tracks_webshop_session_progress():
             session_after = _reported_webshop_session(
                 response_env_info, session_before
             )
