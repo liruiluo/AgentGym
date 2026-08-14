@@ -292,10 +292,23 @@ class LiteResearcherEnvClient(BaseEnvClient):
             ),
         )
 
-    def close(self) -> dict[str, Any]:
-        return self._request("POST", "close", json={"id": self.env_id})
+    def close(self) -> bool:
+        value = self._request_json("POST", "close", json={"id": self.env_id})
+        if value is not True:
+            raise requests.RequestException(
+                "LiteResearcher POST /close did not return true"
+            )
+        return True
 
     def _request(self, method: str, path: str, **kwargs) -> dict[str, Any]:
+        value = self._request_json(method, path, **kwargs)
+        if not isinstance(value, dict):
+            raise requests.RequestException(
+                f"LiteResearcher {method} /{path} returned a non-object response"
+            )
+        return value
+
+    def _request_json(self, method: str, path: str, **kwargs) -> Any:
         response = requests.request(
             method,
             f"{self.env_server_base}/{path}",
@@ -307,12 +320,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 f"LiteResearcher {method} /{path} failed: "
                 f"status={response.status_code} body={response.text[-1000:]}"
             )
-        value = response.json()
-        if not isinstance(value, dict):
-            raise requests.RequestException(
-                f"LiteResearcher {method} /{path} returned a non-object response"
-            )
-        return value
+        return response.json()
 
 
 def _copy_policy_messages(
