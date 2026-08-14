@@ -56,6 +56,7 @@ from ..literesearcher import (
     FrozenLiteResearchBackend,
     LiteResearcherWrapper,
     SQLiteFTSLiteResearchBackend,
+    UpstreamCompatibleLLMJudge,
     load_coverage_manifest,
     load_full_pool,
 )
@@ -219,6 +220,19 @@ def _build_literesearcher_wrapper(surface: str) -> LiteResearcherWrapper:
             _required_file("AGENTMEMORY_LITERESEARCHER_FTS_DATABASE"),
             top_k=_env_int("AGENTMEMORY_LITERESEARCHER_TOP_K", 5),
         )
+        judge = UpstreamCompatibleLLMJudge(
+            api_base=_required_env("AGENTMEMORY_LITERESEARCHER_JUDGE_API_BASE"),
+            model=_required_env("AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL"),
+            api_key=os.environ.get(
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_API_KEY", "EMPTY"
+            ),
+            timeout_seconds=_env_float(
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_TIMEOUT_SECONDS", 120.0
+            ),
+            max_retries=_env_int(
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_MAX_RETRIES", 3
+            ),
+        )
     else:
         task_source = load_coverage_manifest(
             _required_file("AGENTMEMORY_LITERESEARCHER_COVERAGE_MANIFEST")
@@ -228,6 +242,7 @@ def _build_literesearcher_wrapper(surface: str) -> LiteResearcherWrapper:
             split=split,
             top_k=_env_int("AGENTMEMORY_LITERESEARCHER_TOP_K", 5),
         )
+        judge = None
     return LiteResearcherWrapper(
         task_source,
         backend,
@@ -240,6 +255,7 @@ def _build_literesearcher_wrapper(surface: str) -> LiteResearcherWrapper:
         max_policy_steps=_env_int("AGENTMEMORY_LITERESEARCHER_MAX_POLICY_STEPS", 40),
         split=split,
         surface=surface,
+        judge=judge,
     )
 
 

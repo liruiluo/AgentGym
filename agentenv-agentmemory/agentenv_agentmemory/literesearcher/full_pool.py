@@ -43,6 +43,7 @@ class FullPoolLiteResearcherTask:
     physical_row: int
     data_source: str
     upstream_curriculum_stage: int
+    reward_style: str = "llm"
 
     @property
     def task_id(self) -> str:
@@ -92,6 +93,7 @@ class FullPoolLiteResearcherTasks:
             raise IndexError(f"{split} data_idx out of range: {data_idx}") from exc
 
     def public_metadata(self) -> dict[str, Any]:
+        reward_styles = sorted({task.reward_style for task in self.train})
         return {
             "dataset": "simplex-ai-inc/LiteResearcher-Data",
             "data_revision": self.dataset_revision,
@@ -103,6 +105,7 @@ class FullPoolLiteResearcherTasks:
             "manifest_sha256": self.manifest_sha256,
             "native_episode_contract": "search_visit_answer_single_episode_v1",
             "session_boundaries": 0,
+            "upstream_reward_styles": reward_styles,
         }
 
 
@@ -172,6 +175,15 @@ def load_full_pool(
                 raise ValueError("LiteResearcher pool row has invalid source identity") from exc
             question = str(raw["question"]).strip()
             reward_model = _required_mapping(raw["reward_model"], "reward_model")
+            reward_style = str(reward_model.get("style", "")).strip()
+            if reward_style != "llm":
+                raise ValueError(
+                    "LiteResearcher full-pool rows require upstream llm reward style"
+                )
+            if reward_style != row.get("reward_style"):
+                raise ValueError(
+                    "LiteResearcher reward style differs from the frozen pool row"
+                )
             ground_truth = _required_mapping(
                 reward_model.get("ground_truth"), "reward_model.ground_truth"
             )
@@ -202,6 +214,7 @@ def load_full_pool(
                     physical_row=physical_row,
                     data_source=str(raw["data_source"]),
                     upstream_curriculum_stage=int(row["upstream_curriculum_stage"]),
+                    reward_style=reward_style,
                 )
             )
 

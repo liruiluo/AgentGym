@@ -32,7 +32,10 @@ from agentenv_agentmemory.latent_preference_webshop_env import (
     LATENT_PREFERENCE_FILESYSTEM_SURFACE,
     LATENT_PREFERENCE_SURFACE,
 )
-from agentenv_agentmemory.literesearcher import LITERESEARCHER_SURFACE
+from agentenv_agentmemory.literesearcher import (
+    LITERESEARCHER_FULLPOOL_SURFACE,
+    LITERESEARCHER_SURFACE,
+)
 from agentenv_agentmemory.negative_constraint_webshop_env import (
     NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
 )
@@ -114,6 +117,88 @@ class DomainLaunchTest(unittest.TestCase):
         arguments.extend(["--memory-first-add-reward", "0.1"])
         with self.assertRaises(SystemExit):
             self._launch(arguments)
+
+    @staticmethod
+    def _literesearcher_fullpool_arguments(*, judge_key_file: str):
+        return [
+            "--surface",
+            LITERESEARCHER_FULLPOOL_SURFACE,
+            "--run-id",
+            "literesearcher-fullpool-train-test",
+            "--split",
+            "train",
+            "--literesearcher-full-pool-manifest",
+            "/data/literesearcher-fullpool/manifest.json",
+            "--literesearcher-full-pool-rows",
+            "/data/literesearcher-fullpool/pool_rows.jsonl",
+            "--literesearcher-source-root",
+            "/data/literesearcher-fullpool/source",
+            "--literesearcher-fts-database",
+            "/data/literesearcher-fullpool/corpus.sqlite",
+            "--literesearcher-judge-api-base",
+            "http://127.0.0.1:18090/v1",
+            "--literesearcher-judge-model",
+            "qwen-judge",
+            "--literesearcher-judge-api-key-file",
+            judge_key_file,
+            "--literesearcher-judge-timeout-seconds",
+            "45.5",
+            "--literesearcher-judge-max-retries",
+            "4",
+            "--literesearcher-max-policy-steps",
+            "40",
+            "--literesearcher-top-k",
+            "5",
+            "--workspace-rg-binary",
+            "/tools/rg",
+            "--workspace-rg-sha256",
+            "a" * 64,
+        ]
+
+    def test_literesearcher_fullpool_launch_binds_upstream_judge_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            key_file = Path(directory) / "judge.key"
+            key_file.write_text("private-key", encoding="utf-8")
+            key_file.chmod(0o600)
+            configured, uvicorn = self._launch(
+                self._literesearcher_fullpool_arguments(
+                    judge_key_file=str(key_file)
+                )
+            )
+        self.assertEqual(
+            configured["AGENTMEMORY_SURFACE"], LITERESEARCHER_FULLPOOL_SURFACE
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_LITERESEARCHER_JUDGE_API_BASE"],
+            "http://127.0.0.1:18090/v1",
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL"], "qwen-judge"
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_LITERESEARCHER_JUDGE_API_KEY"], "private-key"
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_LITERESEARCHER_JUDGE_TIMEOUT_SECONDS"],
+            "45.5",
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_LITERESEARCHER_JUDGE_MAX_RETRIES"], "4"
+        )
+        uvicorn.assert_called_once()
+
+    def test_literesearcher_fullpool_launch_requires_judge_route(self):
+        with tempfile.TemporaryDirectory() as directory:
+            key_file = Path(directory) / "judge.key"
+            key_file.write_text("private-key", encoding="utf-8")
+            key_file.chmod(0o600)
+            arguments = self._literesearcher_fullpool_arguments(
+                judge_key_file=str(key_file)
+            )
+            base_index = arguments.index("--literesearcher-judge-api-base")
+            del arguments[base_index : base_index + 2]
+            with self.assertRaises(SystemExit):
+                self._launch(arguments)
 
     @staticmethod
     def _procedural_arguments(*, split="train"):

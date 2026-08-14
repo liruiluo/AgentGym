@@ -6,6 +6,11 @@ from copy import deepcopy
 from typing import Any, Callable, Mapping, Protocol
 
 from .backend import LiteResearchBackendError
+from .judge import (
+    LiteResearchJudge,
+    NormalizedExactLiteResearchJudge,
+    UPSTREAM_LLM_JUDGE_CONTRACT,
+)
 
 
 LITERESEARCHER_SURFACE = "agentmemory_literesearcher_stage1_rag_only_v1"
@@ -26,10 +31,6 @@ class WorkspaceAdapter(Protocol):
 
     def close(self) -> None:
         ...
-
-
-def _normalize_answer(text: str) -> str:
-    return " ".join(re.findall(r"[\w]+", text.casefold(), flags=re.UNICODE))
 
 
 def _parse_tool_call(raw: str) -> tuple[str, dict[str, Any]] | None:
@@ -69,6 +70,7 @@ class LiteResearcherWrapper:
         max_policy_steps: int = 40,
         split: str = "train",
         surface: str = LITERESEARCHER_SURFACE,
+        judge: LiteResearchJudge | None = None,
     ) -> None:
         if backend.tasks_source is not task_source:
             raise ValueError("backend and wrapper must share the exact task source")
@@ -80,10 +82,24 @@ class LiteResearcherWrapper:
             raise ValueError("LiteResearcher max_policy_steps must be positive")
         if surface not in {LITERESEARCHER_SURFACE, LITERESEARCHER_FULLPOOL_SURFACE}:
             raise ValueError("unsupported LiteResearcher surface")
+        self.judge = judge or NormalizedExactLiteResearchJudge()
+        if (
+            surface == LITERESEARCHER_FULLPOOL_SURFACE
+            and self.judge.contract_id != UPSTREAM_LLM_JUDGE_CONTRACT
+        ):
+            raise ValueError(
+                "LiteResearcher full pool requires the upstream LLM judge "
+                "with EM fallback"
+            )
         self.task_source = task_source
         self.backend = backend
         self.split = split
         self.surface = surface
+        self.reward_contract = (
+            "terminal_upstream_llm_judge_binary_v1"
+            if surface == LITERESEARCHER_FULLPOOL_SURFACE
+            else "terminal_normalized_exact_binary_v1"
+        )
         self.tasks = task_source.tasks_for_split(split)
         self._shared_workspace = workspace
         self._workspace_factory = workspace_factory
@@ -95,6 +111,7 @@ class LiteResearcherWrapper:
 
     def metadata(self) -> dict[str, Any]:
         metadata = self.task_source.public_metadata()
+        judge_metadata = self.judge.metadata()
         metadata.update(
             {
                 "surface": self.surface,
@@ -110,8 +127,9 @@ class LiteResearcherWrapper:
                 "compaction_contract": "task_neutral_client_replace_messages_v1",
                 "compaction_counts_as_env_step": True,
                 "compaction_calls_backend": False,
-                "reward_contract": "terminal_answer_only_binary_v1",
-                "judge_fallback": "forbidden_fail_closed",
+                "reward_contract": self.reward_contract,
+                "judge": judge_metadata,
+                "judge_fallback": judge_metadata["fallback"],
                 "workspace_tool_contract": "codex_shell_command_apply_patch_v1",
                 "workspace_memory_reward": 0.0,
                 "workspace_runtime": deepcopy(self._workspace_runtime_metadata),
@@ -329,9 +347,12 @@ class LiteResearcherWrapper:
         raw_action: str,
         answer: str,
     ) -> dict[str, Any]:
-        normalized = _normalize_answer(answer)
-        targets = {_normalize_answer(target) for target in episode["task"].targets}
-        correct = bool(normalized) and normalized in targets
+        judgment = self.judge.judge(
+            episode["task"].question,
+            episode["task"].targets,
+            answer,
+        )
+        correct = judgment.correct
         return self._finish(
             env_id,
             episode,
@@ -350,6 +371,9 @@ class LiteResearcherWrapper:
                 "terminal_answer_only": True,
                 "visited_url_count": len(episode["visited_urls"]),
                 "answer_correct": correct,
+                "judge_method": judgment.method,
+                "judge_attempts": judgment.attempts,
+                "judge_latency_seconds": judgment.latency_seconds,
             },
         )
 
@@ -482,7 +506,7 @@ class LiteResearcherWrapper:
             "wrapper_evidence": deepcopy(dict(wrapper_evidence or {})),
             "native_environment_call_count": int(episode["backend_call_count"]),
             "workspace_tools": ["shell_command", "apply_patch"],
-            "reward_contract": "terminal_answer_only_binary_v1",
+            "reward_contract": self.reward_contract,
         }
         payload = {
             "observation": task.question if observation is None else str(observation),

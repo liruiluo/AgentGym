@@ -11,10 +11,36 @@ from agentenv_agentmemory.literesearcher import (
     FullPoolLiteResearcherTask,
     FullPoolLiteResearcherTasks,
     LITERESEARCHER_FULLPOOL_SURFACE,
+    LiteResearchJudgeResult,
     LiteResearchRequestError,
     LiteResearcherWrapper,
     SQLiteFTSLiteResearchBackend,
+    UPSTREAM_LLM_JUDGE_CONTRACT,
 )
+
+
+class _SemanticJudgeStub:
+    contract_id = UPSTREAM_LLM_JUDGE_CONTRACT
+
+    def __init__(self, *, correct: bool = True) -> None:
+        self.correct = correct
+        self.calls: list[tuple[str, tuple[str, ...], str]] = []
+
+    def judge(self, question, targets, answer):
+        self.calls.append((question, tuple(targets), answer))
+        return LiteResearchJudgeResult(
+            correct=self.correct,
+            method="semantic_judge_stub",
+            attempts=1,
+        )
+
+    def metadata(self):
+        return {
+            "contract": self.contract_id,
+            "primary": "semantic_judge_stub",
+            "fallback": "upstream_em_v1",
+            "semantic_equivalence": True,
+        }
 
 
 class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
@@ -99,6 +125,7 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
             self.backend,
             split="train",
             surface=LITERESEARCHER_FULLPOOL_SURFACE,
+            judge=_SemanticJudgeStub(),
         )
         created = wrapper.create(data_idx=0)
         public = json.dumps(
@@ -131,6 +158,39 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
         self.assertEqual(len(results), 64)
         self.assertEqual({url for url, _ in results}, {"https://public.example/evidence"})
         self.assertTrue(all("Beta Fact" in content for _, content in results))
+
+    def test_full_pool_terminal_reward_comes_from_semantic_judge(self) -> None:
+        judge = _SemanticJudgeStub(correct=True)
+        wrapper = LiteResearcherWrapper(
+            self.tasks,
+            self.backend,
+            split="train",
+            surface=LITERESEARCHER_FULLPOOL_SURFACE,
+            judge=judge,
+        )
+        created = wrapper.create(data_idx=0)
+        result = wrapper.step(created["id"], "<answer>Beta</answer>")
+        self.assertTrue(result["done"])
+        self.assertEqual(result["reward"], 1.0)
+        self.assertEqual(
+            result["info"]["wrapper_evidence"]["judge_method"],
+            "semantic_judge_stub",
+        )
+        self.assertEqual(
+            result["info"]["wrapper_evidence"]["judge_latency_seconds"],
+            0.0,
+        )
+        self.assertEqual(
+            judge.calls,
+            [
+                (
+                    self.tasks.train[0].question,
+                    self.tasks.train[0].targets,
+                    "Beta",
+                )
+            ],
+        )
+        wrapper.close(created["id"])
 
 
 if __name__ == "__main__":

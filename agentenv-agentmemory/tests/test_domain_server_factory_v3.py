@@ -152,7 +152,9 @@ class DomainServerFactoryTest(unittest.TestCase):
             self.assertEqual(metadata["task_count"], 8)
             self.assertNotIn("MEMORYARENA_ROOT", environment)
             created = server.create()
-            self.assertEqual(created["observation"], server.coverage.heldout[0].question)
+            self.assertEqual(
+                created["observation"], server.task_source.heldout[0].question
+            )
             server.close(created["id"])
 
     def test_recency_filesystem_uses_dedicated_wrapper(self):

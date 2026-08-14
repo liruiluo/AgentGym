@@ -28,6 +28,12 @@ from .full_pool import (
     load_full_pool,
 )
 from .lexical_backend import SQLiteFTSLiteResearchBackend
+from .judge import (
+    LiteResearchJudgeResult,
+    NormalizedExactLiteResearchJudge,
+    UpstreamCompatibleLLMJudge,
+    UPSTREAM_LLM_JUDGE_CONTRACT,
+)
 
 __all__ = [
     "FrozenLiteResearchBackend",
@@ -43,6 +49,10 @@ __all__ = [
     "FullPoolLiteResearcherTask",
     "FullPoolLiteResearcherTasks",
     "SQLiteFTSLiteResearchBackend",
+    "LiteResearchJudgeResult",
+    "NormalizedExactLiteResearchJudge",
+    "UpstreamCompatibleLLMJudge",
+    "UPSTREAM_LLM_JUDGE_CONTRACT",
     "load_full_pool",
     "load_coverage_manifest",
 ]

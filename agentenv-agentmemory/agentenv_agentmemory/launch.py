@@ -199,6 +199,19 @@ def launch() -> None:
     parser.add_argument("--literesearcher-full-pool-rows")
     parser.add_argument("--literesearcher-source-root")
     parser.add_argument("--literesearcher-fts-database")
+    parser.add_argument("--literesearcher-judge-api-base")
+    parser.add_argument("--literesearcher-judge-model")
+    parser.add_argument("--literesearcher-judge-api-key-file")
+    parser.add_argument(
+        "--literesearcher-judge-timeout-seconds",
+        type=float,
+        default=120.0,
+    )
+    parser.add_argument(
+        "--literesearcher-judge-max-retries",
+        type=int,
+        default=3,
+    )
     parser.add_argument("--literesearcher-max-policy-steps", type=int, default=40)
     parser.add_argument("--literesearcher-top-k", type=int, default=5)
     parser.add_argument("--latent-preference-product-pool")
@@ -357,6 +370,8 @@ def launch() -> None:
                 "literesearcher_full_pool_rows",
                 "literesearcher_source_root",
                 "literesearcher_fts_database",
+                "literesearcher_judge_api_base",
+                "literesearcher_judge_model",
             )
             if args.split != "train":
                 parser.error("LiteResearcher full-pool formal currently requires --split train")
@@ -366,6 +381,10 @@ def launch() -> None:
             parser.error("--literesearcher-max-policy-steps must be positive")
         if args.literesearcher_top_k < 1:
             parser.error("--literesearcher-top-k must be positive")
+        if args.literesearcher_judge_timeout_seconds <= 0:
+            parser.error("--literesearcher-judge-timeout-seconds must be positive")
+        if args.literesearcher_judge_max_retries < 1:
+            parser.error("--literesearcher-judge-max-retries must be positive")
         if args.service_role == "intervention_eval":
             parser.error("LiteResearcher does not expose workspace interventions")
         if args.workspace_intervention_token_file:
@@ -504,11 +523,42 @@ def launch() -> None:
                 "AGENTMEMORY_WORKSPACE_RG_SHA256": args.workspace_rg_sha256,
         })
         if args.surface == LITERESEARCHER_FULLPOOL_SURFACE:
+            judge_api_key = "EMPTY"
+            if args.literesearcher_judge_api_key_file:
+                key_path = Path(args.literesearcher_judge_api_key_file).expanduser()
+                try:
+                    key_info = key_path.lstat()
+                    judge_api_key = key_path.read_text(encoding="utf-8").strip()
+                except OSError as exc:
+                    parser.error(f"cannot read LiteResearcher judge API key file: {exc}")
+                if (
+                    key_path.is_symlink()
+                    or not stat.S_ISREG(key_info.st_mode)
+                    or key_info.st_mode & 0o077
+                ):
+                    parser.error(
+                        "LiteResearcher judge API key file must be a private regular file"
+                    )
+                if not judge_api_key or any(
+                    character.isspace() for character in judge_api_key
+                ):
+                    parser.error(
+                        "LiteResearcher judge API key must be nonempty without whitespace"
+                    )
             configured.update({
                 "AGENTMEMORY_LITERESEARCHER_FULL_POOL_MANIFEST": args.literesearcher_full_pool_manifest,
                 "AGENTMEMORY_LITERESEARCHER_FULL_POOL_ROWS": args.literesearcher_full_pool_rows,
                 "AGENTMEMORY_LITERESEARCHER_SOURCE_ROOT": args.literesearcher_source_root,
                 "AGENTMEMORY_LITERESEARCHER_FTS_DATABASE": args.literesearcher_fts_database,
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_API_BASE": args.literesearcher_judge_api_base,
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL": args.literesearcher_judge_model,
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_API_KEY": judge_api_key,
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_TIMEOUT_SECONDS": str(
+                    args.literesearcher_judge_timeout_seconds
+                ),
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_MAX_RETRIES": str(
+                    args.literesearcher_judge_max_retries
+                ),
             })
     elif args.surface == NATIVE_SURFACE:
         _require_args(
