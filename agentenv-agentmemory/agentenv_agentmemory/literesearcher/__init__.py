@@ -1,8 +1,8 @@
 """LiteResearcher Stage-1 RL intake substrate.
 
-This package is deliberately independent from the shared policy rollout.  It
-provides a frozen, deterministic search/page backend and a wrapper that emits
-the same opaque task-neutral receipts used by the AgentMemoryGym runner.
+This package is deliberately independent from the shared policy rollout. It
+provides frozen intake fixtures, the released upstream hybrid search/page
+backend, and task-neutral receipts used by the AgentMemoryGym runner.
 """
 
 from .backend import (
@@ -28,7 +28,9 @@ from .full_pool import (
     load_full_pool,
 )
 from .lexical_backend import SQLiteFTSLiteResearchBackend
+from .upstream_backend import UpstreamHybridLiteResearchBackend
 from .judge import (
+    LITERESEARCHER_FORMAL_JUDGE_MODEL,
     LiteResearchJudgeResult,
     NormalizedExactLiteResearchJudge,
     UpstreamCompatibleLLMJudge,
@@ -39,6 +41,7 @@ __all__ = [
     "FrozenLiteResearchBackend",
     "LITERESEARCHER_DATA_REVISION",
     "LITERESEARCHER_FULLPOOL_SURFACE",
+    "LITERESEARCHER_FORMAL_JUDGE_MODEL",
     "LITERESEARCHER_UPSTREAM_COMMIT",
     "LITERESEARCHER_SURFACE",
     "LiteResearchBackendError",
@@ -49,6 +52,7 @@ __all__ = [
     "FullPoolLiteResearcherTask",
     "FullPoolLiteResearcherTasks",
     "SQLiteFTSLiteResearchBackend",
+    "UpstreamHybridLiteResearchBackend",
     "LiteResearchJudgeResult",
     "NormalizedExactLiteResearchJudge",
     "UpstreamCompatibleLLMJudge",

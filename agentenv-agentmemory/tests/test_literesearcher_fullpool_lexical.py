@@ -22,8 +22,14 @@ from agentenv_agentmemory.literesearcher import (
 class _SemanticJudgeStub:
     contract_id = UPSTREAM_LLM_JUDGE_CONTRACT
 
-    def __init__(self, *, correct: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        correct: bool = True,
+        fallback_reason: str | None = None,
+    ) -> None:
         self.correct = correct
+        self.fallback_reason = fallback_reason
         self.calls: list[tuple[str, tuple[str, ...], str]] = []
 
     def judge(self, question, targets, answer):
@@ -32,6 +38,8 @@ class _SemanticJudgeStub:
             correct=self.correct,
             method="semantic_judge_stub",
             attempts=1,
+            primary_model="kimi-k2.6",
+            fallback_reason=self.fallback_reason,
         )
 
     def metadata(self):
@@ -181,6 +189,16 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
             0.0,
         )
         self.assertEqual(
+            result["info"]["wrapper_evidence"]["judge_primary_model"],
+            "kimi-k2.6",
+        )
+        self.assertFalse(
+            result["info"]["wrapper_evidence"]["judge_fallback_used"]
+        )
+        self.assertIsNone(
+            result["info"]["wrapper_evidence"]["judge_fallback_reason"]
+        )
+        self.assertEqual(
             judge.calls,
             [
                 (
@@ -190,6 +208,26 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
                 )
             ],
         )
+        wrapper.close(created["id"])
+
+    def test_full_pool_terminal_receipt_records_judge_fallback_reason(self) -> None:
+        judge = _SemanticJudgeStub(
+            correct=False,
+            fallback_reason="timeout",
+        )
+        wrapper = LiteResearcherWrapper(
+            self.tasks,
+            self.backend,
+            split="train",
+            surface=LITERESEARCHER_FULLPOOL_SURFACE,
+            judge=judge,
+        )
+        created = wrapper.create(data_idx=0)
+        result = wrapper.step(created["id"], "<answer>Beta</answer>")
+        evidence = result["info"]["wrapper_evidence"]
+        self.assertTrue(evidence["judge_fallback_used"])
+        self.assertEqual(evidence["judge_fallback_reason"], "timeout")
+        self.assertEqual(evidence["judge_primary_model"], "kimi-k2.6")
         wrapper.close(created["id"])
 
 

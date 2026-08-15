@@ -67,7 +67,11 @@ from .latent_preference_webshop_env import (
     LATENT_PREFERENCE_FILESYSTEM_SURFACE,
     LATENT_PREFERENCE_SURFACE,
 )
-from .literesearcher import LITERESEARCHER_FULLPOOL_SURFACE, LITERESEARCHER_SURFACE
+from .literesearcher import (
+    LITERESEARCHER_FORMAL_JUDGE_MODEL,
+    LITERESEARCHER_FULLPOOL_SURFACE,
+    LITERESEARCHER_SURFACE,
+)
 from .recency_override import (
     PROVIDER_MODE_FIXED_WINDOW as RECENCY_PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM as RECENCY_PROVIDER_MODE_RESEEDED_STREAM,
@@ -198,7 +202,12 @@ def launch() -> None:
     parser.add_argument("--literesearcher-full-pool-manifest")
     parser.add_argument("--literesearcher-full-pool-rows")
     parser.add_argument("--literesearcher-source-root")
-    parser.add_argument("--literesearcher-fts-database")
+    parser.add_argument("--literesearcher-upstream-endpoint")
+    parser.add_argument(
+        "--literesearcher-backend-timeout-seconds",
+        type=float,
+        default=120.0,
+    )
     parser.add_argument("--literesearcher-judge-api-base")
     parser.add_argument("--literesearcher-judge-model")
     parser.add_argument("--literesearcher-judge-api-key-file")
@@ -369,18 +378,27 @@ def launch() -> None:
                 "literesearcher_full_pool_manifest",
                 "literesearcher_full_pool_rows",
                 "literesearcher_source_root",
-                "literesearcher_fts_database",
+                "literesearcher_upstream_endpoint",
                 "literesearcher_judge_api_base",
                 "literesearcher_judge_model",
             )
             if args.split != "train":
                 parser.error("LiteResearcher full-pool formal currently requires --split train")
+            if args.literesearcher_judge_model != LITERESEARCHER_FORMAL_JUDGE_MODEL:
+                parser.error(
+                    "LiteResearcher full-pool formal requires "
+                    f"--literesearcher-judge-model {LITERESEARCHER_FORMAL_JUDGE_MODEL}"
+                )
         if args.split not in {"train", "test"}:
             parser.error("LiteResearcher requires --split train or --split test")
         if args.literesearcher_max_policy_steps < 1:
             parser.error("--literesearcher-max-policy-steps must be positive")
         if args.literesearcher_top_k < 1:
             parser.error("--literesearcher-top-k must be positive")
+        if args.literesearcher_top_k > 50:
+            parser.error("--literesearcher-top-k must not exceed 50")
+        if args.literesearcher_backend_timeout_seconds <= 0:
+            parser.error("--literesearcher-backend-timeout-seconds must be positive")
         if args.literesearcher_judge_timeout_seconds <= 0:
             parser.error("--literesearcher-judge-timeout-seconds must be positive")
         if args.literesearcher_judge_max_retries < 1:
@@ -549,7 +567,10 @@ def launch() -> None:
                 "AGENTMEMORY_LITERESEARCHER_FULL_POOL_MANIFEST": args.literesearcher_full_pool_manifest,
                 "AGENTMEMORY_LITERESEARCHER_FULL_POOL_ROWS": args.literesearcher_full_pool_rows,
                 "AGENTMEMORY_LITERESEARCHER_SOURCE_ROOT": args.literesearcher_source_root,
-                "AGENTMEMORY_LITERESEARCHER_FTS_DATABASE": args.literesearcher_fts_database,
+                "AGENTMEMORY_LITERESEARCHER_UPSTREAM_ENDPOINT": args.literesearcher_upstream_endpoint,
+                "AGENTMEMORY_LITERESEARCHER_BACKEND_TIMEOUT_SECONDS": str(
+                    args.literesearcher_backend_timeout_seconds
+                ),
                 "AGENTMEMORY_LITERESEARCHER_JUDGE_API_BASE": args.literesearcher_judge_api_base,
                 "AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL": args.literesearcher_judge_model,
                 "AGENTMEMORY_LITERESEARCHER_JUDGE_API_KEY": judge_api_key,

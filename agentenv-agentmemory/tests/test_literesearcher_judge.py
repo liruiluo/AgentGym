@@ -59,6 +59,8 @@ class LiteResearcherJudgeTests(unittest.TestCase):
         self.assertEqual(result.method, "llm_judge")
         self.assertEqual(result.attempts, 1)
         self.assertGreaterEqual(result.latency_seconds, 0.0)
+        self.assertEqual(result.primary_model, "qwen")
+        self.assertIsNone(result.fallback_reason)
         sent = json.loads(urlopen.call_args.args[0].data)
         self.assertEqual(sent["model"], "qwen")
         self.assertEqual(
@@ -100,6 +102,8 @@ class LiteResearcherJudgeTests(unittest.TestCase):
         self.assertEqual(result.method, "upstream_em_fallback")
         self.assertEqual(result.attempts, 3)
         self.assertGreaterEqual(result.latency_seconds, 0.0)
+        self.assertEqual(result.primary_model, "qwen")
+        self.assertEqual(result.fallback_reason, "url_error")
         self.assertEqual(urlopen.call_count, 3)
 
     def test_metadata_redacts_endpoint_and_key(self) -> None:
@@ -113,6 +117,8 @@ class LiteResearcherJudgeTests(unittest.TestCase):
         self.assertNotIn("judge.example", serialized)
         self.assertNotIn("secret", serialized)
         self.assertEqual(metadata["fallback"], "upstream_em_v1")
+        self.assertEqual(metadata["fallback_after_primary_failures"], 3)
+        self.assertTrue(metadata["fallback_reason_recorded"])
 
     def test_upstream_em_matches_released_normalization_order(self) -> None:
         self.assertTrue(upstream_em("The Penal Laws", ("penal laws",)))

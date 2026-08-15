@@ -28,14 +28,18 @@ class SearchHit:
     title: str
     snippet: str
     rank: int
+    score: float | None = None
 
     def public_record(self) -> dict[str, Any]:
-        return {
+        record = {
             "url": self.url,
             "title": self.title,
             "snippet": self.snippet,
             "rank": self.rank,
         }
+        if self.score is not None:
+            record["score"] = self.score
+        return record
 
 
 def _tokens(text: str) -> tuple[str, ...]:
