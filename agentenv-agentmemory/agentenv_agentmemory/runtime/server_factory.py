@@ -51,11 +51,12 @@ from ..latent_preference_wrapper import (
     LatentPreferenceFilesystemAgentMemoryWrapper,
 )
 from ..literesearcher import (
+    LITERESEARCHER_FORMAL_JUDGE_MODEL,
     LITERESEARCHER_FULLPOOL_SURFACE,
     LITERESEARCHER_SURFACE,
     FrozenLiteResearchBackend,
     LiteResearcherWrapper,
-    SQLiteFTSLiteResearchBackend,
+    UpstreamHybridLiteResearchBackend,
     UpstreamCompatibleLLMJudge,
     load_coverage_manifest,
     load_full_pool,
@@ -215,14 +216,23 @@ def _build_literesearcher_wrapper(surface: str) -> LiteResearcherWrapper:
             _required_file("AGENTMEMORY_LITERESEARCHER_FULL_POOL_ROWS"),
             _required_directory("AGENTMEMORY_LITERESEARCHER_SOURCE_ROOT"),
         )
-        backend = SQLiteFTSLiteResearchBackend(
+        backend = UpstreamHybridLiteResearchBackend(
             task_source,
-            _required_file("AGENTMEMORY_LITERESEARCHER_FTS_DATABASE"),
+            _required_env("AGENTMEMORY_LITERESEARCHER_UPSTREAM_ENDPOINT"),
             top_k=_env_int("AGENTMEMORY_LITERESEARCHER_TOP_K", 5),
+            timeout_seconds=_env_float(
+                "AGENTMEMORY_LITERESEARCHER_BACKEND_TIMEOUT_SECONDS", 120.0
+            ),
         )
+        judge_model = _required_env("AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL")
+        if judge_model != LITERESEARCHER_FORMAL_JUDGE_MODEL:
+            raise RuntimeError(
+                "LiteResearcher formal judge model must be "
+                f"{LITERESEARCHER_FORMAL_JUDGE_MODEL}"
+            )
         judge = UpstreamCompatibleLLMJudge(
             api_base=_required_env("AGENTMEMORY_LITERESEARCHER_JUDGE_API_BASE"),
-            model=_required_env("AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL"),
+            model=judge_model,
             api_key=os.environ.get(
                 "AGENTMEMORY_LITERESEARCHER_JUDGE_API_KEY", "EMPTY"
             ),

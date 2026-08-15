@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import socket
 import string
 import time
 from collections.abc import Sequence
@@ -12,6 +13,7 @@ from urllib import error, parse, request
 
 UPSTREAM_LLM_JUDGE_CONTRACT = "upstream_llm_with_em_fallback_v1"
 NORMALIZED_EXACT_JUDGE_CONTRACT = "normalized_exact_v1"
+LITERESEARCHER_FORMAL_JUDGE_MODEL = "kimi-k2.6"
 
 _EVALUATION_PROMPT = """You are an evaluation assistant. Please determine if the predicted answer is semantically equivalent to the labeled answer.
 
@@ -38,6 +40,8 @@ class LiteResearchJudgeResult:
     method: str
     attempts: int
     latency_seconds: float = 0.0
+    primary_model: str | None = None
+    fallback_reason: str | None = None
 
 
 class LiteResearchJudge(Protocol):
@@ -196,6 +200,20 @@ class UpstreamCompatibleLLMJudge:
             raise ValueError("judge response does not contain Correct or Incorrect")
         return judgment
 
+    @staticmethod
+    def _fallback_reason(exc: BaseException) -> str:
+        if isinstance(exc, error.HTTPError):
+            return f"http_error_{exc.code}"
+        if isinstance(exc, (TimeoutError, socket.timeout)):
+            return "timeout"
+        if isinstance(exc, error.URLError):
+            if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+                return "timeout"
+            return "url_error"
+        if isinstance(exc, OSError):
+            return "transport_error"
+        return "malformed_response"
+
     def judge(
         self,
         question: str,
@@ -209,6 +227,7 @@ class UpstreamCompatibleLLMJudge:
         ):
             raise ValueError("judge requires a question and nonempty targets")
         started_at = time.monotonic()
+        fallback_reason = "judge_not_attempted"
         for attempt in range(1, self.max_retries + 1):
             try:
                 return LiteResearchJudgeResult(
@@ -216,6 +235,7 @@ class UpstreamCompatibleLLMJudge:
                     method="llm_judge",
                     attempts=attempt,
                     latency_seconds=time.monotonic() - started_at,
+                    primary_model=self.model,
                 )
             except (
                 error.URLError,
@@ -225,7 +245,8 @@ class UpstreamCompatibleLLMJudge:
                 IndexError,
                 TypeError,
                 ValueError,
-            ):
+            ) as exc:
+                fallback_reason = self._fallback_reason(exc)
                 if attempt < self.max_retries:
                     time.sleep(0.5 * attempt)
         return LiteResearchJudgeResult(
@@ -233,6 +254,8 @@ class UpstreamCompatibleLLMJudge:
             method="upstream_em_fallback",
             attempts=self.max_retries,
             latency_seconds=time.monotonic() - started_at,
+            primary_model=self.model,
+            fallback_reason=fallback_reason,
         )
 
     def metadata(self) -> dict[str, Any]:
@@ -247,5 +270,7 @@ class UpstreamCompatibleLLMJudge:
             "max_tokens": 512,
             "timeout_seconds": self.timeout_seconds,
             "max_retries": self.max_retries,
+            "fallback_after_primary_failures": self.max_retries,
+            "fallback_reason_recorded": True,
             "semantic_equivalence": True,
         }

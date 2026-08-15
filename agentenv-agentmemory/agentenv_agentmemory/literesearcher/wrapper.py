@@ -15,7 +15,7 @@ from .judge import (
 
 LITERESEARCHER_SURFACE = "agentmemory_literesearcher_stage1_rag_only_v1"
 LITERESEARCHER_FULLPOOL_SURFACE = (
-    "agentmemory_literesearcher_fullpool_lexical_fallback_v1"
+    "agentmemory_literesearcher_fullpool_upstream_hybrid_v1"
 )
 _APPEND_SCHEMA = "agentmemory_task_neutral_context_transition_v1"
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.IGNORECASE | re.DOTALL)
@@ -374,6 +374,9 @@ class LiteResearcherWrapper:
                 "judge_method": judgment.method,
                 "judge_attempts": judgment.attempts,
                 "judge_latency_seconds": judgment.latency_seconds,
+                "judge_primary_model": judgment.primary_model,
+                "judge_fallback_used": judgment.fallback_reason is not None,
+                "judge_fallback_reason": judgment.fallback_reason,
             },
         )
 
