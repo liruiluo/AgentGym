@@ -216,6 +216,11 @@ class SwesmithEnvClient(BaseEnvClient):
                 "SWE-smith endpoint memory contract mismatch: "
                 f"expected {SWE_MEMORY_CONTRACT!r}, got {memory_contract!r}"
             )
+        self._max_policy_turns = int(metadata["configured_max_policy_turns"])
+        if self._max_policy_turns <= 0:
+            raise RuntimeError(
+                "SWE-smith configured_max_policy_turns must be positive"
+            )
         task_count = int(metadata["task_count"])
         if data_len is not None and int(data_len) > task_count:
             raise ValueError(
@@ -238,6 +243,7 @@ class SwesmithEnvClient(BaseEnvClient):
         self._policy_context_bound = False
         self._selected_policy_control: str | None = None
         self._zero_progress_shell_receipts: set[tuple[str, str]] = set()
+        self._cached_horizon_output: StepOutput | None = None
 
     def _classify_shell_actor_credit(
         self,
@@ -351,8 +357,40 @@ class SwesmithEnvClient(BaseEnvClient):
 
     def step(self, action: str) -> StepOutput:
         if self._selected_policy_control == "context_compaction":
-            return self._complete_context_compaction(action)
-        return self._step_native_policy_action(action)
+            output = self._complete_context_compaction(action)
+        else:
+            output = self._step_native_policy_action(action)
+        return self._finalize_policy_boundary(output)
+
+    def _finalize_policy_boundary(self, output: StepOutput) -> StepOutput:
+        if output.done or self._policy_step_count < self._max_policy_turns:
+            return output
+        if self._policy_step_count != self._max_policy_turns:
+            raise RuntimeError("SWE-smith policy step count exceeded its horizon")
+
+        horizon = self.finalize_horizon()
+        if not horizon.done:
+            raise RuntimeError("SWE-smith horizon grading did not terminate the episode")
+        merged_info = deepcopy(dict(output.info))
+        horizon_info = deepcopy(dict(horizon.info))
+        terminal_env_info = horizon_info.get("env_info")
+        if not isinstance(terminal_env_info, Mapping):
+            raise RuntimeError("SWE-smith horizon receipt lost terminal env_info")
+        merged_info["env_info"] = deepcopy(dict(terminal_env_info))
+        wrapper_evidence = deepcopy(dict(merged_info.get("wrapper_evidence", {})))
+        wrapper_evidence["horizon_finalization"] = {
+            "state": str(horizon.state),
+            "reward": float(horizon.reward),
+            "done": bool(horizon.done),
+            "info": horizon_info,
+        }
+        merged_info["wrapper_evidence"] = wrapper_evidence
+        return StepOutput(
+            state=str(horizon.state),
+            reward=float(horizon.reward),
+            done=True,
+            info=merged_info,
+        )
 
     def _step_native_policy_action(self, action: str) -> StepOutput:
         native_before = self._native_call_count
@@ -494,10 +532,12 @@ class SwesmithEnvClient(BaseEnvClient):
         )
 
     def finalize_horizon(self) -> StepOutput:
+        if self._cached_horizon_output is not None:
+            return deepcopy(self._cached_horizon_output)
         response = self._request("POST", "horizon", json={"id": self.env_id})
         self.info = response
         response_env_info = response.get("info", {})
-        return StepOutput(
+        output = StepOutput(
             state=str(response["observation"]),
             reward=float(response["reward"]),
             done=bool(response["done"]),
@@ -520,6 +560,8 @@ class SwesmithEnvClient(BaseEnvClient):
                 },
             ),
         )
+        self._cached_horizon_output = deepcopy(output)
+        return output
 
     def finalize_policy_horizon(self) -> StepOutput:
         """Expose horizon grading through the task-neutral wrapper contract."""
