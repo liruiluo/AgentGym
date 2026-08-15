@@ -1,0 +1,26 @@
+[project]
+name = "agentenv-openmle-fast"
+version = "0.1.0"
+description = "Isolated OpenMLE-fast environment for AgentMemoryGym RL"
+requires-python = ">=3.10"
+readme = "README.md"
+license = {text = "MIT"}
+dependencies = [
+    "fastapi==0.141.1",
+    "numpy==2.5.2",
+    "pandas==3.0.5",
+    "pydantic==2.13.4",
+    "uvicorn==0.52.3",
+]
+
+[project.scripts]
+openmle-fast = "agentenv_openmle_fast.launch:launch"
+openmle-fast-private-grader = "agentenv_openmle_fast.launch:launch_private_grader"
+
+[build-system]
+requires = ["pdm-backend==2.4.6"]
+build-backend = "pdm.backend"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

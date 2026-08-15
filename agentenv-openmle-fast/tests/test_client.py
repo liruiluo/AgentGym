@@ -1,0 +1,524 @@
+from __future__ import annotations
+
+import copy
+import hashlib
+import importlib.util
+import sys
+import types
+import unittest
+from dataclasses import dataclass
+from pathlib import Path
+from unittest.mock import patch
+
+from agentenv_openmle_fast.environment import POLICY_PROMPT
+
+
+def _load_client_module():
+    controller = types.ModuleType("agentenv.controller")
+
+    class BaseEnvClient:
+        def __init__(self, **_kwargs):
+            pass
+
+    class BaseTask:
+        pass
+
+    @dataclass
+    class StepOutput:
+        state: str
+        reward: float | None
+        done: bool
+        info: dict
+
+    def transition_info(**kwargs):
+        return {
+            "env_info": dict(kwargs.get("env_info") or {}),
+            "action_submission": kwargs.get("action_submission"),
+            "native_step_before": kwargs.get("native_step_before"),
+            "native_step_after": kwargs.get("native_step_after"),
+            "native_call_count_before": kwargs.get("native_call_count_before"),
+            "native_call_count_after": kwargs.get("native_call_count_after"),
+            "context_epoch_before": kwargs.get("context_epoch_before"),
+            "context_epoch_after": kwargs.get("context_epoch_after"),
+            "session_epoch_before": kwargs.get("session_epoch_before"),
+            "session_epoch_after": kwargs.get("session_epoch_after"),
+            "policy_step_before": kwargs.get("policy_step_before"),
+            "policy_step_after": kwargs.get("policy_step_after"),
+            "wrapper_evidence": kwargs.get("wrapper_evidence"),
+        }
+
+    controller.BaseEnvClient = BaseEnvClient
+    controller.BaseTask = BaseTask
+    controller_types = types.ModuleType("agentenv.controller.types")
+    controller_types.ConversationMessage = dict
+    controller_types.StepOutput = StepOutput
+    controller_types.build_task_neutral_transition_info = transition_info
+    agentenv = types.ModuleType("agentenv")
+    agentenv.__path__ = []
+    sys.modules["agentenv"] = agentenv
+    sys.modules["agentenv.controller"] = controller
+    sys.modules["agentenv.controller.types"] = controller_types
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "agentenv"
+        / "agentenv"
+        / "envs"
+        / "openmle_fast.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "openmle_fast_client_under_test", path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_CLIENT_MODULE = _load_client_module()
+OPENMLE_FAST_POLICY_SYSTEM_PROMPT = _CLIENT_MODULE.OPENMLE_FAST_POLICY_SYSTEM_PROMPT
+OpenMLEFastEnvClient = _CLIENT_MODULE.OpenMLEFastEnvClient
+
+from tests.support import RELEASE_REVISION
+
+
+class _Response:
+    def __init__(self, payload, status_code=200):
+        self.payload = payload
+        self.status_code = status_code
+        self.text = str(payload)
+
+    def json(self):
+        return self.payload
+
+
+class OpenMLEFastClientTest(unittest.TestCase):
+    def test_client_and_server_prompt_contracts_are_byte_identical(self) -> None:
+        self.assertEqual(OPENMLE_FAST_POLICY_SYSTEM_PROMPT, POLICY_PROMPT)
+
+    def metadata(self):
+        prompt_sha = hashlib.sha256(
+            OPENMLE_FAST_POLICY_SYSTEM_PROMPT.encode("utf-8")
+        ).hexdigest()
+        return {
+            "schema": "openmle_fast_public_metadata_v1",
+            "domain_id": "openmle_fast",
+            "contract_version": "openmle_fast_v1",
+            "panel_id": "openmle-fast-unit-gate",
+            "release_revision": RELEASE_REVISION,
+            "openmle_tasks_revision": RELEASE_REVISION,
+            "manifest_sha256": "a" * 64,
+            "task_manifest_sha256": "a" * 64,
+            "task_id_list_sha256": "d" * 64,
+            "compact_panel_sha256": "e" * 64,
+            "policy_prompt_sha256": prompt_sha,
+            "task_count": 1,
+            "role": "gate_only",
+            "max_policy_actions": 30,
+            "observation_max_bytes": 65536,
+            "max_observation_tokens": 16_384,
+            "boundary_contracts": dict(_CLIENT_MODULE._EXPECTED_BOUNDARIES),
+            "contracts": {
+                "action": _CLIENT_MODULE._EXPECTED_BOUNDARIES["actions"],
+                "observation": _CLIENT_MODULE._EXPECTED_BOUNDARIES["observation"],
+                "horizon": _CLIENT_MODULE._EXPECTED_BOUNDARIES["horizon"],
+                "workspace": _CLIENT_MODULE._EXPECTED_BOUNDARIES["workspace"],
+                "executor": _CLIENT_MODULE._EXPECTED_BOUNDARIES["executor"],
+                "grader_boundary": _CLIENT_MODULE._EXPECTED_BOUNDARIES["grader"],
+                "cleanup": _CLIENT_MODULE._EXPECTED_BOUNDARIES["cleanup"],
+            },
+            "runtime_source": {
+                "outer_commit": "1" * 40,
+                "inner_commit": "2" * 40,
+            },
+            "executor_runtime_digest": "sha256:" + "3" * 64,
+            "implementation_digests": {
+                "materializer_sha256": "4" * 64,
+                "actions_sha256": "5" * 64,
+            },
+            "resource_limits": dict(_CLIENT_MODULE._FROZEN_RESOURCE_LIMITS),
+            "limits": {
+                "max_policy_actions": 30,
+                "max_request_wall_seconds": 20.0,
+            },
+            "executor_coverage": {
+                "formal_eligible": True,
+                "backend_contract": "openmle_fast_linux_cgroup_namespace_runner_v1",
+                "execution_counter_coverage": "complete",
+                "fit_counter_coverage": "partial",
+            },
+            "audit_enabled": True,
+            "active_slot_count": 0,
+            "active_environment_count": 0,
+            "active_workspace_count": 0,
+        }
+
+    def client_kwargs(self):
+        return {
+            "expected_manifest_sha256": "a" * 64,
+            "expected_release_revision": RELEASE_REVISION,
+            "expected_outer_commit": "1" * 40,
+            "expected_inner_commit": "2" * 40,
+            "expected_role": "gate_only",
+            "expected_executor_runtime_digest": "sha256:" + "3" * 64,
+            "expected_materializer_sha256": "4" * 64,
+            "expected_actions_sha256": "5" * 64,
+            "expected_max_observation_tokens": 16_384,
+        }
+
+    def step_response(
+        self,
+        *,
+        observation="task",
+        reward=0.0,
+        done=False,
+        action_count=0,
+        action_kind="reset",
+        terminal_reason=None,
+        truncated=False,
+        episode_id="episode-1",
+        data_idx=0,
+    ):
+        counters = {
+            "action_count": action_count,
+            "execution_action_count": 0,
+            "execution_attempt_count": 0,
+            "execution_completed_count": 0,
+            "nested_subprocess_count": 0,
+            "fit_count": 0,
+            "grading_count": 0,
+            "managed_runtime_wall_seconds": 0.0,
+            "raw_output_bytes": 0,
+        }
+        return {
+            "observation": observation,
+            "state": observation,
+            "reward": reward,
+            "done": done,
+            "truncated": truncated,
+            "info": {
+                "schema": "openmle_fast_episode_v1",
+                "episode_id": episode_id,
+                "data_idx": data_idx,
+                "task_id": "tiny-regression@1",
+                "source_family": "TEST:tiny-regression",
+                "public_tree_sha256": "6" * 64,
+                "manifest_sha256": "a" * 64,
+                "task_manifest_sha256": "a" * 64,
+                "release_revision": RELEASE_REVISION,
+                "manifest_role": "gate_only",
+                "archive_sha256": "7" * 64,
+                "package_identity_sha256": "8" * 64,
+                "task_spec_sha256": "9" * 64,
+                "grader_binding_sha256": "b" * 64,
+                "runtime_source": {
+                    "outer_commit": "1" * 40,
+                    "inner_commit": "2" * 40,
+                },
+                "executor_runtime_digest": "sha256:" + "3" * 64,
+                "implementation_digests": {
+                    "materializer_sha256": "4" * 64,
+                    "actions_sha256": "5" * 64,
+                },
+                "boundary_contracts": dict(_CLIENT_MODULE._EXPECTED_BOUNDARIES),
+                "action_kind": action_kind,
+                "action_status": "terminal" if done else "completed",
+                "terminal": done,
+                "truncated": truncated,
+                "terminal_reason": terminal_reason,
+                "runtime_success": False,
+                "episode_success": False,
+                "counters": counters,
+                "counter_delta": {
+                    **counters,
+                    "action_count": 1 if action_kind == "parser_error" else 0,
+                },
+                "fit_counter_coverage": "not_observed",
+                "execution": None,
+                "sandbox_freeze": None,
+                "sandbox_teardown": None,
+                "grade": None,
+                "audit_digest": "c" * 64,
+                "unaudited_evidence_sha256": None,
+            },
+        }
+
+    def test_attests_before_create_and_forwards_raw_action(self) -> None:
+        calls = []
+        metadata = self.metadata()
+
+        def request(method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            path = url.rsplit("/", 1)[-1]
+            if path == "metadata":
+                return _Response(metadata)
+            if path == "create":
+                return _Response({"id": 7, "observation": "unbound", "info": {}})
+            if path == "reset":
+                return _Response(self.step_response())
+            if path == "step":
+                return _Response(
+                    self.step_response(
+                        observation="ran",
+                        action_count=1,
+                        action_kind="parser_error",
+                    )
+                )
+            if path == "horizon":
+                return _Response(
+                    self.step_response(
+                        observation="done",
+                        reward=-1.0,
+                        done=True,
+                        action_count=1,
+                        action_kind="policy_horizon",
+                        terminal_reason="action_budget_exhausted",
+                    )
+                )
+            if path == "close":
+                return _Response(
+                    {
+                        "schema": "openmle_fast_cleanup_receipt_v1",
+                        "closed": True,
+                        "already_closed": False,
+                        "workspace_removed": True,
+                        "retryable": False,
+                        "failure_class": None,
+                        "cleanup_contract": _CLIENT_MODULE._EXPECTED_BOUNDARIES[
+                            "cleanup"
+                        ],
+                    }
+                )
+            raise AssertionError(path)
+
+        with patch("requests.request", side_effect=request):
+            client = OpenMLEFastEnvClient(
+                "http://127.0.0.1:9000",
+                **self.client_kwargs(),
+            )
+            self.assertTrue(calls[0][1].endswith("/metadata"))
+            self.assertTrue(calls[1][1].endswith("/create"))
+            client.reset(0)
+            raw = 'shell_command {"command":"printf \'unchanged\'"}'
+            output = client.step(raw)
+            self.assertEqual(calls[-1][2]["json"]["action"], raw)
+            self.assertEqual(output.info["action_submission"]["raw_policy_output"], raw)
+            self.assertEqual(output.info["policy_step_before"], 0)
+            self.assertEqual(output.info["policy_step_after"], 1)
+            terminal = client.finalize_policy_horizon()
+            self.assertTrue(terminal.done)
+            self.assertEqual(terminal.info["policy_step_after"], 1)
+            client.close()
+
+    def test_rejects_manifest_or_data_len_mismatch_before_create(self) -> None:
+        metadata = self.metadata()
+        with patch("requests.request", return_value=_Response(metadata)) as request:
+            with self.assertRaises(RuntimeError):
+                OpenMLEFastEnvClient(
+                    "http://127.0.0.1:9000",
+                    **{
+                        **self.client_kwargs(),
+                        "expected_manifest_sha256": "b" * 64,
+                    },
+                )
+            self.assertEqual(request.call_count, 1)
+
+    def test_shared_factory_requires_independent_attestation_pins(self) -> None:
+        calls = []
+
+        def request(method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            if url.endswith("/metadata"):
+                return _Response(self.metadata())
+            if url.endswith("/create"):
+                return _Response({"id": 3, "observation": "unbound", "info": {}})
+            raise AssertionError(url)
+
+        with (
+            patch("requests.request", side_effect=request),
+            self.assertRaisesRegex(ValueError, "TASK_MANIFEST_SHA256"),
+        ):
+            OpenMLEFastEnvClient(
+                "http://127.0.0.1:9000",
+                data_len=None,
+                timeout=2400,
+            )
+        self.assertEqual([call[0] for call in calls], ["GET"])
+
+    def test_shared_factory_can_receive_independent_pins_from_environment(self) -> None:
+        calls = []
+
+        def request(method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            if url.endswith("/metadata"):
+                return _Response(self.metadata())
+            if url.endswith("/create"):
+                return _Response({"id": 3, "observation": "unbound", "info": {}})
+            raise AssertionError(url)
+
+        environment = {
+            "OPENMLE_FAST_TASK_MANIFEST_SHA256": "a" * 64,
+            "OPENMLE_FAST_RELEASE_REVISION": RELEASE_REVISION,
+            "OPENMLE_FAST_RUNTIME_OUTER_COMMIT": "1" * 40,
+            "OPENMLE_FAST_RUNTIME_INNER_COMMIT": "2" * 40,
+            "OPENMLE_FAST_MANIFEST_ROLE": "gate_only",
+            "OPENMLE_FAST_EXECUTOR_RUNTIME_DIGEST": "sha256:" + "3" * 64,
+            "OPENMLE_FAST_MATERIALIZER_SHA256": "4" * 64,
+            "OPENMLE_FAST_ACTIONS_SHA256": "5" * 64,
+            "OPENMLE_FAST_MAX_OBSERVATION_TOKENS": "16384",
+        }
+        with (
+            patch.dict(_CLIENT_MODULE.os.environ, environment, clear=True),
+            patch("requests.request", side_effect=request),
+        ):
+            client = OpenMLEFastEnvClient(
+                "http://127.0.0.1:9000",
+                data_len=None,
+                timeout=2400,
+            )
+        self.assertEqual(len(client), 1)
+        self.assertEqual([call[0] for call in calls], ["GET", "POST"])
+
+    def test_truncated_reset_is_marked_for_resampling(self) -> None:
+        def request(_method, url, **_kwargs):
+            if url.endswith("/metadata"):
+                return _Response(self.metadata())
+            if url.endswith("/create"):
+                return _Response({"id": 3, "observation": "unbound", "info": {}})
+            if url.endswith("/reset"):
+                return _Response(
+                    self.step_response(
+                        reward=None,
+                        done=True,
+                        truncated=True,
+                        action_count=4,
+                        terminal_reason="reset_infrastructure_fault",
+                    )
+                )
+            raise AssertionError(url)
+
+        with patch("requests.request", side_effect=request):
+            client = OpenMLEFastEnvClient(
+                "http://127.0.0.1:9000", **self.client_kwargs()
+            )
+            with self.assertRaisesRegex(RuntimeError, "must be resampled"):
+                client.reset(0)
+        self.assertTrue(client.sample_excluded)
+
+    def test_retryable_cleanup_failure_is_not_silently_accepted(self) -> None:
+        def request(_method, url, **_kwargs):
+            if url.endswith("/metadata"):
+                return _Response(self.metadata())
+            if url.endswith("/create"):
+                return _Response({"id": 3, "observation": "unbound", "info": {}})
+            if url.endswith("/close"):
+                return _Response(
+                    {
+                        "schema": "openmle_fast_cleanup_receipt_v1",
+                        "closed": False,
+                        "already_closed": False,
+                        "workspace_removed": False,
+                        "retryable": True,
+                        "failure_class": "cleanup_infrastructure_fault",
+                        "cleanup_contract": _CLIENT_MODULE._EXPECTED_BOUNDARIES[
+                            "cleanup"
+                        ],
+                    }
+                )
+            raise AssertionError(url)
+
+        with patch("requests.request", side_effect=request):
+            client = OpenMLEFastEnvClient(
+                "http://127.0.0.1:9000", **self.client_kwargs()
+            )
+            with self.assertRaisesRegex(RuntimeError, "did not complete"):
+                client.close()
+
+    def test_rejects_reset_index_and_cross_step_episode_identity_drift(self) -> None:
+        responses = [
+            self.step_response(data_idx=1),
+            self.step_response(),
+            self.step_response(
+                action_count=1,
+                action_kind="parser_error",
+                episode_id="episode-2",
+            ),
+        ]
+
+        def request(_method, url, **_kwargs):
+            if url.endswith("/metadata"):
+                return _Response(self.metadata())
+            if url.endswith("/create"):
+                return _Response({"id": 3, "observation": "unbound", "info": {}})
+            return _Response(responses.pop(0))
+
+        with patch("requests.request", side_effect=request):
+            client = OpenMLEFastEnvClient(
+                "http://127.0.0.1:9000", **self.client_kwargs()
+            )
+            with self.assertRaisesRegex(RuntimeError, "wrong data_idx"):
+                client.reset(0)
+            client.reset(0)
+            with self.assertRaisesRegex(RuntimeError, "identity drifted"):
+                client.step("malformed")
+
+    def test_rejects_ineligible_or_drifted_endpoint_contracts(self) -> None:
+        cases = []
+        ineligible = copy.deepcopy(self.metadata())
+        ineligible["executor_coverage"]["formal_eligible"] = False
+        cases.append(ineligible)
+        missing_boundary = copy.deepcopy(self.metadata())
+        missing_boundary["boundary_contracts"].pop("audit")
+        cases.append(missing_boundary)
+        limit_drift = copy.deepcopy(self.metadata())
+        limit_drift["resource_limits"]["max_processes"] = 65
+        cases.append(limit_drift)
+        digest_drift = copy.deepcopy(self.metadata())
+        digest_drift["implementation_digests"]["actions_sha256"] = "f" * 64
+        cases.append(digest_drift)
+        for metadata in cases:
+            with (
+                self.subTest(metadata=metadata),
+                patch("requests.request", return_value=_Response(metadata)) as request,
+            ):
+                with self.assertRaises(RuntimeError):
+                    OpenMLEFastEnvClient(
+                        "http://127.0.0.1:9000",
+                        **self.client_kwargs(),
+                    )
+                self.assertEqual(request.call_count, 1)
+
+    def test_strict_response_validation_rejects_coercion_and_nonfinite_data(
+        self,
+    ) -> None:
+        metadata = self.metadata()
+        invalid = []
+        nan_reward = self.step_response(action_count=1, action_kind="parser_error")
+        nan_reward["reward"] = float("nan")
+        invalid.append(nan_reward)
+        string_done = self.step_response(action_count=1, action_kind="parser_error")
+        string_done["done"] = "false"
+        invalid.append(string_done)
+        bad_counters = self.step_response(action_count=1, action_kind="parser_error")
+        bad_counters["info"]["counters"]["execution_completed_count"] = 1
+        invalid.append(bad_counters)
+        for response in invalid:
+            with self.subTest(response=response), self.assertRaises(RuntimeError):
+                _CLIENT_MODULE._validate_step_response(
+                    response,
+                    metadata=metadata,
+                    expected_action_count=1,
+                    expected_action_delta=1,
+                )
+        with patch("requests.request", return_value=_Response(metadata)) as request:
+            with self.assertRaises(ValueError):
+                OpenMLEFastEnvClient(
+                    "http://127.0.0.1:9000",
+                    data_len=2,
+                    **self.client_kwargs(),
+                )
+            self.assertEqual(request.call_count, 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
