@@ -56,6 +56,7 @@ from ..literesearcher import (
     FrozenLiteResearchBackend,
     LiteResearcherWrapper,
     SQLiteFTSLiteResearchBackend,
+    TantivyLiteResearchBackend,
     UpstreamCompatibleLLMJudge,
     load_coverage_manifest,
     load_full_pool,
@@ -215,11 +216,29 @@ def _build_literesearcher_wrapper(surface: str) -> LiteResearcherWrapper:
             _required_file("AGENTMEMORY_LITERESEARCHER_FULL_POOL_ROWS"),
             _required_directory("AGENTMEMORY_LITERESEARCHER_SOURCE_ROOT"),
         )
-        backend = SQLiteFTSLiteResearchBackend(
+        search_backend = os.environ.get(
+            "AGENTMEMORY_LITERESEARCHER_SEARCH_BACKEND", "sqlite_fts"
+        )
+        backend_arguments = (
             task_source,
             _required_file("AGENTMEMORY_LITERESEARCHER_FTS_DATABASE"),
-            top_k=_env_int("AGENTMEMORY_LITERESEARCHER_TOP_K", 5),
         )
+        if search_backend == "sqlite_fts":
+            backend = SQLiteFTSLiteResearchBackend(
+                *backend_arguments,
+                top_k=_env_int("AGENTMEMORY_LITERESEARCHER_TOP_K", 5),
+            )
+        elif search_backend == "tantivy":
+            backend = TantivyLiteResearchBackend(
+                *backend_arguments,
+                _required_directory("AGENTMEMORY_LITERESEARCHER_TANTIVY_INDEX"),
+                top_k=_env_int("AGENTMEMORY_LITERESEARCHER_TOP_K", 5),
+            )
+        else:
+            raise RuntimeError(
+                "AGENTMEMORY_LITERESEARCHER_SEARCH_BACKEND must be "
+                "sqlite_fts or tantivy"
+            )
         judge = UpstreamCompatibleLLMJudge(
             api_base=_required_env("AGENTMEMORY_LITERESEARCHER_JUDGE_API_BASE"),
             model=_required_env("AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL"),

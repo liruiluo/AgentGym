@@ -38,7 +38,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
                     "You are a deep-research agent working on one continuous "
                     "question with an empty private workspace that persists for "
                     "the episode. Search with <tool_call>{\"name\":\"search\","
-                    "\"arguments\":{\"query\":[\"...\"]}}</tool_call>; visit an "
+                    "\"arguments\":{\"query\":\"...\"}}</tool_call>; visit an "
                     "opaque result URL with <tool_call>{\"name\":\"visit\","
                     "\"arguments\":{\"url\":\"...\",\"goal\":\"...\","
                     "\"page\":1}}</tool_call>. A visit returns one bounded page; "

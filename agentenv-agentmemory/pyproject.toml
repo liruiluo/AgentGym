@@ -9,6 +9,9 @@ dependencies = [
     "fastapi",
     "uvicorn",
 ]
+
+[project.optional-dependencies]
+literesearcher-tantivy = ["tantivy==0.25.1"]
 requires-python = ">=3.10"
 readme = "README.md"
 license = {text = "MIT"}

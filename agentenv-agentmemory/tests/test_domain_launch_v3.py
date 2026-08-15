@@ -200,6 +200,46 @@ class DomainLaunchTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self._launch(arguments)
 
+    def test_literesearcher_fullpool_launch_binds_tantivy_index(self):
+        with tempfile.TemporaryDirectory() as directory:
+            key_file = Path(directory) / "judge.key"
+            key_file.write_text("private-key", encoding="utf-8")
+            key_file.chmod(0o600)
+            arguments = self._literesearcher_fullpool_arguments(
+                judge_key_file=str(key_file)
+            )
+            arguments.extend(
+                [
+                    "--literesearcher-search-backend",
+                    "tantivy",
+                    "--literesearcher-tantivy-index",
+                    "/runtime/literesearcher-tantivy-v1",
+                ]
+            )
+            configured, _ = self._launch(arguments)
+        self.assertEqual(
+            configured["AGENTMEMORY_LITERESEARCHER_SEARCH_BACKEND"],
+            "tantivy",
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_LITERESEARCHER_TANTIVY_INDEX"],
+            "/runtime/literesearcher-tantivy-v1",
+        )
+
+    def test_literesearcher_fullpool_tantivy_requires_index(self):
+        with tempfile.TemporaryDirectory() as directory:
+            key_file = Path(directory) / "judge.key"
+            key_file.write_text("private-key", encoding="utf-8")
+            key_file.chmod(0o600)
+            arguments = self._literesearcher_fullpool_arguments(
+                judge_key_file=str(key_file)
+            )
+            arguments.extend(
+                ["--literesearcher-search-backend", "tantivy"]
+            )
+            with self.assertRaises(SystemExit):
+                self._launch(arguments)
+
     @staticmethod
     def _procedural_arguments(*, split="train"):
         return [

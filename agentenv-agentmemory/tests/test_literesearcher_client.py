@@ -44,6 +44,11 @@ class LiteResearcherClientTests(unittest.TestCase):
         ):
             self._client().close()
 
+    def test_prompt_uses_the_simple_string_search_contract(self) -> None:
+        prompt = LiteResearcherEnvClient.conversation_start[0]["value"]
+        self.assertIn('"query":"..."', prompt)
+        self.assertNotIn('"query":["..."]', prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

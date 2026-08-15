@@ -98,6 +98,69 @@ class LiteResearcherServerFactoryTests(unittest.TestCase):
             max_retries=4,
         )
 
+    def test_fullpool_factory_selects_tantivy_backend_explicitly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            rg = root / "rg"
+            manifest = root / "manifest.json"
+            rows = root / "rows.jsonl"
+            source = root / "source"
+            database = root / "corpus.sqlite"
+            index = root / "tantivy"
+            for path in (rg, manifest, rows, database):
+                path.write_text("fixture", encoding="utf-8")
+            source.mkdir()
+            index.mkdir()
+            environment = {
+                "AGENTMEMORY_WORKSPACE_RG_BINARY": str(rg),
+                "AGENTMEMORY_WORKSPACE_RG_SHA256": "a" * 64,
+                "AGENTMEMORY_LITERESEARCHER_SPLIT": "train",
+                "AGENTMEMORY_LITERESEARCHER_FULL_POOL_MANIFEST": str(manifest),
+                "AGENTMEMORY_LITERESEARCHER_FULL_POOL_ROWS": str(rows),
+                "AGENTMEMORY_LITERESEARCHER_SOURCE_ROOT": str(source),
+                "AGENTMEMORY_LITERESEARCHER_FTS_DATABASE": str(database),
+                "AGENTMEMORY_LITERESEARCHER_SEARCH_BACKEND": "tantivy",
+                "AGENTMEMORY_LITERESEARCHER_TANTIVY_INDEX": str(index),
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_API_BASE": "http://judge/v1",
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL": "kimi-judge",
+            }
+            task_source = _TaskSource()
+            backend = Mock(tasks_source=task_source, split="train")
+            judge = _Judge()
+            sandbox = Mock(metadata={"kind": "test"})
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch(
+                    "agentenv_agentmemory.runtime.server_factory."
+                    "LinuxNamespaceShellSandbox.from_environment",
+                    return_value=sandbox,
+                ),
+                patch(
+                    "agentenv_agentmemory.runtime.server_factory.load_full_pool",
+                    return_value=task_source,
+                ),
+                patch(
+                    "agentenv_agentmemory.runtime.server_factory."
+                    "TantivyLiteResearchBackend",
+                    return_value=backend,
+                ) as backend_type,
+                patch(
+                    "agentenv_agentmemory.runtime.server_factory."
+                    "UpstreamCompatibleLLMJudge",
+                    return_value=judge,
+                ),
+            ):
+                wrapper = _build_literesearcher_wrapper(
+                    LITERESEARCHER_FULLPOOL_SURFACE
+                )
+        self.assertIs(wrapper.backend, backend)
+        backend_type.assert_called_once_with(
+            task_source,
+            database.resolve(),
+            index.resolve(),
+            top_k=5,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

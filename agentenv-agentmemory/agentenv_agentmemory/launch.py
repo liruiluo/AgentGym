@@ -199,6 +199,12 @@ def launch() -> None:
     parser.add_argument("--literesearcher-full-pool-rows")
     parser.add_argument("--literesearcher-source-root")
     parser.add_argument("--literesearcher-fts-database")
+    parser.add_argument(
+        "--literesearcher-search-backend",
+        choices=("sqlite_fts", "tantivy"),
+        default="sqlite_fts",
+    )
+    parser.add_argument("--literesearcher-tantivy-index")
     parser.add_argument("--literesearcher-judge-api-base")
     parser.add_argument("--literesearcher-judge-model")
     parser.add_argument("--literesearcher-judge-api-key-file")
@@ -373,6 +379,8 @@ def launch() -> None:
                 "literesearcher_judge_api_base",
                 "literesearcher_judge_model",
             )
+            if args.literesearcher_search_backend == "tantivy":
+                _require_args(parser, args, "literesearcher_tantivy_index")
             if args.split != "train":
                 parser.error("LiteResearcher full-pool formal currently requires --split train")
         if args.split not in {"train", "test"}:
@@ -550,6 +558,12 @@ def launch() -> None:
                 "AGENTMEMORY_LITERESEARCHER_FULL_POOL_ROWS": args.literesearcher_full_pool_rows,
                 "AGENTMEMORY_LITERESEARCHER_SOURCE_ROOT": args.literesearcher_source_root,
                 "AGENTMEMORY_LITERESEARCHER_FTS_DATABASE": args.literesearcher_fts_database,
+                "AGENTMEMORY_LITERESEARCHER_SEARCH_BACKEND": (
+                    args.literesearcher_search_backend
+                ),
+                "AGENTMEMORY_LITERESEARCHER_TANTIVY_INDEX": (
+                    args.literesearcher_tantivy_index or ""
+                ),
                 "AGENTMEMORY_LITERESEARCHER_JUDGE_API_BASE": args.literesearcher_judge_api_base,
                 "AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL": args.literesearcher_judge_model,
                 "AGENTMEMORY_LITERESEARCHER_JUDGE_API_KEY": judge_api_key,

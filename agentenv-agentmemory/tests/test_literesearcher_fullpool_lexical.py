@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from agentenv_agentmemory.literesearcher import (
     FullPoolLiteResearcherTask,
@@ -15,8 +16,69 @@ from agentenv_agentmemory.literesearcher import (
     LiteResearchRequestError,
     LiteResearcherWrapper,
     SQLiteFTSLiteResearchBackend,
+    TantivyLiteResearchBackend,
     UPSTREAM_LLM_JUDGE_CONTRACT,
 )
+
+
+class _FakeTantivyDocument:
+    def __init__(self, document_id: int) -> None:
+        self.document_id = document_id
+
+    def get_first(self, field: str) -> int:
+        if field != "id":
+            raise KeyError(field)
+        return self.document_id
+
+
+class _FakeTantivySearcher:
+    num_docs = 3
+
+    def search(self, query, *, limit: int, count: bool):
+        del query, count
+        return type(
+            "SearchResult",
+            (),
+            {"hits": [(3.0 - index, index + 1) for index in range(min(limit, 3))]},
+        )()
+
+    @staticmethod
+    def doc(address: int) -> _FakeTantivyDocument:
+        return _FakeTantivyDocument(address)
+
+
+class _FakeTantivyIndex:
+    schema = object()
+
+    @staticmethod
+    def reload() -> None:
+        return None
+
+    @staticmethod
+    def searcher() -> _FakeTantivySearcher:
+        return _FakeTantivySearcher()
+
+
+class _FakeTantivy:
+    __version__ = "0.25.1-test"
+
+    class Occur:
+        Should = "should"
+
+    class Query:
+        @staticmethod
+        def term_query(schema, field: str, token: str):
+            return schema, field, token
+
+        @staticmethod
+        def boolean_query(clauses):
+            return tuple(clauses)
+
+    class Index:
+        @staticmethod
+        def open(path: str) -> _FakeTantivyIndex:
+            del path
+            return _FakeTantivyIndex()
 
 
 class _SemanticJudgeStub:
@@ -158,6 +220,51 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
         self.assertEqual(len(results), 64)
         self.assertEqual({url for url, _ in results}, {"https://public.example/evidence"})
         self.assertTrue(all("Beta Fact" in content for _, content in results))
+
+    def test_tantivy_backend_masks_url_and_uses_released_document_store(self) -> None:
+        index = Path(self.temporary.name) / "tantivy-index"
+        index.mkdir()
+        (index / "agentmemory-index.json").write_text(
+            json.dumps(
+                {
+                    "contract": "combined_title2_document_bm25_v1",
+                    "document_count": 3,
+                    "tantivy_version": "0.25.1-test",
+                }
+            ),
+            encoding="utf-8",
+        )
+        with patch(
+            "agentenv_agentmemory.literesearcher.lexical_backend."
+            "importlib.import_module",
+            return_value=_FakeTantivy,
+        ):
+            backend = TantivyLiteResearchBackend(
+                self.tasks,
+                self.database,
+                index,
+                top_k=2,
+            )
+            hits = backend.search(
+                "Alpha research evidence",
+                mask_url=self.tasks.train[0].mask_url,
+            )
+        self.assertEqual(
+            [hit["url"] for hit in hits],
+            [
+                "https://public.example/evidence",
+                "https://public.example/other",
+            ],
+        )
+        self.assertIn("Beta Fact", hits[0]["snippet"])
+        metadata = backend.metadata()
+        self.assertEqual(
+            metadata["backend_contract"],
+            "literesearcher_released_corpus_tantivy_bm25_v1",
+        )
+        self.assertEqual(metadata["tantivy_document_count"], 3)
+        page = backend.visit(hits[0]["url"], goal="Beta Fact")
+        self.assertIn("Beta Fact", page["content"])
 
     def test_full_pool_terminal_reward_comes_from_semantic_judge(self) -> None:
         judge = _SemanticJudgeStub(correct=True)
