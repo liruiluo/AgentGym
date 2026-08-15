@@ -114,18 +114,24 @@ class ExporterTests(unittest.TestCase):
                 path = workspace.policy_root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content, encoding="utf-8")
-            row = self.exporter.prediction_row(workspace, arm="native")
+            rows = {
+                arm: self.exporter.prediction_row(workspace, arm=arm)
+                for arm in ("native", "amg_compaction_only", "amg_memory")
+            }
             self.assertFalse((workspace.private_root / "export.git").exists())
         finally:
             self.materializer.close(workspace)
         object_inventory_after = self.git("count-objects", "-v")
 
-        self.assertEqual(
-            set(row), {"instance_id", "model_name_or_path", "model_patch"}
-        )
-        self.assertEqual(row["instance_id"], "owner__repo-1")
-        self.assertEqual(row["model_name_or_path"], MODEL_LABELS["native"])
-        patch = row["model_patch"]
+        for arm, row in rows.items():
+            self.assertEqual(
+                set(row), {"instance_id", "model_name_or_path", "model_patch"}
+            )
+            self.assertEqual(row["instance_id"], "owner__repo-1")
+            self.assertEqual(row["model_name_or_path"], MODEL_LABELS[arm])
+        patches = {row["model_patch"] for row in rows.values()}
+        self.assertEqual(len(patches), 1)
+        patch = patches.pop()
         self.assertIn("diff --git a/src/value.py b/src/value.py", patch)
         self.assertIn("diff --git a/obsolete.txt b/obsolete.txt", patch)
         self.assertIn("diff --git a/src/new_file.py b/src/new_file.py", patch)

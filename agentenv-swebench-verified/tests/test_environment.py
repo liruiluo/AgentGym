@@ -23,10 +23,12 @@ from agentenv_swebench_verified.dataset import (
 from agentenv_swebench_verified.environment import VerifiedEpisodeManager
 from agentenv_swebench_verified.exporter import PredictionStore, SolutionPatchExporter
 from agentenv_swebench_verified.protocol import (
+    ARMS,
     DATASET_REPOSITORY,
     DATASET_REVISION,
     EVALUATION_MAX_POLICY_TURNS,
     FrozenDatasetPins,
+    MODEL_LABELS,
 )
 from agentenv_swebench_verified.sandbox import (
     VerifiedLinuxNamespaceEpisodeSandbox,
@@ -285,31 +287,62 @@ class VerifiedEnvironmentTests(unittest.TestCase):
         self.manager.close(slot)
         self.assertEqual(list((self.root / "episodes").iterdir()), [])
 
-    def test_both_arms_use_identical_non_memory_dispatch(self) -> None:
+    def test_triad_uses_identical_non_memory_dispatch_and_runtime(self) -> None:
         slots = {
             arm: self.manager.create(
                 arm=arm,
                 run_id=f"{arm}-dispatch",
                 run_capability=RUN_CAPABILITY,
             )
-            for arm in ("native", "amg_memory")
+            for arm in ARMS
         }
-        for slot in slots.values():
-            self.manager.reset(slot, 0)
+        resets = {
+            arm: self.manager.reset(slot, 0) for arm, slot in slots.items()
+        }
+        runtime = {
+            arm: self.manager._slot(slot).episode.binding.runtime_metadata()
+            for arm, slot in slots.items()
+        }
+        sandbox = {
+            arm: self.manager._slot(slot).episode.sandbox.metadata
+            for arm, slot in slots.items()
+        }
         action = 'shell_command {"command":"printf same > common.txt"}'
         results = {arm: self.manager.step(slot, action) for arm, slot in slots.items()}
 
-        self.assertEqual(
-            results["native"].observation,
-            results["amg_memory"].observation,
-        )
-        for key in ("action_kind", "actor_credit", "action_progress"):
+        for arm in ("amg_compaction_only", "amg_memory"):
+            self.assertEqual(resets["native"].observation, resets[arm].observation)
+            self.assertEqual(runtime["native"], runtime[arm])
+            self.assertEqual(sandbox["native"], sandbox[arm])
             self.assertEqual(
-                results["native"].info[key],
-                results["amg_memory"].info[key],
+                results["native"].observation,
+                results[arm].observation,
             )
+            for key in ("action_kind", "actor_credit", "action_progress"):
+                self.assertEqual(
+                    results["native"].info[key],
+                    results[arm].info[key],
+                )
         for slot in slots.values():
             self.manager.close(slot)
+
+    def test_compaction_only_starts_without_memory_residue(self) -> None:
+        slot = self.manager.create(
+            arm="amg_compaction_only",
+            run_id="compaction-only-clean",
+            run_capability=RUN_CAPABILITY,
+        )
+        self.manager.reset(slot, 0)
+
+        absent = self.manager.step(
+            slot,
+            'shell_command {"command":"test ! -e .agent_memory && printf clean"}',
+        )
+
+        self.assertIn("clean", absent.observation)
+        self.assertEqual(absent.info["action_kind"], "shell_command")
+        self.assertNotIn("memory", json.dumps(absent.info).lower())
+        self.manager.close(slot)
 
     def test_parser_errors_remain_non_terminal_and_do_not_dispatch(self) -> None:
         slot = self.manager.create(
@@ -413,11 +446,16 @@ class VerifiedEnvironmentTests(unittest.TestCase):
 
     def test_metadata_freezes_external_grading_and_unified_budget(self) -> None:
         metadata = self.manager.metadata()
+        self.assertEqual(
+            ARMS,
+            ("native", "amg_compaction_only", "amg_memory"),
+        )
         self.assertEqual(metadata["evaluation_max_policy_turns"], 250)
         self.assertEqual(metadata["task_count"], 1)
         self.assertEqual(metadata["full_benchmark_task_count"], 500)
         self.assertEqual(metadata["reward_contract"], "external_official_grading_only")
-        self.assertEqual(metadata["supported_arms"], ["native", "amg_memory"])
+        self.assertEqual(metadata["supported_arms"], list(ARMS))
+        self.assertEqual(metadata["model_labels"], MODEL_LABELS)
         self.assertEqual(
             metadata["policy_visible_fields"],
             ["instance_id", "repo", "base_commit", "problem_statement"],

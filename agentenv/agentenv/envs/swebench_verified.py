@@ -83,6 +83,7 @@ SBV_MEMORY_ADDENDUM = (
     "a tool and has no separate task reward. After compaction, read any needed note "
     "again with an ordinary shell action before relying on it."
 )
+SBV_COMPACTION_ARMS = frozenset({"amg_compaction_only", "amg_memory"})
 
 
 class SwebenchVerifiedEnvClient(BaseEnvClient):
@@ -255,6 +256,9 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
     def policy_framing(self) -> list[dict[str, str]]:
         return [{"role": "system", "content": self.system_prompt}]
 
+    def _compaction_enabled(self) -> bool:
+        return self.arm in SBV_COMPACTION_ARMS
+
     def normalize_initial_policy_context(
         self, messages: Sequence[Mapping[str, str]]
     ) -> list[dict[str, str]]:
@@ -290,7 +294,7 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
         self._current_policy_context = normalized
 
     def policy_turn_candidate(self) -> str | None:
-        if self.arm != "amg_memory" or not self._policy_context_bound:
+        if not self._compaction_enabled() or not self._policy_context_bound:
             return None
         return SBV_CONTEXT_COMPACTION_REQUEST
 
@@ -298,7 +302,7 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
         self, pressure: PolicyContextPressure | None
     ) -> str | None:
         self._selected_policy_control = None
-        if self.arm != "amg_memory" or not self._policy_context_bound:
+        if not self._compaction_enabled() or not self._policy_context_bound:
             return None
         if pressure is None:
             raise RuntimeError(
@@ -384,7 +388,7 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
 
     def _complete_context_compaction(self, action: str) -> StepOutput:
         framing = self._immutable_policy_context
-        if framing is None or self.arm != "amg_memory":
+        if framing is None or not self._compaction_enabled():
             raise RuntimeError("AMG compaction lost its immutable task framing")
         native_before = self._native_call_count
         policy_before = self._policy_step_count

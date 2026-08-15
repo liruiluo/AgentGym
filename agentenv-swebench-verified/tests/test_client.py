@@ -4,6 +4,7 @@ import importlib.util
 import sys
 import types
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 
@@ -75,9 +76,10 @@ def metadata():
         "schema": "swebench_verified_external_patch_episode_v1",
         "task_count": 500,
         "full_benchmark_task_count": 500,
-        "supported_arms": ["native", "amg_memory"],
+        "supported_arms": ["native", "amg_compaction_only", "amg_memory"],
         "model_labels": {
             "native": "qwen35-4b-native",
+            "amg_compaction_only": "qwen35-4b-amg-compaction-only",
             "amg_memory": "qwen35-4b-amg-memory",
         },
         "policy_visible_fields": [
@@ -135,6 +137,7 @@ def metadata():
             ),
             "model_labels": {
                 "native": "qwen35-4b-native",
+                "amg_compaction_only": "qwen35-4b-amg-compaction-only",
                 "amg_memory": "qwen35-4b-amg-memory",
             },
         },
@@ -247,6 +250,21 @@ class ClientTests(unittest.TestCase):
         client.bind_policy_context(normalized, initial=True)
         return normalized
 
+    def compaction_pressure(
+        self,
+        *,
+        action_prompt_tokens=800,
+        candidate_prompt_tokens=850,
+    ):
+        return self.types.PolicyContextPressure(
+            action_prompt_tokens=action_prompt_tokens,
+            candidate_prompt_tokens=candidate_prompt_tokens,
+            max_prompt_tokens=1000,
+            max_model_tokens=1200,
+            max_response_tokens=100,
+            max_observation_tokens=100,
+        )
+
     def test_native_has_zero_memory_or_compaction_affordance(self) -> None:
         backend = Backend()
         client = self.TransportClient(
@@ -284,14 +302,7 @@ class ClientTests(unittest.TestCase):
         native_calls_before = len(
             [call for call in backend.calls if call[:2] == ("POST", "step")]
         )
-        pressure = self.types.PolicyContextPressure(
-            action_prompt_tokens=800,
-            candidate_prompt_tokens=850,
-            max_prompt_tokens=1000,
-            max_model_tokens=1200,
-            max_response_tokens=100,
-            max_observation_tokens=100,
-        )
+        pressure = self.compaction_pressure()
         self.assertEqual(
             client.prepare_policy_turn(pressure),
             self.module.SBV_CONTEXT_COMPACTION_REQUEST,
@@ -311,10 +322,119 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(read.info["native_call_count_after"], 2)
         self.assertEqual(read.info["policy_step_after"], 3)
 
-    def test_non_memory_action_dispatch_is_identical_between_arms(self) -> None:
+    def test_compaction_only_has_no_memory_affordance_or_store(self) -> None:
+        backend = Backend()
+        client = self.TransportClient(
+            backend=backend,
+            arm="amg_compaction_only",
+            run_id="paired-compaction-only",
+            image_manifest_sha256=IMAGE_MANIFEST_SHA256,
+        )
+        client.reset(0)
+        prompt = client.conversation_start[0]["value"]
+        self.assertNotIn(".agent_memory", prompt)
+        self.assertNotIn("durable task memory", prompt.lower())
+        framing = self.bind_initial_context(client)
+        self.assertEqual(
+            client.policy_turn_candidate(),
+            self.module.SBV_CONTEXT_COMPACTION_REQUEST,
+        )
+        self.assertEqual(
+            client.prepare_policy_turn(self.compaction_pressure()),
+            self.module.SBV_CONTEXT_COMPACTION_REQUEST,
+        )
+
+        summary = "objective fixed; inspect the failing test next"
+        compacted = client.step(summary)
+
+        self.assertEqual(backend.memory, {})
+        self.assertFalse(
+            any(call[:2] == ("POST", "step") for call in backend.calls)
+        )
+        transition = compacted.info["context_transition"]
+        self.assertEqual(transition["operation"], "replace_messages")
+        self.assertEqual(transition["messages"][: len(framing)], framing)
+        self.assertEqual(
+            transition["messages"][-2:],
+            [
+                {"role": "assistant", "content": summary},
+                {
+                    "role": "user",
+                    "content": self.types.POLICY_CONTINUATION_MARKER,
+                },
+            ],
+        )
+        self.assertEqual(compacted.info["native_call_count_after"], 0)
+        self.assertEqual(compacted.info["policy_step_after"], 1)
+        self.assertEqual(compacted.info["context_epoch_after"], 1)
+        serialized = str(compacted.info).lower()
+        for forbidden in (
+            ".agent_memory",
+            "memory_root",
+            "memory_mount",
+            "memory_endpoint",
+            "memory_action",
+            "memory_receipt",
+        ):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_compacting_arms_share_trigger_transition_and_accounting(self) -> None:
+        evidence = []
+        summary = "objective fixed; inspect the failing test next"
+        for arm in ("amg_compaction_only", "amg_memory"):
+            backend = Backend()
+            client = self.TransportClient(
+                backend=backend,
+                arm=arm,
+                run_id=f"paired-{arm}",
+                image_manifest_sha256=IMAGE_MANIFEST_SHA256,
+            )
+            expected_prompt = self.module.SBV_BASE_POLICY_SYSTEM_PROMPT
+            if arm == "amg_memory":
+                expected_prompt += self.module.SBV_MEMORY_ADDENDUM
+            self.assertEqual(client.system_prompt, expected_prompt)
+            self.assertEqual(
+                client.policy_framing(),
+                [{"role": "system", "content": expected_prompt}],
+            )
+            self.assertEqual(
+                client.conversation_start[0]["value"],
+                expected_prompt,
+            )
+            client.reset(0)
+            self.bind_initial_context(client)
+            candidate = client.policy_turn_candidate()
+            below_trigger = client.prepare_policy_turn(
+                self.compaction_pressure(
+                    action_prompt_tokens=600,
+                    candidate_prompt_tokens=650,
+                )
+            )
+            selected = client.prepare_policy_turn(self.compaction_pressure())
+            compacted = client.step(summary)
+            normalized_info = deepcopy(compacted.info)
+            normalized_info["context_transition"]["messages"][0]["content"] = (
+                "<arm-specific framing>"
+            )
+            normalized_info["wrapper_evidence"]["arm"] = "<arm>"
+            evidence.append(
+                (
+                    candidate,
+                    below_trigger,
+                    selected,
+                    compacted.state,
+                    compacted.reward,
+                    compacted.done,
+                    normalized_info,
+                )
+            )
+
+        self.assertEqual(evidence[0], evidence[1])
+
+    def test_non_memory_action_dispatch_is_identical_across_triad(self) -> None:
         clients = {}
         backends = {}
-        for arm in ("native", "amg_memory"):
+        for arm in ("native", "amg_compaction_only", "amg_memory"):
             backend = Backend()
             client = self.TransportClient(
                 backend=backend,
@@ -329,12 +449,13 @@ class ClientTests(unittest.TestCase):
         action = 'shell_command {"command":"printf same > source.txt"}'
         results = {arm: client.step(action) for arm, client in clients.items()}
 
-        self.assertEqual(backends["native"].calls, backends["amg_memory"].calls)
-        self.assertEqual(results["native"].state, results["amg_memory"].state)
-        self.assertEqual(
-            results["native"].info["native_call_count_after"],
-            results["amg_memory"].info["native_call_count_after"],
-        )
+        for arm in ("amg_compaction_only", "amg_memory"):
+            self.assertEqual(backends["native"].calls, backends[arm].calls)
+            self.assertEqual(results["native"].state, results[arm].state)
+            self.assertEqual(
+                results["native"].info["native_call_count_after"],
+                results[arm].info["native_call_count_after"],
+            )
 
     def test_unified_budget_counts_compaction_without_native_call_or_horizon_row(
         self,
@@ -348,14 +469,7 @@ class ClientTests(unittest.TestCase):
         )
         client.reset(0)
         self.bind_initial_context(client)
-        pressure = self.types.PolicyContextPressure(
-            action_prompt_tokens=800,
-            candidate_prompt_tokens=850,
-            max_prompt_tokens=1000,
-            max_model_tokens=1200,
-            max_response_tokens=100,
-            max_observation_tokens=100,
-        )
+        pressure = self.compaction_pressure()
         client.prepare_policy_turn(pressure)
         compacted = client.step("short continuation")
         self.assertEqual(compacted.info["policy_step_after"], 1)

@@ -31,9 +31,10 @@ FORBIDDEN_POLICY_FIELDS = frozenset(
         "parser_state",
     }
 )
-ARMS = ("native", "amg_memory")
+ARMS = ("native", "amg_compaction_only", "amg_memory")
 MODEL_LABELS = {
     "native": "qwen35-4b-native",
+    "amg_compaction_only": "qwen35-4b-amg-compaction-only",
     "amg_memory": "qwen35-4b-amg-memory",
 }
 EVALUATION_MAX_POLICY_TURNS = 250

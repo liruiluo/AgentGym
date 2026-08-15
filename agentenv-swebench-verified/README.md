@@ -86,9 +86,10 @@ Optional host/port variables are `SWEBENCH_VERIFIED_HOST` and
 The AgentGym client is
 `agentenv.envs.swebench_verified.SwebenchVerifiedEnvClient`. Pass the
 same server URL, run ID, runtime-pinned `image_manifest_sha256`, a mandatory
-unpredictable `run_capability`, and either `arm="native"` or
-`arm="amg_memory"`. Generate 32 random bytes for each `(arm, run_id)` namespace
-and reuse that bearer only for parallel clients writing that same namespace:
+unpredictable `run_capability`, and exactly one of `arm="native"`,
+`arm="amg_compaction_only"`, or `arm="amg_memory"`. Generate 32 random bytes
+for each `(arm, run_id)` namespace and reuse that bearer only for parallel
+clients writing that same namespace:
 
 ```python
 import secrets
@@ -113,12 +114,17 @@ existing `(arm, run_id)`. The server returns a separate per-slot bearer for all
 later reset/step/export/close requests. Do not log either bearer. No
 environment-registry or shared-rollout edit is included.
 
-Both arms use the same task order, 250 unified policy-turn cap, action HTTP path,
-workspace materializer, observation budget, and patch exporter. Native has no
-AMG memory or compaction candidate. `amg_memory` adds clean per-task
-`.agent_memory` files and the existing task-neutral policy-authored context
-replacement. A compaction consumes one policy turn and no native HTTP call;
-horizon export consumes no sampled turn.
+All three arms use the same task order, 250 unified policy-turn cap, action HTTP
+path, `/testbed` shell/apply-patch surface, workspace materializer, observation
+budget, runtime identity, and patch exporter. Native has no AMG memory or
+compaction candidate. `amg_compaction_only` and `amg_memory` use the exact same
+compaction request, token-pressure trigger, task-neutral `replace_messages`
+transition, and action accounting. Only `amg_memory` receives the durable-memory
+prompt convention for clean per-task `.agent_memory` files. Compaction-only has
+no dedicated memory namespace, root, mount, endpoint, environment variable,
+prompt declaration, tool schema, parser/dispatch path, memory action receipt,
+private evidence store, or cleanup handle. A compaction consumes one policy turn
+and no native HTTP call; horizon export consumes no sampled turn.
 
 The observation byte limit applies to the complete policy-visible message,
 including the initial issue, shell framing, changed-path summary, patch result,
@@ -130,7 +136,7 @@ explicit truncation marker.
 Terminal text, the unified horizon, or lifecycle close stores exactly one row
 per `(arm, run_id, data_idx)` with keys `instance_id`, `model_name_or_path`, and
 `model_patch`. Empty patches are explicit rows. Assembly rejects incomplete
-ledgers and writes separate native/AMG JSONLs in canonical dataset order.
+ledgers and writes a separate JSONL for each arm in canonical dataset order.
 
 The diff is produced against the exact base commit with a private Git index and
 private object database. It includes modified, deleted, binary, executable-mode,
@@ -141,6 +147,12 @@ the required explicit empty prediction row rather than an unusable gitlink patch
 Model patches are capped at 16 MiB and Git export has a five-minute timeout.
 Official test patches, eval scripts, parsers, and scoring remain entirely in the
 external v4.1.0 grader.
+
+The frozen reportable contrasts are `amg_compaction_only - native` for the
+compaction effect, `amg_memory - amg_compaction_only` for the incremental
+external-memory effect, and `amg_memory - native` for the full AMG effect. There
+is no memory-only fourth arm, so this triad does not identify a
+compaction-by-memory interaction.
 
 ## Verification
 
