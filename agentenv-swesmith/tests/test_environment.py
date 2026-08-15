@@ -17,7 +17,7 @@ from agentenv_agentmemory.workspace_sandbox import (
 from agentenv_swesmith.dataset import SwesmithDataset
 from agentenv_swesmith.audit import AUDIT_SCHEMA, SwesmithEpisodeAuditSink
 from agentenv_swesmith.environment import SwesmithEpisodeManager
-from agentenv_swesmith.environment import _shell_observation
+from agentenv_swesmith.environment import _changed_paths_observation, _shell_observation
 from agentenv_swesmith.grader import SwesmithGradeResult
 from agentenv_swesmith.profile import SwesmithProfileBinding
 from agentenv_swesmith.sandbox import LinuxNamespaceEpisodeSandbox
@@ -391,6 +391,40 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("[stderr truncated: visible output budget reached]", observation)
         self.assertNotIn("A" * 10_000, observation)
         self.assertNotIn("B" * 10_000, observation)
+
+    def test_changed_paths_summary_is_bounded_and_digest_backed(self) -> None:
+        paths = tuple(f"generated/{index:04d}/" + "x" * 240 for index in range(3230))
+        summary = _changed_paths_observation(paths, max_bytes=768)
+
+        expected_digest = hashlib.sha256("\n".join(paths).encode()).hexdigest()
+        self.assertLessEqual(len(summary.encode()), 768)
+        self.assertIn("3230 paths", summary)
+        self.assertIn(f"sha256={expected_digest}", summary)
+        self.assertIn("omitted=3228", summary)
+        self.assertNotIn(paths[100], summary)
+
+        tiny_summary = _changed_paths_observation(paths, max_bytes=128)
+        self.assertLessEqual(len(tiny_summary.encode()), 128)
+        self.assertIn("3230 paths", tiny_summary)
+        self.assertIn(f"sha256={expected_digest}", tiny_summary)
+
+    def test_shell_observation_does_not_expand_with_changed_path_count(self) -> None:
+        paths = tuple(f"changed/{index:04d}/" + "y" * 240 for index in range(3230))
+        observation = _shell_observation(
+            exit_code=0,
+            elapsed_ms=1,
+            timed_out=False,
+            stdout="ok",
+            stderr="",
+            stdout_truncated=False,
+            stderr_truncated=False,
+            changed_paths=paths,
+            max_observation_bytes=6144,
+        )
+
+        self.assertLess(len(observation.encode()), 8000)
+        self.assertIn("3230 paths", observation)
+        self.assertNotIn(paths[100], observation)
 
     def test_embedded_tool_payload_does_not_submit_or_execute(self) -> None:
         slot = self.manager.create()

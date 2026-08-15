@@ -34,6 +34,7 @@ UPSTREAM_REFERENCE_MAX_POLICY_TURNS = 250
 DEFAULT_MAX_OBSERVATION_BYTES = 6144
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
 ACTION_PROGRESS_SCHEMA = "swesmith_action_progress_v1"
+MAX_VISIBLE_CHANGED_PATHS_BYTES = 1024
 
 
 class ProfileResolver(Protocol):
@@ -685,8 +686,9 @@ def _shell_observation(
 ) -> str:
     if type(max_observation_bytes) is not int or max_observation_bytes <= 0:
         raise ValueError("max_observation_bytes must be a positive integer")
-    # Bound the combined visible output below the 8192-token contract.  The
-    # fixed receipt text and workspace path list retain additional headroom.
+    # Bound both command output and the workspace-diff receipt.  The complete
+    # diff remains in the private audit; the policy only needs a compact signal
+    # that its workspace changed and a few paths for orientation.
     stdout_limit = max(1, max_observation_bytes // 2)
     stderr_limit = max(1, max_observation_bytes - stdout_limit)
     visible_stdout, stdout_was_bounded = _bound_shell_output(
@@ -713,8 +715,49 @@ def _shell_observation(
         + "\nstderr:\n"
         + (visible_stderr if visible_stderr else "<empty>")
         + "\nworkspace changed paths: "
-        + (", ".join(changed_paths) if changed_paths else "none")
+        + _changed_paths_observation(changed_paths)
     )
+
+
+def _changed_paths_observation(
+    changed_paths: tuple[str, ...],
+    *,
+    max_bytes: int = MAX_VISIBLE_CHANGED_PATHS_BYTES,
+) -> str:
+    """Expose a bounded diff summary while keeping exact paths private."""
+
+    if type(max_bytes) is not int or max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer")
+    if not changed_paths:
+        return "none"
+
+    encoded_paths = [path.encode("utf-8", errors="replace") for path in changed_paths]
+    digest = hashlib.sha256(b"\n".join(encoded_paths)).hexdigest()
+    prefix = f"{len(changed_paths)} paths; sha256={digest}; sample="
+    suffix = "; sample_truncated=true"
+    # Keep the summary itself bounded even when one path is unusually long.
+    budget = max(0, max_bytes - len(prefix.encode("utf-8")) - len(suffix.encode("utf-8")))
+    selected: list[str] = []
+    used = 2  # the surrounding brackets
+    candidates = list(dict.fromkeys((changed_paths[0], changed_paths[-1])))
+    for path in candidates:
+        rendered = path.replace("\\", "/")
+        token = rendered if not selected else ", " + rendered
+        token_bytes = len(token.encode("utf-8", errors="replace"))
+        if used + token_bytes > budget:
+            continue
+        selected.append(rendered)
+        used += token_bytes
+    sample = "[" + ", ".join(selected) + "]"
+    omitted = len(changed_paths) - len(selected)
+    result = prefix + sample
+    if omitted:
+        result += f"; omitted={omitted}"
+    if len(result.encode("utf-8", errors="replace")) > max_bytes:
+        result = (prefix + suffix).encode("utf-8", errors="replace")[:max_bytes].decode(
+            "utf-8", errors="ignore"
+        )
+    return result
 
 
 def _bound_shell_output(
