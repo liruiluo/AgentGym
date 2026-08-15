@@ -212,6 +212,47 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
         request = json.loads(popen.return_value.communicate.call_args_list[0].args[0])
         self.assertEqual(request["timeout_ms"], 1_000)
 
+    def test_lifecycle_caps_episode_deadline_to_runner_request_limit(self) -> None:
+        backend = object.__new__(ExternalSandboxRunnerBackend)
+        backend.runner_path = self.workspace / "runner"
+        backend.limits = self.limits
+        backend.expected_runtime_digest = "sha256:" + "1" * 64
+        response = {
+            "schema": "openmle_fast_backend_lifecycle_v1",
+            "operation": "freeze",
+            "success": True,
+            "processes_reaped": True,
+            "workspace_read_only": True,
+            "cgroup_empty": True,
+            "failure_class": None,
+        }
+        with (
+            patch("agentenv_openmle_fast.executor.subprocess.Popen") as popen,
+            patch(
+                "agentenv_openmle_fast.executor._process_group_exists",
+                return_value=False,
+            ),
+        ):
+            popen.return_value.pid = 43210
+            popen.return_value.communicate.return_value = (
+                json.dumps(response).encode(),
+                b"",
+            )
+            popen.return_value.returncode = 0
+            popen.return_value.poll.return_value = 0
+            receipt = backend._lifecycle(
+                "freeze",
+                self.workspace,
+                timeout_ms=self.limits.episode_wall_ms,
+            )
+        self.assertTrue(receipt.success)
+        request = json.loads(popen.return_value.communicate.call_args.args[0])
+        self.assertEqual(request["timeout_ms"], self.limits.shell_wall_ms)
+        self.assertEqual(
+            popen.return_value.communicate.call_args.kwargs["timeout"],
+            (self.limits.shell_wall_ms + 1_000) / 1_000.0,
+        )
+
     def test_remaining_managed_runtime_is_passed_separately_to_backend(self) -> None:
         backend = _RecordingBackend(self.limits)
         executor = OpenMLEFastExecutor(limits=self.limits, backend=backend)

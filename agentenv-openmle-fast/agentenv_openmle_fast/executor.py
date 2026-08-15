@@ -652,11 +652,17 @@ class ExternalSandboxRunnerBackend:
                 cgroup_empty=False,
                 failure_class="runner_lifecycle_fault",
             )
+        effective_timeout_ms = min(
+            timeout_ms,
+            self.limits.shell_wall_ms + EXTERNAL_RUNNER_COMPLETION_GRACE_MS,
+        )
         request = {
             "schema": "openmle_fast_runner_lifecycle_request_v1",
             "workspace": str(workspace),
             "operation": operation,
-            "timeout_ms": timeout_ms - EXTERNAL_RUNNER_COMPLETION_GRACE_MS,
+            "timeout_ms": (
+                effective_timeout_ms - EXTERNAL_RUNNER_COMPLETION_GRACE_MS
+            ),
         }
         process: subprocess.Popen[bytes] | None = None
         try:
@@ -674,7 +680,7 @@ class ExternalSandboxRunnerBackend:
             try:
                 stdout, _ = process.communicate(
                     request_bytes,
-                    timeout=timeout_ms / 1000.0,
+                    timeout=effective_timeout_ms / 1000.0,
                 )
             except subprocess.TimeoutExpired:
                 _kill_process_group(process.pid)
