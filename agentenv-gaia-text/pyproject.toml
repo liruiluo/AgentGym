@@ -1,0 +1,21 @@
+[project]
+name = "agentenv-gaia-text"
+version = "0.0.1"
+description = "Thin leak-safe GAIA-Text HTTP adapter for paired AgentMemoryGym evaluation."
+authors = [
+    {name = "Lirui Luo"},
+]
+dependencies = [
+    "fastapi",
+    "uvicorn",
+]
+requires-python = ">=3.10"
+readme = "README.md"
+license = {text = "MIT"}
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[project.scripts]
+agentenv-gaia-text = "agentenv_gaia_text:launch"
