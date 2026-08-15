@@ -7,7 +7,7 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 
-from .backend import FixtureBackend
+from .backend import FixtureBackend, LiteResearcherBackend, SearchVisitBackend
 from .contracts import PRODUCTION_PROTOCOL, EvaluationArm, ProtocolContract
 from .dataset import GaiaTextDataset
 from .submission import SubmissionStore
@@ -24,14 +24,15 @@ def build_manager_from_environment(
     arm = EvaluationArm(_required_text(values, "GAIA_TEXT_ARM"))
     manifest = _required_file(values, "GAIA_TEXT_MANIFEST")
     questions = _required_file(values, "GAIA_TEXT_QUESTIONS")
-    backend_asset = _required_file(values, "GAIA_TEXT_BACKEND_ASSET")
-    resolved_inputs = {manifest.resolve(), questions.resolve(), backend_asset.resolve()}
+    backend_kind = _required_text(values, "GAIA_TEXT_BACKEND")
+    backend_input = _backend_input(values, backend_kind)
+    resolved_inputs = {manifest.resolve(), questions.resolve(), backend_input.resolve()}
     prediction_candidate = Path(
         _required_text(values, "GAIA_TEXT_PREDICTIONS")
     ).expanduser()
     if len(resolved_inputs) != 3 or prediction_candidate.resolve() in resolved_inputs:
         raise RuntimeError(
-            "GAIA-Text manifest, questions, backend asset, and predictions must be distinct"
+            "GAIA-Text manifest, questions, backend input, and predictions must be distinct"
         )
     predictions = _output_path(values, "GAIA_TEXT_PREDICTIONS")
 
@@ -43,11 +44,7 @@ def build_manager_from_environment(
         ),
         contract=contract,
     )
-    backend = FixtureBackend.load(
-        backend_asset,
-        _required_sha256(values, "GAIA_TEXT_BACKEND_SHA256"),
-        page_chars=_positive_integer(values, "GAIA_TEXT_VISIT_PAGE_CHARS", 8192),
-    )
+    backend = _build_backend(values, backend_kind, backend_input)
     submissions = SubmissionStore(dataset.task_ids, predictions)
     workspace_factory: WorkspaceFactory | None = None
     workspace_runtime = None
@@ -62,6 +59,110 @@ def build_manager_from_environment(
         workspace_factory=workspace_factory,
         workspace_runtime=workspace_runtime,
         max_policy_steps=_positive_integer(values, "GAIA_TEXT_MAX_POLICY_STEPS", 40),
+    )
+
+
+def _backend_input(
+    environment: Mapping[str, str],
+    backend_kind: str,
+) -> Path:
+    if backend_kind == "fixture":
+        if any(
+            value
+            for name, value in environment.items()
+            if name.startswith("GAIA_TEXT_LITERESEARCHER_")
+            or name
+            in {
+                "GAIA_TEXT_SEARCH_RESULT_LIMIT",
+                "GAIA_TEXT_VISIT_PAGE_LIMIT",
+            }
+        ):
+            raise RuntimeError(
+                "GAIA_TEXT_BACKEND fixture must not mix production backend inputs"
+            )
+        return _required_file(environment, "GAIA_TEXT_BACKEND_ASSET")
+    if backend_kind == "production":
+        if environment.get("GAIA_TEXT_BACKEND_ASSET") or environment.get(
+            "GAIA_TEXT_BACKEND_SHA256"
+        ):
+            raise RuntimeError(
+                "GAIA_TEXT_BACKEND production must not mix fixture backend inputs"
+            )
+        return _required_file(
+            environment, "GAIA_TEXT_LITERESEARCHER_CERTIFICATE"
+        )
+    raise RuntimeError("GAIA_TEXT_BACKEND must be fixture or production")
+
+
+def _build_backend(
+    environment: Mapping[str, str],
+    backend_kind: str,
+    backend_input: Path,
+) -> SearchVisitBackend:
+    page_chars = _bounded_integer(
+        environment,
+        "GAIA_TEXT_VISIT_PAGE_CHARS",
+        8192,
+        minimum=1,
+        maximum=1_000_000,
+    )
+    if backend_kind == "fixture":
+        return FixtureBackend.load(
+            backend_input,
+            _required_sha256(environment, "GAIA_TEXT_BACKEND_SHA256"),
+            page_chars=page_chars,
+        )
+    return LiteResearcherBackend.load(
+        backend_input,
+        _required_sha256(
+            environment, "GAIA_TEXT_LITERESEARCHER_CERTIFICATE_SHA256"
+        ),
+        base_url=_required_text(
+            environment, "GAIA_TEXT_LITERESEARCHER_BASE_URL"
+        ),
+        connect_timeout_ms=_bounded_integer(
+            environment,
+            "GAIA_TEXT_LITERESEARCHER_CONNECT_TIMEOUT_MS",
+            2_000,
+            minimum=1,
+            maximum=300_000,
+        ),
+        read_timeout_ms=_bounded_integer(
+            environment,
+            "GAIA_TEXT_LITERESEARCHER_READ_TIMEOUT_MS",
+            30_000,
+            minimum=1,
+            maximum=300_000,
+        ),
+        retry_count=_bounded_integer(
+            environment,
+            "GAIA_TEXT_LITERESEARCHER_RETRY_COUNT",
+            2,
+            minimum=0,
+            maximum=10,
+        ),
+        retry_backoff_ms=_bounded_integer(
+            environment,
+            "GAIA_TEXT_LITERESEARCHER_RETRY_BACKOFF_MS",
+            100,
+            minimum=0,
+            maximum=60_000,
+        ),
+        result_limit=_bounded_integer(
+            environment,
+            "GAIA_TEXT_SEARCH_RESULT_LIMIT",
+            10,
+            minimum=1,
+            maximum=50,
+        ),
+        page_chars=page_chars,
+        page_limit=_bounded_integer(
+            environment,
+            "GAIA_TEXT_VISIT_PAGE_LIMIT",
+            256,
+            minimum=1,
+            maximum=10_000,
+        ),
     )
 
 
@@ -185,4 +286,24 @@ def _positive_integer(environment: Mapping[str, str], name: str, default: int) -
         raise RuntimeError(f"{name} must be an integer") from exc
     if value <= 0:
         raise RuntimeError(f"{name} must be positive")
+    return value
+
+
+def _bounded_integer(
+    environment: Mapping[str, str],
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    raw = environment.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+    if not minimum <= value <= maximum:
+        raise RuntimeError(f"{name} must be in [{minimum}, {maximum}]")
     return value

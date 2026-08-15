@@ -10,7 +10,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from .backend import BackendError, FixtureBackend, RequestError
+from .backend import BackendError, RequestError, SearchVisitBackend
 from .contracts import EvaluationArm
 from .dataset import GaiaTextDataset, GaiaTextTask
 from .submission import SubmissionStore
@@ -64,7 +64,7 @@ class GaiaTextEpisodeManager:
     def __init__(
         self,
         dataset: GaiaTextDataset,
-        backend: FixtureBackend,
+        backend: SearchVisitBackend,
         submissions: SubmissionStore,
         *,
         arm: EvaluationArm | str,

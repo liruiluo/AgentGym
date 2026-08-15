@@ -1,6 +1,6 @@
 # GAIA-Text thin AMG adapter
 
-This package serves the frozen 127-task attachment-free GAIA validation protocol defined by `gaia_text_2023_validation_no_attachment@682dd723ee1e1697e00360edccf2366dc8418dd9`. It does not contain or download GAIA rows. Runtime task files and browse assets must be supplied externally.
+This package serves the frozen 127-task attachment-free GAIA validation protocol defined by `gaia_text_2023_validation_no_attachment@682dd723ee1e1697e00360edccf2366dc8418dd9`. It does not contain or download GAIA rows. Runtime task files and retrieval certificates must be supplied externally.
 
 The `native` and `amg_memory` arms use one search/visit/answer dispatcher. Native creates no private workspace and offers no policy compaction. AMG memory creates a new empty `PersistentWorkspace` for every task and enables client-owned, policy-authored task-neutral `replace_messages` compaction. Search, visit, final-answer extraction, zero online reward, and external submission handling are shared.
 
@@ -9,14 +9,38 @@ The `native` and `amg_memory` arms use one search/visit/answer dispatcher. Nativ
 The inference server requires:
 
 - `GAIA_TEXT_ARM`: `native` or `amg_memory`.
+- `GAIA_TEXT_BACKEND`: explicit `production` or `fixture`; there is no implicit default.
 - `GAIA_TEXT_MANIFEST`: external canonical manifest JSONL from the pinned audit.
 - `GAIA_TEXT_QUESTIONS` and `GAIA_TEXT_QUESTIONS_SHA256`: external runner-only question JSONL and its staged byte digest.
-- `GAIA_TEXT_BACKEND_ASSET` and `GAIA_TEXT_BACKEND_SHA256`: external deterministic browse fixture/corpus asset and its digest.
 - `GAIA_TEXT_PREDICTIONS`: fresh external output path.
+
+`fixture` is only for deterministic tests. It requires `GAIA_TEXT_BACKEND_ASSET` and `GAIA_TEXT_BACKEND_SHA256` and rejects production inputs. A production run must select `production`, which rejects fixture inputs and requires:
+
+- `GAIA_TEXT_LITERESEARCHER_BASE_URL`: one HTTP(S) origin containing no credentials, path, query, or fragment.
+- `GAIA_TEXT_LITERESEARCHER_CERTIFICATE` and `GAIA_TEXT_LITERESEARCHER_CERTIFICATE_SHA256`: an external deployment certificate and the SHA-256 of its exact bytes.
+- Optional frozen bounds: connect timeout `GAIA_TEXT_LITERESEARCHER_CONNECT_TIMEOUT_MS` (default 2000), read/write timeout `GAIA_TEXT_LITERESEARCHER_READ_TIMEOUT_MS` (30000), `GAIA_TEXT_LITERESEARCHER_RETRY_COUNT` (2), retry backoff `GAIA_TEXT_LITERESEARCHER_RETRY_BACKOFF_MS` (100), `GAIA_TEXT_SEARCH_RESULT_LIMIT` (10, maximum 50), `GAIA_TEXT_VISIT_PAGE_CHARS` (8192), and `GAIA_TEXT_VISIT_PAGE_LIMIT` (256).
+
+The production bridge pins LiteResearcher revision `779e7d5f6a043d4100149ba0992a39507f69a974`. It probes `GET /health`, sends the upstream-native five-field hybrid request to `POST /search`, and sends only `url` to `POST /web_parser`. The full text returned by `/web_parser` is paginated locally under the frozen page bounds. HTTP redirects, inherited proxy environment variables, alternate endpoints, and live-web fallback are disabled. Timeout, connection, HTTP-status, and response-contract failures are separately classified and all terminate the current episode fail-closed.
+
+The external certificate is strict JSON with exactly these fields:
+
+```json
+{
+  "schema": "gaia_text_literesearcher_service_certificate_v1",
+  "upstream_source_revision": "779e7d5f6a043d4100149ba0992a39507f69a974",
+  "endpoint_contract_sha256": "b9694a7a90d34522626cb0444d3aca6541ae804923a26a2f555d4d13289fc0b4",
+  "endpoint_origin_sha256": "<sha256 of the canonical configured origin>",
+  "search_corpus_certificate_sha256": "<sha256>",
+  "search_index_certificate_sha256": "<sha256>",
+  "browse_store_certificate_sha256": "<sha256>"
+}
+```
+
+The service deployment owner must provide this certificate only after the pinned source is running with a populated Milvus hybrid index, a live BGE-M3 embedding worker behind Redis, and the PostgreSQL browse store loaded and verified. `/health` proves that Milvus is loaded and Redis responds, but it does not prove that an embedding worker consumes the queue. Certificate issuance therefore also requires a real bounded `/search` probe, plus a known-URL `/web_parser` probe because the pinned health response does not report PostgreSQL. No deployment certificate or corpus is committed to this package.
 
 The memory arm additionally requires `GAIA_TEXT_WORKSPACE_ROOT`, `GAIA_TEXT_RG_BINARY`, and `GAIA_TEXT_RG_SHA256`. Its launcher lazily imports the existing AgentMemoryGym Linux namespace sandbox; native does not import or construct memory state.
 
-The service always binds `127.0.0.1`; `GAIA_TEXT_HOST` is intentionally ignored. `GAIA_TEXT_VISIT_PAGE_CHARS` and `GAIA_TEXT_MAX_POLICY_STEPS` may override their positive-integer defaults. Metadata publishes a canonical, arm-neutral `paired_runtime_contract` and SHA-256 covering the protocol/task/question hashes, backend asset and page size, policy budget, shared domain/answer/reward contracts, and submission format. The common paired runner must require equal digests across arms; it can also pass the frozen digest as `expected_paired_runtime_sha256` to each `GaiaTextEnvClient` for fail-fast pinning.
+The service always binds `127.0.0.1`; `GAIA_TEXT_HOST` is intentionally ignored. `GAIA_TEXT_MAX_POLICY_STEPS` may override its positive-integer default. Production metadata exposes no configured URL or certificate path. Its `runtime_identity_sha256` (also carried in the legacy `asset_sha256` client field) binds the upstream revision, endpoint contract and origin digests, service/corpus/index/store certificate digests, timeouts, retries, result/page limits, and no-fallback policy. The canonical arm-neutral `paired_runtime_contract` incorporates that identity digest. The common paired runner must require equal digests across arms; it can also pass the frozen digest as `expected_paired_runtime_sha256` to each `GaiaTextEnvClient` for fail-fast pinning.
 
 Do not provide a gold or scorer environment variable. The launcher rejects GAIA-related variable names containing `GOLD` or `SCORER`. The server has no score/detail endpoint, never loads final answers or scorer code, and does not expose host paths. Run the pinned official scorer later in a distinct process with the server stopped.
 
