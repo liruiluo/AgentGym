@@ -11,7 +11,7 @@ import time
 import tantivy
 
 
-INDEX_CONTRACT = "combined_title2_document_bm25_v1"
+INDEX_CONTRACT = "combined_title2_document_bm25_lead512_v2"
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -48,6 +48,13 @@ def main() -> None:
     schema_builder = tantivy.SchemaBuilder()
     schema_builder.add_integer_field("id", stored=True, fast=True)
     schema_builder.add_text_field("content", stored=False)
+    for field_name in ("url", "title", "snippet"):
+        schema_builder.add_text_field(
+            field_name,
+            stored=True,
+            tokenizer_name="raw",
+            index_option="basic",
+        )
     schema = schema_builder.build()
     index = tantivy.Index(schema, path=str(index_path), reuse=True)
     writer = index.writer(heap_size=args.heap_bytes, num_threads=args.threads)
@@ -61,7 +68,7 @@ def main() -> None:
         connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
     )
     cursor = connection.execute(
-        "SELECT id, title, document FROM documents ORDER BY id"
+        "SELECT id, url, title, document FROM documents ORDER BY id"
     )
     progress_path = index_path / "build-progress.json"
     started = time.perf_counter()
@@ -71,11 +78,14 @@ def main() -> None:
         rows = cursor.fetchmany(args.fetch_size)
         if not rows:
             break
-        for document_id, title, document in rows:
+        for document_id, url, title, document in rows:
             writer.add_document(
                 tantivy.Document(
                     id=[int(document_id)],
                     content=[f"{title} {title} {document}"],
+                    url=[str(url)],
+                    title=[str(title)],
+                    snippet=[str(document)[:512]],
                 )
             )
             indexed += 1

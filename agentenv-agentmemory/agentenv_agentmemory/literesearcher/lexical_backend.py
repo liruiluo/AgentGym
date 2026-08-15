@@ -63,36 +63,18 @@ def _normalize_search_request(
     return query_text, limit
 
 
-def _query_centered_snippet(
-    document: str,
-    tokens: list[str],
-    *,
-    width: int = 48,
-) -> str:
-    words = list(re.finditer(r"\S+", document))
-    if not words:
-        return ""
-    folded = document.casefold()
-    offsets = [folded.find(token) for token in tokens]
-    matched_offsets = [offset for offset in offsets if offset >= 0]
-    anchor = min(matched_offsets) if matched_offsets else 0
-    anchor_index = next(
-        (
-            index
-            for index, match in enumerate(words)
-            if match.start() <= anchor < match.end()
-        ),
-        0,
+def _requires_sqlite_tokenization(value: str) -> bool:
+    fallback_ranges = (
+        (0x3400, 0x4DBF),
+        (0x4E00, 0x9FFF),
+        (0x3040, 0x30FF),
+        (0xAC00, 0xD7AF),
     )
-    start = max(0, anchor_index - width // 4)
-    end = min(len(words), start + width)
-    start = max(0, end - width)
-    snippet = document[words[start].start() : words[end - 1].end()]
-    if start:
-        snippet = f"... {snippet}"
-    if end < len(words):
-        snippet = f"{snippet} ..."
-    return snippet
+    return any(
+        start <= ord(character) <= end
+        for character in value
+        for start, end in fallback_ranges
+    )
 
 
 class SQLiteFTSLiteResearchBackend:
@@ -246,7 +228,10 @@ class TantivyLiteResearchBackend(SQLiteFTSLiteResearchBackend):
             raise ValueError(
                 "LiteResearcher Tantivy index requires agentmemory-index.json"
             ) from exc
-        if index_manifest.get("contract") != "combined_title2_document_bm25_v1":
+        if (
+            index_manifest.get("contract")
+            != "combined_title2_document_bm25_lead512_v2"
+        ):
             raise ValueError("LiteResearcher Tantivy index contract mismatch")
         try:
             tantivy = importlib.import_module("tantivy")
@@ -283,6 +268,7 @@ class TantivyLiteResearchBackend(SQLiteFTSLiteResearchBackend):
         self._searcher = searcher
         self._schema = index.schema
         self._index_manifest = index_manifest
+        self._search_slots = threading.BoundedSemaphore(8)
         try:
             probe = tantivy.Query.term_query(self._schema, "content", "probe")
             searcher.search(probe, limit=1, count=False)
@@ -301,9 +287,13 @@ class TantivyLiteResearchBackend(SQLiteFTSLiteResearchBackend):
                 "retrieval_engine_version": getattr(
                     self._tantivy, "__version__", "unknown"
                 ),
-                "search_ranking_contract": "combined_title2_document_bm25_v1",
-                "search_snippet_contract": "query_centered_whitespace_48_v1",
-                "unicode_query_fallback": "sqlite_fts_v1",
+                "search_ranking_contract": (
+                    "combined_title2_document_bm25_lead512_v2"
+                ),
+                "search_snippet_contract": "tantivy_lead_512_chars_v1",
+                "search_document_store": "tantivy_lead512_stored_v1",
+                "max_concurrent_searches": 8,
+                "cjk_query_fallback": "sqlite_fts_v1",
                 "index_manifest_contract": self._index_manifest["contract"],
                 "tantivy_document_count": int(self._searcher.num_docs),
                 "sqlite_document_store": True,
@@ -318,12 +308,26 @@ class TantivyLiteResearchBackend(SQLiteFTSLiteResearchBackend):
         top_k: int | None = None,
         mask_url: str = "",
     ) -> list[dict[str, Any]]:
+        with self._search_slots:
+            return self._search_unthrottled(
+                query,
+                top_k=top_k,
+                mask_url=mask_url,
+            )
+
+    def _search_unthrottled(
+        self,
+        query: str | list[str],
+        *,
+        top_k: int | None = None,
+        mask_url: str = "",
+    ) -> list[dict[str, Any]]:
         query_text, limit = _normalize_search_request(
             query,
             top_k=top_k,
             default_top_k=self.top_k,
         )
-        if not query_text.isascii():
+        if _requires_sqlite_tokenization(query_text):
             return super().search(
                 query,
                 top_k=limit,
@@ -343,44 +347,31 @@ class TantivyLiteResearchBackend(SQLiteFTSLiteResearchBackend):
                 limit=limit + 1,
                 count=False,
             )
-            hit_ids = [
-                int(self._searcher.doc(address).get_first("id"))
-                for _, address in result.hits
+            documents = [
+                self._searcher.doc(address) for _, address in result.hits
             ]
-            if not hit_ids:
+            if not documents:
                 return []
-            placeholders = ",".join("?" for _ in hit_ids)
-            rows = self._connection().execute(
-                "SELECT id, url, title, document FROM documents "
-                f"WHERE id IN ({placeholders})",
-                hit_ids,
-            ).fetchall()
-        except sqlite3.Error as exc:
-            raise LiteResearchBackendError(
-                "LiteResearcher Tantivy document lookup failed"
-            ) from exc
         except Exception as exc:
             raise LiteResearchBackendError(
                 "LiteResearcher Tantivy search failed"
             ) from exc
-        by_id = {
-            int(document_id): (str(url), str(title), str(document))
-            for document_id, url, title, document in rows
-        }
-        if len(by_id) != len(hit_ids):
-            raise LiteResearchBackendError(
-                "LiteResearcher Tantivy result is missing from the SQLite corpus"
-            )
         hits = []
-        for document_id in hit_ids:
-            url, title, document = by_id[document_id]
+        for document in documents:
+            url = document.get_first("url")
+            title = document.get_first("title")
+            snippet = document.get_first("snippet")
+            if not all(isinstance(value, str) for value in (url, title, snippet)):
+                raise LiteResearchBackendError(
+                    "LiteResearcher Tantivy result lacks stored public fields"
+                )
             if url == str(mask_url):
                 continue
             hits.append(
                 SearchHit(
                     url=url,
                     title=title,
-                    snippet=_query_centered_snippet(document, tokens),
+                    snippet=str(snippet),
                     rank=len(hits) + 1,
                 ).public_record()
             )

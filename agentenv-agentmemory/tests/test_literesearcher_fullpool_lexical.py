@@ -25,10 +25,31 @@ class _FakeTantivyDocument:
     def __init__(self, document_id: int) -> None:
         self.document_id = document_id
 
-    def get_first(self, field: str) -> int:
-        if field != "id":
-            raise KeyError(field)
-        return self.document_id
+    def get_first(self, field: str) -> int | str:
+        records = {
+            1: {
+                "id": 1,
+                "url": "https://public.example/answer",
+                "title": "Hidden source",
+                "content": "Alpha Secret",
+                "snippet": "Alpha Secret",
+            },
+            2: {
+                "id": 2,
+                "url": "https://public.example/evidence",
+                "title": "Independent evidence",
+                "content": "Alpha research evidence supports Beta Fact.",
+                "snippet": "Alpha research evidence supports Beta Fact.",
+            },
+            3: {
+                "id": 3,
+                "url": "https://public.example/other",
+                "title": "Other source",
+                "content": "Other material.",
+                "snippet": "Other material.",
+            },
+        }
+        return records[self.document_id][field]
 
 
 class _FakeTantivySearcher:
@@ -79,7 +100,6 @@ class _FakeTantivy:
         def open(path: str) -> _FakeTantivyIndex:
             del path
             return _FakeTantivyIndex()
-
 
 class _SemanticJudgeStub:
     contract_id = UPSTREAM_LLM_JUDGE_CONTRACT
@@ -227,7 +247,7 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
         (index / "agentmemory-index.json").write_text(
             json.dumps(
                 {
-                    "contract": "combined_title2_document_bm25_v1",
+                    "contract": "combined_title2_document_bm25_lead512_v2",
                     "document_count": 3,
                     "tantivy_version": "0.25.1-test",
                 }
@@ -266,13 +286,13 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
         page = backend.visit(hits[0]["url"], goal="Beta Fact")
         self.assertIn("Beta Fact", page["content"])
 
-    def test_tantivy_backend_routes_unicode_queries_to_sqlite(self) -> None:
+    def test_tantivy_backend_routes_cjk_queries_to_sqlite(self) -> None:
         index = Path(self.temporary.name) / "tantivy-unicode-index"
         index.mkdir()
         (index / "agentmemory-index.json").write_text(
             json.dumps(
                 {
-                    "contract": "combined_title2_document_bm25_v1",
+                    "contract": "combined_title2_document_bm25_lead512_v2",
                     "document_count": 3,
                     "tantivy_version": "0.25.1-test",
                 }
@@ -300,7 +320,9 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
                 "\u7d22\u6069\u6cb3\u53d1\u6e90\u4e8e\u5df4\u683c\u9a6c\u5c3c",
                 mask_url="masked",
             )
+            latin_result = backend.search("Marek Bako\u0161")
         self.assertEqual(result, [{"url": "sqlite-fallback"}])
+        self.assertTrue(latin_result)
         sqlite_search.assert_called_once_with(
             "\u7d22\u6069\u6cb3\u53d1\u6e90\u4e8e\u5df4\u683c\u9a6c\u5c3c",
             top_k=5,
