@@ -11,6 +11,12 @@ from agentenv.controller.types import (
     PolicyContextPressure,
 )
 from agentenv.envs.mlebench_lite import (
+    LITE_COMPETITION_IDS as CLIENT_LITE_COMPETITION_IDS,
+)
+from agentenv.envs.mlebench_lite import (
+    MODES as CLIENT_MODES,
+)
+from agentenv.envs.mlebench_lite import (
     MLEBenchLiteEnvClient,
     _resource_contract,
     _resource_contract_sha256,
@@ -73,7 +79,7 @@ class _FakeRequester:
             "runner_sha256": FAKE_RUNNER_SHA256,
             "runtime_digest": FAKE_RUNTIME_DIGEST,
             "submission_path": "/home/submission/submission.csv",
-            "modes": ["native", "amg_memory"],
+            "modes": ["native", "amg_compaction_only", "amg_memory"],
             "resource_contract": resource_contract,
             "resource_contract_sha256": _resource_contract_sha256(resource_contract),
         }
@@ -86,7 +92,11 @@ class _FakeRequester:
         if path == "metadata":
             return _Response(self.metadata())
         if path == "create":
-            if kwargs.get("json", {}).get("mode") not in {"native", "amg_memory"}:
+            if kwargs.get("json", {}).get("mode") not in {
+                "native",
+                "amg_compaction_only",
+                "amg_memory",
+            }:
                 raise AssertionError("client sent an invalid mode")
             return _Response({"id": 7, "capability_token": self.capability_token})
         if path == "reset":
@@ -272,6 +282,26 @@ class MLEBenchLiteClientTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.make_client("native", requester)
 
+    def test_client_pins_exact_triad_and_ordered_22_id_identity(self) -> None:
+        self.assertEqual(
+            CLIENT_MODES,
+            ("native", "amg_compaction_only", "amg_memory"),
+        )
+        self.assertEqual(CLIENT_LITE_COMPETITION_IDS, LITE_COMPETITION_IDS)
+        self.assertEqual(len(CLIENT_LITE_COMPETITION_IDS), 22)
+        self.assertEqual(len(set(CLIENT_LITE_COMPETITION_IDS)), 22)
+        for mode in CLIENT_MODES:
+            client, requester = self.make_client(mode)
+            metadata = requester.metadata()
+            self.assertEqual(metadata["competition_ids"], list(LITE_COMPETITION_IDS))
+            self.assertEqual(metadata["split_sha256"], SPLIT_SHA256)
+            self.assertEqual(metadata["runtime_digest"], FAKE_RUNTIME_DIGEST)
+            self.assertEqual(len(client), 22)
+            for index, competition_id in enumerate(LITE_COMPETITION_IDS):
+                client.reset(index)
+                self.assertEqual(client._competition_id, competition_id)
+                self.assertEqual(requester.competition_id, competition_id)
+
     def test_client_rejects_resource_contract_type_confusion(self) -> None:
         cases = (
             ("integer_as_boolean", "gpu_count", True),
@@ -385,10 +415,64 @@ class MLEBenchLiteClientTest(unittest.TestCase):
         self.assertIsNone(client.policy_turn_candidate())
         self.assertIsNone(client.prepare_policy_turn(self.pressure()))
 
-    def test_both_modes_pin_the_same_non_memory_resource_contract(self) -> None:
-        native, _ = self.make_client("native")
-        memory, _ = self.make_client("amg_memory")
-        self.assertEqual(native._expected_metadata, memory._expected_metadata)
+    def test_triad_pins_the_same_tools_resources_runtime_and_task_identity(
+        self,
+    ) -> None:
+        clients = [self.make_client(mode)[0] for mode in CLIENT_MODES]
+        expected = clients[0]._expected_metadata
+        for client in clients[1:]:
+            self.assertEqual(client._expected_metadata, expected)
+        framings = [client.policy_framing()[0]["content"] for client in clients]
+        self.assertEqual(framings[0], framings[1])
+        for native_tool in ("inspect", "edit", "shell", "submit"):
+            self.assertIn(native_tool, framings[0])
+            self.assertIn(native_tool, framings[2])
+
+    def test_compaction_only_has_shared_compaction_without_memory_capability(
+        self,
+    ) -> None:
+        compact_only, requester = self.make_client("amg_compaction_only")
+        framing = compact_only.policy_framing()[0]["content"].lower()
+        self.assertNotIn("memory", framing)
+        self.assertNotIn(".agent_memory", framing)
+        self.bind_initial_context(compact_only)
+        candidate = compact_only.policy_turn_candidate()
+        self.assertIsNotNone(candidate)
+        self.assertEqual(compact_only.prepare_policy_turn(self.pressure()), candidate)
+
+        compacted = compact_only.step("objective fixed; inspect train.py next")
+        transition = compacted.info["context_transition"]
+        self.assertEqual(transition["operation"], CONTEXT_OPERATION_REPLACE)
+        self.assertIn("objective fixed", transition["messages"][-2]["content"])
+        request = requester.calls[-1]["json"]
+        self.assertEqual(request["control"], "compaction")
+        self.assertEqual(request["expected_action_count"], 0)
+
+        later = compact_only.step('inspect {"path":"/home/workspace/train.py"}')
+        self.assertFalse(later.done)
+        self.assertNotIn("control", requester.calls[-1]["json"])
+        self.assertEqual(requester.calls[-1]["json"]["expected_action_count"], 1)
+
+    def test_compacting_arms_share_trigger_request_transition_and_accounting(
+        self,
+    ) -> None:
+        evidence = []
+        summary = "objective fixed; inspect train.py next"
+        for mode in ("amg_compaction_only", "amg_memory"):
+            client, requester = self.make_client(mode)
+            self.bind_initial_context(client)
+            candidate = client.policy_turn_candidate()
+            selected = client.prepare_policy_turn(self.pressure())
+            compacted = client.step(summary)
+            request = dict(requester.calls[-1]["json"])
+            request.pop("action_id")
+            request.pop("capability_token")
+            transition = copy.deepcopy(compacted.info)
+            transition["context_transition"]["messages"][0]["content"] = (
+                "<mode-specific framing>"
+            )
+            evidence.append((candidate, selected, request, transition))
+        self.assertEqual(evidence[0], evidence[1])
 
     def test_memory_compaction_is_server_counted_before_replace_then_read(self) -> None:
         client, requester = self.make_client("amg_memory")

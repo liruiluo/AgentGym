@@ -14,7 +14,7 @@ class _StrictModel(BaseModel):
 
 
 class CreateRequest(_StrictModel):
-    mode: Literal["native", "amg_memory"]
+    mode: Literal["native", "amg_compaction_only", "amg_memory"]
 
 
 class ResetRequest(_StrictModel):

@@ -47,7 +47,11 @@ LITE_COMPETITION_IDS = (
     "the-icml-2013-whale-challenge-right-whale-redux",
 )
 SUBMISSION_PATH = "/home/submission/submission.csv"
-MODES = ("native", "amg_memory")
+MODE_NATIVE = "native"
+MODE_AMG_COMPACTION_ONLY = "amg_compaction_only"
+MODE_AMG_MEMORY = "amg_memory"
+MODES = (MODE_NATIVE, MODE_AMG_COMPACTION_ONLY, MODE_AMG_MEMORY)
+COMPACTION_MODES = (MODE_AMG_COMPACTION_ONLY, MODE_AMG_MEMORY)
 METADATA_SCHEMA = "mlebench_lite_metadata_v2"
 COMPACTION_RECEIPT_SCHEMA = "mlebench_lite_compaction_receipt_v2"
 RESOURCE_CONTRACT_SCHEMA = "mlebench_lite_resource_contract_v2"
@@ -265,7 +269,7 @@ class MLEBenchLiteEnvClient(BaseEnvClient):
 
     def policy_framing(self) -> list[dict[str, str]]:
         prompt = BASE_POLICY_PROMPT
-        if self.mode == "amg_memory":
+        if self.mode == MODE_AMG_MEMORY:
             prompt += MEMORY_POLICY_ADDITION
         return [{"role": "system", "content": prompt}]
 
@@ -299,13 +303,13 @@ class MLEBenchLiteEnvClient(BaseEnvClient):
         self._current_policy_context = normalized
 
     def policy_turn_candidate(self) -> str | None:
-        if self.mode != "amg_memory" or not self._policy_context_bound:
+        if self.mode not in COMPACTION_MODES or not self._policy_context_bound:
             return None
         return COMPACTION_REQUEST
 
     def prepare_policy_turn(self, pressure: PolicyContextPressure | None) -> str | None:
         self._selected_policy_control = None
-        if self.mode != "amg_memory" or not self._policy_context_bound:
+        if self.mode not in COMPACTION_MODES or not self._policy_context_bound:
             return None
         if pressure is None:
             raise RuntimeError("MLE-bench Lite compaction requires token pressure")

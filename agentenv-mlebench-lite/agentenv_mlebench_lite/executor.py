@@ -20,7 +20,7 @@ from .resources import (
 from .resources import (
     validate_resource_contract as _validate_resource_contract,
 )
-from .workspace import EpisodeWorkspace
+from .workspace import MODE_AMG_MEMORY, EpisodeWorkspace
 
 ATTESTATION_SCHEMA = "mlebench_lite_sandbox_attestation_v2"
 EXECUTION_SCHEMA = "mlebench_lite_sandbox_execution_v2"
@@ -295,7 +295,7 @@ class SandboxExecutor:
                 "path": "/home/workspace/.agent_memory",
                 "state": (
                     "task_local_rw"
-                    if workspace.mode == "amg_memory"
+                    if workspace.mode == MODE_AMG_MEMORY
                     else "absent_and_denied"
                 ),
             },

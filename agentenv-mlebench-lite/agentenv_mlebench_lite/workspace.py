@@ -33,8 +33,10 @@ from .resources import (
 )
 
 MODE_NATIVE = "native"
+MODE_AMG_COMPACTION_ONLY = "amg_compaction_only"
 MODE_AMG_MEMORY = "amg_memory"
-MODES = (MODE_NATIVE, MODE_AMG_MEMORY)
+MODES = (MODE_NATIVE, MODE_AMG_COMPACTION_ONLY, MODE_AMG_MEMORY)
+COMPACTION_MODES = (MODE_AMG_COMPACTION_ONLY, MODE_AMG_MEMORY)
 SUBMISSION_PATH = "/home/submission/submission.csv"
 
 _DIRECTORY_FLAGS = (
@@ -196,7 +198,7 @@ class EpisodeWorkspace:
         if write and read_only:
             raise MLEBenchLitePolicyPathError("policy path is unavailable")
         if (
-            self.mode == MODE_NATIVE
+            self.mode != MODE_AMG_MEMORY
             and parts
             and parts[0] == ".agent_memory"
             and root == self.workspace_root

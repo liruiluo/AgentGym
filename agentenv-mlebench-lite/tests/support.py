@@ -176,7 +176,7 @@ class RecordingFormalBackend:
         if (
             "/private" in command
             or str(workspace.public_root.parent.parent) in command
-            or (workspace.mode == "native" and ".agent_memory" in command)
+            or (workspace.mode != "amg_memory" and ".agent_memory" in command)
         ):
             return self._result(
                 workspace,

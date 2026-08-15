@@ -1,9 +1,9 @@
 # AgentEnv MLE-bench Lite
 
-Paired `native` / `amg_memory` environment adapter for the pinned official
-MLE-bench Lite split. Formal execution requires an independently installed,
-SHA-pinned sandbox runner that attests the exact mount and isolation contract;
-there is no host-subprocess fallback.
+Matched `native` / `amg_compaction_only` / `amg_memory` environment adapter for
+the pinned official MLE-bench Lite split. Formal execution requires an
+independently installed, SHA-pinned sandbox runner that attests the exact mount
+and isolation contract; there is no host-subprocess fallback.
 
 This package does not contain Kaggle data, private labels, grading code, model
 weights, or benchmark scores.
@@ -75,7 +75,7 @@ read-only state. `max_step_response_ms` is conservatively derived as the
 episode deadline plus 30 seconds for runner transport and cleanup; the
 AgentGym HTTP timeout must be strictly larger. The client verifies every field
 before creating a slot, accepts only an absent `data_len` or exact `22`, and
-requires identical metadata for `native` and `amg_memory`.
+requires identical metadata for all three arms.
 
 `/create` returns a random owner capability token. Reset, step, and close bind
 that token to the slot. Every step also carries a canonical UUID4 action ID;
@@ -107,11 +107,13 @@ prior-plus-delta resource counters and zero surviving descendants, including
 timeouts. The adapter has no `subprocess(cwd=workspace)` policy fallback.
 
 `native` has no memory prompt, namespace, or compaction candidate.
-`amg_memory` gets a fresh task/reset-local `.agent_memory` directory and a
-policy-authored task-neutral compaction turn. Compaction is sent to `/step`
-first and atomically consumes the same server action budget; the client emits
-`replace_messages` only after validating the `n -> n+1` receipt. A compaction
-that exhausts the budget is terminal and never replaces context.
+`amg_compaction_only` has the exact policy-authored task-neutral compaction
+trigger, request, transition, and action accounting used by `amg_memory`, but
+has no memory prompt or `.agent_memory` capability. `amg_memory` additionally
+gets a fresh task/reset-local `.agent_memory` directory. Compaction is sent to
+`/step` first and atomically consumes the same server action budget; the client
+emits `replace_messages` only after validating the `n -> n+1` receipt. A
+compaction that exhausts the budget is terminal and never replaces context.
 
 `submit` performs public structural CSV checks, freezes/reaps the sandbox,
 reopens a no-follow regular single-link bounded file, and stages the exact

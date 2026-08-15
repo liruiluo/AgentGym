@@ -14,11 +14,17 @@ from agentenv_mlebench_lite.actions import parse_policy_action
 from agentenv_mlebench_lite.dataset import load_lite_dataset
 from agentenv_mlebench_lite.environment import MLEBenchLiteEpisodeManager
 from agentenv_mlebench_lite.executor import MLEBenchLiteExecutorError, SandboxExecutor
-from agentenv_mlebench_lite.identity import UPSTREAM_COMMIT, load_official_lite_identity
+from agentenv_mlebench_lite.identity import (
+    LITE_COMPETITION_IDS,
+    UPSTREAM_COMMIT,
+    load_official_lite_identity,
+)
 from agentenv_mlebench_lite.resources import zero_resource_usage
 from agentenv_mlebench_lite.workspace import (
+    MODE_AMG_COMPACTION_ONLY,
     MODE_AMG_MEMORY,
     MODE_NATIVE,
+    MODES,
     MLEBenchLiteWorkspaceError,
     WorkspaceManager,
 )
@@ -160,6 +166,52 @@ class MLEBenchLiteActionsEnvironmentTest(unittest.TestCase):
         )
         self.assertIn("normalize labels", read.observation)
         self.assertEqual(read.info["counters"]["action_count"], 3)
+
+    def test_compaction_only_accepts_compaction_but_denies_memory_residue(
+        self,
+    ) -> None:
+        manager = self.build_manager()
+        slot, _ = self.reset(manager, MODE_AMG_COMPACTION_ONLY)
+        workspace = manager._testing_workspace(slot)
+        self.assertFalse((workspace.workspace_root / ".agent_memory").exists())
+
+        written = manager.step(
+            slot,
+            'edit {"path":"/home/workspace/notes.md","content":"durable state"}',
+        )
+        self.assertEqual(written.observation, "Edit completed.")
+        compacted = manager.step(slot, "objective fixed", control="compaction")
+        self.assertEqual(compacted.info["action_kind"], "compaction")
+        self.assertTrue(compacted.info["control_receipt"]["accepted"])
+        self.assertEqual(compacted.info["counter_delta"]["action_count"], 1)
+        survived = manager.step(
+            slot,
+            'inspect {"path":"/home/workspace/notes.md"}',
+        )
+        self.assertEqual(survived.observation, "durable state")
+
+        for raw in (
+            'inspect {"path":"/home/workspace/.agent_memory/note"}',
+            'edit {"path":"/home/workspace/.agent_memory/note","content":"x"}',
+            (
+                'shell {"command":"mkdir -p /home/workspace/.agent_memory",'
+                '"timeout_ms":1000}'
+            ),
+        ):
+            denied = manager.step(slot, raw)
+            self.assertRegex(
+                denied.observation.lower(), r"(?:unavailable|not available)"
+            )
+        self.assertFalse((workspace.workspace_root / ".agent_memory").exists())
+
+    def test_compacting_arms_have_identical_server_compaction_receipts(self) -> None:
+        manager = self.build_manager()
+        results = []
+        for mode in (MODE_AMG_COMPACTION_ONLY, MODE_AMG_MEMORY):
+            slot, _ = self.reset(manager, mode)
+            results.append(manager.step(slot, "same handoff", control="compaction"))
+        self.assertEqual(results[0].observation, results[1].observation)
+        self.assertEqual(results[0].info, results[1].info)
 
     def test_every_action_type_including_compaction_uses_one_budget(self) -> None:
         manager = self.build_manager(max_actions=6)
@@ -625,6 +677,75 @@ class MLEBenchLiteActionsEnvironmentTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             manager.host_submission_path(slot)
 
+    def test_sealed_grader_handoff_contract_is_equal_across_triad(self) -> None:
+        manager = self.build_manager()
+        terminal_receipts = []
+        invariant_manifests = []
+        receipt_shapes = []
+        expected_manifest_keys = {
+            "schema",
+            "episode_id",
+            "mode",
+            "competition_id",
+            "submission_file",
+            "submission_sha256",
+            "runner_sha256",
+            "runtime_digest",
+            "resource_contract_sha256",
+            "freeze_receipt",
+            "teardown_receipt",
+        }
+        for mode in MODES:
+            slot, _ = self.reset(manager, mode)
+            workspace = manager._testing_workspace(slot)
+            manager.step(
+                slot,
+                'edit {"path":"/home/submission/submission.csv",'
+                '"content":"id,target\\n1,0\\n"}',
+            )
+            terminal = manager.step(slot, "submit")
+            self.assertTrue(terminal.done)
+            self.assertFalse(workspace.episode_root.exists())
+            terminal_receipts.append(terminal.info["terminal_receipt"])
+
+            host_submission = manager.host_submission_path(slot)
+            manifest = json.loads(
+                (host_submission.parent / "handoff.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(set(manifest), expected_manifest_keys)
+            self.assertEqual(manifest["mode"], mode)
+            self.assertEqual(host_submission.read_bytes(), b"id,target\n1,0\n")
+            self.assertEqual(stat.S_IMODE(host_submission.stat().st_mode), 0o400)
+            self.assertEqual(stat.S_IMODE(host_submission.parent.stat().st_mode), 0o500)
+            invariant_manifests.append(
+                {
+                    key: manifest[key]
+                    for key in (
+                        "schema",
+                        "competition_id",
+                        "submission_file",
+                        "submission_sha256",
+                        "runner_sha256",
+                        "runtime_digest",
+                        "resource_contract_sha256",
+                    )
+                }
+            )
+            receipt_shapes.append(
+                (
+                    set(manifest["freeze_receipt"]),
+                    set(manifest["teardown_receipt"]),
+                )
+            )
+
+        self.assertTrue(
+            all(receipt == terminal_receipts[0] for receipt in terminal_receipts)
+        )
+        self.assertTrue(
+            all(manifest == invariant_manifests[0] for manifest in invariant_manifests)
+        )
+        self.assertTrue(all(shape == receipt_shapes[0] for shape in receipt_shapes))
+
     def test_host_handoff_manifest_rejects_nested_type_confusion(self) -> None:
         manager = self.build_manager()
         slot, _ = self.reset(manager, MODE_NATIVE)
@@ -807,6 +928,21 @@ class MLEBenchLiteActionsEnvironmentTest(unittest.TestCase):
             (manager._testing_workspace(slot).workspace_root / ".agent_memory").exists()
         )
 
+    def test_triad_metadata_pins_modes_ids_runtime_resources_and_budgets(self) -> None:
+        manager = self.build_manager()
+        metadata = manager.metadata()
+        self.assertEqual(
+            MODES,
+            (MODE_NATIVE, MODE_AMG_COMPACTION_ONLY, MODE_AMG_MEMORY),
+        )
+        self.assertEqual(metadata["modes"], list(MODES))
+        self.assertEqual(metadata["competition_ids"], list(LITE_COMPETITION_IDS))
+        self.assertEqual(metadata["task_count"], 22)
+        self.assertEqual(metadata["runner_sha256"], FAKE_RUNNER_SHA256)
+        self.assertEqual(metadata["runtime_digest"], FAKE_RUNTIME_DIGEST)
+        self.assertEqual(metadata["resource_contract"], manager.resource_contract)
+        self.assertEqual(metadata["resource_contract"]["max_actions"], 20)
+
     def test_reset_and_task_boundaries_isolate_submission_and_memory(self) -> None:
         manager = self.build_manager()
         slot, _ = self.reset(manager)
@@ -850,21 +986,22 @@ class MLEBenchLiteActionsEnvironmentTest(unittest.TestCase):
         with self.assertRaises(KeyError):
             manager.reset(slot, 0)
 
-    def test_non_memory_dispatch_is_identical_between_modes(self) -> None:
+    def test_native_tool_dispatch_is_identical_across_triad(self) -> None:
         manager = self.build_manager()
-        native, _ = self.reset(manager, MODE_NATIVE)
-        memory, _ = self.reset(manager, MODE_AMG_MEMORY)
         raw = 'shell {"command":"python -V","timeout_ms":1234}'
-        native_step = manager.step(native, raw)
-        memory_step = manager.step(memory, raw)
-        self.assertEqual(native_step.observation, memory_step.observation)
-        self.assertEqual(
-            self.backends[0].executed[0]["command"],
-            self.backends[1].executed[0]["command"],
+        steps = []
+        for mode in MODES:
+            slot, _ = self.reset(manager, mode)
+            steps.append(manager.step(slot, raw))
+        self.assertTrue(all(step.observation == steps[0].observation for step in steps))
+        executions = [backend.executed[0] for backend in self.backends]
+        self.assertTrue(
+            all(item["command"] == executions[0]["command"] for item in executions)
         )
-        self.assertEqual(
-            self.backends[0].executed[0]["timeout_ms"],
-            self.backends[1].executed[0]["timeout_ms"],
+        self.assertTrue(
+            all(
+                item["timeout_ms"] == executions[0]["timeout_ms"] for item in executions
+            )
         )
 
 

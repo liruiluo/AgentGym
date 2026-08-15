@@ -39,7 +39,7 @@ from .resources import (
     resource_contract_sha256 as _resource_contract_sha256,
 )
 from .workspace import (
-    MODE_AMG_MEMORY,
+    COMPACTION_MODES,
     MODES,
     SUBMISSION_PATH,
     EpisodeWorkspace,
@@ -484,7 +484,7 @@ class MLEBenchLiteEpisodeManager:
     ) -> tuple[str, str]:
         accepted = (
             control == "compaction"
-            and episode.workspace.mode == MODE_AMG_MEMORY
+            and episode.workspace.mode in COMPACTION_MODES
             and isinstance(raw_policy_output, str)
         )
         if accepted:

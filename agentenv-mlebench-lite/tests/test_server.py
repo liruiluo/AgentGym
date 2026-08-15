@@ -84,6 +84,10 @@ class MLEBenchLiteServerTest(unittest.TestCase):
         self.assertEqual(value["task_count"], 22)
         self.assertEqual(value["runner_sha256"], FAKE_RUNNER_SHA256)
         self.assertEqual(value["runtime_digest"], FAKE_RUNTIME_DIGEST)
+        self.assertEqual(
+            value["modes"],
+            ["native", "amg_compaction_only", "amg_memory"],
+        )
         self.assertEqual(value["resource_contract"]["max_actions"], 3)
         self.assertEqual(
             value["resource_contract"]["max_step_response_ms"],
@@ -94,6 +98,8 @@ class MLEBenchLiteServerTest(unittest.TestCase):
             self.client.post("/create", json={"mode": "invalid"}).status_code,
             422,
         )
+        compact_only, token = self.create_slot("amg_compaction_only")
+        self.assertEqual(self.reset_slot(compact_only, token).status_code, 200)
         self.assertEqual(
             self.client.post(
                 "/create", json={"mode": "native", "extra": True}

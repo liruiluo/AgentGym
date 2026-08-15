@@ -22,6 +22,7 @@ from agentenv_mlebench_lite.resources import (
     validate_resource_contract,
 )
 from agentenv_mlebench_lite.workspace import (
+    MODE_AMG_COMPACTION_ONLY,
     MODE_AMG_MEMORY,
     MODE_NATIVE,
     MLEBenchLiteWorkspaceError,
@@ -64,10 +65,12 @@ class MLEBenchLiteWorkspaceExecutorTest(unittest.TestCase):
         first = self.manager.create(record, MODE_AMG_MEMORY)
         second = self.manager.create(record, MODE_AMG_MEMORY)
         native = self.manager.create(record, MODE_NATIVE)
+        compact_only = self.manager.create(record, MODE_AMG_COMPACTION_ONLY)
 
         self.assertNotEqual(first.episode_root, second.episode_root)
         self.assertTrue((first.workspace_root / ".agent_memory").is_dir())
         self.assertFalse((native.workspace_root / ".agent_memory").exists())
+        self.assertFalse((compact_only.workspace_root / ".agent_memory").exists())
         self.assertEqual(list(first.submission_root.iterdir()), [])
         self.assertFalse((first.workspace_root / "train.csv").exists())
         self.assertEqual(first.public_root, record.public_root)
@@ -155,11 +158,26 @@ class MLEBenchLiteWorkspaceExecutorTest(unittest.TestCase):
     ) -> None:
         memory = self.manager.create(self.dataset[0], MODE_AMG_MEMORY)
         native = self.manager.create(self.dataset[0], MODE_NATIVE)
+        compact_only = self.manager.create(self.dataset[0], MODE_AMG_COMPACTION_ONLY)
         with self.assertRaises(MLEBenchLiteWorkspaceError):
             memory.resolve_policy_path("/home/data/train.csv", write=True)
         with self.assertRaises(MLEBenchLiteWorkspaceError):
             native.resolve_policy_path(
                 "/home/workspace/.agent_memory/notes.md", write=True
+            )
+        with self.assertRaises(MLEBenchLiteWorkspaceError):
+            compact_only.resolve_policy_path(
+                "/home/workspace/.agent_memory/notes.md", write=True
+            )
+
+        for workspace in (native, compact_only):
+            attestation = sandbox_attestation(workspace)
+            self.assertEqual(
+                attestation["memory_namespace"]["state"], "absent_and_denied"
+            )
+            self.assertNotIn(
+                "/home/workspace/.agent_memory",
+                {mount["target"] for mount in attestation["mounts"]},
             )
 
         link = memory.workspace_root / "escape"
