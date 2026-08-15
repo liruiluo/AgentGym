@@ -67,6 +67,7 @@ from .latent_preference_webshop_env import (
     LATENT_PREFERENCE_FILESYSTEM_SURFACE,
     LATENT_PREFERENCE_SURFACE,
 )
+from .literesearcher import LITERESEARCHER_FULLPOOL_SURFACE, LITERESEARCHER_SURFACE
 from .recency_override import (
     PROVIDER_MODE_FIXED_WINDOW as RECENCY_PROVIDER_MODE_FIXED_WINDOW,
     PROVIDER_MODE_RESEEDED_STREAM as RECENCY_PROVIDER_MODE_RESEEDED_STREAM,
@@ -144,11 +145,13 @@ def launch() -> None:
             SELECTIVE_MEMORY_USE_FILESYSTEM_SURFACE,
             NEGATIVE_CONSTRAINT_SURFACE,
             NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
+            LITERESEARCHER_SURFACE,
+            LITERESEARCHER_FULLPOOL_SURFACE,
             *V3_SURFACES,
         ],
         required=True,
     )
-    parser.add_argument("--memoryarena-root", required=True)
+    parser.add_argument("--memoryarena-root")
     parser.add_argument("--raw-data")
     parser.add_argument("--items-file")
     parser.add_argument("--attributes-file")
@@ -159,7 +162,7 @@ def launch() -> None:
     parser.add_argument("--annotation-audit-summary")
     parser.add_argument("--annotation-audit-chains")
     parser.add_argument("--annotation-manual-evidence")
-    parser.add_argument("--memoryarena-base-commit", required=True)
+    parser.add_argument("--memoryarena-base-commit")
     parser.add_argument("--run-id", required=True)
     parser.add_argument(
         "--service-role",
@@ -189,7 +192,28 @@ def launch() -> None:
     parser.add_argument("--procedural-start-orbit", type=int, default=0)
     parser.add_argument("--workspace-rg-binary")
     parser.add_argument("--workspace-rg-sha256")
+    parser.add_argument("--workspace-root-parent")
     parser.add_argument("--workspace-intervention-token-file")
+    parser.add_argument("--literesearcher-coverage-manifest")
+    parser.add_argument("--literesearcher-full-pool-manifest")
+    parser.add_argument("--literesearcher-full-pool-rows")
+    parser.add_argument("--literesearcher-source-root")
+    parser.add_argument("--literesearcher-fts-database")
+    parser.add_argument("--literesearcher-judge-api-base")
+    parser.add_argument("--literesearcher-judge-model")
+    parser.add_argument("--literesearcher-judge-api-key-file")
+    parser.add_argument(
+        "--literesearcher-judge-timeout-seconds",
+        type=float,
+        default=120.0,
+    )
+    parser.add_argument(
+        "--literesearcher-judge-max-retries",
+        type=int,
+        default=3,
+    )
+    parser.add_argument("--literesearcher-max-policy-steps", type=int, default=40)
+    parser.add_argument("--literesearcher-top-k", type=int, default=5)
     parser.add_argument("--latent-preference-product-pool")
     parser.add_argument("--latent-preference-product-pool-sha256")
     parser.add_argument("--latent-preference-task-count", type=int)
@@ -328,7 +352,58 @@ def launch() -> None:
         INTENT_CLARIFICATION_SURFACE,
         NEGATIVE_CONSTRAINT_SURFACE,
     }
-    if args.surface in FILESYSTEM_SURFACES:
+    literesearcher_surfaces = {LITERESEARCHER_SURFACE, LITERESEARCHER_FULLPOOL_SURFACE}
+    if args.surface in literesearcher_surfaces:
+        _require_args(
+            parser,
+            args,
+            "workspace_rg_binary",
+            "workspace_rg_sha256",
+        )
+        if args.surface == LITERESEARCHER_SURFACE:
+            _require_args(parser, args, "literesearcher_coverage_manifest")
+        else:
+            _require_args(
+                parser,
+                args,
+                "literesearcher_full_pool_manifest",
+                "literesearcher_full_pool_rows",
+                "literesearcher_source_root",
+                "literesearcher_fts_database",
+                "literesearcher_judge_api_base",
+                "literesearcher_judge_model",
+            )
+            if args.split != "train":
+                parser.error("LiteResearcher full-pool formal currently requires --split train")
+        if args.split not in {"train", "test"}:
+            parser.error("LiteResearcher requires --split train or --split test")
+        if args.literesearcher_max_policy_steps < 1:
+            parser.error("--literesearcher-max-policy-steps must be positive")
+        if args.literesearcher_top_k < 1:
+            parser.error("--literesearcher-top-k must be positive")
+        if args.literesearcher_judge_timeout_seconds <= 0:
+            parser.error("--literesearcher-judge-timeout-seconds must be positive")
+        if args.literesearcher_judge_max_retries < 1:
+            parser.error("--literesearcher-judge-max-retries must be positive")
+        if args.service_role == "intervention_eval":
+            parser.error("LiteResearcher does not expose workspace interventions")
+        if args.workspace_intervention_token_file:
+            parser.error(
+                "LiteResearcher refuses --workspace-intervention-token-file"
+            )
+        if any(
+            value not in {None, 0.0}
+            for value in (
+                args.memory_first_add_reward,
+                args.memory_first_later_retrieve_reward,
+                args.memory_exact_repeat_reward,
+                args.invalid_action_reward,
+            )
+        ):
+            parser.error("LiteResearcher refuses memory-specific reward shaping")
+        if args.memory_prompt_mode != "legacy":
+            parser.error("LiteResearcher owns its prompt and refuses memory prompt modes")
+    elif args.surface in FILESYSTEM_SURFACES:
         if not args.workspace_rg_binary or not args.workspace_rg_sha256:
             parser.error(
                 "the Codex workspace surface requires --workspace-rg-binary and "
@@ -397,11 +472,19 @@ def launch() -> None:
 
     configured = {
         "AGENTMEMORY_SURFACE": args.surface,
-        "MEMORYARENA_ROOT": args.memoryarena_root,
-        "MEMORYARENA_BASE_COMMIT": args.memoryarena_base_commit,
         "AGENTMEMORY_RUN_ID": args.run_id,
         "AGENTMEMORY_SERVICE_ROLE": args.service_role,
     }
+    if args.surface not in literesearcher_surfaces:
+        _require_args(parser, args, "memoryarena_root", "memoryarena_base_commit")
+        configured.update(
+            {
+                "MEMORYARENA_ROOT": args.memoryarena_root,
+                "MEMORYARENA_BASE_COMMIT": args.memoryarena_base_commit,
+            }
+        )
+    if args.workspace_root_parent:
+        configured["AGENTMEMORY_WORKSPACE_ROOT_PARENT"] = args.workspace_root_parent
     if args.runtime_source_id:
         configured["AGENTMEMORY_RUNTIME_SOURCE_ID"] = args.runtime_source_id
     if args.workspace_intervention_token_file:
@@ -424,7 +507,60 @@ def launch() -> None:
                 "workspace intervention token must contain at least 32 non-whitespace characters"
             )
         configured["AGENTMEMORY_WORKSPACE_INTERVENTION_TOKEN"] = token
-    if args.surface == NATIVE_SURFACE:
+    if args.surface in literesearcher_surfaces:
+        configured.update({
+                "AGENTMEMORY_LITERESEARCHER_COVERAGE_MANIFEST": (
+                    args.literesearcher_coverage_manifest or ""
+                ),
+                "AGENTMEMORY_LITERESEARCHER_SPLIT": args.split,
+                "AGENTMEMORY_LITERESEARCHER_MAX_POLICY_STEPS": str(
+                    args.literesearcher_max_policy_steps
+                ),
+                "AGENTMEMORY_LITERESEARCHER_TOP_K": str(
+                    args.literesearcher_top_k
+                ),
+                "AGENTMEMORY_WORKSPACE_RG_BINARY": args.workspace_rg_binary,
+                "AGENTMEMORY_WORKSPACE_RG_SHA256": args.workspace_rg_sha256,
+        })
+        if args.surface == LITERESEARCHER_FULLPOOL_SURFACE:
+            judge_api_key = "EMPTY"
+            if args.literesearcher_judge_api_key_file:
+                key_path = Path(args.literesearcher_judge_api_key_file).expanduser()
+                try:
+                    key_info = key_path.lstat()
+                    judge_api_key = key_path.read_text(encoding="utf-8").strip()
+                except OSError as exc:
+                    parser.error(f"cannot read LiteResearcher judge API key file: {exc}")
+                if (
+                    key_path.is_symlink()
+                    or not stat.S_ISREG(key_info.st_mode)
+                    or key_info.st_mode & 0o077
+                ):
+                    parser.error(
+                        "LiteResearcher judge API key file must be a private regular file"
+                    )
+                if not judge_api_key or any(
+                    character.isspace() for character in judge_api_key
+                ):
+                    parser.error(
+                        "LiteResearcher judge API key must be nonempty without whitespace"
+                    )
+            configured.update({
+                "AGENTMEMORY_LITERESEARCHER_FULL_POOL_MANIFEST": args.literesearcher_full_pool_manifest,
+                "AGENTMEMORY_LITERESEARCHER_FULL_POOL_ROWS": args.literesearcher_full_pool_rows,
+                "AGENTMEMORY_LITERESEARCHER_SOURCE_ROOT": args.literesearcher_source_root,
+                "AGENTMEMORY_LITERESEARCHER_FTS_DATABASE": args.literesearcher_fts_database,
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_API_BASE": args.literesearcher_judge_api_base,
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL": args.literesearcher_judge_model,
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_API_KEY": judge_api_key,
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_TIMEOUT_SECONDS": str(
+                    args.literesearcher_judge_timeout_seconds
+                ),
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_MAX_RETRIES": str(
+                    args.literesearcher_judge_max_retries
+                ),
+            })
+    elif args.surface == NATIVE_SURFACE:
         _require_args(
             parser,
             args,

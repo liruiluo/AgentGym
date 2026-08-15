@@ -34,6 +34,7 @@ from agentenv_agentmemory.latent_preference_webshop_env import (
     LATENT_PREFERENCE_FILESYSTEM_SURFACE,
     LATENT_PREFERENCE_SURFACE,
 )
+from agentenv_agentmemory.literesearcher import LITERESEARCHER_SURFACE
 from agentenv_agentmemory.negative_constraint_webshop_env import (
     NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
 )
@@ -110,6 +111,51 @@ class DomainServerFactoryTest(unittest.TestCase):
         ):
             self.assertIs(server_factory.build_server(), sentinel)
         wrapper.assert_called_once_with()
+
+    def test_literesearcher_factory_uses_frozen_manifest_without_memoryarena(self):
+        fixture = (
+            Path(__file__).resolve().parents[1]
+            / "fixtures"
+            / "literesearcher_stage1_coverage.json"
+        )
+        with tempfile.TemporaryDirectory() as tempdir:
+            rg_binary = Path(tempdir) / "rg"
+            rg_binary.write_bytes(b"pinned-rg")
+            fake_sandbox = SimpleNamespace(
+                metadata={
+                    "contract": "test-sandbox",
+                    "ripgrep_sha256": "1" * 64,
+                }
+            )
+            environment = {
+                "AGENTMEMORY_SURFACE": LITERESEARCHER_SURFACE,
+                "AGENTMEMORY_LITERESEARCHER_COVERAGE_MANIFEST": str(fixture),
+                "AGENTMEMORY_LITERESEARCHER_SPLIT": "test",
+                "AGENTMEMORY_LITERESEARCHER_MAX_POLICY_STEPS": "40",
+                "AGENTMEMORY_LITERESEARCHER_TOP_K": "5",
+                "AGENTMEMORY_WORKSPACE_RG_BINARY": str(rg_binary),
+                "AGENTMEMORY_WORKSPACE_RG_SHA256": "1" * 64,
+            }
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch.object(
+                    server_factory.LinuxNamespaceShellSandbox,
+                    "from_environment",
+                    return_value=fake_sandbox,
+                ),
+            ):
+                server = server_factory.build_server()
+
+            metadata = server.metadata()
+            self.assertEqual(metadata["domain_id"], "literesearcher")
+            self.assertEqual(metadata["split"], "test")
+            self.assertEqual(metadata["task_count"], 8)
+            self.assertNotIn("MEMORYARENA_ROOT", environment)
+            created = server.create()
+            self.assertEqual(
+                created["observation"], server.task_source.heldout[0].question
+            )
+            server.close(created["id"])
 
     def test_recency_filesystem_uses_dedicated_wrapper(self):
         sentinel = object()

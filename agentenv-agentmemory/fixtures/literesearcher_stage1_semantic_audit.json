@@ -1,0 +1,1083 @@
+{
+  "schema": "agentmemory_literesearcher_semantic_audit_v1",
+  "dataset": "simplex-ai-inc/LiteResearcher-Data",
+  "config": "stage1",
+  "data_revision": "fff6b0cfef718859543a16f542ea248d30d1ac34",
+  "reviewed_at": "2026-08-10T10:05:00Z",
+  "review_contract": "independent_review_replaced_all_reject_and_weak_rows_with_source_supported_passages_v2",
+  "heldout_selection_contract": "explicit_non_easy_heldout_subset_v1",
+  "heldout_indices": [
+    5400,
+    5464,
+    5500,
+    5761,
+    5806,
+    5857,
+    6754,
+    6918
+  ],
+  "summary": {
+    "original_candidate_count": 72,
+    "approved_original_count": 51,
+    "removed_reject_count": 13,
+    "removed_weak_count": 8,
+    "rejected_count": 21,
+    "replacement_count": 21,
+    "discarded_replacement_candidate_count": 7,
+    "final_count": 72,
+    "train_count": 64,
+    "heldout_count": 8,
+    "source_backed_count": 72,
+    "source_backed_ratio": 1.0,
+    "removed_indices": [
+      66,
+      353,
+      362,
+      411,
+      584,
+      875,
+      899,
+      902,
+      989,
+      1489,
+      1780,
+      1878,
+      2191,
+      2315,
+      2705,
+      2911,
+      3166,
+      3838,
+      3859,
+      3874,
+      4558
+    ],
+    "replacement_indices": [
+      2666,
+      4489,
+      5034,
+      5046,
+      5058,
+      5256,
+      5327,
+      5330,
+      5397,
+      5400,
+      5464,
+      5500,
+      5717,
+      5761,
+      5806,
+      5815,
+      5857,
+      5905,
+      5909,
+      6754,
+      6918
+    ],
+    "easy_title_or_search_only_indices": [
+      5815,
+      5905,
+      5909
+    ]
+  },
+  "approved": [
+    {
+      "index": 1,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "a950876e68c82ae5516d5490857e83c0feb4327945b41c14faa6f6fd3b51d4d4",
+      "targets_sha256": "895fe1c6cd13aa442b33b839eac029fe8726c007ef840cbd55776dc69bf8c8b0",
+      "resolved_url": "https://en.wikipedia.org/wiki/Tuskegee_(album)",
+      "content_sha256": "92f18fc53d573c2f019f4d17bd9fa893b883d054c62d483d513384e187ba1321",
+      "evidence_quote": "in its first week, becoming Lionel Richie's best sales week since Nielsen SoundScan began tracking sales data in 1991.[13] The following week the album sold 95,000 copies and fell two places to number four.[14] In its third week on the chart Tuskegee rose to number one, selling 129,000 copies, while making Tuskegee Richie's third number-one album as well as his first since Dancing on the Ceiling (1986).[15] Tuskegee was certified platinum by the Recording Industry Association of America (RIAA) on May 3, 2012, for shipments of one million units in the US. As of December 2012, it has sold 1,071,000 copies.[16]\n\nIn the United Kingdom, the album debuted at number seven on the UK Albums Chart with first-week sales of 19,320 copies. It is Lionel Richie's eleventh top 10 album there.[1"
+    },
+    {
+      "index": 5,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "0fbc1eaf7b086847472418da657685ca534f45547194f2f97d2bdcdbe4b0d364",
+      "targets_sha256": "86b44bce9143b89a60ba467c539f2ba10cd7257fb79fb5f7759a583fe3f8536e",
+      "resolved_url": "https://en.wikipedia.org/wiki/Russian-American_Company",
+      "content_sha256": "9c2a44b02c39e0cf368fca9794daa7319a31007ba5f9e5649fe0a4bfa502723e",
+      "evidence_quote": "the Russian-American Company\n\nNative name\tПод Высочайшим Его Императорского Величества покровительством Российская Американская компания\nType\tJoint-stock company\nIndustry\tFur trade\nPredecessor\tShelikhov-Golikov Company (United American Company)\nFounded\t8 July 1799[1]\nSaint Petersburg, Russian Empire\nFounder\tNikolai Rezanov\nGrigory Shelikhov\nDefunct\t1881\nFate\tCeased operations following Alaska Purchase (1867)\nSuccessor\tAlaska Commercial Company\nHeadquarters\tSaint Petersburg, Russian Empire\nKey people\tAlexander Andreyevich Baranov\n\nThe Russian-American Company Under the High Patronage of His Imperial Majesty[2] was a Russian state-sponsored chartered company formed largely on the basis of the United American Company. Emperor Paul I of Russia chartered the company in the Ukase"
+    },
+    {
+      "index": 16,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "b6d947708c13d420524fa1b22f193e082249e3bf13aafd204ffbc8969839df6a",
+      "targets_sha256": "eb5a862eb1aa67134b01c68c7f5d9408cea34766ce4fc4497c107a9fff765f88",
+      "resolved_url": "https://en.wikipedia.org/wiki/Sam_%26_Cat",
+      "content_sha256": "8365f86fce33323a510caced34d3606ae483ebe2299a032c540c3269a73353ae",
+      "evidence_quote": "at\n36 languages\nArticle\nTalk\nRead\nEdit\nView history\nTools\nAppearance hide\nText\nSmall\nStandard\nLarge\nWidth\nStandard\nWide\nColor\nAutomatic\nLight\nDark\nFrom Wikipedia, the free encyclopedia\nSam & Cat\n\nGenre\tTeen sitcom\nCreated by\tDan Schneider\nBased on\t\niCarly and\nVictorious\nby Dan Schneider\n\nShowrunner\tDan Schneider\nStarring\t\nJennette McCurdy\nAriana Grande\nCameron Ocasio\nMaree Cheatham[a]\n\nTheme music composer\tMichael Corcoran\nOpening theme\t\"Just Fine\" by Backhouse Mike\nComposers\tMichael Corcoran\nZack Hexum\nCountry of origin\tUnited States\nOriginal language\tEnglish\nNo. of seasons\t1\nNo. of episodes\t35\nProduction\nExecutive producers\tDan Schneider\nWarren Bell\nProducers\tChristopher J. Nowak\nBruce Rand Berman\nProduction locations\tNickelodeon on Sunset\nHollywood, California\nCamera setup\tVid"
+    },
+    {
+      "index": 22,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "883709310d3faf52d8848f2b67752969925f4e92b57d5343c2ab49fda0f025c6",
+      "targets_sha256": "f1fb0bf5a19829c8569f6d48dc293f78f9f31f1817ee3c80e53c782215cf8d10",
+      "resolved_url": "https://en.wikipedia.org/wiki/Delhi_Belly_(film)",
+      "content_sha256": "91d929da8d57550ed3753c1a4312190e0e4bb62fdbf3c241f34a1b6d7748c25c",
+      "evidence_quote": "al release poster\n\nDirected by\tAbhinay Deo\nWritten by\tAkshat Verma\nProduced by\tAamir Khan\nJim Furgele\nKiran Rao\nRonnie Screwvala\nStarring\tImran Khan\nVir Das\nKunaal Roy Kapur\nPoorna Jagannathan\nShenaz Treasurywala\nVijay Raaz\nCinematography\tJason West\nEdited by\tHuzefa Lokhandwala\nMusic by\tRam Sampath\nProduction\ncompanies\t\nUTV Motion Pictures\nFerocious Attack Cow\nAamir Khan Productions\n\nDistributed by\tUTV Motion Pictures\nRelease date\t\n1 July 2011\n\nRunning time\t100 minutes\nCountry\tIndia\nLanguages\tEnglish[1]\nHindi\nBudget\t₹ 23 crore[2]\nBox office\t₹ 87.60 crore[2]\n\nDelhi Belly is a 2011 Indian action comedy film[3][4] written by Akshat Verma and directed by Abhinay Deo. It stars Imran Khan, Kunaal Roy Kapur, Vir Das, Poorna Jagannathan and Shenaz Treasurywala. It is a Hinglish-language film, wi"
+    },
+    {
+      "index": 36,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "d8786baa9ab1e6ef687bafba32f4eaa079ebc1ef2883333304c0486ce332f9ea",
+      "targets_sha256": "149aed820dbd470c4f1cc630e0b9eb9ca4d71c6fbc16522e17b71eba02eccf2b",
+      "resolved_url": "https://en.wikipedia.org/wiki/Luddite",
+      "content_sha256": "724f01f0dfed9f103aff185122ed436c03afa56b475163aff75e8ccd719b24d6",
+      "evidence_quote": "ids.[2][3] Members of the group referred to themselves as Luddites, self-described followers of \"Ned Ludd\", a legendary weaver whose name was used as a pseudonym in threatening letters to mill owners and government officials.[4]\n\nThe Luddite movement began in Nottingham, England, and spread to the North West and Yorkshire between 1811 and 1816.[5] Mill and factory owners took to shooting protesters and eventually the movement was suppressed by legal and military force, which included execution and penal transportation of accused and convicted Luddites.[6]\n\nDespite its original meaning, the term has over time been used to refer to those who are opposed to the introduction of new technologies.[7]\n\nEtymologyedit\n\nThe name Luddite (/ˈlʌdaɪt/ LUD-ite) occurs in the movement's writings"
+    },
+    {
+      "index": 45,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "e2ea741672a62b041fac5ed041f7b6e64423bc65ec8cac6cbbcef2fd54a81c76",
+      "targets_sha256": "60b03a725ca24f64c74fec27d8f505015cd8136adc82fc461a3e3cf1b96b4ad6",
+      "resolved_url": "https://en.wikipedia.org/wiki/The_Predator_(film)",
+      "content_sha256": "aacab192da24aa000c651c6d3835f2ae402f7077817082ce41708fb602372db1",
+      "evidence_quote": "the film,[60] which incorporates Alan Silvestri's themes from the 1987 film. The film's soundtrack album was released by Lakeshore Records on September 28, 2018.[61]\n\nReleaseedit\nTheatricaledit\n\nThe Predator was originally scheduled by 20th Century Fox for a March 2, 2018, release date,[62][63] until the date was moved to February 9, 2018.[64] It was then delayed to August 3, 2018.[65] In February 2018, the released date was delayed to September 14, 2018.[66] On May 10, 2018, the first trailer was released. A television spot was released on June 9,[67] while a second full trailer was released on June 26, 2018.[68] The third and final theatrical trailer was released on August 31, 2018, featuring the song \"One Shot, One Kill\" by Jon Connor featuring Snoop Dogg.[69] The film's world p"
+    },
+    {
+      "index": 59,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "478c1ac65539c4195410af52cecef70f19ec4f409fa4911c93defd653723ddbd",
+      "targets_sha256": "52bb8623bcac42b589598ed308ae08ad49ea983b0105c9bd582e83b3a737285f",
+      "resolved_url": "https://en.wikipedia.org/wiki/2023_JEF_United_Chiba_season",
+      "content_sha256": "b62f1d197ef5deec1a9589cb13f685e68c1fc250c13dd6a176705db80e29df65",
+      "evidence_quote": "rticle: 2023 J2 League\nLeague tableedit\nPos\tTeam\nvte\n\tPld\tW\tD\tL\tGF\tGA\tGD\tPts\tPromotion or relegation\n4\tShimizu S-Pulse\t42\t20\t14\t8\t78\t34\t+44\t74\tQualification for the promotion play-offs\n5\tMontedio Yamagata\t42\t21\t4\t17\t64\t54\t+10\t67\n6\tJEF United Chiba\t42\t19\t10\t13\t61\t53\t+8\t67\n7\tV-Varen Nagasaki\t42\t18\t11\t13\t70\t56\t+14\t65\t\n8\tVentforet Kofu\t42\t18\t10\t14\t60\t50\t+10\t64\nSource: Meiji Yasuda J2 League, J.League Data Site\nRules for classification: 1) Points; 2) Goal difference; 3) Goals scored; 4) Head-to-head points; 5) Head-to-head goal difference; 6) Head-to-head goal scored; 7) Fair-play points.\nResults by roundedit\nRound\t1\t2\t3\t4\t5\t6\t7\t8\t9\t10\t11\t12\t13\t14\t15\t16\nGround\tA\tH\tH\tA\tA\tH\tA\tH\tA\tH\tA\tH\tA\tH\tA\tH\nResult\tW\tL\tD\tL\tL\tD\tL\tD\tL\tW\tD\tW\tD\tL\tW\t\nPositions\t5\t11\t12\t17\t19\t19\t21\t21\t21\t20\t20\t15\t16"
+    },
+    {
+      "index": 91,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "52034e913be0c7cbc6388a4e744fd42b1bed92ad1b3d5bf2ac1b953f5799810d",
+      "targets_sha256": "7403dca9febd2fa34dde68c9401d3e857b5af4bad14ffd143fa9a2d6fd5b7a26",
+      "resolved_url": "https://en.wikipedia.org/wiki/Georgy_Lvov",
+      "content_sha256": "6a30107e5694f16e361d880efd887c5ca8ff51cb0764ec6ebbca30e38dddaa84",
+      "evidence_quote": "ight\nDark\nFrom Wikipedia, the free encyclopedia\nIn this name that follows East Slavic naming customs, the patronymic is Yevgenyevich and the family name is Lvov.\nGeorgy Lvov\n\nГеоргий Львов\n\nGeorgy Lvov as Prime Minister in March 1917\n\nMinister-Chairman of the\nRussian Provisional Government\n(Prime Minister of Russia)\nIn office\n15 March 1917 – 20 July 1917\nPreceded by\tNikolai Golitsyn\n(As Prime Minister of the Russian Empire)\nNicholas II\n(As Emperor of Russia)\nSucceeded by\tAlexander Kerensky\nMinister of the Interior of the\nRussian Provisional Government\nIn office\n15 March 1917 – 20 July 1917\nPrime Minister\tHimself\nPreceded by\tOffice established[a]\nSucceeded by\tIrakli Tsereteli\nChief Commissioner of the\nAll-Russian Zemstvo Union\nIn office\n30 July 1914 – 9 March 1917\nPreceded by\tPosition established\nSuc"
+    },
+    {
+      "index": 93,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "044cdc83488b5251bf6f1ef44b7a30c183be92c1e9e1dea80262aeed829b4433",
+      "targets_sha256": "1111a84e7b7280f220cd769d1ff6d6bf5c4a39310dc40b464ac18776e954b973",
+      "resolved_url": "https://en.wikipedia.org/wiki/CrossGen",
+      "content_sha256": "05b514d89788986f2ca74dcd1c9631801be9b3224c024785718fcf597a0b1e84",
+      "evidence_quote": "00, the Homeric myth The First was released and, steadily over the next three years, CrossGen released many more titles.\n\nThe following were released in 2001: Crux (based on the Atlantean myth); Sojourn (an epic fantasy in the style of The Lord of the Rings); Ruse (a Victorian detective story); and Negation.\n\nIn the following year, these titles were released: the horror story Route 666; the wuxia comedy Way of the Rat; and the samurai drama The Path.[6]\n\nThe company enjoyed great initial success, with fifteen Harvey Award nominations in 2002.[7]\n\nIn 2003, other titles were released expanding the fictional universe: the sword and sorcery epic Brath; Chimera, a limited series about a Sigil-bearer on the far reaches of the Universe; the pirate adventure El Cazador; and two oth"
+    },
+    {
+      "index": 96,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "da6ea6e1b535a46b5dd9ad94405f14b8951878b670a533746e6339a7260c82db",
+      "targets_sha256": "221e37525ae03cf07912e535634c7221747213de051e7694f05199d8a509b141",
+      "resolved_url": "https://en.wikipedia.org/wiki/Battle_of_Nicopolis",
+      "content_sha256": "e2dc4063d684aca1037253ab2a9cecc6f9203e4e2c20d19a3c324b52e42b6270",
+      "evidence_quote": "Duchy of Burgundy \nKingdom of Croatia[2] \nPrincipality of Wallachia[3] \nKnights Hospitaller[2] \nRepublic of Venice[2] \nRepublic of Genoa \nTsardom of Vidin[4] \nTeutonic Knights \nByzantine Empire \nCounty of Cilli \nDistrict of BrankovićCommanders and leaders \n \n\nBayezid I \nÇandarlı Ali Pasha[5] \nKara Timurtaş Pasha \nEvrenos Bey  Stefan Lazarević \n \n\nSigismund, King of Hungary and Croatia \nMircea the Elder \nStibor of Stiboricz \nNicholas II Garai \nPhilip, Count of Eu (POW) \nJean II Le Maingre (POW) \nJohn, Count of Nevers (POW) \nEnguerrand de Coucy (POW) \nJean de Vienne † \nJean de Carrouges † \nLeonhard Reichartinger † \nStephen II Lackfi \nIvan Sratsimir  \nPhilibert de Naillac \nVuk Branković (POW) [6][7]Strength 10,000–20,000[8][9][10] 17,000–20,000[8][10][11]Casualties and losses Consi"
+    },
+    {
+      "index": 285,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "c659e908d99f5a1303fb1b9d519d2d7f6af7b8686fa47d8a67d1c7ea8c386fa7",
+      "targets_sha256": "256345b36a27344658e9834ffad79b7590605b4a6045f8aec5bd22bf0f98d7e0",
+      "resolved_url": "https://en.wikipedia.org/wiki/C._M._S._McLellan",
+      "content_sha256": "3468fec4a5f260535bcfde75803386ba1310fd9a20867eea40fcf919b4c19717",
+      "evidence_quote": "at the Casino Theatre on September 28, 1897, to mixed reviews and closed after a two-month run. The following year the show was brought to London, where it opened at the Shaftesbury Theatre on April 12, 1898, and went on to have an extremely successful run of 697 consecutive performances, closing on December 30, 1899. The Belle of New York later proved successful on tours of Australia, New Zealand and the British provinces and returned to Broadway for revival engagements in 1900 and 1921. The musical was made into two Hollywood films, the first in 1919 with Marion Davies, Etienne Girardot and L. Rogers Lytton, and the second in 1952 with Fred Astaire, Vera-Ellen, Marjorie Main and Keenan Wynn.[5][6][7][8]\n\nLeah Kleschna, a melodrama about the daughter of a Paris jewel thie"
+    },
+    {
+      "index": 317,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "b7f3675b69f9892a37f800749d192bebcc32f8f7ea62e394114c46bb1b503bdd",
+      "targets_sha256": "0e7a817dbf2dcbac24819efb473837a894c9471000acb3cac4e74d743b51c289",
+      "resolved_url": "https://en.wikipedia.org/wiki/Verbotene_Liebe",
+      "content_sha256": "e02b541492b71f598434516182551e1c4eb2ec03c1b46fdf7e01f7a10846c00c",
+      "evidence_quote": "roduction\nProducers\t\nRainer Wemcken\nGuido Reinhardt\n\nProduction locations\tCologne and Düsseldorf, North Rhine-Westphalia, Germany\nRunning time\t\n25 minutes (1995– 2011)\n40–50 minutes (2011–2015)\n\nProduction companies\t\nGrundy UFA TV Produktions GmbH (1995–2013)\nUFA Serial drama (2013–2015)\n\nOriginal release\nNetwork\tDas Erste\nRelease\t2 January 1995 –\n26 June 2015\nRelated\nVerbotene Liebe: Next Generation\n\nVerbotene Liebe (pronounced [fɛɐ̯ˈboːtənə ˈliːbə], lit. \"Forbidden Love\") is a German television soap opera created by Reg Watson for Das Erste. The show was set primarily in the German city of Düsseldorf although, at times, the city of Cologne and the Spanish island of Mallorca figured prominently in the show's story lines. First broadcast on 2 January 1995,[2] Verbotene Liebe was origin"
+    },
+    {
+      "index": 328,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "d2cc4d156cf5331e8df2e13901254d5269ff2c4cf829b1d58c7d1f5e30bfb255",
+      "targets_sha256": "6649c720612b46aa94f320ecbff181dc0788cacc3a1b7b7bfcdbba00e80bd55d",
+      "resolved_url": "https://en.wikipedia.org/wiki/Verrazzano-Narrows_Bridge",
+      "content_sha256": "25fcf79c901ee360fbe90fa8b1c9200d52c7ba91031b51703dfb836779aa0ba3",
+      "evidence_quote": "York, U.S.\nOther name(s)\tVerrazano–Narrows Bridge\nVerrazzano Bridge\nNarrows Bridge\nMaintained by\tMTA Bridges and Tunnels\nCharacteristics\nDesign\tSuspension bridge\nTotal length\t13,700 ft (4,176 m)\nWidth\t103 ft (31 m)\nHeight\t693 ft (211 m)\nLongest span\t4,260 ft (1,298 m)\nClearance above\t15 ft (4.57 m) (upper level)\n14.4 ft (4.39 m) (lower level)\nClearance below\t228 ft (69.5 m) at mean high water\nHistory\nDesigner\tOthmar Ammann, Leopold Just and other engineers at Ammann & Whitney\nConstruction start\tAugust 13, 1959; 66 years ago\nOpened\tNovember 21, 1964; 61 years ago (upper level)\nJune 28, 1969; 57 years ago (lower level)\nStatistics\nDaily traffic\t202,523 (2016)[1]\nToll\t(Both directions) As of January 4, 2026:\n$7.46 (New York E-ZPass users outside Staten Island)\n$4.19 (Staten Island"
+    },
+    {
+      "index": 365,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "b76588940f1b07559c2eebe0927012ed78ebc2e5ba736507efe42c6630ba9606",
+      "targets_sha256": "9e904a9796d1c74957ebd50c86b67a17d131bb99655b3c19e37256d758c81647",
+      "resolved_url": "https://en.wikipedia.org/wiki/Walter_Santesso",
+      "content_sha256": "5b0f7e2afd3db8d76984e043685801e719d86c8803cad6bfccf287b6d8ca978d",
+      "evidence_quote": "Jump to content\nMain menu\nSearch\nDonate\nCreate account\nLog in\nContents hide\n(Top)\nFilmography\nReferences\nExternal links\nWalter Santesso\n8 languages\nArticle\nTalk\nRead\nEdit\nView history\nTools\nAppearance hide\nText\nSmall\nStandard\nLarge\nWidth\nStandard\nWide\nColor\nAutomatic\nLight\nDark\nFrom Wikipedia, the free encyclopedia\nWalter Santesso\n\n\nBorn\t27 February 1931\nPadua, Kingdom of Italy\nDied\t20 January 2008 (aged 76)\nPadua, Italy\nOccupations\tActor, director\nYears active\t1951–1969\n\nWalter Santesso (27 February 1931 in Padua, Italy – 20 January 2008) was an Italian film actor and director. His character name \"Paparazzo\" in Federico Fellini's 1960 film La Dol"
+    },
+    {
+      "index": 385,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "4335d477118886c882c3ae2ca46a41737436f3b109e43c28a65730a04ef8ebd8",
+      "targets_sha256": "f8345cd8936120cd9cab91290f619981bffd5691f31d69c09734288a0169d382",
+      "resolved_url": "https://en.wikipedia.org/wiki/Minister_of_Employment,_Workforce_Development_and_Official_Languages",
+      "content_sha256": "fffc669e1f68a5e65da85ef6268de295f224595c8873e8773a873ee591c8a6e7",
+      "evidence_quote": "Development and Disability Inclusion, with Carla Qualtrough being appointed the new minister on November 20.[13]\n\nIn 2023, the Official Languages portfolio was merged into the expanded ministry of Employment, Workforce Development and Official Languages, with Randy Boissonnault being appointed the new minister on July 26, 2023.[14]\n\nIn 2024, responsibility for labour was folded back into the portfolio while responsibility for official languages was split off; consequently, the position reverted to its former title of Minister of Employment, Workforce Development and Labour, with incumbent Labour minister Steven MacKinnon being appointed to the post. The position was abolished the following year and its responsibilities consolidated into the new position of Minister of Jobs and Families,"
+    },
+    {
+      "index": 410,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "792d2ae5c8fd0977e4cfc34b9c0db0a3b7ea699ed24b9bf9b43f7849767be29e",
+      "targets_sha256": "376c1cf1562c786edee85a7a385f9a3dbfb7533891734f7edd7c7fd244cf7203",
+      "resolved_url": "https://en.wikipedia.org/wiki/Austen_Chamberlain",
+      "content_sha256": "2588594fb6360252f44936a54c2df0e5e910a448c3e1af9e4795f445ed2283da",
+      "evidence_quote": "1903–05) after his father resigned in 1903 to campaign for Tariff Reform. After his father's disabling stroke in 1906, Austen became the leading tariff reformer in the House of Commons. Late in 1911 he and Walter Long were due to compete for the leadership of the Conservative Party (in succession to Arthur Balfour), but both withdrew in favour of Bonar Law rather than risk a party split on a close result.\n\nChamberlain returned to office in H. H. Asquith's wartime coalition government in May 1915, as Secretary of State for India, but resigned to take responsibility for the disastrous Kut Campaign. He again returned to office in David Lloyd George's coalition government, once again serving as Chancellor of the Exchequer. He then served as Conservative Party leader in the Commons (1921–1922), b"
+    },
+    {
+      "index": 423,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "ff509f2cc35f60bdd719d6ce69948e630cad8c362e71936ee2a8ebfe7df29e40",
+      "targets_sha256": "daf56331e83becba2513940ff3cb98cc4ded10e422adeb24d91dcdf2da51fb10",
+      "resolved_url": "https://en.wikipedia.org/wiki/TS_Class_7",
+      "content_sha256": "4cdf0f50d815241f0bb024270dabe77f900a5cebcea33ac51fb2c58d2d12ca68",
+      "evidence_quote": "ed\t4\nFleet numbers\t1–5, 10–32\nCapacity\t33 (seated) + 52 (standing)\nOperator\tTrondheim Sporvei\nSpecifications\nCar length\t13.2 m (43 ft 4 in)\nWidth\t2.6 m (8 ft 6 in)\nDoors\t6\nWeight\t15.0 t (14.8 long tons; 16.5 short tons)\nPrime mover\tNEBB GDTM 1252\nPower output\t172 kW (231 hp)\nCurrent collection\tPantograph\nTrack gauge\t1,000 mm (3 ft 3\n+\n3⁄8 in)\n\nTS Class 7 was a series of 28 trams and 15 trailers built by Strømmens Værksted for Trondheim Sporvei. They were delivered in 1956–57.\n\nOn 10 October 1956, almost all operative trams used by the company were lost to the flames. Subsequently, Trondheim Sporvei ordered the Class 6 from Strømmen. Five engines were salvaged from the fire, and were reused in trams 1 through 5. The remaining deliveries were numbered 10–32. The trams delivered with ne"
+    },
+    {
+      "index": 535,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "efb5a6e6aa7bd8f31834cf5969a8ee357e62b9e9a62b9239440a86c8c8a3a6d0",
+      "targets_sha256": "ae10734a070cae5754ea19efd43ad2e7a4d1278084b5c7dbaafbe286ac6e6656",
+      "resolved_url": "https://en.wikipedia.org/wiki/Verbotene_Liebe",
+      "content_sha256": "23c1007e9c64d0f04fd6139bab03e92dc0a6c2b3f7aa1bd7f129bfdf1a62b0b7",
+      "evidence_quote": "onal Königsbrunn Castle in the series.\n\nVerbotene Liebe centers on the fictional high society in and around Düsseldorf and Cologne. Initially, primary locations include Friedenau Castle, the residence of the affluent Anstettens; the Brandner home; and the bar No Limits (originally called Off Limits). Gut Schönberg, the home of the Beyenbachs, figures in the storyline between 2001 and 2003, succeeded by Königsbrunn Castle, home of the Lahnsteins. Dyck Castle was used for the exteriors of Friedenau, the Kitzburg for Schönberg, and Ehreshoven Castle for Königsbrunn.\n\nThe early years of Verbotene Liebe were produced in the studios of WDR. The show was produced in the Magic Media Company studios in Cologne's borough Ossendorf from 2003 until 2015. The same studios were also the home of the RTL soap opera Alles wa"
+    },
+    {
+      "index": 607,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "94aefbc3ed65749a258a402f30a1973a3fa4c010b714919bd42e513a291dddff",
+      "targets_sha256": "a7d542f7b1ba8be5851f3d90f894c0e14e4455493125585afacaadd811251135",
+      "resolved_url": "https://en.wikipedia.org/wiki/Henry_John_Temple,_3rd_Viscount_Palmerston",
+      "content_sha256": "9083402c8da129db3c168b432662760bb3c083e4569be1a8218f83677db67321",
+      "evidence_quote": "Biographies and scholarly studies   \n   \n  \n 21.2 Primary sources   \n   \n  \n 21.3 Other sources   \n     \n  \n 22 External links   \n  Toggle External links subsection  \n \n  \n 22.1 Offices and titles   \n           \n    \n   Toggle the table of contents  \n \n     \nHenry John Temple, 3rd Viscount Palmerston \n   55 languages  \n \n \n \nالعربية\nمصرى\nAzərbaycanca\nБеларуская (тарашкевіца)\nБеларуская\nБългарски\nCatalà\nČeština\nCymraeg\nDansk\nDeutsch\nΕλληνικά\nEsperanto\nEspañol\nEesti\nEuskara\nفارسی\nSuomi\nFrançais\nGaeilge\nGàidhlig\nעברית\nहिन्दी\nՀայերեն\nBahasa Indonesia\nIdo\nÍslenska\nItaliano\n日本語\n한국어\nKernowek\nLatina\nLombard\nLatviešu\nमराठी\nNederlands\nNorsk bokmål\nPolski\nپښتو\nPortuguês\nRomână\nРусский\nSrpskohrvatski / српскохрватски\nSimple English\nSvenska\nТоҷикӣ\nไทย\nTürkçe\nУкраїнська\nOʻzbekcha / ўзбекча\nTiếng Việt\nYorùbá\n文言\n粵語\n中文  \nEdit"
+    },
+    {
+      "index": 746,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "3142331c2e4be81bbab4a37ad9d2a3fe6e46dbe31212f46cdf59b708a5975b60",
+      "targets_sha256": "18a1b58b6b6e1d99a6be7b740b35aab9b1d34feae1fcbccd4b519c93b29c557f",
+      "resolved_url": "https://en.wikipedia.org/wiki/Treaty_on_the_Creation_of_the_Union_of_Soviet_Socialist_Republics",
+      "content_sha256": "4b7acffb485cc679b3a8ae4be9f48c47a6d5ea9df6e14fc70b4ab92e84b8410f",
+      "evidence_quote": "preceding treaties\nContent\nSignatories\nImmediate aftermath\nToggle Immediate aftermath subsection\nPolitics\nCentral Asia\nSoviet Constitution\nExpansion\nAnnulment\nPost-Soviet discussion about the validity of the treaty\nTimeline\nSee also\nReferences\nExternal links\nTreaty on the Creation of the Union of Soviet Socialist Republics\n27 languages\nArticle\nTalk\nRead\nEdit\nView history\nTools\nAppearance hide\nFrom Wikipedia, the free encyclopedia\nDeclaration and Treaty on the Creation\nof the Union of Soviet Socialist Republics\nДекларация и договор об образовании СССР (Russian)\nДекларація та договір про утворення СРСР (Ukrainian)\nДэкларацыя і дагавор аб утварэнні СССР (Belarusian)\n\nType\tUnion treaty\nSigned\t29 December 1922\nLocation\tMoscow, Russian SFSR\nEffective\t30 December 1922\nExpiration\t8 December 1991\n(Belovezha Accords)\n21 December 1991\n(Alma-At"
+    },
+    {
+      "index": 775,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "4dfeb56e1804daa7b85cea4ccf43744081bf3ec9c9e7cb3ca8fb58028bfb731f",
+      "targets_sha256": "91912da70a7a5e9e69145d2529e33cf3dac3026edbb978b9b9885dba1cef92d1",
+      "resolved_url": "https://en.wikipedia.org/wiki/Louise_Richardson",
+      "content_sha256": "354a071e7ef7270e0aec9f10c8a060aeae009c9864e9767bfd381cefb0565be7",
+      "evidence_quote": "alk\nRead\nEdit\nView history\nTools\nAppearance hide\nFrom Wikipedia, the free encyclopedia\nDame\nLouise Richardson\nDBE FRSE\n\n\nRichardson in 2025\n\nPresident of the Carnegie Corporation of New York\n\nIncumbent\n\nAssumed office\nJanuary 2023\nPreceded by\tVartan Gregorian\nVice-Chancellor of the University of Oxford\nIn office\n1 January 2016 – 31 December 2022\nChancellor\tChris Patten\nPreceded by\tAndrew Hamilton\nSucceeded by\tIrene Tracey\nPrincipal and Vice-Chancellor of the University of St Andrews\nIn office\n6 January 2009 – 31 December 2015\nChancellor\tThe Lord Campbell of Pittenweem\nPreceded by\tBrian Lang\nSucceeded by\tDame Sally Mapstone\nPersonal details\nBorn\tLouise Mary Richardson\n8 June 1958 (age 68)\n\nTramore, Ireland\n\nCitizenship\tIreland, United States, United Kingdom\nSpouse\tThomas Jevon ​(m. 1988)​\nChildren\t3\nEducation\tTri"
+    },
+    {
+      "index": 849,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "6e948d7bd8368938edf8e84781274a1cd37fd26d494761e08a40ac98fef364ca",
+      "targets_sha256": "7a612a8df720fe8e7d31617fb9ad77681a0700e00d2a271de9a7d53c96336c4d",
+      "resolved_url": "https://en.wikipedia.org/wiki/Lost_Highway_(film)",
+      "content_sha256": "256c49bce1853df34b9283211a4a2be7857384e683e221c37897e285e3a86de0",
+      "evidence_quote": "ease poster\n\nDirected by\tDavid Lynch\nWritten by\tDavid Lynch\nBarry Gifford\nProduced by\tMary Sweeney\nTom Sternberg\nDeepak Nayar\nStarring\t\nBill Pullman\nPatricia Arquette\nBalthazar Getty\nRobert Blake\nNatasha Gregson Wagner\nGary Busey\nRobert Loggia\n\nCinematography\tPeter Deming\nEdited by\tMary Sweeney\nMusic by\tAngelo Badalamenti\nProduction\ncompanies\t\nCiby 2000\nAsymmetrical Productions\n\nDistributed by\t\nOctober Films\n(United States)\nCiby 2000\n(France)\n\nRelease dates\t\nJanuary 15, 1997 (France)\nJanuary 1997 (Sundance)\nFebruary 21, 1997 (United States)\n\nRunning time\t134 minutes[1]\nCountries\t\nUnited States\nFrance\n\nLanguage\tEnglish\nBudget\t$15 million\nBox office\t$3.8 million\n\nLost Highway is a 1997 surrealist neo-noir horror film directed by David Lynch, who co-wrote it with Barry Gifford. The fi"
+    },
+    {
+      "index": 888,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "002fc8341cc0b86a00c62ee3db802bcaf97eb729ab1cd4ee9e83dbe40315ea44",
+      "targets_sha256": "c7a8fa60c4a5f759875acf87a83daca40f16a0af03e0ac7f6b701fc5b16ffb0f",
+      "resolved_url": "https://en.wikipedia.org/wiki/Elihu_Yale",
+      "content_sha256": "7c0b4410d9996daebe9a946728accb994d4da65a232771f9251027ecd8a25dfd",
+      "evidence_quote": "4 November 1680, with Sir Henry Oxenden, Governor of Bombay, as brideman.[22] With his wife's capital, Yale learned the trade and became a specialist in diamonds and precious stones.[22]\n\nMadras Counciledit\nThe Government House at Fort St. George, seat of the Madras Presidency, where Yale would spend 29 years of his career\n\nIn January 1681, he was promoted to the office of Provisional Customer.[23] In the same year, Gov. Streynsham Master was replaced by William Gyfford, and Yale was sent as a diplomat to meet the VOC Governor of Pulicat.[23] Despite Master's loyalty, the directors once again believed the charges of bad management, fueled by enemies, who brought complaints after complaints to the board in London.[23] According to Madras historian Arthur Pringle, the official records are"
+    },
+    {
+      "index": 1160,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "6a8b1ba326eaa56e9421e35230d64a8b199935432fd85f8ec4739426bda5aae2",
+      "targets_sha256": "07106a5ba8a291cd93b00803e5cb5efe515a5edecc20b50f3d99fa134557bc50",
+      "resolved_url": "https://en.wikipedia.org/wiki/Franco_Rocchetta",
+      "content_sha256": "e134651bb57c92df4dc23c0ed78e5cb9bd6746f54deb99030c5418fe0d6ecd57",
+      "evidence_quote": "Della Sala.[6] With his \"Center for International Studies\" dedicated to Paolo Sarpi, Rocchetta organised several initiatives with representatives of minorities, notably including those with Ibrahim Rugova in favour of a peaceful resolution of the conflict in Kosovo.[24] In 1999 Rocchetta was instrumental in the awarding to Rugova of the honorary citizenship of Venice by then-mayor Massimo Cacciari.[25]\n\nBetween the 1990s and the 2000s Rocchetta was honorary consul of the Republic of Macedonia in Venice.[26]\n\nIn 2013 Rocchetta returned to active politics after virtually 20 years of absence from the political scene as a member of Plebiscite 2013, a cross-party committee which organised the 2014 referendum on Veneto's independence,[27][28] which saw the participation of 63.2% o"
+    },
+    {
+      "index": 1236,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "04f16f75bf620f0a278515ed6d2f0ae38bb6ae3ead5e6cf7348e586282edf5ee",
+      "targets_sha256": "46368a5684943debedc8d4d5666c7ee0b61800fe8d4043e4724be233cc309cdf",
+      "resolved_url": "https://en.wikipedia.org/wiki/Avesta",
+      "content_sha256": "9dedf8bf7935346b409bd822dca076b25ea65d440b237d9e29e5fdaf5783c79c",
+      "evidence_quote": "ubt, to the eight fargards still extant under the corrupt name Vishtasp Yasht, which probably consist of fragments of the Avesta text of this Nask\".\n Shaki 1993.\n Hintze 2012, p. 419: \"To the present day Avestan Studies largely rely on two monumental works[:] Karl Friedrich Geldner's edition of the Avesta of 1889–1896 and Christian Bartholomae's Altiranisches Wörterbuch of 1904\".\n Redard 2021, p. 1: \"Geldner’s edition, became the reference edition\".\n Gholami 2024, p. 19: \"Geldner's edition has been considered the canonical text to date\".\n Geldner 1889, pp. 1–31.\nJump up to:\n Geldner 1889, pp. 37–277.\n Malandra 2006.\n Malandra 2000a.\n Geldner 1889, Intro.\n Geldner 1889, Intro: \"The text is given according to the Visperad sada\".\n Geldner 1889, pp. 1-31.\n Malandra 2000c, \"KHORDEH AVESTĀ (Pahlav"
+    },
+    {
+      "index": 1252,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "11c4090bcb4d38cad55f74dbf203af828ad43fa1ed1a28181eef8f000663c3df",
+      "targets_sha256": "c2a10c27d4c66d138ae8d31502ba42b29adc39e9cffe289b37386ca60a56b8f9",
+      "resolved_url": "https://en.wikipedia.org/wiki/Central_Avenue_Reunion",
+      "content_sha256": "e459364491829dee080fecb1a6c1bfe3f8f6fd138dd4123395d34f4883110373",
+      "evidence_quote": "(Art Farmer) - 6:58\n\"Embraceable You\" (George Gershwin, Ira Gershwin) - 6:48\n\"Blue Minor\" (Sonny Clark) - 7:08\n\"I Remember You\" (Johnny Mercer, Victor Schertzinger) - 9:03\n\"Don't Blame Me\" (Dorothy Fields, Jimmy McHugh) - 5:45\n\"Cool Struttin'\" (Clark) - 9:21\n\"Donna Lee\" (Charlie Parker) - 6:30 Bonus track on CD\nPersonneledit\nArt Farmer - trumpet, flugelhorn\nFrank Morgan - alto saxophone\nLou Levy - piano\nEric Von Essen - bass\nAlbert Heath - drums\nReferencesedit\n Art Farmer discography accessed July 31, 2014\n Frank Morgan Leader Entry accessed December 18, 2018\nJump up to:\n Yanow, S., Allmusic Review accessed July 31, 2014\nJump up to:\n Stewart, Z., Los Angeles Times Review, May 27, 1990\nJump up to:\n Cook, Richard; Brian Morton (2008) [1992]. \"Art Farmer\". The Penguin Guide to Jazz"
+    },
+    {
+      "index": 1521,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "2bfbce45f9737d9eeb9f7fdf33e1ea5ba8f342a03a256707510243d4a6b598a6",
+      "targets_sha256": "719751b163c7725a487262bf41cbdfc795e1b31b1ef1e2e755886bd264a2946e",
+      "resolved_url": "https://en.wikipedia.org/wiki/2024_Puerto_Rican_general_election",
+      "content_sha256": "2f0eff817905b565df08e29b79630b5a5c6e02becc9f250c90db512d3a8fadd6",
+      "evidence_quote": "yclopedia\n2024 Puerto Rican general election\n\n← 2020\tNovember 5, 2024\t2028 →\n\n\n\nGubernatorial election\n\nTurnout\t64.46%\n\n \t\t\nNominee\tJenniffer González Colón\tJuan Dalmau Ramírez\t\nParty\tNew Progressive\tIndependence\nPopular vote\t526,020\t392,185\nPercentage\t41.22%\t30.73%\n\n\n \t\t\nNominee\tJesús Manuel Ortiz\tJavier Jiménez\t\nParty\tPopular Democratic\tProject Dignity\nPopular vote\t273,649\t81,369\nPercentage\t21.44%\t6.38%\n\n\nResults by municipality\nGonzález:      30–40%      40–50%      50–60%\nDalmau:      30–40%      40–50%\n\n\nGovernor before election\n\n\nPedro Pierluisi\nNew Progressive\n\n\tElected Governor\n\n\nJennifer Gonzalez Colon\nNew Progressive\n\n\n\nResident Commissioner election\n\n\n \t\t\t\nNominee\tPablo José Hernández Rivera\tWilliam Villafañe\tAna Irma Rivera Lassén\nParty\tPopular Democratic\tNew Prog"
+    },
+    {
+      "index": 1772,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "28c7ec9ce7edfcf70bfac93b456e61f71062858156cb22b1da3629ed775e0b5e",
+      "targets_sha256": "ff4e9765343d54f855e5b23dfae0bffddabcf1f54cd5a5f38b0f6e68e072e970",
+      "resolved_url": "https://en.wikipedia.org/wiki/Lorin_Maazel",
+      "content_sha256": "62b1170b7ab017849d614878575c04db3f5db78a9daa436a2a3c33c7183016dd",
+      "evidence_quote": "the Russian Empire, was a violinist in the Metropolitan Opera orchestra.[3] He and his wife Esther Glazer (1879–1921), originally from Kharkiv, Ukraine, then in the Russian Empire, came to North America in 1900 after the birth of their eldest son Marvin (1899–1988), who later became a pianist and composer.\n\nMaazel was brought up in the United States, primarily at his parents' home in the city of Pittsburgh's Oakland neighborhood.[5] His father, Lincoln Maazel (1903–2009),[6] was a singer, teacher of voice and piano, and an actor (he co-starred in George A. Romero's 1978 horror movie Martin); and his mother, Marion \"Marie\" Shulman Maazel (1894–1992),[7] founded the Pittsburgh Youth Symphony Orchestra.[8]\n\nMaazel was a child prodigy and had perfect pitch.[9] He had his first"
+    },
+    {
+      "index": 1832,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "93f403a00ddcb42348f5596ee46f17b0ecfddefbe043b268ac70c9e0750e65de",
+      "targets_sha256": "ab3d7d160b13062f2827fc70543da4e72cc5bdf569fc3ab504b59b76a1614c60",
+      "resolved_url": "https://en.wikipedia.org/wiki/Charlotte_of_Belgium",
+      "content_sha256": "d4616c4ea1f2cb5044607b968698932e6e42458f276eede87caedaabd2e82bd3",
+      "evidence_quote": "menu\nSearch\nDonate\nCreate account\nLog in\nContents hide\n(Top)\nLife\nToggle Life subsection\nTitles and honours\nToggle Titles and honours subsection\nArms\nIn popular culture\nToggle In popular culture subsection\nSee also\nNotes\nReferences\nBibliography\nExternal links\nCharlotte of Belgium\n41 languages\nArticle\nTalk\nRead\nEdit\nView history\nTools\nAppearance hide\nFrom Wikipedia, the free encyclopedia\nCharlotte of Belgium\n\nOfficial portrait as Empress of Mexico, 1865, by Albert Gräfle\n\nEmpress of Mexico\nTenure\t10 April 1864 – 19 June 1867\nCoronation\t10 June 1864\n\n\nBorn\t7 June 1840\nPalace of Laeken, Brussels, Belgium\nDied\t19 January 1927 (aged 86)\nBouchout Castle, Meise, Belgium\nBurial\tRoyal Crypt, Church of Our Lady of Laeken\nSpouse\tMaximilian I of Mexico\n​\n​(m. 1857; died 1867)​\n\nNames\nFrench: Marie Cha"
+    },
+    {
+      "index": 1917,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "632b5239a36b3dafead45fe87d18d797a85d687566328de585d2ec9bfae622fb",
+      "targets_sha256": "ec54b6396139307b881cf2bdb7f56b4d179685d2dcc67e408ed24fc691e3c28c",
+      "resolved_url": "https://en.wikipedia.org/wiki/Belgrade_International_Theatre_Festival",
+      "content_sha256": "24f66dc841b287c7051a7e389ea674965f3c340ee261c4360d6548e0bacebec8",
+      "evidence_quote": "ormation\nCite this page\nGet shortened URL\nSwitch to legacy parser    \n \n Print/export  \n \n \nDownload as PDF\nPrintable version    \n \n In other projects  \n \n \nWikidata item            \n \n  \n    \n \n \n \nAppearance \nmove to sidebar \nhide       \n \n \n \n\nCoordinates: 44°49′05″N 20°28′06″E  /  44.818140°N 20.468389°E  / 44.818140; 20.468389  \nFrom Wikipedia, the free encyclopedia  \n\n \n\n \n\nTheatre festival in Serbia \n\nThis article needs more citations. Please help improve this article by adding citations to reliable sources. Unsourced material may be challenged and removed.\nFind sources: \"Belgrade International Theatre Festival\" – news · newspapers · books · scholar · JSTOR (August 2014) (Learn how and when to remove this message) \nBITEF\nБИТЕФ\nBITEF Theatre\n\n\n\n\n\n\n\nBITEF\nLocation within Belgrade\nForme"
+    },
+    {
+      "index": 1975,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "e7e86f0ff747f3ec034bf2100f2b5f66c71f056c900d18edb886ec014e58dcef",
+      "targets_sha256": "6ce7005f8d49c0f5a4bce88fcefa9cf1de02fa337f8ae480ab3fd924cab1fbca",
+      "resolved_url": "https://en.wikipedia.org/wiki/List_of_most_populous_cities_in_the_United_States_by_decade",
+      "content_sha256": "04a0893bbfc761d8a6518e56eacb8f33abcc082ef49ee012123eca8071743afb",
+      "evidence_quote": "nguages\nArticle\nTalk\nRead\nEdit\nView history\nTools\nAppearance hide\nFrom Wikipedia, the free encyclopedia\nFor a more extensive list of present population estimates, see List of United States cities by population.\nPopulation tables\nof U.S. cities\n\nThe skyline of New York City, the most populous city in the United States\n\nCities\nPopulation\nAreaDensityEthnic identityForeign-bornIncomeSpanish speakersCapitalsBy decadeBy stateBy decade/state\n\nUrban areas\nPopulous cities and metropolitan areas\nMetropolitan areas\n\n184 combined statistical areas\n935 core-based statistical areas\n393 metropolitan statistical areas\n542 micropolitan statistical areas\n\nMegaregions\n\nRelated population lists\nNorth American metro areas\nWorld cities\nStates and territories\n\nvte\nPopulation as a function of time for"
+    },
+    {
+      "index": 2036,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "5c922b13b2e48a5eb29d434cb852b091ab7dd20377e3b90ab69d9c8c10f1ae68",
+      "targets_sha256": "7cf634af34f701a607b19a46368f7ea1c093c735e9ab879627d3b9540e9892f7",
+      "resolved_url": "https://en.wikipedia.org/wiki/Second_Mobutu_coup_d%27%C3%A9tat",
+      "content_sha256": "7b8cd4e433be144a9b7a184cd33c860ae025b8e917ddde0d09932c6699d5a784",
+      "evidence_quote": "Jump to content\nMain menu\nSearch\nDonate\nCreate account\nLog in\nContents hide\n(Top)\nBackground\nCoup\nAftermath\nReferences\nWorks cited\nSecond Mobutu coup d'état\n3 languages\nArticle\nTalk\nRead\nEdit\nView history\nTools\nAppearance hide\nFrom Wikipedia, the free encyclopedia\nSecond Mobutu coup d'état\nPart of Congo Crisis\nDate\t25 November 1965\nLocation\t\nLéopoldville, Democratic Republic of the Congo\n\nResult\t\n\nCoup d'état successful\n\nJoseph Kasa-Vubu and Evariste Kimba deposed.\nJoseph Mobutu installed as the President of the Democratic Republic of Congo\nEnd of the Congo Crisis\n\nBelligerents\n Government of the Democratic Republic of the Congo\tArmed Forces of the Democratic Republic"
+    },
+    {
+      "index": 2079,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "f7890f9a859affd5b10ab8efa0a1ae01a960e86f7a73db212b3f3131fc142ff1",
+      "targets_sha256": "8f91303597c33c980a8e8e88889c89ac31c125802d2b59e5ba3d2cefe3a76602",
+      "resolved_url": "https://en.wikipedia.org/wiki/Colombian_Civil_War_(1860%E2%80%931862)",
+      "content_sha256": "5f64c84912c282755879e48d8fb243d7793b991b10d2162ab657b031aaa2fde4",
+      "evidence_quote": "ce hide\nText\nSmall\nStandard\nLarge\nWidth\nStandard\nWide\nColor\nAutomatic\nLight\nDark\nFrom Wikipedia, the free encyclopedia\nColombian Civil War (1860–1862)\nPart of the Colombian Civil Wars\n\nChurch of San Agustín after the capture of Bogotá by General Mosquera\nDate\tMay 8, 1860 – November 1862\nLocation\t\nColombia\n\nResult\tVictory for Tomás Cipriano de Mosquera, formation of the United States of Colombia\nTerritorial\nchanges\tGranadine Confederation becomes United States of Colombia\nBelligerents\n\n\n Granadine Confederation\n Colombian Conservative Party Federal states:\n\nAntioquia\nCundinamarca\nPasto\nQuindio\nPanamá\n\t\n\n United States of New Granada\n Colombian Liberal Party\n\nFederal states:\n\nCauca\nSantander\nBoyaca\nMagdalena\nTolima\n\nCommanders and leaders\n Mariano Ospina Rodríguez\n Bartolomé Calvo\n Joaquín París\n P"
+    },
+    {
+      "index": 2130,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "35ac6dcba092de864a622726d9c17bc3a897a67bab694c6a760bbe95d9a8368f",
+      "targets_sha256": "9d627b5ba183202de96caee760b2afe560938e9debda409981f4768fc5be117a",
+      "resolved_url": "https://en.wikipedia.org/wiki/Miramare_Castle",
+      "content_sha256": "165bd71f036bc3fa796e1d34d4648b9cfdf599be05e7591609cf87a68f4a6710",
+      "evidence_quote": "to 1860 for Austrian Archduke Ferdinand Maximilian and his wife, Charlotte of Belgium, later Emperor Maximilian I of Mexico and Empress Carlota of Mexico, based on a design by Carl Junker.\n\nThe castle's grounds include an extensive cliff and seashore park of 22 hectares (54 acres) designed by the archduke. The grounds were completely re-landscaped to feature numerous tropical species of trees and plants.\n\nHistoryedit\nCastleedit\nPainting by Cesare dell'Acqua (1867) of Maximilian receiving the Mexican delegation offering him the crown of Mexico.\n\nMiramare Castle and its park were built by order of Ferdinand Maximilian (1832–1867), of the House of Habsburg-Lorraine.[1] In 1850, at the age of eighteen, Ferdinand Maximilian - younger brother of Franz Joseph, Emperor of Austria - came to Trieste"
+    },
+    {
+      "index": 2133,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "17f9cc237c946356127938343e90876b155cf832283517fcaa5e7b2b5a2cc34c",
+      "targets_sha256": "a25fc4feabdc601b7069a904aa7e18fbbcdcc6d9353566de8a8bfd1ab02e04ae",
+      "resolved_url": "https://en.wikipedia.org/wiki/Adriatic_campaign_of_1807%E2%80%931814",
+      "content_sha256": "3daed91d68a75762eb5e20edb4c475f7f896fe7c90d3623ae6538bca0d85139f",
+      "evidence_quote": "ames Brisbane. These reinforcements made an immediate impact with a series of raids in the Dalmatian and Ionian islands.[17] In February Belle Poule captured the Var off Valona; the French responded by despatching the frigates Danaé and Flore from Toulon.[14] HMS Topaze attacked these frigates as they arrived, but they were able to reach Corfu before sailing north to augment French defences in the Adriatic.[18]\n\nThroughout the year British attacks intensified, driven by Hoste's Amphion operating from Lissa. Raids on the Italian coastline seized dozens of coastal merchant vessels and gunboats while parties of marines and sailors landed at coastal towns, driving off the defenders and blowing up the fortifications before returning to their ships.[19] These successes in the face of n"
+    },
+    {
+      "index": 2326,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "a45bf890802a6956037fc7a8168a76ae7655a5a6597a29343c8c40cd025c88a2",
+      "targets_sha256": "55fd206d925c17d653bd8305fd28fb7a0042274929056b8f12c84f9cd0053d8f",
+      "resolved_url": "https://en.wikipedia.org/wiki/Tomb_of_Absalom",
+      "content_sha256": "5a41b2db2f3e27c4dc5b3516e10381ca4d21c11c360e40b5d3bb7c1ffe57ba62",
+      "evidence_quote": "ertically cut rock of the Mount of Olives. It is decorated from the outside on each side by pairs of Ionic half-columns, flanked in the corners by quarter-columns and pillars (a so-called distyle in antis arrangement). The four square facades are crowned by a Doric frieze of triglyphs and metopes and an Egyptian cornice.\n\nInside view of Absalom's Pillar, Photoshop-morphed from the following two early 20th-century photos.\n\nThe upper, ashlar-built part of the monument consists of three differently-shaped segments: a square base set on top of the Egyptian cornice of the lower part, followed by a round drum crowned by a rope-shaped decoration, which sustains a conical roof with concave sides (the easily recognisable \"hat\"), topped by a half-closed lotus flower. The upper part of the mo"
+    },
+    {
+      "index": 2403,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "5e0c270c44c81d283818e4d190814935ec8470ae71d9a3c39eb98ad5a5ed3ed2",
+      "targets_sha256": "bef57e94f6b85310365e43b786cb600b2527c08430834da7f0cc0eea45745fe1",
+      "resolved_url": "https://en.wikipedia.org/wiki/Area_code_575",
+      "content_sha256": "1f69ef31ea43a52f3965ce0668aacf713e69c87e163d9e39787cf955a711d96b",
+      "evidence_quote": "llecitos\nVaughn\nVirden\nWagon Mound\nWeber City\nWhite Lakes\nSee alsoedit\nList of New Mexico area codes\nList of North American Numbering Plan area codes\nReferencesedit\nJump up to:\n \"Planning Letter 358: 505 NPA; 2-way Split, Creating 575 NPA – New Mexico\" (PDF). North American Numbering Plan Administrator. December 21, 2006. Retrieved July 30, 2013.\n North American Numbering Plan Administrator (March 2022). \"NANPA 2021 Annual Report\" (PDF). Retrieved December 19, 2022.\n \"Transition to 10-digit dialing (for 988 as 3-digit access to National Suicide Prevention Hotline)\" (PDF). North American Numbering Plan Administrator. January 8, 2021. Retrieved March 9, 2021.\nExternal linksedit\n\"Area Code Maps\". North American Numbering Plan Administrator.\nNew Mexico area codes: 505, 575\n\tNorth: 505, 719, 970\t\nWest: 505, 520, 928"
+    },
+    {
+      "index": 2419,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "f59dd8b5985ab8e33dc18cced0a0b1fb0fa248d71e96437552148c3f31663a5a",
+      "targets_sha256": "2c02fa790b3609ea9edf0f83207fcfa6f2371af6bd8b1b339fa3afc8487cb88e",
+      "resolved_url": "https://en.wikipedia.org/wiki/Nanjing_decade",
+      "content_sha256": "2228ad7dd5edd5290078931e82d379b318b04b77a980e7db7603a39ed1ef9a14",
+      "evidence_quote": "ing Decade\"\n\nThe organization and function of the KMT one-party state was derived from Sun's \"Three Stages of Revolution\" and his policy of Dang Guo. The first stage was military unification, which was carried out with the Northern Expedition. The second was \"political tutelage\" which was a provisional government led by the KMT to educate people about their political and civil rights, and the third stage was constitutional government. The KMT considered themselves to be at the second stage in 1928.\n\nThe KMT set up its five-branch government (based on the Three Principles of the People) using an organic law including Executive Yuan, Legislative Yuan, Judicial Yuan, Control Yuan and Examination Yuan. This government disavowed continuity with the defunct Beiyang government that enjoyed inte"
+    },
+    {
+      "index": 2453,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "b1aa8c522a087f6c4d7f4f9a63f02d9bd2cafae8ffa8af855214ed12d0327c34",
+      "targets_sha256": "eb65e62dc2c34f679bc0e4e952964dc076ebf20518052409652869f6d8646576",
+      "resolved_url": "https://en.wikipedia.org/wiki/Antipope_Clement_VII",
+      "content_sha256": "c5dc6a06a4cb4c9751e03a847530dc97d975a2a0a7cd2a0507c92f70cbcb9a9d",
+      "evidence_quote": "Jump to content\nMain menu\nSearch\nDonate\nCreate account\nLog in\nContents hide\n(Top)\nBiography\nPapal election and reign\nSee also\nReferences\nSources\nAntipope Clement VII\n39 languages\nArticle\nTalk\nRead\nEdit\nView history\nTools\nAppearance hide\nText\nSmall\nStandard\nLarge\nWidth\nStandard\nWide\nColor\nAutomatic\nLight\nDark\nFrom Wikipedia, the free encyclopedia\nFor the sixteenth-century pope, see Pope Clement VII.\nAntipope\nClement VII\nCount of Geneva\n\nInterview between the duke of Anjou and pope Clement VII (seated) at Avignon, from Froissart's Chronicles.[1]\n\nElected\t20 September 1378\nPapacy began\t20 September 1378?\nPapacy ended\t16 September 1394\nPredecessor\t\nRoman claimant:\nUrban VI\nBonifac"
+    },
+    {
+      "index": 2455,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "33c79324234b933f93d95aa795658c88d59c3f046f02a631d07f3f538ecb6c25",
+      "targets_sha256": "999679b29280c7e1e937711db0995fa33c5e0abf35764a5ae5fc0923ac3721ab",
+      "resolved_url": "https://en.wikipedia.org/wiki/I_quattro_libri_dell%27architettura",
+      "content_sha256": "3d1f5ee7f6f1439fa33ab02749bdc45a3030407d7bee795d9977af1ef36ade17",
+      "evidence_quote": "eferences subsection\nSources\nExternal links\nI quattro libri dell'architettura\n20 languages\nArticle\nTalk\nRead\nEdit\nView history\nTools\nAppearance hide\nText\nSmall\nStandard\nLarge\nWidth\nStandard\nWide\nColor\nAutomatic\nLight\nDark\nFrom Wikipedia, the free encyclopedia\nThe Four Books of Architecture\nFront page of I quattro libri dell'architettura\n\nAuthor\tAndrea Palladio\nOriginal title\tI quattro libri dell'architettura\nTranslator\tGiacomo Leoni\nIllustrator\tAndrea Palladio\nLanguage\tItalian\nSubject\tArchitecture\nGenre\tNon-fiction\nPublished\t1570\nPublisher\tDominico de' Franceschi[1]\nPublication place\tItaly\nPublished in English\tJohn Watts, London, 1716-1720\nMedia type\tPrint\n\nI quattro libri dell'architettura (The Four Books of Architecture) is a treatise on architecture by the architect Andrea Palladio (1508–1580), w"
+    },
+    {
+      "index": 2458,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "81cfec0b80cc8ae4bc6653e82cd5550f2dc4bc2aa96cf0543a37f78b17ae57a3",
+      "targets_sha256": "30f27f742df53f14ade36b3aac352171e8ba82ae4fb16c51126caf0b92330c12",
+      "resolved_url": "https://en.wikipedia.org/wiki/Jamie_Murray",
+      "content_sha256": "b2b049e90805b129f5bae09b5ee50e2a9c4dfc04b37b427231ccb0fbb83581ca",
+      "evidence_quote": "019)\nOther mixed doubles tournaments\nOlympic Games\t1R (2016)\nTeam competitions\nDavis Cup\tW (2015)\n\nJames Robert Murray OBE (born 13 February 1986) is a British former professional tennis player. A doubles specialist, he is a seven-time major doubles champion (five in mixed doubles and two in men's doubles), a Davis Cup winner, and a former doubles world No. 1. He is the older brother of former singles world No. 1, Andy Murray. Murray had an early career partnership with Eric Butorac, winning three titles in 2007. His following seven ATP finals came with six different partners. In 2013, he began a new partnership with John Peers, winning six ATP tournaments, and reaching two Grand Slam finals. After this partnership ended, Murray played alongside Bruno Soares from 2016, with"
+    },
+    {
+      "index": 2462,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "b4c6b93382dd3ffcd9a3a5db1f72c028467f537f41ec9195360ce5f85d12140a",
+      "targets_sha256": "533405385fbc18025eb538bc664ccab627df0419c44c2abdc8b9bea9e133d414",
+      "resolved_url": "https://en.wikipedia.org/wiki/Salish_Sea",
+      "content_sha256": "7398407df6115ebcd75155fe1fc3a68cb37b29c82751521e544195afca44c87f",
+      "evidence_quote": "Fauna   \n   \n  \n 4.1.3 Sponge reefs   \n     \n  \n 4.2 Terrestrial   \n     \n  \n 5 Foot discoveries   \n   \n  \n 6 See also   \n   \n  \n 7 References   \n   \n  \n 8 Further reading   \n   \n  \n 9 External links   \n         \n    \n   Toggle the table of contents  \n \n     \nSalish Sea \n   35 languages  \n \n \n \nالعربية\nAzərbaycanca\nCebuano\nЧӑвашла\nDeutsch\nEsperanto\nEspañol\nEuskara\nفارسی\nFrançais\nFrysk\nעברית\nՀայերեն\nÍslenska\nItaliano\n한국어\nKurdî\nLietuvių\nLatviešu\nОлык марий\nМакедонски\nBahasa Melayu\nNederlands\nNorsk nynorsk\nPolski\nРусский\nSrpskohrvatski / српскохрватски\nСрпски / srpski\nKiswahili\nTürkçe\nУкраїнська\nاردو\nTiếng Việt\n粵語\n中文  \nEdit links     \n \n \n  \n \n \n \nArticle  \nTalk     \n  English  \n \n \n \n        \n  \n \n \n \nRead  \nEdit  \nView history       \n   Tools  \n \n \n \n \nTools \nmove to sidebar \nhide"
+    },
+    {
+      "index": 2525,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "b569bebc0494c9b2f13677726c1bb650db86ac041460918ba979dc4ff172865f",
+      "targets_sha256": "aabba6f800edf9f6e96f884583adcd50417f05532522e0601d09c9686c9f6353",
+      "resolved_url": "https://en.wikipedia.org/wiki/Ceres_(dwarf_planet)",
+      "content_sha256": "a9bbaaef5c4ca4eb54485b37b18d02c4c628464b471c5757b60b5530f09a8dc2",
+      "evidence_quote": "8 km2[a]Volume434,000,000 km3[7]Mass\n\n\n(9.38392±0.00005)×1020 kg[7]\n0.00016 Earths\n0.0128 Moons\nMean density2.1616±0.0025 g/cm3[7]\nEquatorial surface gravity0.284 m/s2 (0.0290 g0)[a]\nMoment of inertia factor0.36±0.15[8][b] (estimate)\nEquatorial escape velocity0.516 km/s[a] 1141 mph\nSidereal rotation period9.074170±0.000001 h[2]\nEquatorial rotation velocity92.61 m/s[a]\nAxial tilt≈4°[10]\nNorth pole right ascension291.42744°[11]\nNorth pole declination66.76033°[12]\nGeometric albedo0.090±0.0033 (V-band)[13] Surface temp. min mean max  Kelvin ≈110[14] 172.5±2 235±4[15]  \nSpectral typeC[16]\nApparent magnitude\n\n\n7.6[17]\n9.27 (July 2021)[18]\nAbsolute magnitude (H)3.35[2]\nAngular diameter0.854″ to 0.339″\n  \nCeres is a dwarf planet in the main asteroid belt between the orbits of Mars and Ju"
+    },
+    {
+      "index": 2652,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "ad47714bbfec2cb406132e53d78cbbbd37635dffe9f8b5c2fdd0d328ff9272d7",
+      "targets_sha256": "8d52d0f318e59710882eb49f3e0370077b768d12c6e50de93a33558a330d9c01",
+      "resolved_url": "https://en.wikipedia.org/wiki/Laughing_Stock",
+      "content_sha256": "23f1263f7886dc58088c8b9db6e4fa261a690294e8736fbe0b33d81a61241c4c",
+      "evidence_quote": "Jump to content\nMain menu\nSearch\nDonate\nCreate account\nLog in\nContents hide\n(Top)\nBackground\nRecording\nMusic\nRelease\nArtwork\nCritical reception\nLegacy\nTrack listing\nPersonnel\nCharts\nReferences\nLaughing Stock\n14 languages\nArticle\nTalk\nRead\nEdit\nView history\nTools\nAppearance hide\nFrom Wikipedia, the free encyclopedia\nFor other uses, see Laughing stock (disambiguation).\nLaughing Stock\n\nStudio album by Talk Talk\nReleased\t16 September 1991[1][2]\nRecorded\tEarly 1990[3] – 1991 (credited as September 1990 – April 1991)\nStudios\tWessex, London\nGenres\t\nPost-rock[4][5][6]art rock[7]ambient[8]\n\nLength\t43:29\nLabels\tVerve, Polydor\nProducer\tTim Friese-Greene\nTalk Talk chronology\nHistory Revisited\n(1991)\tLaughing Stock\n(1991)\tAsides B"
+    },
+    {
+      "index": 2666,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "765b0ac9c19311a88a0d0acbc191ec7bae4f9d8b88393ffd52edb0dcadaf2021",
+      "targets_sha256": "97dcb9900a66018e11a4942fa54a6f3970d84537588b4d8b5475e0dd8d3e14f5",
+      "resolved_url": "https://en.wikipedia.org/wiki/Take_Good_Care_of_My_Baby",
+      "content_sha256": "f5bc3e07962235606ab6ca2426a3025677c40fec57cb16ab58b498916b8cf30b",
+      "evidence_quote": "Good Care of My Baby\"Single by Smokiefrom the album  Solid Ground B-side\"I Wanna Kiss Your Lips\"Released1980 (1980)Length3:15LabelRAKSongwriters \n\nGerry Goffin \nCarole King ProducerSmokieSmokie singles chronology   \"San Francisco Bay\" \n(1979) \"Take Good Care of My Baby\" \n(1980) \"Run to Me\" \n(1980)  \nIn 1980, English rock band Smokie released a version of the song, which spent seven weeks on the UK Singles Chart, reaching No. 34,[36] while reaching No. 10 on Austria's Ö3 Hit wähl mit chart,[37] No. 15 on the Irish Singles Chart,[38] and No. 18 in West Germany.[39] It was later released on their 1981 album Solid Ground.[39] \n\nCharts[edit]   Chart (1980) Peak\nposition  Australia (Kent Music Report)[40] 48  \n\nOther versions[edit] \nDion recorded a version of the song, which was released on his November 1961 album Runaround Sue.[41] Although Dion's version was released after Bobby Vee's version, Dion's was the first version to be recorded.[2] \nThe song was performed by the Beatles during th"
+    },
+    {
+      "index": 2891,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "727258905a19ab0c985037f54c0868e232010b379b1c7b5057ec5d2f79be4acd",
+      "targets_sha256": "41503e89db61287469e67ff253705933af8a7c88c3f2a5e41874a077b060c558",
+      "resolved_url": "https://en.wikipedia.org/wiki/All_Saints,_Margaret_Street",
+      "content_sha256": "6e219e7b8c21944a85e32ed3b98d2f41f22f4ca4130b8dd2a7206024db313532",
+      "evidence_quote": "a cousin of Edward Bouverie Pusey, was also a member of the Oxford Movement. He translated a volume within the Library of the Fathers, a collection of English translations of the works of the Church Fathers, but died in June 1839 before its publication.[22]\n\nFrederick Oakeley, a fellow of Balliol College, Oxford who joined the Oxford Movement in early 1839, left the university and became minister of Margaret Street Chapel on 5 July that year.[23] As minister, Oakeley rearranged the interior of the chapel and practised Anglo-Catholic high liturgy, making it a \"showcase of the liturgical practices of the Oxford movement\" according to Galloway and Rawll.[24] James Pereiro also wrote that the chapel was an example of the \"new spirit of liturgical worship\" of Oxford.[20] In 1845, Oakeley wr"
+    },
+    {
+      "index": 2920,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "7aa2cb3f7beb4d29bb3f2e13cea2802018ccf65461b84b4e6a015c97773eaeb2",
+      "targets_sha256": "ef04e05944bbf207099452d94dcd4ec953183377b1f6910f7ffae79a793eb39b",
+      "resolved_url": "https://en.wikipedia.org/wiki/The_Sing-Off_season_1",
+      "content_sha256": "67525649e7c9aa2b67423519da0ebfcba70ae7b4c1b5261f794107ca303899e1",
+      "evidence_quote": "des, concluding on December 21, 2009 with a live finale. The group Nota won the title.\n\nGroupsedit\nContestant\tSchool\tFinish\tNumber\nof members\nNota\nSan Juan, Puerto Rico\tNA\t\nWinner\n\t\n6\n\nThe Beelzebubs\nMedford, Massachusetts\tTufts University\t\nSecond Place\n\t\n12\n\nVoices of Lee\nCleveland, Tennessee\tLee University\t\nThird Place\n\t\n10\n\nThe SoCals\nLos Angeles, California\tUniversity of Southern California\t\nEliminated\nEpisode 3\n\t\n8\n\nMAXX Factor\nBaltimore, Maryland\tNA\t\nEliminated\nEpisode 3\n\t\n4\n\nBYU Noteworthy\nProvo, Utah\tBrigham Young University\t\nEliminated\nEpisode 2\n\t\n9\n\nSolo\nOmaha, Nebraska\tNA\t\nEliminated\nEpisode 1\n\t\n7\n\nFace\nBoulder, Colorado\tNA\t\nEliminated\nEpisode 1\n\t\n6\nElimination tableedit\nLegend\nEliminated\tLast safe\tSafe\tThird\tRunner-up\tWinner\nDate:\t12/14\t12/15\t12/16 (A)\t12/16 (B)\t12/21\nPl",
+      "replacement_for_index": 370
+    },
+    {
+      "index": 4398,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "da28de645347f5896652a26ae767df1035a4a092a752af9a4833fc69dde41656",
+      "targets_sha256": "d2c834c282636646459f20e78f5fe778a396801c35f3443971d3bc1e58555d94",
+      "resolved_url": "https://en.wikipedia.org/wiki/Go_Now",
+      "content_sha256": "3dc6c4e4505ca69ef3d84158f8f01bb7fbb55fc4ef4a8d1c9d51e3e298615012",
+      "evidence_quote": "ra, produced and directed by their co-manager Alex Wharton (the father of DJ Sonny Wharton). The song reached No. 1 in the UK Singles Chart in late January 1965.[8] In the US, \"Go Now!\" did not enter the Billboard Hot 100 until mid-February 1965; it peaked at No. 10[9] and No. 2 in Canada.[10] Billboard described the song as having a \"rare beat\" and \"interesting gospel-like piano support.\"[11] The next chart successes for The Moody Blues were \"Nights in White Satin\" and \"Tuesday Afternoon\" in 1968.\n\nIn a 2018 interview with author Robert Rodriguez on the podcast \"Something About the Beatles\", White Album engineer Chris Thomas recalled that George Harrison asked him to add a piano part to the Beatles song \"Long Long Long\" in the style of the Moody Blues' version of \"Go Now\".[1",
+      "replacement_for_index": 1916
+    },
+    {
+      "index": 4489,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "56ac90c59786332601c8ce2c9966e41d3f8e6fa9fa3c764d51fcc643b86f4195",
+      "targets_sha256": "6cb4ba0cd09fcc1a3c1da9c12f8065ea527dc0313f8deb91719a1533849d0fef",
+      "resolved_url": "https://en.wikipedia.org/wiki/2012_Cardiff_South_and_Penarth_by-election",
+      "content_sha256": "8d92c6f94957c410aab9d11f816a02ce4d45988d0456dcd9d06144f08d9998f6",
+      "evidence_quote": "eate account\nLog in\nContents hide\n(Top)\nBackground\nCandidates\nBy-election result\nPrevious result\nSee also\nReferences\n2012 Cardiff South and Penarth by-election\nAdd languages\nArticle\nTalk\nRead\nEdit\nView history\nTools\nAppearance hide\nText\nSmall\nStandard\nLarge\nWidth\nStandard\nWide\nColor\nAutomatic\nLight\nDark\nFrom Wikipedia, the free encyclopedia\n2012 Cardiff South and Penarth by-election\n\n← 2010\t15 November 2012\t2015 →\n\nThe Cardiff South and Penarth Parliamentary seat in the House of Commons\nTurnout\t25.7%\n\n \tFirst party\tSecond party\tThird party\n \t\t\t\n\nCandidate\tStephen Doughty\tCraig Williams\tBablin Molik\nParty\tLabour\tConservative\tLiberal Democrats\nPopular vote\t9,193\t3,859\t2,103\nPercentage\t47.3%\t19.9%\t10.8%\nSwing\t 8.4 pp\t 8.4 pp\t 11.5 pp\n\n\n\n \tFourth party\tFifth party\n \t\n\t\n\nCandidate\tLuke Nicholas\tSimon Zeigler\nParty\tPlaid Cymru\tUKIP\nPopular vote\t1,854\t1,179\nPercentage\t9.5%\t6.1%\nSwing\t 5.3 pp\t 3.5 pp\n\n\nMP before election\n\n\nAlun Michael\nLabour\n\n\tSubsequent MP\n\n\nStephen Doughty\nLabour\n\nA by-elec"
+    },
+    {
+      "index": 4728,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "794259c299fec81f2480e2e93406d1512cb98740574a8d9550a1957fe3943d2b",
+      "targets_sha256": "bd3113617e206b584d8139ca326d52997c28f2ce392016e7711bbc6513add4a5",
+      "resolved_url": "https://en.wikipedia.org/wiki/The_Nightingale_(opera)",
+      "content_sha256": "95f4a866656e091a19e080ed24e9e1d1c992c59519dd101a5cf0974ed78ccad9",
+      "evidence_quote": "a few weeks later, on 26 May, by the Ballets Russes conducted by Pierre Monteux at the Palais Garnier in Paris. Publication, by the then Paris-based Éditions Russes de Musique, followed only in 1923 and caused the opera to become known by its French title of Le Rossignol and French descriptor of conte lyrique, or lyric tale, despite its being wholly Russian.\n\nCompositionedit\n\nStravinsky began work on the opera in 1908 but put it aside after receiving the next year the commission from Sergei Diaghilev for the ballet The Firebird. He returned to it in 1913 after he had completed three ballets for Diaghilev, Petrushka and The Rite of Spring being the others. Act 1, set at the seashore, was mostly complete by 1909; acts 2 and 3, set at court, were finished in early 1914. Stravinsky wa",
+      "replacement_for_index": 2232
+    },
+    {
+      "index": 4920,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "ff6180ec8478f73c3f52375cae4fb2b90b708ab521d8e24451f3d1051df688e9",
+      "targets_sha256": "4d83a1f3e47b09a57f011d4bd69c80eaaed35d7122fbd598fca53a56f2f82d95",
+      "resolved_url": "https://en.wikipedia.org/wiki/Irish_Americans_in_New_York_City",
+      "content_sha256": "d337b0468e2495e885b5641894ce68343ca25d1bc944bd0c51f3381e26b063c9",
+      "evidence_quote": "York grew so large that a nationwide stereotype began to form of Irish-Americans as police officers and firemen.[21][22] Pipe bands have continued to play at funerals for police officers regardless of ethnicity into the 21st century.[22][23] On September 11, 2001, 40% of the 343 firefighters who died had Irish ancestry.[24] According to George Pataki, NYPD Commissioner Bernard Kerik told Brian Cowen during a visit to Ground Zero that 200 claddagh rings had been recovered from the site.[25]\n\nIrish colleges and universitiesedit\n\nFordham University was founded by Archbishop John Hughes an Irish immigrant, and built by Irish labor. Most of the Jesuits are Irish-Americans and Irish Americans make up a sizeable amount of the student body. The University president Rev. Joseph Mc",
+      "replacement_for_index": 2502
+    },
+    {
+      "index": 4947,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "470bf0c7f1de51f4ee71666705dc820bc3dcfb03a06de8c07cc6d7c9fe794b85",
+      "targets_sha256": "356e1260756332d9eaaad8289f604f72d7d5ed3eaff9d922bf3077e2b4ada7f1",
+      "resolved_url": "https://en.wikipedia.org/wiki/Beatification_and_canonization_of_Pope_Paul_VI",
+      "content_sha256": "08f7f3283f13538dd9f9b735d1f7e4e81ed5c0a3866d1d42a4f5efff9577dc54",
+      "evidence_quote": "nio Marrazzo while the vice-postulator was Antonio Lanzoni.\n\nHistoryedit\nDiocesan processedit\n\nOn 18 March 1993 \"nihil obstat\" (\"nothing against\") was declared under Pope John Paul II which opened the cause for beatification. The diocesan process commenced on 11 May 1993 in Rome and thus, he was granted the title of Servant of God. The postulator assigned to the cause was Father Antonio Marrazzo. The diocesan process concluded its business on 18 March 1998.[7] Father Luigi Villa, playing the part of the devil's advocate, released a book titled Paul VI: Beatified? which was written in opposition to the cause of beatification.[8]\n\nRoman phaseedit\n\nThe Positio - documents and other information gathered from the diocesan process - was forwarded to the Congregation for the Causes of Sa",
+      "replacement_for_index": 2599
+    },
+    {
+      "index": 4950,
+      "review_status": "approved",
+      "review_basis": "question-relevant source passage directly identifies the verifier target",
+      "question_sha256": "433c6ea425ec145b66b3dd5726c76ec7856bb28634b71cc9d7a053e8f7f829c9",
+      "targets_sha256": "b5d96812b2d31229432db2e83e62806f20c45908a0e003a81a8c46a65ef752a1",
+      "resolved_url": "https://en.wikipedia.org/wiki/Via_Mala_(1945_film)",
+      "content_sha256": "c1720430ce001e548f6971fc7ae764bbf754131ff6284bebf83b1fcee36b5d60",
+      "evidence_quote": "ch 1944. This was still deemed unsatisfactory, and several scenes were re-shot. The ending moved away from that of the novel, where all family members except Silvelie were revealed to have taken part in the murder.[4] It was finally submitted to the censor in January 1945.[2]\n\nReleaseedit\n\nThe film's release was also troubled. It was passed by the censors on 9 March 1945, but this was rescinded only ten days later.[2] The downbeat plot was considered unsuitable in light of the recent war situation, as German forces were being pushed back on all fronts and escapist films were preferred. It was finally agreed that the film could go on general release only outside Germany.[2]\n\nThe film premièred in Mayrhofen on 7 April 1945. It was not released in Germany until 16 January 1948, when i",
+      "replacement_for_index": 2642
+    },
+    {
+      "index": 5034,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "8f973bd07311785f288ea291f0012ef48c61902327c905832e0a6df9e89ddc08",
+      "targets_sha256": "8166203409d06a40b7974bf734ea28558b3809fe907cc34693a9de37540d1c4d",
+      "resolved_url": "https://en.wikipedia.org/wiki/TS_Class_7",
+      "content_sha256": "4cdf0f50d815241f0bb024270dabe77f900a5cebcea33ac51fb2c58d2d12ca68",
+      "evidence_quote": "Contents hide\n(Top)\nReferences\nTS Class 7\nAdd languages\nArticle\nTalk\nRead\nEdit\nView history\nTools\nAppearance hide\nText\nSmall\nStandard\nLarge\nWidth\nStandard\nWide\nColor\nAutomatic\nLight\nDark\nFrom Wikipedia, the free encyclopedia\nTS Class 7\n\nManufacturer\tStrømmen\nConstructed\t1956–57\nEntered service\t1956\nScrapped\t1984–85\nNumber built\t28 (trams)\n15 (trailers)\nNumber preserved\t4\nFleet numbers\t1–5, 10–32\nCapacity\t33 (seated) + 52 (standing)\nOperator\tTrondheim Sporvei\nSpecifications\nCar length\t13.2 m (43 ft 4 in)\nWidth\t2.6 m (8 ft 6 in)\nDoors\t6\nWeight\t15.0 t (14.8 long tons; 16.5 short tons)\nPrime mover\tNEBB GDTM 1252\nPower output\t172 kW (231 hp)\nCurrent collection\tPantograph\nTrack gauge\t1,000 mm (3 ft 3\n+\n3⁄8 in)\n\nTS Class 7 was a series of 28 trams and 15 trailers built by Strømmens Værksted for Trondheim Sporvei. They were delivered in 1956–57.\n\nOn 10 October 1956, almost all operative trams used by the company were lost to the flames. Subsequently, Trondheim Sporvei ordered the Class 6 from"
+    },
+    {
+      "index": 5046,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "268d54163e42ca8d3480d58906a8ba7dba7a3c254ffa4b02ce13dea697ba5c9e",
+      "targets_sha256": "e82c1b2c884852c61cdad8de90c4eb44131caee7c43e751abd58e2053430e0c7",
+      "resolved_url": "https://en.wikipedia.org/wiki/Vakhsh_District",
+      "content_sha256": "08d211a056b144e54aec20a872a17df05b89878761e9a344f7e8ad20378cb76c",
+      "evidence_quote": "earch\nDonate\nCreate account\nLog in\nContents hide\n(Top)\nAdministrative divisions\nReferences\nVakhsh District\n8 languages\nArticle\nTalk\nRead\nEdit\nView history\nTools\nAppearance hide\nText\nSmall\nStandard\nLarge\nWidth\nStandard\nWide\nColor\nAutomatic\nLight\nDark\nCoordinates: 37°40′N 68°52′E\nFrom Wikipedia, the free encyclopedia\nVakhsh District\n(Tajik: Ноҳияи Вахш)\n\n\nLocation of the district in Tajikistan\n\nCoordinates: 37°40′N 68°52′E\nCountry\t Tajikistan\nRegion\tKhatlon Region\nCapital\tVakhsh\nArea\n\n • Total\n\t1,000 km2 (390 sq mi)\nPopulation (2020)\n\n • Total\n\t199,300\n • Density\t200/km2 (520/sq mi)\nTime zone\tUTC+5\nWebsite\tvakhsh.tj\n\nVakhsh District (Tajik: Ноҳияи Вахш Nohiya-i Vakhsh) is a district in Khatlon Region, Tajikistan. Its capital is Vakhsh. It is located in the southern part of Khatlon and of the country. The population of the district is 199,300 (January 2020 estimate).[1]\n\nAdministrative divisionsedit\n\nThe district has an area of about 1,000 km2 (400 sq mi) and is divided administratively i"
+    },
+    {
+      "index": 5058,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "dc9dc9c42db9e10396f684e2cc740bf716d16f68720b8ded31a30178abc432ba",
+      "targets_sha256": "44f73db6f3ad479ebd64cd5ed39e3a2679cbddf6deccd222ac1753adcabdf2ff",
+      "resolved_url": "https://en.wikipedia.org/wiki/Rhine",
+      "content_sha256": "1922ff30723988fdac97b2ccd2d1620ac158ce2e753991cee4bb48b21894b196",
+      "evidence_quote": "s forming the Anterior and Posterior Rhine within Grisons, Switzerland\t116 m3/s[iii]\t584 m\tAua Russein, Schmuèr[16]\tRein da Tuma, Rein da Curnera, Rein da Medel, Rein da Sumvitg (Rein da Vigliuts), Glogn (Valser Rhine), Rabiusa, Rein Posteriur/Hinterrhein (tributaries of which include the Ragn da Ferrera, Albula/Alvra, Gelgia, and Landwasser)[16]\nc. 90 km[iv]\tThe Alpine Rhine running through the Grisonian and St. Gall Rhine Valley (partly forming the Swiss border with Liechtenstein and Austria)\t245 m3/s[v]\t400 m\tTamina, Saar[18]\tPlessur, Landquart,[18] Liechtenstein inland canal, Ill, Frutz\nc. 60 km[vi]\tLake Constance, including the short channel called Seerhein at Konstanz, connecting Obersee and Untersee\t364 m3/s[vii]\t395 m\tAlter Rhein (Rheintaler Binnenkanal), Goldach, Aach[20]\tDornbirner Ach, Bregenzer Ach, Leiblach, Argen, Schussen, Rotach, Brunnisach, Lipbach, Seefelder Aach, Stockacher Aach, Radolfzeller Aach[viii][20]\nc. 150 km[ix]\tThe High Rhine from the exit of Lake Constance"
+    },
+    {
+      "index": 5256,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "6f1017e861270ea3c537ff4e1721250e4803452ff7c5da55e3fee8888d89e3eb",
+      "targets_sha256": "f90674775fbee190880eea9ef40050bc98c9fd2d157db79e6c7268c559d831fb",
+      "resolved_url": "https://en.wikipedia.org/wiki/Roe_Highway",
+      "content_sha256": "92098dc78c00d79cb75bcde611d1cb63ff0b5e778b61f6a41be70cad8e76641e",
+      "evidence_quote": "the 20-kilometre (12 mi) section between Tonkin Highway and the Kwinana Freeway (a little more than half the highway's entire length) is a continuous freeway.\n\nThe speed limit for the highway is mostly 100 kilometres per hour (62 mph); however, the section between Great Northern Highway and Morrison Road carries a 90 kilometres per hour (56 mph), and it is 80 kilometres per hour (50 mph) at the Great Eastern Highway Bypass intersection. Otherwise, the speed limit near at-grade intersections is 70 kilometres per hour (43 mph). A principal shared path (PSP) exists alongside most of Roe Highway, from Kalamunda Road to Kwinana Freeway.\n\nMiddle Swan to Forrestfieldedit\n\nRoe Highway commences in Middle Swan within the City of Swan local government area (LGA) at Great Northern Highway at a traffic light controlled intersection as an eastern continuation of Reid Highway. Upon the highway's commencement it is carrying both State Route 3 (continuing from Reid Highway) and National Highway 95 (c"
+    },
+    {
+      "index": 5327,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "b5a1159da0a193bf27559eab1281bb66252fd3fa4aa857ab94cbf5313014e880",
+      "targets_sha256": "19516999fb1e5c81c00df49c0f79d834da63e7346b83d2eaf2295d0220882c8d",
+      "resolved_url": "https://en.wikipedia.org/wiki/Quarter_(United_States_coin)",
+      "content_sha256": "10c0806eee4a562f5a3d343bf186a662e361ff7ad85de41d83d80b1f4f185bdd",
+      "evidence_quote": "hortened URL\nSwitch to legacy parser    \n \n Print/export  \n \n \nDownload as PDF\nPrintable version    \n \n In other projects  \n \n \nWikimedia Commons\nWikidata item            \n \n  \n    \n \n \n \nAppearance \nmove to sidebar \nhide       \n \n \n  \nFrom Wikipedia, the free encyclopedia  \n\n \n\n \n\nDenomination of United States currency \n  \nQuarter dollar\nUnited StatesValue0.25 U.S. dollarMass0.2 oz. (5.67 g)Diameter0.955 in. (24.257 mm)Thickness0.069 in. (1.7526 mm)Edge119 reedsCompositionFrom 1965: 91.67% Cu, 8.33% Ni\n1932–1964: 0.2204 oz. (6.25 g), 90% Ag, 10% CuYears of minting1796–presentCatalog number1985ObverseDesignGeorge Washington bustDesignerLaura Gardin FraserDesign date1931; 95 years ago (1931)Design used2022–2025ReverseDesignVarious \nThe quarter dollar, commonly called the quarter, is a United States coin valued at 25 cents, equal to 1⁄4 of a dollar ($0.25). Adorning its obverse in modern designs is the profile of George Washington, while its reverse design has undergone frequent changes"
+    },
+    {
+      "index": 5330,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "a034639ecf9edd0989acbeb832b0e069f20442bc08f0b9254980b65bb92e1ff4",
+      "targets_sha256": "f0999b90dd84e796a12eaa0682706f9fa4bf7b1c6113e504999eeb6bf006eb1a",
+      "resolved_url": "https://en.wikipedia.org/wiki/Bonus_Army",
+      "content_sha256": "c5eabe16fdb43618a4c4d37480ac7650f1eda109735f0cc203964bfa2a850d89",
+      "evidence_quote": "ans \"bonuses\" in the form of certificates which they could not redeem until 1945. Each certificate, issued to a qualified veteran soldier, bore a face value equal to the soldier's promised payment with compound interest. The principal demand of the Bonus Army was the immediate cash payment of their certificates.\n\nOn July 28, 1932, U.S. Attorney General William D. Mitchell ordered the veterans removed from all government property. Washington police met with resistance and shot at the protestors; two veterans were wounded and later died. President Herbert Hoover then ordered the U.S. Army to clear the marchers' campsite. Army Chief of Staff General Douglas MacArthur commanded a contingent of infantry and cavalry, supported by six tanks. The Bonus Army marchers with their wives and children were driven out, and their shelters and belongings burned.\n\nA second, smaller Bonus March in 1933 at the start of the Roosevelt administration was defused in May with an offer of jobs with the Civilian"
+    },
+    {
+      "index": 5397,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "93e7c312c650b2d7bd4dd96143db352d317addbb19a32b9fdd3e16d7c00478ee",
+      "targets_sha256": "1119ea68c7ce934ba29aa60739aff3f5a4d2801297f0f4d3481f784f3a0aec88",
+      "resolved_url": "https://en.wikipedia.org/wiki/Rhine",
+      "content_sha256": "1922ff30723988fdac97b2ccd2d1620ac158ce2e753991cee4bb48b21894b196",
+      "evidence_quote": "nterrhein (Sursilvan: Rein Posteriur)\n • location\tParadies Glacier, Graubünden, Switzerland\nSource confluence\tReichenau\n • location\tTamins, Graubünden, Switzerland\n • coordinates\t46°49′24″N 9°24′27″E\n • elevation\t585 m (1,919 ft)\nMouth\tNorth Sea\n • location\tNetherlands\n • coordinates\t51°58′54″N 4°4′50″E\n • elevation\t0 m (0 ft)\nLength\t1,230 km (760 mi)[note 1]\nBasin size\t185,000 km2 (71,000 sq mi)\nDischarge\t \n • average\t2,900 m3/s (100,000 cu ft/s)\n • minimum\t800 m3/s (28,000 cu ft/s)\n • maximum\t13,000 m3/s (460,000 cu ft/s)\n[2]\n\nThe Rhine (/raɪn/ RYNE)[3][note 2] is one of the major rivers of Europe. The river begins in the Swiss canton of Graubünden in the southeastern Swiss Alps. It forms part of the Swiss–Liechtenstein border, then part of the Swiss–Austrian border. From Lake Constance downstream, it forms part of the Swiss–German border. After that, the Rhine defines much of the Franco-German border. It then flows in a mostly northerly direction through the German Rhineland. Finall"
+    },
+    {
+      "index": 5400,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "7908b621dcb6f38e9c17845d2b62a01fd483bbf7019e667c2f2701a30d18b60d",
+      "targets_sha256": "c25005b070ba3abd9143ec2824b6799b06dd5b0b6b14682dc2196a8446f862d3",
+      "resolved_url": "https://en.wikipedia.org/wiki/EMS_VCS_3",
+      "content_sha256": "7c32c4c2221ca9660b9ab46c5eaa32d7137a6bfc09ac595451842f842a4df1b2",
+      "evidence_quote": "S 3) II\"\n\nThe VCS 3 was created in 1969 by Peter Zinovieff's EMS company. The electronics were designed largely by David Cockerell, and its distinctive appearance was the work of composer Tristram Cary. It was one of the first portable commercially available synthesizers, in the sense that it was housed entirely in a small wooden case, unlike synths from American manufacturers such as Moog Music, ARP and Buchla, which had large cabinets and could take up entire rooms.\n\nThe VCS 3 cost just under £330 in 1969 (equivalent to £4,800 in 2025[1]). Some people found it unsatisfactory as a melodic instrument due to its inherent tuning instability.[2] This arose from the instrument's reliance on the then current method of exponential conversion of voltage to oscillator frequency—an approach that other companies also implemented with fewer tuning issues. However, the VCS 3 was renowned as an extremely powerful generator of electronic effects and processor of external sounds for its cost.[accordi"
+    },
+    {
+      "index": 5464,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "f88714a292df7cfe27045d7e0dcc04b501bb5f552b50438fe5d9c3c3340df5a8",
+      "targets_sha256": "930365704982b9dad208d3f67d4f532bf2de938080ca17971ec75e89fa6df2b0",
+      "resolved_url": "https://en.wikipedia.org/wiki/Grant%27s",
+      "content_sha256": "ddade6864d154de341dc94b759d923e302c0712cb8ef3ef723365e8ce707d1af",
+      "evidence_quote": "stablished. In 1963, William's great-grandson Charles Gordon, oversaw construction of the Girvan grain distillery.[4] In 1979, Grant's UK sales surpassed 1-million cases for the first time. Today, Grant's continues to be family-owned and operated. The current CEO, Glenn Gordon, is the fifth generation of the family to lead the business.[5]\n\nGrant's is the oldest family-owned blended whisky and is currently sold in over 180 countries. It is the world's fourth largest Scotch whisky brand, selling 4.1 million cases of whisky in the first half of 2020.[6] The mother company, William Grant & Sons also owns single malt whisky brands, including Glenfiddich and The Balvenie.[7]\n\nBottleedit\n\nBeginning in 1957, Grant's is sold in a bottle that has a triangular cross section. The designer, Hans Schleger, came to Britain as a refugee from Nazi Germany. He was asked to create a distinctive, elegant bottle that would showcase the quality and colour of the whisky as well being able to be stacked and"
+    },
+    {
+      "index": 5500,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "9de93d41aa51097eae2f7a7656ade4c99d8cf5dcdc34360eb04fc7e1d75e558e",
+      "targets_sha256": "9590a7e2cfbd3f6a32f512cb094ef419a90331dd4dfa0b8a8f5421305f4bf28e",
+      "resolved_url": "https://en.wikipedia.org/wiki/History_of_street_lighting_in_the_United_States",
+      "content_sha256": "93a5c0ea09868c716e009c215da80fe3a5709fe7a0efa6660e3b2e09bc020019",
+      "evidence_quote": "ic worried about the \"eerie, ominous quality of sodium vapor illumination\".[15] In 1976, the large-scale installation of sodium vapor lamps began on Chicago's arterial streets.[15]\n\nIn the end, the most critical factor in favor of sodium vapor lamps was their cost. In 1980, the annual operating cost for the average incandescent lamp was $280; for mercury vapor lamps, it was $128; and for low-pressure sodium vapor lamps, it was $60 a year.[1] Meanwhile, high-pressure sodium vapor lamps cost only $44 a year to operate, with a standard life expectancy of 15,000 hours, which also helped to lower labor and maintenance costs.[1] According to the Edison Tech Center, sodium vapor lamps are \"the most ubiquitous lamp for street lighting on the planet.\"[17]\n\nLight emitting diodesedit\nOne of the LED streetlights in Bellingham, Washington, which is individually controlled via a smart network (2016)\n\nIn recent years, efforts to make street lighting more energy efficient have focused on using light-e"
+    },
+    {
+      "index": 5717,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "0dc5b269f097b79aee484417d76a4996faa246be1bc63609ea764daed3b48ff9",
+      "targets_sha256": "2e1998dfaa5b6c278e9482ca39e3b95c8205ad9bc566030068edccdcb85c53dd",
+      "resolved_url": "https://en.wikipedia.org/wiki/North_Canadian_River",
+      "content_sha256": "6daf8ed9cb5dd8b9b0be51a92d8b62a54cc1be4fed62c99b69bc9758032544a0",
+      "evidence_quote": "dth\nStandard\nWide\nColor\nAutomatic\nLight\nDark\nCoordinates: 35.3750995°N 95.6099852°W\nFrom Wikipedia, the free encyclopedia\nNorth Canadian River\n\nThe North Canadian River near Yukon, Oklahoma\n\n\nMap of the Canadian River watershed showing the North Canadian River\n\n\nWikimedia | © OpenStreetMap\n\nLocation\nCountry\tUnited States\nStates\tOklahoma\nPhysical characteristics\nSource\tConfluence of Beaver River and Wolf Creek\n • location\tWoodward County\n • coordinates\t36.5889236°N 99.5017789°W[1]\n • elevation\t1,952 ft (595 m)[2]\nMouth\tEufaula Lake, Canadian River\n • location\tMcIntosh County\n • coordinates\t35.3750995°N 95.6099852°W[1]\n • elevation\t581 ft (177 m)[1]\nLength\t800 mi (1,300 km)\nBasin size\t17,955 square miles (46,500 km2)\nDischarge\t \n • location\tWetumka\n • average\t834 cu ft/s (23.6 m3/s)[3]\n\nThe North Canadian River is a river, 440 miles (710 km) long,[4] in Oklahoma in the United States. It is a tributary of the Canadian River, draining an area of 17,955 square miles (46,500 km2)[5] in a wat"
+    },
+    {
+      "index": 5761,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "0d78a27c41cc5954f6b4611f26269aba20674fcdb1fd956b19d85e220bba8bc6",
+      "targets_sha256": "2e6ba6f0f8e76c05c7a20b02f9adbe2971f126bc4eda1da87db59098b85908a9",
+      "resolved_url": "https://en.wikipedia.org/wiki/Martin_Luther_King_Jr._Day",
+      "content_sha256": "a8fa019604f38d51583a0504657a001e96c94cd9180b346c3dfba2caf828fef3",
+      "evidence_quote": "for those federal holidays which fall under the Uniform Monday Holiday Act.\n\nThe campaign for a federal holiday in King's honor began soon after his assassination in 1968. President Ronald Reagan signed the holiday into law in 1983, and it was first observed three years later on January 20, 1986. At first, some states resisted observing the holiday as such, giving it alternative names or combining it with other holidays. Official observance in each state's law as well as federal law occurred in 2000.\n\nHistoryedit\nMain article: Passage of Martin Luther King Jr. Day\nProposalsedit\nA sign in 1969, pro­mot­ing a holiday on the an­ni­ver­sa­ry of King's death\nRonald Reagan and Coretta Scott King at the Martin Luther King Jr. Day signing ceremony\n\nThe initial idea of Martin Luther King Jr. Day as a holiday was promoted by labor unions in contract negotiations.[2] After King's death, Representative John Conyers[3] (a Democrat from Michigan) and Senator Edward Brooke (a Republican from Massachu"
+    },
+    {
+      "index": 5806,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "4f0884abdf908b5a69106882ad8c57314ee4c2b4b0cd53e9944a4bf4a4401719",
+      "targets_sha256": "bdde2eb384124a33b6df88404a25c7aa4af1bcc33544243dcda0b6fbe4c7c51f",
+      "resolved_url": "https://en.wikipedia.org/wiki/Skinnamarink_TV",
+      "content_sha256": "d81cf7191494aefb7a0c34de3a9b161aa84fcbaa9f1e645bb12f2304d4283391",
+      "evidence_quote": "r with weatherman Percy P. Tation (Bram). \nHmmm – A science show about a scientist Professor Hmmm (Bram) and his assistant (Ella). In Season 2, Professor Hmmm's two sisters Professor Ohhh (Sharon) and Professor Ahhh (Lois) would sometimes help him with his experiments. \nInspector Gumshoe – About a detective named Inspector Gumshoe (Bram) and his sidekick Ella Mentary (Ella). \nThe Late Late Show – A show about old movies. Sharon, Lois, Bram, C.C., and Ella play certain characters for the movie. \nLost from Space – A parody of the television series Lost in Space. \nNosey's Park – Nosey Parker (Lois) randomly walks into a park and gives advice to someone on a certain subject. This was used during Season 1. \nReally Big Shoo – Sharon, Lois, and Bram perform a musical number on a stage. \nRhyme Time – In this segment, Bram plays someone numerous,[clarification needed] and rhymes something. \nSilly Sonata – A concert show where C.C. CopyCat, Sharon, Lois and Bram perform silly renditions of diffe"
+    },
+    {
+      "index": 5815,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "f9a4cb00463383f54f5727f41891fd42b90fddbbdb29329ff28c837a32a1a13e",
+      "targets_sha256": "b37aa12f50fff68178e0b80a29beb5abd026c4f2163d638c8346562a66a10251",
+      "resolved_url": "https://en.wikipedia.org/wiki/Castle_Sinclair_Girnigoe",
+      "content_sha256": "3245dd6317b230a85f7315770ab1312fb2926af7c3dc3d63e59c43d4c52de530",
+      "evidence_quote": "Jump to content\nMain menu\nSearch\nDonate\nCreate account\nLog in\nContents hide\n(Top)\nHistory\nPreservation\nImage gallery\nSee also\nReferences\nExternal links\nCastle Sinclair Girnigoe\n5 languages\nArticle\nTalk\nRead\nEdit\nView history\nTools\nAppearance hide\nText\nSmall\nStandard\nLarge\nWidth\nStandard\nWide\nColor\nAutomatic\nLight\nDark\nCoordinates: 58.478014°N 3.068082°W\nFrom Wikipedia, the free encyclopedia\nCastle Sinclair Girnigoe\nWick, Caithness, Scotland\n\nCastle Sinclair Girnigoe from Sinclairs Bay\n\nSite information\nType\tL-plan tower house with numerous extensions\nOwner\tthe Sinclair Castle Trust\nOpen to the public\tYes\nCondition\tRuin\nLocation\n\nWikimedia | © O"
+    },
+    {
+      "index": 5857,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "f263e13fcf420a0d4e0301e244ac3cf167da828e496fffe34d68d86ade9956c2",
+      "targets_sha256": "f5cad4f9857e3c716b40e3d100d5dd97a382d48abc53c8dd421a39205600ff26",
+      "resolved_url": "https://en.wikipedia.org/wiki/Palace_of_the_Generalitat_of_Catalonia",
+      "content_sha256": "5817692bd53dae1b72694841a2cdb9de920487e39e446fa21fde6e665395bd65",
+      "evidence_quote": "ee in 1716, the Royal Audience established its headquarters at the Palau, without taking much account of the rich architecture of the building. Partitions were built to divide the various services of the Audiencia. Later, in the 19th century, the architect Miquel Garriga i Roca was commissioned to do some building repairs, mainly on the façade on the Carrer de Sant Honorat and the Gothic gallery. Between the second and fourth decade of the twentieth century, under the direction of the architect Josep Puig i Cadafalch in collaboration with Josep Borí and Joan Rubió i Bellver, another great restoration was carried out to recover the original features and spaces. Also, some new neo-Gothic creations were added, such as the famous bridge over Carrer del Bisbe that links the palace with the Casa dels Canonges (which opened on April 23, 1928) and a project to build a large fireplace in alabaster for the Board of the Presidency, made by the sculptor Josep M. i Camps Arnau, later transferred to"
+    },
+    {
+      "index": 5905,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "e6bec876fd25415310790488f2bc116d5563950dca360081eb4fc523682c5e2c",
+      "targets_sha256": "ad11c95c3963a54368f9a58336768a9008de70e71a733b09697526db06d4b8dc",
+      "resolved_url": "https://en.wikipedia.org/wiki/Chicken_Run:_Dawn_of_the_Nugget",
+      "content_sha256": "6bfdf7f74382e9615a027f39a66e54033299b977e57bde7c1044559ef0eb84ae",
+      "evidence_quote": "Donate  \n Create account  \n Log in           \n \n \n \n  \n \n \n  \n     \n  \n \n \n \nContents \nmove to sidebar \nhide  \n \n  \n(Top)   \n  \n 1 Plot   \n   \n  \n 2 Voice cast   \n   \n  \n 3 Production   \n   \n  \n 4 Music   \n   \n  \n 5 Release   \n   \n  \n 6 Reception   \n  Toggle Reception subsection  \n \n  \n 6.1 Critical response   \n   \n  \n 6.2 Accolades   \n     \n  \n 7 Video game   \n   \n  \n 8 Notes   \n   \n  \n 9 References   \n   \n  \n 10 External links   \n         \n    \n   Toggle the table of contents  \n \n     \nChicken Run: Dawn of the Nugget \n   24 languages  \n \n \n \nCatalà\nCebuano\nČeština\nDansk\nDeutsch\nΕλληνικά\nEspañol\nفارسی\nFrançais\nGalego\nעברית\nMagyar\nՀայերեն\nBahasa Indonesia\nItaliano\n한국어\nNederlands\nPortuguês\nRomână\nРусский\nSvenska\nTürkçe\nУкраїнська\n中文  \nEdit links     \n \n \n  \n \n \n \nArticle  \nTalk     \n  English  \n \n \n \n        \n  \n \n \n \nRead  \nView source  \nView history       \n   Tools  \n \n \n \n \nTools \nmove to sidebar \nhide  \n \n Actions  \n \n \n Read  \n View source  \n View history     \n \n General"
+    },
+    {
+      "index": 5909,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "d075b20f89ad6c24610dd7a504fe22e3611e68bed4e5aea0e805972a20f547ff",
+      "targets_sha256": "23d90869ef799eb1cf68dd0611d409d95d11102681f505834061ff883f9daedf",
+      "resolved_url": "https://en.wikipedia.org/wiki/Gazi-Stadion_auf_der_Waldau",
+      "content_sha256": "768edc153900666536a8e0f6130a7a1dde72d23e32c147180ba1eddad64854d1",
+      "evidence_quote": "Jump to content\nMain menu\nSearch\nDonate\nCreate account\nLog in\nContents hide\n(Top)\nHistory\nSee also\nReferences\nGazi-Stadion auf der Waldau\n6 languages\nArticle\nTalk\nRead\nEdit\nView history\nTools\nAppearance hide\nText\nSmall\nStandard\nLarge\nWidth\nStandard\nWide\nColor\nAutomatic\nLight\nDark\nCoordinates: 48°45′14.2″N 9°11′18.3″E\nFrom Wikipedia, the free encyclopedia\nGazi-Stadion auf der Waldau\nView with the Fernsehturm Stuttgart\n\n\nWikimedia | © OpenStreetMap\nInteractive map of Gazi-Stadion auf der Waldau\n\nLocation\tGuts-Muths Weg 4\n70597 Stuttgart\nGermany\nCoordinates\t48°45′14.2″N 9°11′18.3″E\nOwner\tCity of Stuttgart"
+    },
+    {
+      "index": 6754,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "4412b34706b92ba4d3f10e022a359fea3ed3c3191773255afe4ff09cfc296c6c",
+      "targets_sha256": "92640ffcc0f86cd5ab7f8688b26e2894317f5003c6b39e0c8449faa15217b075",
+      "resolved_url": "https://en.wikipedia.org/wiki/Chesapeake_Bay_Bridge",
+      "content_sha256": "013459ab68cec68bd5c423fe2e47c9727945b09d27f4352f0c25ada9ea76d178",
+      "evidence_quote": "name\"Bay Bridge\"Maintained byMaryland Transportation Authority, State of MarylandID numberAAZ050[1][2]Websitebaybridge.maryland.govCharacteristicsDesignCantilever bridge (eastbound), Continuous truss bridge (westbound), and Suspension bridges (both spans)MaterialSteel, concreteTotal length21,273 ft (6,484.0 m) (eastbound)\n21,047 ft (6,415.1 m) (westbound)Width28 ft (8.5 m) (eastbound)\n38 ft (11.6 m) (westbound)Height354 ft (107.9 m) (eastbound)\n379 ft (115.5 m) (westbound)Longest span1,600 ft (488 m)\nClearance below186 ft (56.7 m)HistoryOpenedJuly 30, 1952 (eastbound)\nJune 28, 1973 (westbound)StatisticsDaily traffic61,000Toll$6.00 (eastbound only) $4.00 with EZPass TransponderLocation\nInteractive map of Chesapeake Bay Bridge \nThe Gov. William Preston Lane Jr. Memorial Bridge (informally called the Chesapeake Bay Bridge and, locally, the Bay Bridge) is a major dual-span bridge in the U.S. state of Maryland. Spanning the Chesapeake Bay, it connects the state's rural Eastern Shore region"
+    },
+    {
+      "index": 6918,
+      "review_status": "approved",
+      "review_basis": "independent replacement row; question-relevant frozen source passage directly identifies the verifier target",
+      "question_sha256": "cf04f1d1b0fd4dbf397addb617ee5d2033f8a3fd7bc8303c10db509ef3339e2e",
+      "targets_sha256": "f5599cb55daa16bbf3d2d9c3f74d1dd1584e56109cf828eff87d18b1dcf458db",
+      "resolved_url": "https://en.wikipedia.org/wiki/Dromornithidae",
+      "content_sha256": "cfd76c0ff60858a77a78b8b5f694fe85d10371de76192873a80711ac8dbdede3",
+      "evidence_quote": "kipedia, the free encyclopedia  \n\n \n\n \n\nExtinct family of birds \n  Dromornithids\n\nTemporal range: Oligocene - Pleistocene, 25–0.03 Ma \n \nPreꞒ \nꞒ \nO \nS \nD \nC \nP \nT \nJ \nK \nPg \nN \n\n\n \n \n   Possible Eocene record    Dromornis stirtoni  Scientific classification   Kingdom: Animalia  Phylum: Chordata  Class: Aves  Clade: Pangalloanserae  Superorder: Galloanserae  Family: †Dromornithidae\nFürbringer, 1888  Genera   \n\n†Barawertornis \n†Dromornis (type) \n†Genyornis \n†Ilbandornis  \nDromornithidae, known as mihirungs (after Tjapwuring Mihirung paringmal, \"giant bird\") and informally as thunder birds or demon ducks, is an extinct family of large, flightless birds native to Australia from at least the late Oligocene (and perhaps as early as the early Eocene) to the Late Pleistocene. They were long classified in Struthioniformes (the ratites), but are now usually classified as a type of gigantic fowl (Galloanserae).[1][2][3] Dromornithids were part of the Australian megafauna. One species, Dromornis s"
+    }
+  ],
+  "rejected": [
+    {
+      "index": 66,
+      "review_status": "rejected",
+      "category": "weak_replaced",
+      "reason": "The source says more than 600 million copies, while the target is exactly 600 million copies and the question asks for the total.",
+      "question_sha256": "98b591825c525b69446bc660e34aa6636c1001baf101e0d42ef0ecb103eeca4e",
+      "targets_sha256": "f66330f6646073020493a6ed304cc39df381435ed0fa692ddd187b6e54ad6c90",
+      "resolved_url": "https://en.wikipedia.org/wiki/Harry_Potter",
+      "content_sha256": "f2abcb9ff47bfd4395e8727a04f3eed8f9324a717ba794c865c7adfa2fa88dfa",
+      "independent_verdict": "weak"
+    },
+    {
+      "index": 353,
+      "review_status": "rejected",
+      "category": "leaks_target",
+      "reason": "The question itself states that Mountbatten served as Lord Lieutenant of the Isle of Wight from 1974 and then asks for that same full title.",
+      "question_sha256": "10b367bc00b8e3851a1ec7017303193621093dab2271698c7ec940dda2f0fc3a",
+      "targets_sha256": "5aeca050f87106842572d0b7b3b5ea142af2d95b7b3266427e7a0f2865856501",
+      "resolved_url": "https://en.wikipedia.org/wiki/List_of_titles_and_honours_of_Lord_Mountbatten",
+      "content_sha256": "ac561fe3c46193266f6da4280a171b058ae2a165a6a7a686029607f28483e40d",
+      "independent_verdict": "reject"
+    },
+    {
+      "index": 362,
+      "review_status": "rejected",
+      "category": "weak_replaced",
+      "reason": "The page calls Thomas Barclay an American diplomat and says he signed with the sultan, but the question calls him a U.S. Minister, a title the source does not establish.",
+      "question_sha256": "6dd0ab795ffb165e31ab03b25f392a477d95aebd88f1818d458a249003335444",
+      "targets_sha256": "9ea525d65940663604a207789afca1ec11e08d84578588073fc7b4d21c954f63",
+      "resolved_url": "https://en.wikipedia.org/wiki/Moroccan%E2%80%93American_Treaty_of_Friendship",
+      "content_sha256": "db9f1e37658797901002c07bed8da997cef1ba14184516089db5c6ec615f0e33",
+      "independent_verdict": "weak"
+    },
+    {
+      "index": 411,
+      "review_status": "rejected",
+      "category": "unsupported_decisive_relation",
+      "reason": "The source says the 1962 album was released by Liberty Records, but it does not establish the record label of the 1961 single asked about.",
+      "question_sha256": "3aea8d53db885c6d0eff400fcd85c7507724a43fa3f17d209872ff7773813286",
+      "targets_sha256": "9fc7c84dc9c771c6d3b2df757744c22e033d25c1707167ace4099acc5afef35c",
+      "resolved_url": "https://en.wikipedia.org/wiki/Take_Good_Care_of_My_Baby_(Bobby_Vee_album)",
+      "content_sha256": "4a4e68f68ac3519533692a0f45d7ef6afffb2eb909dacbeb57f32617e7d351fa",
+      "independent_verdict": "reject"
+    },
+    {
+      "index": 584,
+      "review_status": "rejected",
+      "category": "weak_replaced",
+      "reason": "The page states that roughly 1,200 Jews were saved and that their story was depicted in Schindler's List, but it does not state that the film itself depicts a total of exactly 1,200.",
+      "question_sha256": "5e2841ada855b10b41c3bdf62f2c3bb6fe05cd6cb8685631fc78148aa5d395fe",
+      "targets_sha256": "246ca53ffe9c457d63f957a01c6ce791b9d96d1d3bc8d7f64569efae328d70a4",
+      "resolved_url": "https://en.wikipedia.org/wiki/Schindlerjuden",
+      "content_sha256": "29466e7fd5a8ef80a400d3a2405b7ecfac82cd8a08806d0db1a9a6e855148356",
+      "independent_verdict": "weak"
+    },
+    {
+      "index": 875,
+      "review_status": "rejected",
+      "category": "contradicted_date_and_entity",
+      "reason": "The source is about WK Kellogg Co, says the split occurred on 2 October 2023, and gives the successor's headquarters; it does not support a Kellogg Company split on 15 March 2023 or directly establish the predecessor's headquarters.",
+      "question_sha256": "577e6a83da4247dd299749ae3f92c7579370819416bed79998790c4dec6a703f",
+      "targets_sha256": "98ebe1b328bde462614698672c5e5cfff50c2b2d6b7adb40543f6a0966c8c088",
+      "resolved_url": "https://en.wikipedia.org/wiki/WK_Kellogg_Co",
+      "content_sha256": "ebc73bbe7a37b0cd12d7b07dd5eff2fad82c52393c487d467f616052f8090fdc",
+      "independent_verdict": "reject"
+    },
+    {
+      "index": 899,
+      "review_status": "rejected",
+      "category": "partially_leaks_target",
+      "reason": "The target song title is Good Girl Gone Bad, exactly the album title already printed in the question; only the fact that it is the title track and the year remain to be inferred.",
+      "question_sha256": "fc43bdcb9e2a10b9d0abf106e918259806d763d32cfc3d0256399543dc2e5fac",
+      "targets_sha256": "3ef4210010fdb0aebbbf60521b1dcecdab250562cd1a940567e5072dce729ead",
+      "resolved_url": "https://en.wikipedia.org/wiki/Good_Girl_Gone_Bad",
+      "content_sha256": "c9d790391e019b6671e5a198627bc204125609764c12f2a3c861d8e64c577234",
+      "independent_verdict": "reject"
+    },
+    {
+      "index": 902,
+      "review_status": "rejected",
+      "category": "supported",
+      "reason": "The question asks for the full title, but the source gives Candide, ou l'Optimisme / Candide, or Optimism while the target is only Candide.",
+      "question_sha256": "31732755229fe0805a9622a7e34d909a0db5a828ae2247642d942a59773ed810",
+      "targets_sha256": "aaf4657ffb7384dec2be910e810c49c3fc32cd6cfd325b66eca7d28c50b9b972",
+      "resolved_url": "https://en.wikipedia.org/wiki/Candide",
+      "content_sha256": "668e7511203c93651a3f7ac48a62a604ddf81f681cdafaecd0b0da6265fdeb45",
+      "independent_verdict": "reject"
+    },
+    {
+      "index": 989,
+      "review_status": "rejected",
+      "category": "leaks_target",
+      "reason": "The premise explicitly says Jerry Brown was preceded by Arnold Schwarzenegger and then asks who preceded him.",
+      "question_sha256": "ee1d815b9af0489d3a5c4e9667ded81a0e692f2851234f11775ed699718460c2",
+      "targets_sha256": "a61e8c18120950fde17f5d1356b5590369c3ca41f9280d344d88705dd36e1da8",
+      "resolved_url": "https://en.wikipedia.org/wiki/Arnold_Schwarzenegger",
+      "content_sha256": "13e684383cb058aa4e4b8390e2b3dfb327d613e40b787b4c1636ac10575883a3",
+      "independent_verdict": "reject"
+    },
+    {
+      "index": 1489,
+      "review_status": "rejected",
+      "category": "unsupported_origin_relation",
+      "reason": "The frozen Glider page identifies Soon as the lead single but contains no South Kensington experiment, June-July 1989, or embryonic-version provenance from the question.",
+      "question_sha256": "0089a281eb399e60ee355b44ded21647700612f13a98245ee157e866bc20863f",
+      "targets_sha256": "d86904b6fb37b0b651e6dd20b66a74d01bf22b01648f4608361c6149bd219bf1",
+      "resolved_url": "https://en.wikipedia.org/wiki/Glider_(EP)",
+      "content_sha256": "db189a93ce1d1bb73507b81e8acb8a287cce4ab67499c187912b45ee3105acf0",
+      "independent_verdict": "reject"
+    },
+    {
+      "index": 1780,
+      "review_status": "rejected",
+      "category": "contradicted_birthplace_and_residence",
+      "reason": "The source says Carl Gunnar Feilberg was born in Copenhagen and died in Hellerup; it does not say he was born in Hellerup or lived there until death.",
+      "question_sha256": "a08fc5486198c2d62c8c9cf7579425d36dc750f709fb8c02dd1b2fd4dcd009c7",
+      "targets_sha256": "aaa329b5c884eba3f1e0e1c27b5df09c8cb6e9c129ed1cd8756439f4a9909eba",
+      "resolved_url": "https://en.wikipedia.org/wiki/Carl_Gunnar_Feilberg",
+      "content_sha256": "4eb001a42c9d11d253992bfa29148178feb15669e60ba445cf0debbe766f0b3c",
+      "independent_verdict": "reject"
+    },
+    {
+      "index": 1878,
+      "review_status": "rejected",
+      "category": "weak_replaced",
+      "reason": "The source describes the Itza Maya and the fall of their capital Nojpeten as the last independent kingdom, but 'The Itza Maya' names the people rather than a formal kingdom as the question requests.",
+      "question_sha256": "bc80728a27591d9eb840e22bc4488ed37334188b9bbd5ef0142fe380c85d08c7",
+      "targets_sha256": "cc82d5256de2f542cce8cbcb7320ea09db22cf7c5a66ac56c3691d6be00f1281",
+      "resolved_url": "https://en.wikipedia.org/wiki/Spanish_conquest_of_the_Maya",
+      "content_sha256": "624d39abc9ca83df99b5a4d2db406df5ef5b6c7d95efa3c35bed2f7170e25d89",
+      "independent_verdict": "weak"
+    },
+    {
+      "index": 2191,
+      "review_status": "rejected",
+      "category": "weak_replaced",
+      "reason": "Los Villanos is the five-brother group, while the decisive mask match used a three-man team of Villano I, IV, and V; calling the five-son group itself a trio is inaccurate.",
+      "question_sha256": "e117e84698c41da3c95fe0f63573d8ece2bc2bc9395af8f682752acbd189a18a",
+      "targets_sha256": "5c045038113a74b4b2883cacc5486234dcb46cba155c223dc5e1584476547de2",
+      "resolved_url": "https://en.wikipedia.org/wiki/Villano_IV",
+      "content_sha256": "b232bbc1e1ae71e8df529c4724dfb7ec3f7427a39797898a0eb85c3b736896ab",
+      "independent_verdict": "weak"
+    },
+    {
+      "index": 2315,
+      "review_status": "rejected",
+      "category": "weak_replaced",
+      "reason": "The source calls Berners-Lee a professorial research fellow at the University of Oxford, not simply a professor, and the target Oxford University is not the official full name requested.",
+      "question_sha256": "ccf83d34ea4bfd75169ff9f6778ebda0216b2f5eccda7152d5719e4cb3d901e2",
+      "targets_sha256": "86f086288945823c067eab2732dc3181b09f3b6cbc5d6d5f39e832f7ad8a3d33",
+      "resolved_url": "https://en.wikipedia.org/wiki/Tim_Berners-Lee",
+      "content_sha256": "950e503cf84d5fdecf5f564aa7b62c89eb3b842adf3692d1f11e6a588530ff18",
+      "independent_verdict": "weak"
+    },
+    {
+      "index": 2705,
+      "review_status": "rejected",
+      "category": "wrong_performer_role",
+      "reason": "The soundtrack credits Clyde Lawrence as songwriter and intro performer, while Hugh Grant is the credited film performer; the question incorrectly says Clyde Lawrence performed the song.",
+      "question_sha256": "18c3b24579513c5f2d59c1a692a3fe48efe2d87e90a4f48852c5fef523419e1c",
+      "targets_sha256": "01f27e423b8ad0b682940a0eb77e87f62c0c1208e778a76c8e86742c2a03a35b",
+      "resolved_url": "https://en.wikipedia.org/wiki/Music_and_Lyrics",
+      "content_sha256": "adc386514570047169581e0b2bd30f670383e8e003b1f19f14781139682d6797",
+      "independent_verdict": "reject"
+    },
+    {
+      "index": 2911,
+      "review_status": "rejected",
+      "category": "unsupported_location_relation",
+      "reason": "The Roscoe Arbuckle page supports his name and Fatty nickname but contains no Fort Lee street-sighting relation; the decisive clue is absent from the frozen source.",
+      "question_sha256": "08fca078a06e3746c4a3a7d32405cd1f68999ff4d6b66015df33455ff21c720c",
+      "targets_sha256": "98f66a83f9bd3ad3ece00c0d2a415e8420101a3dc5f01d36d15795fbc3f976ee",
+      "resolved_url": "https://en.wikipedia.org/wiki/Roscoe_Arbuckle",
+      "content_sha256": "609da2c6074d03982b6e2f4de673b9763cdb1262bc603fd44ad8724da8606173",
+      "independent_verdict": "reject"
+    },
+    {
+      "index": 3166,
+      "review_status": "rejected",
+      "category": "unsupported_treaty_predicates",
+      "reason": "The Allied-POW source only cites Article 16 compensation; it does not support the question's end-of-war and accepted-war-criminal-punishment predicates.",
+      "question_sha256": "6c2565ae679a61c0f36a1a083a400da23c2d1c89791084fc3aea1e3b677d8c7f",
+      "targets_sha256": "8af6d1b77f2a7cd6e91b45e9f5163d5f31f039b8bf5a3a59856112ddad15358f",
+      "resolved_url": "https://en.wikipedia.org/wiki/Allied_prisoners_of_war_of_Japan",
+      "content_sha256": "2815f033450f310be907faae14a261818447966c797bad55f18c887b85c600ff",
+      "independent_verdict": "reject"
+    },
+    {
+      "index": 3838,
+      "review_status": "rejected",
+      "category": "weak_replaced",
+      "reason": "The source defines polar climate by a warmest-month average below 50 F; the target 50 F drops the strict below qualifier and is a boundary, not an attained maximum.",
+      "question_sha256": "fffc4dc001b3c9a1bb16d0406f20827bad8bfd40301bec809c3260499c61b333",
+      "targets_sha256": "91f5f426fde03a2cb282bc985c7e1a883051dbc94b244a3e06bcdf4c7655ed8c",
+      "resolved_url": "https://en.wikipedia.org/wiki/Polar_climate",
+      "content_sha256": "fd8ef7524d270a76fd44d7d3b8bbecbf6fcf2b115a4856f13ae77fdcbe34b601",
+      "independent_verdict": "weak"
+    },
+    {
+      "index": 3859,
+      "review_status": "rejected",
+      "category": "weak_replaced",
+      "reason": "The page directly supports Kursk as Stepanova's birthplace but contains no claim that it is eight hours' drive southwest of Moscow.",
+      "question_sha256": "663599c30b334a4bf5c0a8731e22a0e2f1715a849d870d3f1e17bb4f4b5a1469",
+      "targets_sha256": "9efcb66f8dcf67994b07dec200fcf0cbf9111eea2c176d9199a88d23ba5d4a67",
+      "resolved_url": "https://en.wikipedia.org/wiki/Yuliya_Stepanova",
+      "content_sha256": "fe5c52ae63c8266076040edbac5d56601c1c306abd15296c26427dc0107cc021",
+      "independent_verdict": "weak"
+    },
+    {
+      "index": 3874,
+      "review_status": "rejected",
+      "category": "wrong_choreographer_roles",
+      "reason": "The source lists Tippu as singer of Old Model Laila but lists Shobi and Sridhar as dancers, not choreographers as the question claims.",
+      "question_sha256": "844c2bb70c4836ef1bc2174b22082a37c9ab47d894785f89623bde766bc7b69a",
+      "targets_sha256": "98846e283410f4c8795e1874c3f32dbe6004211821a6a5d426ee523d114233d8",
+      "resolved_url": "https://en.wikipedia.org/wiki/Youth_(2002_film)",
+      "content_sha256": "59c27cb11398ee2d6ab17bc215152664ddcae739f04cc8660c29e663802c82db",
+      "independent_verdict": "reject"
+    },
+    {
+      "index": 4558,
+      "review_status": "rejected",
+      "category": "contradicted_establishment_date",
+      "reason": "The source says the museum was established by decree in 1862; 1 April 1865 was the organizing committee's first meeting, although Alexandre Bertrand did become first director.",
+      "question_sha256": "cade96d402cd9f4e49aa0626c018c6902d15caaa21cebff5a85a452b0cab6684",
+      "targets_sha256": "b6e4a3b4e7665f592cfd483dd717772755255575b18eb1f037c41e3f2b41391b",
+      "resolved_url": "https://en.wikipedia.org/wiki/National_Archaeological_Museum,_France",
+      "content_sha256": "d18b3435dca48ed97d85afccf827636b985c342c006ef29719b3d3ae87c967df",
+      "independent_verdict": "reject"
+    }
+  ],
+  "discarded_replacement_candidates": [
+    {
+      "index": 4984,
+      "category": "ambiguous_or_wrong_role",
+      "reason": "question conflates Valide Hatun/sovereign relation"
+    },
+    {
+      "index": 5643,
+      "category": "calculational_or_table_relation_not_used",
+      "reason": "not needed after cleaner replacements; avoided derived-duration evidence"
+    },
+    {
+      "index": 5892,
+      "category": "underqualified_answer",
+      "reason": "target is surname-only for a who question"
+    },
+    {
+      "index": 6084,
+      "category": "unsupported_relation",
+      "reason": "source page mentions Alexios II but does not support the stated 1180-1185 emperor relation"
+    },
+    {
+      "index": 6202,
+      "category": "generic_anchor",
+      "reason": "target four is too generic and matched unrelated district-count text"
+    },
+    {
+      "index": 6516,
+      "category": "role_title_inexact",
+      "reason": "question calls the target a trade unionist; source support is only succession/MP relation"
+    },
+    {
+      "index": 6653,
+      "category": "generic_anchor",
+      "reason": "target EMI is too short/generic and occurrence is not direct support in the fetched page"
+    }
+  ],
+  "audit_sha256": "c81d3c36abadcb5ac2578e550b9f5b9c848dd762a6f6ccf7e6a0bfb22be8ea25"
+}

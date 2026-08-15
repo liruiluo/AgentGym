@@ -60,6 +60,13 @@ def _fingerprint_payload(
         "role": role,
         "runtime_source_id": source_id,
         "surface": metadata.get("surface"),
+        "domain_id": metadata.get("domain_id"),
+        "split": metadata.get("split"),
+        "task_count": metadata.get("task_count"),
+        "data_revision": metadata.get("data_revision"),
+        "manifest_sha256": metadata.get("manifest_sha256"),
+        "compaction_contract": metadata.get("compaction_contract"),
+        "workspace_runtime": metadata.get("workspace_runtime"),
         "memoryarena_base_commit": os.environ.get("MEMORYARENA_BASE_COMMIT"),
         "provider": metadata.get("provider"),
         "runtime_inputs": metadata.get("runtime_inputs"),
@@ -72,6 +79,10 @@ def _fingerprint_payload(
         "memory_prompt_mode": metadata.get("memory_prompt_mode"),
         "backend": {
             "surface": backend.get("surface"),
+            "backend_contract": backend.get("backend_contract"),
+            "coverage_manifest_sha256": backend.get(
+                "coverage_manifest_sha256"
+            ),
             "price_seed": backend.get("price_seed"),
             "product_count": backend.get("product_count"),
             "price_table_sha256": backend.get("price_table_sha256"),

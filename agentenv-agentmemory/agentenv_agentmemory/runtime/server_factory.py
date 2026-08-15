@@ -50,6 +50,17 @@ from ..latent_preference_wrapper import (
     LatentPreferenceAgentMemoryWrapper,
     LatentPreferenceFilesystemAgentMemoryWrapper,
 )
+from ..literesearcher import (
+    LITERESEARCHER_FULLPOOL_SURFACE,
+    LITERESEARCHER_SURFACE,
+    FrozenLiteResearchBackend,
+    LiteResearcherWrapper,
+    SQLiteFTSLiteResearchBackend,
+    UpstreamCompatibleLLMJudge,
+    load_coverage_manifest,
+    load_full_pool,
+)
+from ..persistent_workspace import PersistentWorkspace, WorkspaceLimits
 from ..procedural_webshop_env import PROCEDURAL_SURFACE
 from ..procedural_wrapper import ProceduralAgentMemoryWrapper
 from ..recency_override_webshop_env import (
@@ -68,6 +79,7 @@ from ..selective_memory_use_wrapper import (
     SelectiveMemoryUseAgentMemoryWrapper,
     SelectiveMemoryUseFilesystemAgentMemoryWrapper,
 )
+from ..workspace_sandbox import LinuxNamespaceShellSandbox
 from ..negative_constraint_webshop_env import (
     NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE,
     NEGATIVE_CONSTRAINT_SURFACE,
@@ -127,6 +139,8 @@ def build_server():
         return NegativeConstraintAgentMemoryWrapper()
     if surface == NEGATIVE_CONSTRAINT_FILESYSTEM_SURFACE:
         return NegativeConstraintFilesystemAgentMemoryWrapper()
+    if surface in {LITERESEARCHER_SURFACE, LITERESEARCHER_FULLPOOL_SURFACE}:
+        return _build_literesearcher_wrapper(surface)
 
     factory = build_domain_registry().build(surface)
     first_add = _env_float("AGENTMEMORY_FIRST_ADD_REWARD", 0.0)
@@ -167,6 +181,81 @@ def build_server():
             exact_repeat=exact_repeat,
         ),
         invalid_action_penalty=invalid_action,
+    )
+
+
+def _build_literesearcher_wrapper(surface: str) -> LiteResearcherWrapper:
+    limits = WorkspaceLimits()
+    sandbox = LinuxNamespaceShellSandbox.from_environment(
+        limits=limits.shell_limits(),
+        rg_binary=_required_file("AGENTMEMORY_WORKSPACE_RG_BINARY"),
+        expected_rg_sha256=_required_env("AGENTMEMORY_WORKSPACE_RG_SHA256"),
+    )
+    root_parent_raw = os.environ.get("AGENTMEMORY_WORKSPACE_ROOT_PARENT")
+    root_parent = (
+        None
+        if not root_parent_raw or not root_parent_raw.strip()
+        else Path(root_parent_raw).expanduser().resolve()
+    )
+
+    def workspace_factory(env_id: int) -> PersistentWorkspace:
+        return PersistentWorkspace(
+            workspace_id=f"literesearcher-env-{env_id}",
+            shell_sandbox=sandbox,
+            root_parent=root_parent,
+            limits=limits,
+        )
+
+    split = _required_env("AGENTMEMORY_LITERESEARCHER_SPLIT")
+    if split not in {"train", "test"}:
+        raise RuntimeError("AGENTMEMORY_LITERESEARCHER_SPLIT must be train or test")
+    if surface == LITERESEARCHER_FULLPOOL_SURFACE:
+        task_source = load_full_pool(
+            _required_file("AGENTMEMORY_LITERESEARCHER_FULL_POOL_MANIFEST"),
+            _required_file("AGENTMEMORY_LITERESEARCHER_FULL_POOL_ROWS"),
+            _required_directory("AGENTMEMORY_LITERESEARCHER_SOURCE_ROOT"),
+        )
+        backend = SQLiteFTSLiteResearchBackend(
+            task_source,
+            _required_file("AGENTMEMORY_LITERESEARCHER_FTS_DATABASE"),
+            top_k=_env_int("AGENTMEMORY_LITERESEARCHER_TOP_K", 5),
+        )
+        judge = UpstreamCompatibleLLMJudge(
+            api_base=_required_env("AGENTMEMORY_LITERESEARCHER_JUDGE_API_BASE"),
+            model=_required_env("AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL"),
+            api_key=os.environ.get(
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_API_KEY", "EMPTY"
+            ),
+            timeout_seconds=_env_float(
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_TIMEOUT_SECONDS", 120.0
+            ),
+            max_retries=_env_int(
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_MAX_RETRIES", 3
+            ),
+        )
+    else:
+        task_source = load_coverage_manifest(
+            _required_file("AGENTMEMORY_LITERESEARCHER_COVERAGE_MANIFEST")
+        )
+        backend = FrozenLiteResearchBackend(
+            task_source,
+            split=split,
+            top_k=_env_int("AGENTMEMORY_LITERESEARCHER_TOP_K", 5),
+        )
+        judge = None
+    return LiteResearcherWrapper(
+        task_source,
+        backend,
+        workspace_factory=workspace_factory,
+        workspace_runtime_metadata={
+            "sandbox": dict(sandbox.metadata),
+            "limits": limits.as_metadata(),
+            "host_root_exposed_to_policy": False,
+        },
+        max_policy_steps=_env_int("AGENTMEMORY_LITERESEARCHER_MAX_POLICY_STEPS", 40),
+        split=split,
+        surface=surface,
+        judge=judge,
     )
 
 
