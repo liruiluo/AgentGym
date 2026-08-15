@@ -15,6 +15,7 @@ from support import protocol_kwargs, write_runtime_fixture
 def _environment(runtime, arm: str) -> dict[str, str]:
     return {
         "GAIA_TEXT_ARM": arm,
+        "GAIA_TEXT_BACKEND": "fixture",
         "GAIA_TEXT_MANIFEST": str(runtime.manifest),
         "GAIA_TEXT_QUESTIONS": str(runtime.questions),
         "GAIA_TEXT_QUESTIONS_SHA256": runtime.questions_sha256,
