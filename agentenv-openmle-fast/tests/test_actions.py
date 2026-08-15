@@ -61,6 +61,20 @@ class OpenMLEFastActionsTest(unittest.TestCase):
             "parser_error",
         )
 
+    def test_patch_outputs_are_accessible_to_fresh_sandbox_uid(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="openmle-patch-mode-test-") as raw:
+            workspace = Path(raw)
+            apply_workspace_patch(
+                workspace,
+                "*** Begin Patch\n*** Add File: src/solution.py\n"
+                "+print('ok')\n*** End Patch",
+            )
+            self.assertEqual(
+                (workspace / "src" / "solution.py").stat().st_mode & 0o777,
+                0o666,
+            )
+            self.assertEqual((workspace / "src").stat().st_mode & 0o777, 0o777)
+
     def test_patch_is_workspace_scoped_and_protects_task_data(self) -> None:
         with tempfile.TemporaryDirectory(prefix="openmle-patch-test-") as raw:
             workspace = Path(raw)

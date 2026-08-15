@@ -162,8 +162,7 @@ def apply_workspace_patch(workspace: Path | str, patch: str) -> PatchResult:
             path.unlink()
             changed.append(relative)
             continue
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        _require_real_parent_chain(root, path.parent)
+        _prepare_patch_parent(root, path.parent)
         descriptor, temporary = tempfile.mkstemp(
             prefix=f".{path.name}.", dir=path.parent
         )
@@ -172,7 +171,10 @@ def apply_workspace_patch(workspace: Path | str, patch: str) -> PatchResult:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.chmod(temporary, 0o600)
+            # The exact sandbox runs as a fresh unprivileged uid.  Files
+            # authored by the root-owned patch controller must remain readable
+            # and writable across later policy actions by that sandbox identity.
+            os.chmod(temporary, 0o666)
             os.replace(temporary, path)
         finally:
             if os.path.exists(temporary):
@@ -245,6 +247,22 @@ def _workspace_path(root: Path, relative: str) -> Path:
         raise OpenMLEFastActionError("patch path escapes the workspace") from exc
     _require_real_parent_chain(root, candidate.parent)
     return candidate
+
+
+def _prepare_patch_parent(root: Path, parent: Path) -> None:
+    relative = parent.absolute().relative_to(root)
+    current = root
+    for part in relative.parts:
+        current = current / part
+        try:
+            info = os.lstat(current)
+        except FileNotFoundError:
+            os.mkdir(current, 0o777)
+            os.chmod(current, 0o777)
+            continue
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise OpenMLEFastActionError("patch path traverses a non-directory")
+    _require_real_parent_chain(root, parent)
 
 
 def _require_real_parent_chain(root: Path, parent: Path) -> None:
