@@ -303,6 +303,7 @@ class TantivyLiteResearchBackend(SQLiteFTSLiteResearchBackend):
                 ),
                 "search_ranking_contract": "combined_title2_document_bm25_v1",
                 "search_snippet_contract": "query_centered_whitespace_48_v1",
+                "unicode_query_fallback": "sqlite_fts_v1",
                 "index_manifest_contract": self._index_manifest["contract"],
                 "tantivy_document_count": int(self._searcher.num_docs),
                 "sqlite_document_store": True,
@@ -322,6 +323,12 @@ class TantivyLiteResearchBackend(SQLiteFTSLiteResearchBackend):
             top_k=top_k,
             default_top_k=self.top_k,
         )
+        if not query_text.isascii():
+            return super().search(
+                query,
+                top_k=limit,
+                mask_url=mask_url,
+            )
         tokens = _query_tokens(query_text)
         clauses = [
             (

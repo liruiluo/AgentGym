@@ -266,6 +266,47 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
         page = backend.visit(hits[0]["url"], goal="Beta Fact")
         self.assertIn("Beta Fact", page["content"])
 
+    def test_tantivy_backend_routes_unicode_queries_to_sqlite(self) -> None:
+        index = Path(self.temporary.name) / "tantivy-unicode-index"
+        index.mkdir()
+        (index / "agentmemory-index.json").write_text(
+            json.dumps(
+                {
+                    "contract": "combined_title2_document_bm25_v1",
+                    "document_count": 3,
+                    "tantivy_version": "0.25.1-test",
+                }
+            ),
+            encoding="utf-8",
+        )
+        with (
+            patch(
+                "agentenv_agentmemory.literesearcher.lexical_backend."
+                "importlib.import_module",
+                return_value=_FakeTantivy,
+            ),
+            patch.object(
+                SQLiteFTSLiteResearchBackend,
+                "search",
+                return_value=[{"url": "sqlite-fallback"}],
+            ) as sqlite_search,
+        ):
+            backend = TantivyLiteResearchBackend(
+                self.tasks,
+                self.database,
+                index,
+            )
+            result = backend.search(
+                "\u7d22\u6069\u6cb3\u53d1\u6e90\u4e8e\u5df4\u683c\u9a6c\u5c3c",
+                mask_url="masked",
+            )
+        self.assertEqual(result, [{"url": "sqlite-fallback"}])
+        sqlite_search.assert_called_once_with(
+            "\u7d22\u6069\u6cb3\u53d1\u6e90\u4e8e\u5df4\u683c\u9a6c\u5c3c",
+            top_k=5,
+            mask_url="masked",
+        )
+
     def test_full_pool_terminal_reward_comes_from_semantic_judge(self) -> None:
         judge = _SemanticJudgeStub(correct=True)
         wrapper = LiteResearcherWrapper(
