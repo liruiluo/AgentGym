@@ -24,6 +24,7 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 class EvaluationArm(str, Enum):
     NATIVE = "native"
+    AMG_COMPACTION_ONLY = "amg_compaction_only"
     AMG_MEMORY = "amg_memory"
 
 

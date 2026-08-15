@@ -49,6 +49,14 @@ def _components(tmp_path: Path, arm: EvaluationArm):
     return runtime, backend, store, workspaces, manager
 
 
+def test_evaluation_arms_are_exactly_the_frozen_triad() -> None:
+    assert tuple(arm.value for arm in EvaluationArm) == (
+        "native",
+        "amg_compaction_only",
+        "amg_memory",
+    )
+
+
 def test_create_is_unbound_and_native_never_constructs_a_workspace(
     tmp_path: Path,
 ) -> None:
@@ -77,6 +85,83 @@ def test_create_is_unbound_and_native_never_constructs_a_workspace(
     assert manager.metadata()["compaction_available"] is False
 
 
+def test_compaction_only_has_compaction_but_no_workspace_lifecycle(
+    tmp_path: Path,
+) -> None:
+    _, _, _, workspaces, manager = _components(
+        tmp_path, EvaluationArm.AMG_COMPACTION_ONLY
+    )
+    metadata = manager.metadata()
+    assert metadata["arm"] == "amg_compaction_only"
+    assert metadata["compaction_available"] is True
+    assert (
+        metadata["compaction_contract"]
+        == "task_neutral_client_replace_messages_v1"
+    )
+    assert metadata["workspace_available"] is False
+    assert metadata["workspace_contract"] == "disabled"
+    assert metadata["workspace_lifetime"] == "none"
+    assert metadata["workspace_runtime"] == {}
+    assert metadata["active_workspace_count"] == 0
+
+    env_id = manager.create()["id"]
+    manager.reset(env_id, 0)
+    attempted = manager.step(
+        env_id,
+        'shell_command {"command":"printf forbidden > note.txt","workdir":"."}',
+    )
+    assert attempted["info"]["status"] == "invalid_action"
+    assert attempted["info"]["domain_action"] == "invalid"
+    assert attempted["info"]["workspace_action_count"] == 0
+    assert "workspace" not in attempted["observation"].casefold()
+    assert str(tmp_path) not in str(attempted)
+    assert workspaces == []
+    assert not (tmp_path / "workspaces").exists()
+
+    manager.finalize_horizon(env_id)
+    assert manager.close(env_id) is True
+    assert manager.metadata()["active_workspace_count"] == 0
+
+
+def test_memory_disabled_arms_reject_workspace_construction_inputs(
+    tmp_path: Path,
+) -> None:
+    runtime, backend, _, _, native = _components(
+        tmp_path / "base", EvaluationArm.NATIVE
+    )
+    dataset = native.dataset
+
+    def factory(env_id: int, task_id: str, episode_index: int) -> FileWorkspace:
+        return FileWorkspace(
+            tmp_path / "forbidden",
+            f"{env_id}-{task_id}-{episode_index}",
+        )
+
+    for arm in (EvaluationArm.NATIVE, EvaluationArm.AMG_COMPACTION_ONLY):
+        with pytest.raises(ValueError, match="must not receive a workspace factory"):
+            GaiaTextEpisodeManager(
+                dataset,
+                backend,
+                SubmissionStore(
+                    dataset.task_ids,
+                    runtime.root / f"{arm.value}-factory.jsonl",
+                ),
+                arm=arm,
+                workspace_factory=factory,
+            )
+        with pytest.raises(ValueError, match="must not receive workspace runtime"):
+            GaiaTextEpisodeManager(
+                dataset,
+                backend,
+                SubmissionStore(
+                    dataset.task_ids,
+                    runtime.root / f"{arm.value}-runtime.jsonl",
+                ),
+                arm=arm,
+                workspace_runtime={"hidden_root": str(tmp_path / "forbidden")},
+            )
+
+
 def test_active_episode_cannot_be_reset_and_horizon_records_null(
     tmp_path: Path,
 ) -> None:
@@ -95,51 +180,58 @@ def test_active_episode_cannot_be_reset_and_horizon_records_null(
     assert json.loads(partial)["model_answer"] is None
 
 
-def test_both_arms_share_domain_path_and_answer_extraction(tmp_path: Path) -> None:
-    native_runtime, native_backend, _, _, native = _components(
-        tmp_path / "native-run", EvaluationArm.NATIVE
-    )
-    memory_runtime, memory_backend, _, _, memory = _components(
-        tmp_path / "memory-run", EvaluationArm.AMG_MEMORY
-    )
-    native_id = native.create()["id"]
-    memory_id = memory.create()["id"]
-    native_metadata = native.metadata()
-    memory_metadata = memory.metadata()
+def test_three_arms_share_domain_path_and_answer_extraction(tmp_path: Path) -> None:
+    components = {
+        arm: _components(tmp_path / arm.value, arm) for arm in EvaluationArm
+    }
+    managers = {arm: value[-1] for arm, value in components.items()}
+    env_ids = {arm: manager.create()["id"] for arm, manager in managers.items()}
+    metadata = [manager.metadata() for manager in managers.values()]
     assert (
-        native_metadata["paired_runtime_contract"]
-        == memory_metadata["paired_runtime_contract"]
+        len({json.dumps(item["backend"], sort_keys=True) for item in metadata})
+        == 1
     )
-    assert (
-        native_metadata["paired_runtime_contract_sha256"]
-        == memory_metadata["paired_runtime_contract_sha256"]
-    )
-    assert (
-        native.reset(native_id, 0)["observation"]
-        == memory.reset(memory_id, 0)["observation"]
-    )
+    assert len(
+        {
+            json.dumps(item["paired_runtime_contract"], sort_keys=True)
+            for item in metadata
+        }
+    ) == 1
+    assert len({item["paired_runtime_contract_sha256"] for item in metadata}) == 1
+    reset_observations = {
+        manager.reset(env_ids[arm], 0)["observation"]
+        for arm, manager in managers.items()
+    }
+    assert len(reset_observations) == 1
 
     actions = (
         '<tool_call>{"name":"search","arguments":{"query":["alpha evidence"]}}</tool_call>',
         '<tool_call>{"name":"visit","arguments":{"url":"gaia-text://fixture/alpha","goal":"synthetic result","page":1}}</tool_call>',
     )
     for action in actions:
-        native_result = native.step(native_id, action)
-        memory_result = memory.step(memory_id, action)
-        assert native_result["observation"] == memory_result["observation"]
-        assert (
-            native_result["info"]["domain_action"]
-            == memory_result["info"]["domain_action"]
-        )
+        results = [
+            manager.step(env_ids[arm], action) for arm, manager in managers.items()
+        ]
+        assert len({result["observation"] for result in results}) == 1
+        assert len({result["info"]["domain_action"] for result in results}) == 1
 
-    native_answer = native.step(native_id, "prefix <answer> forty two </answer> suffix")
-    memory_answer = memory.step(memory_id, "prefix <answer> forty two </answer> suffix")
-    assert native_answer["done"] is memory_answer["done"] is True
-    assert native_answer["reward"] == memory_answer["reward"] == 0.0
-    assert native_answer["observation"] == memory_answer["observation"]
-    assert native_backend.call_trace == memory_backend.call_trace
-    for artifact in (native_runtime.predictions, memory_runtime.predictions):
-        first = json.loads(Path(str(artifact) + ".partial").read_text())
+    answers = [
+        manager.step(
+            env_ids[arm], "prefix <answer> forty two </answer> suffix"
+        )
+        for arm, manager in managers.items()
+    ]
+    assert all(answer["done"] is True for answer in answers)
+    assert {answer["reward"] for answer in answers} == {0.0}
+    assert len({answer["observation"] for answer in answers}) == 1
+    assert len(
+        {
+            json.dumps(value[1].call_trace, sort_keys=True)
+            for value in components.values()
+        }
+    ) == 1
+    for runtime, _, _, _, _ in components.values():
+        first = json.loads(Path(str(runtime.predictions) + ".partial").read_text())
         assert first == {
             "task_id": "synthetic-task-000",
             "model_answer": "forty two",

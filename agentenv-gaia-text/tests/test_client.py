@@ -13,12 +13,13 @@ from agentenv.controller.policy_turn import (
     complete_policy_turn,
     prepare_policy_turn,
 )
-from agentenv.envs.gaia_text import (
+from agentenv_gaia_text.backend import FixtureBackend
+from agentenv_gaia_text.client import (
     GAIA_TEXT_DOMAIN_PROMPT,
     GAIA_TEXT_MEMORY_AFFORDANCE,
+    GAIA_TEXT_POLICY_CONTINUATION_MARKER,
     GaiaTextEnvClient,
 )
-from agentenv_gaia_text.backend import FixtureBackend
 from agentenv_gaia_text.contracts import EvaluationArm, ProtocolContract
 from agentenv_gaia_text.dataset import GaiaTextDataset
 from agentenv_gaia_text.server import create_app
@@ -141,6 +142,177 @@ def test_memory_prompt_diff_is_only_memory_and_compaction_affordance(
         assert client.conversation_start[0]["value"] == memory_prompt
 
 
+def _exercise_compaction(tmp_path: Path, arm: EvaluationArm) -> dict[str, object]:
+    app, contract, manager, workspaces = _app_and_contract(tmp_path, arm)
+    with TestClient(app) as http:
+        request = Mock(wraps=_requests_adapter(http))
+        with patch("agentenv.envs.gaia_text.requests.request", request):
+            client = GaiaTextEnvClient(
+                "http://gaia.test",
+                arm=arm.value,
+                expected_protocol=contract,
+            )
+            client.reset(0)
+            initial = bind_initial_policy_context(
+                client,
+                [
+                    {
+                        "role": "system",
+                        "content": client.policy_framing()[0]["content"],
+                    },
+                    {"role": "user", "content": client.observe()},
+                ],
+            )
+            candidate = client.policy_turn_candidate()
+            prepared = prepare_policy_turn(
+                client,
+                initial,
+                count_prompt_tokens=lambda messages: (
+                    100 if messages[-1]["content"] == client.compaction_request else 80
+                ),
+                max_prompt_tokens=150,
+                max_model_tokens=200,
+                max_response_tokens=40,
+                max_observation_tokens=30,
+                action_observation_envelope_tokens=10,
+            )
+            before_compaction_requests = request.call_count
+            compacted, replaced_messages = complete_policy_turn(
+                client,
+                prepared,
+                "Preserve the same concise unresolved state.",
+            )
+            assert request.call_count == before_compaction_requests
+            assert replaced_messages == compacted.info["context_transition"]["messages"]
+            client.finalize_policy_horizon()
+            assert client.close() is True
+    return {
+        "candidate": candidate,
+        "control_request": prepared.control_request,
+        "prompt_token_count": prepared.prompt_token_count,
+        "compaction_request": client.compaction_request,
+        "info": compacted.info,
+        "metadata": manager.metadata(),
+        "workspace_count": len(workspaces),
+    }
+
+
+def test_compacting_arms_share_trigger_transition_and_action_accounting(
+    tmp_path: Path,
+) -> None:
+    compaction_only = _exercise_compaction(
+        tmp_path / "compaction-only",
+        EvaluationArm.AMG_COMPACTION_ONLY,
+    )
+    full_memory = _exercise_compaction(
+        tmp_path / "full-memory",
+        EvaluationArm.AMG_MEMORY,
+    )
+
+    for key in (
+        "candidate",
+        "control_request",
+        "prompt_token_count",
+        "compaction_request",
+    ):
+        assert compaction_only[key] == full_memory[key]
+    compaction_info = deepcopy(compaction_only["info"])
+    memory_info = deepcopy(full_memory["info"])
+    assert isinstance(compaction_info, dict)
+    assert isinstance(memory_info, dict)
+    compaction_messages = compaction_info["context_transition"]["messages"]
+    memory_messages = memory_info["context_transition"]["messages"]
+    assert memory_messages[0]["content"] == (
+        compaction_messages[0]["content"] + GAIA_TEXT_MEMORY_AFFORDANCE
+    )
+    memory_messages[0]["content"] = compaction_messages[0]["content"]
+    assert compaction_info == memory_info
+    info = compaction_info
+    assert info["policy_step_before"] == 0
+    assert info["policy_step_after"] == 1
+    assert info["native_call_count_before"] == 0
+    assert info["native_call_count_after"] == 0
+    assert info["context_epoch_before"] == 0
+    assert info["context_epoch_after"] == 1
+    assert info["context_transition"]["operation"] == "replace_messages"
+    assert info["context_transition"]["messages"][-1] == {
+        "role": "user",
+        "content": GAIA_TEXT_POLICY_CONTINUATION_MARKER,
+    }
+    assert "workspace" not in json.dumps(
+        info["context_transition"], sort_keys=True
+    ).casefold()
+    assert compaction_only["workspace_count"] == 0
+    assert full_memory["workspace_count"] == 1
+    assert compaction_only["metadata"]["active_workspace_count"] == 0
+
+
+def test_compaction_only_prompt_and_receipts_expose_no_memory_capability(
+    tmp_path: Path,
+) -> None:
+    app, contract, manager, workspaces = _app_and_contract(
+        tmp_path, EvaluationArm.AMG_COMPACTION_ONLY
+    )
+    with (
+        TestClient(app) as http,
+        patch(
+            "agentenv.envs.gaia_text.requests.request",
+            side_effect=_requests_adapter(http),
+        ),
+    ):
+        client = GaiaTextEnvClient(
+            "http://gaia.test",
+            arm="amg_compaction_only",
+            expected_protocol=contract,
+        )
+        assert client.policy_framing() == [
+            {"role": "system", "content": GAIA_TEXT_DOMAIN_PROMPT}
+        ]
+        assert GAIA_TEXT_MEMORY_AFFORDANCE not in client.conversation_start[0]["value"]
+        assert "workspace" not in client.compaction_request.casefold()
+        client.reset(0)
+        attempted = client.step(
+            'shell_command {"command":"printf forbidden > note.txt","workdir":"."}'
+        )
+        serialized = json.dumps(attempted.info, sort_keys=True)
+        assert attempted.done is False
+        assert attempted.info["env_info"]["status"] == "invalid_action"
+        assert attempted.info["env_info"]["workspace_action_count"] == 0
+        assert attempted.info["env_info"]["domain_action"] == "invalid"
+        assert "workspace_op" not in serialized
+        assert '"kind": "workspace"' not in serialized
+        assert str(tmp_path) not in serialized
+        assert workspaces == []
+        assert not (tmp_path / "workspaces").exists()
+        assert manager.metadata()["active_workspace_count"] == 0
+
+
+def test_compaction_only_client_rejects_forged_memory_runtime_without_path_leak(
+    tmp_path: Path,
+) -> None:
+    app, contract, manager, _ = _app_and_contract(
+        tmp_path, EvaluationArm.AMG_COMPACTION_ONLY
+    )
+    hidden_path = str(tmp_path / "hidden-memory-root")
+    forged = manager.metadata()
+    forged["workspace_runtime"] = {"root": hidden_path}
+    manager.metadata = lambda: deepcopy(forged)  # type: ignore[method-assign]
+    with (
+        TestClient(app) as http,
+        patch(
+            "agentenv.envs.gaia_text.requests.request",
+            side_effect=_requests_adapter(http),
+        ),
+        pytest.raises(RuntimeError, match="exposed runtime state") as error,
+    ):
+        GaiaTextEnvClient(
+            "http://gaia.test",
+            arm="amg_compaction_only",
+            expected_protocol=contract,
+        )
+    assert hidden_path not in str(error.value)
+
+
 def test_memory_write_survives_client_owned_replace_messages_compaction(
     tmp_path: Path,
 ) -> None:
@@ -215,7 +387,7 @@ def test_memory_write_survives_client_owned_replace_messages_compaction(
                 },
                 {
                     "role": "user",
-                    "content": "Continue the same task in the unchanged workspace.",
+                    "content": GAIA_TEXT_POLICY_CONTINUATION_MARKER,
                 },
             ]
             assert compacted.info["wrapper_evidence"] == {
