@@ -24,6 +24,7 @@ from .actions import (
 )
 from .bounded_text import bound_text
 from .deadline import DeadlineExceeded, MonotonicDeadline
+from .runtime_attestation import exact_runtime_identity_is_attested
 
 EXECUTOR_CONTRACT = "openmle_fast_executor_v1"
 EXTERNAL_RUNNER_CONTRACT = "openmle_fast_linux_cgroup_namespace_runner_v1"
@@ -448,6 +449,7 @@ class ExternalSandboxRunnerBackend:
         runner_path: Path | str,
         expected_runner_sha256: str,
         expected_runtime_digest: str,
+        expected_artifact_lock_sha256: str,
         limits: OpenMLEFastResourceLimits,
     ) -> None:
         self.runner_path = Path(runner_path).expanduser().absolute()
@@ -460,6 +462,7 @@ class ExternalSandboxRunnerBackend:
             raise OpenMLEFastExecutorError("sandbox runner SHA256 mismatch")
         self.limits = limits
         self.expected_runtime_digest = expected_runtime_digest
+        self.expected_artifact_lock_sha256 = expected_artifact_lock_sha256
         self._metadata = self._load_metadata()
 
     @property
@@ -497,9 +500,6 @@ class ExternalSandboxRunnerBackend:
             "pid_namespace",
             "ipc_namespace",
             "mount_namespace",
-            "cgroup_v2_cpu",
-            "cgroup_v2_memory",
-            "cgroup_v2_pids",
             "workspace_quota",
             "tmpfs_limit",
             "file_size_limit",
@@ -526,9 +526,11 @@ class ExternalSandboxRunnerBackend:
             "container_engine_absent",
             "background_process_detection",
             "descendant_kill_reap",
+            "parent_death_cleanup_watchdog",
             "freeze_reap",
             "read_only_workspace_freeze",
             "teardown_cgroup_empty",
+            "teardown_mount_empty",
             "idempotent_teardown",
         )
         if (
@@ -538,6 +540,10 @@ class ExternalSandboxRunnerBackend:
             or value.get("runtime_digest") != self.expected_runtime_digest
             or value.get("resource_limits") != self.limits.as_dict()
             or any(value.get(key) is not True for key in required_true)
+            or not exact_runtime_identity_is_attested(
+                value,
+                expected_artifact_lock_sha256=self.expected_artifact_lock_sha256,
+            )
             or value.get("execution_counter_coverage") != "complete"
             or value.get("fit_counter_coverage") != "partial"
             or value.get("fit_hook_contract") != FIT_HOOK_CONTRACT
@@ -745,6 +751,17 @@ class OpenMLEFastExecutor:
             "resource_limits": self.limits.as_dict(),
             "fit_hook_contract": FIT_HOOK_CONTRACT,
         }
+
+    @property
+    def runner_owns_workspace_lifecycle(self) -> bool:
+        """Whether the attested backend adopts and unmounts policy workspaces."""
+
+        metadata = self.backend.metadata
+        return bool(
+            metadata.get("teardown_mount_empty") is True
+            and metadata.get("workspace_storage_contract")
+            == "owned_dedicated_tmpfs_at_most_2g_v1"
+        )
 
     def freeze_for_grading(
         self,

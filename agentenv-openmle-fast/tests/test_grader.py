@@ -22,7 +22,10 @@ from agentenv_openmle_fast.grader_protocol import (
     receive_frame,
     verify_authenticated_message,
 )
-from agentenv_openmle_fast.private_grader import PrivateGraderService
+from agentenv_openmle_fast.private_grader import (
+    PrivateGraderError,
+    PrivateGraderService,
+)
 from agentenv_openmle_fast.private_grader_runner import (
     PRIVATE_RUNNER_COMPLETION_GRACE_MS,
     PRIVATE_RUNNER_CONTRACT,
@@ -40,6 +43,7 @@ from tests.support import (
     TASK_ID,
     GraderServiceThread,
     create_fixture,
+    sha256_file,
 )
 
 
@@ -561,8 +565,147 @@ class ExitMetric:
                 runner_path=runner,
                 expected_runner_sha256=hashlib.sha256(b"private-runner").hexdigest(),
                 expected_runtime_digest=PRIVATE_RUNTIME_DIGEST,
+                expected_artifact_lock_sha256="a" * 64,
                 limits=limits,
             )
+
+    def test_private_manifest_binds_exact_runtime_and_all_public_manifests(
+        self,
+    ) -> None:
+        for mutation, message in (
+            (
+                lambda value: value.__setitem__("runtime_digest", "sha256:" + "8" * 64),
+                "runtime digest",
+            ),
+            (
+                lambda value: value["public_manifest_sha256"].pop("heldout"),
+                "public-manifest",
+            ),
+        ):
+            with self.subTest(message=message):
+                root = self.root / ("bad-" + message.replace("-", "_"))
+                fixture = create_fixture(root)
+                manifest = Path(fixture["private_manifest"])
+                value = json.loads(manifest.read_text(encoding="utf-8"))
+                mutation(value)
+                manifest.write_text(
+                    json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(
+                    PrivateGraderError, message.replace("-", "[- ]?")
+                ):
+                    PrivateGraderService(
+                        private_manifest_path=manifest,
+                        expected_manifest_sha256=sha256_file(manifest),
+                        package_root=Path(fixture["package_root"]),
+                        archive_root=Path(fixture["archive_root"]),
+                        expected_release_revision=RELEASE_REVISION,
+                        expected_runtime_digest=PRIVATE_RUNTIME_DIGEST,
+                        socket_path=root / "grader.sock",
+                        credential_path=Path(fixture["credential"]),
+                        audit_root=Path(fixture["audit_root"]),
+                        total_wall_ms=5_000,
+                        max_concurrent_requests=2,
+                        backend=LocalCPUPrivateGraderBackend(
+                            PrivateGraderLimits.frozen_v1()
+                        ),
+                    )
+
+    def test_private_client_rejects_nonfinite_timeout(self) -> None:
+        for timeout in (float("nan"), float("inf")):
+            with (
+                self.subTest(timeout=timeout),
+                self.assertRaisesRegex(ValueError, "finite"),
+            ):
+                PrivateGraderClient(
+                    endpoint=self.socket_path,
+                    credential_path=Path(self.fixture["credential"]),
+                    timeout_seconds=timeout,
+                )
+
+    def test_exact_private_runner_accepts_truthful_v1_and_pins_artifact_lock(
+        self,
+    ) -> None:
+        runner = self.root / "private-runner-v1"
+        runner.write_bytes(b"private-runner-v1")
+        runner.chmod(0o700)
+        limits = PrivateGraderLimits.frozen_v1()
+        artifact_lock = "a" * 64
+        true_fields = (
+            "formal_eligible",
+            "fresh_worker_per_grade",
+            "selected_task_only_mounts",
+            "submission_passed_by_fd",
+            "all_task_inputs_passed_by_fd",
+            "result_sanitized_ipc",
+            "service_environment_hidden",
+            "network_namespace",
+            "network_no_egress",
+            "dns_disabled",
+            "metadata_service_blocked",
+            "external_unix_sockets_blocked",
+            "pid_namespace",
+            "ipc_namespace",
+            "mount_namespace",
+            "fresh_unprivileged_uid_gid",
+            "capabilities_dropped",
+            "no_new_privs",
+            "seccomp",
+            "read_only_rootfs",
+            "isolated_proc",
+            "minimal_devices",
+            "gpu_devices_absent",
+            "core_dumps_disabled",
+            "hard_wall_supervision",
+            "descendant_kill_reap",
+            "parent_death_cleanup_watchdog",
+            "worker_teardown_verified",
+            "validate_submission_once",
+            "evaluate_once_after_validation",
+        )
+        metadata = {field: True for field in true_fields}
+        metadata.update(
+            {
+                "contract": PRIVATE_RUNNER_CONTRACT,
+                "runtime_digest": PRIVATE_RUNTIME_DIGEST,
+                "resource_limits": limits.as_dict(),
+                "cgroup_version": "v1",
+                "cgroup_controller_attestation": {"version": "v1"},
+                "cgroup_v1_cpu": True,
+                "cgroup_v1_memory": True,
+                "cgroup_v1_pids": True,
+                "cgroup_v2_cpu": False,
+                "cgroup_v2_memory": False,
+                "cgroup_v2_pids": False,
+                "active_verification": {
+                    "admission_stamp_valid": True,
+                    "all_checks_pass": True,
+                },
+                "artifact_identity": {
+                    "artifact_lock_sha256": artifact_lock,
+                    "artifact_lock_expected_sha256": artifact_lock,
+                },
+            }
+        )
+        completed = subprocess.CompletedProcess(
+            args=[str(runner), "metadata"],
+            returncode=0,
+            stdout=json.dumps(metadata).encode(),
+            stderr=b"",
+        )
+        with patch(
+            "agentenv_openmle_fast.private_grader_runner.subprocess.run",
+            return_value=completed,
+        ):
+            backend = ExternalPrivateGraderRunnerBackend(
+                runner_path=runner,
+                expected_runner_sha256=hashlib.sha256(b"private-runner-v1").hexdigest(),
+                expected_runtime_digest=PRIVATE_RUNTIME_DIGEST,
+                expected_artifact_lock_sha256=artifact_lock,
+                limits=limits,
+            )
+        self.assertEqual(backend.metadata["cgroup_version"], "v1")
 
 
 if __name__ == "__main__":

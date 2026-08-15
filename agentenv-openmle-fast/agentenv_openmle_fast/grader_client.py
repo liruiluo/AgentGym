@@ -32,8 +32,13 @@ class PrivateGraderClient:
         credential_path: Path | str,
         timeout_seconds: float,
     ) -> None:
-        if not isinstance(timeout_seconds, (int, float)) or timeout_seconds <= 0:
-            raise ValueError("private-grader timeout must be positive")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(float(timeout_seconds))
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("private-grader timeout must be finite and positive")
         self.endpoint = Path(endpoint).expanduser().absolute()
         self.credential = read_credential(Path(credential_path))
         self.timeout_seconds = float(timeout_seconds)

@@ -269,41 +269,42 @@ class OpenMLEFastEpisodeManager:
                     action_status="infrastructure_fault",
                 )
             record = self.dataset[data_idx]
-            workspace: OpenMLEFastWorkspace | None = None
+            episode = _Episode(
+                slot_id=slot_id,
+                episode_id=uuid.uuid4().hex,
+                record=record,
+                workspace=None,
+                executor=None,
+                observation=(
+                    "Environment infrastructure fault; this sample must be rescheduled."
+                ),
+                started_monotonic=started_monotonic,
+            )
+            # Adopt the cleanup handle before constructing any later component.
+            # A failed cleanup remains reachable through the slot for bounded retry.
+            slot.episode = episode
             try:
-                workspace = self.materializer.materialize(record)
-                executor = self.executor_factory()
+                episode.workspace = self.materializer.materialize(record)
                 observation = _bound_text(
                     record.task_markdown,
                     self.limits,
                     self.max_observation_tokens,
                 )
-                episode = _Episode(
-                    slot_id=slot_id,
-                    episode_id=uuid.uuid4().hex,
-                    record=record,
-                    workspace=workspace,
-                    executor=executor,
-                    observation=observation,
-                    started_monotonic=started_monotonic,
-                )
+                executor = self.executor_factory()
+                episode.observation = observation
+                episode.executor = executor
             except Exception:  # noqa: BLE001 - reset faults become truncations
-                if workspace is not None:
-                    self.materializer.close(workspace)
-                episode = _Episode(
-                    slot_id=slot_id,
-                    episode_id=uuid.uuid4().hex,
-                    record=record,
-                    workspace=None,
-                    executor=None,
-                    observation="Environment infrastructure fault; this sample must be rescheduled.",
-                    started_monotonic=started_monotonic,
-                    done=True,
-                    truncated=True,
-                    reward=None,
-                    terminal_reason="reset_infrastructure_fault",
-                )
-            slot.episode = episode
+                episode.done = True
+                episode.truncated = True
+                episode.reward = None
+                episode.terminal_reason = "reset_infrastructure_fault"
+                if episode.workspace is not None and episode.executor is None:
+                    try:
+                        self.materializer.close(episode.workspace)
+                    except Exception:  # noqa: BLE001 - retain handle for close retry
+                        pass
+                    else:
+                        episode.workspace = None
             return self._public_step(
                 episode, action_kind="reset", action_status="reset"
             )
@@ -466,10 +467,13 @@ class OpenMLEFastEpisodeManager:
         active_environments = sum(1 for slot in slots if slot.episode is not None)
         backend = self.executor_metadata.get("backend", {})
         provenance = self.dataset.provenance
-        maximum_request_wall_seconds = max(
-            self.limits.shell_wall_ms,
-            self.limits.grader_total_wall_ms,
-        ) / 1000.0
+        maximum_request_wall_seconds = (
+            max(
+                self.limits.shell_wall_ms,
+                self.limits.grader_total_wall_ms,
+            )
+            / 1000.0
+        )
         return {
             "schema": PUBLIC_SERVICE_SCHEMA,
             "domain_id": "openmle_fast",
@@ -550,6 +554,8 @@ class OpenMLEFastEpisodeManager:
             episode.observation = "The cumulative managed-runtime budget is exhausted."
             return "policy_violation", _zero_delta()
         try:
+            if episode.executor.runner_owns_workspace_lifecycle:
+                self.materializer.mark_adopted_by_runner(episode.workspace)
             receipt = episode.executor.execute(
                 episode.workspace.policy_root,
                 action,
@@ -714,7 +720,7 @@ class OpenMLEFastEpisodeManager:
         counter_delta: Mapping[str, Any] | None = None,
     ) -> EpisodeStep:
         record = episode.record
-        grade = None if episode.grade is None else episode.grade.as_dict()
+        grade = None if episode.grade is None else episode.grade.public_payload()
         execution = (
             None if episode.last_execution is None else episode.last_execution.as_dict()
         )
@@ -848,8 +854,11 @@ class OpenMLEFastEpisodeManager:
         if episode is None:
             return
         if episode.workspace is not None and episode.executor is not None:
-            teardown = episode.executor.close(episode.workspace.policy_root)
-            episode.teardown_receipt = teardown.as_dict()
+            runner_owns_mount = episode.executor.runner_owns_workspace_lifecycle
+            adopted = self.materializer.is_adopted_by_runner(episode.workspace)
+            if not runner_owns_mount or adopted:
+                teardown = episode.executor.close(episode.workspace.policy_root)
+                episode.teardown_receipt = teardown.as_dict()
         if episode.workspace is not None:
             self.materializer.close(episode.workspace)
         slot.episode = None
@@ -887,7 +896,7 @@ def _read_submission(
             if info.st_size > maximum:
                 raise ValueError("submission exceeds the input cap")
             allocated = getattr(info, "st_blocks", 0) * 512
-            if info.st_size and allocated and allocated < info.st_size:
+            if info.st_size > 0 and allocated < info.st_size:
                 raise ValueError("sparse submissions are not accepted")
             with os.fdopen(descriptor, "rb", closefd=False) as handle:
                 chunks: list[bytes] = []
@@ -900,6 +909,25 @@ def _read_submission(
                     chunks.append(chunk)
                     remaining -= len(chunk)
                 payload = b"".join(chunks)
+            after = os.fstat(descriptor)
+            identity_before = (
+                info.st_dev,
+                info.st_ino,
+                info.st_mode,
+                info.st_nlink,
+                info.st_size,
+                getattr(info, "st_blocks", 0),
+            )
+            identity_after = (
+                after.st_dev,
+                after.st_ino,
+                after.st_mode,
+                after.st_nlink,
+                after.st_size,
+                getattr(after, "st_blocks", 0),
+            )
+            if identity_after != identity_before or len(payload) != info.st_size:
+                raise ValueError("submission changed while it was being read")
         finally:
             os.close(descriptor)
     finally:

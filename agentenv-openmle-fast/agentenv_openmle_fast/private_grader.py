@@ -33,6 +33,7 @@ from .private_grader_runner import (
 )
 
 PRIVATE_MANIFEST_SCHEMA = "openmle_fast_fullpool_private_grader_manifest_v1"
+PUBLIC_MANIFEST_BINDING_KEYS = frozenset({"g64", "train", "heldout"})
 
 
 class PrivateGraderError(RuntimeError):
@@ -104,7 +105,11 @@ class PrivateGraderService:
         runtime_id = manifest.get("runtime_id")
         if not isinstance(runtime_id, str) or not runtime_id.strip():
             raise PrivateGraderError("private grader runtime identity is missing")
-        self.runtime_digest = expected_runtime_digest
+        manifest_runtime_digest = _runtime_digest(manifest.get("runtime_digest"))
+        configured_runtime_digest = _runtime_digest(expected_runtime_digest)
+        if manifest_runtime_digest != configured_runtime_digest:
+            raise PrivateGraderError("private grader runtime digest mismatch")
+        self.runtime_digest = configured_runtime_digest
         self.package_root = _real_directory(Path(package_root), "private package root")
         self.archive_root = _real_directory(Path(archive_root), "private archive root")
         tasks = manifest.get("records")
@@ -117,10 +122,13 @@ class PrivateGraderService:
         ):
             raise PrivateGraderError("private grader manifest has no tasks")
         public_manifests = manifest.get("public_manifest_sha256")
-        if not isinstance(public_manifests, dict) or not public_manifests:
-            raise PrivateGraderError("private grader public-manifest bindings missing")
-        for role, digest in public_manifests.items():
-            if not isinstance(role, str) or not role or _digest(digest) != digest:
+        if (
+            not isinstance(public_manifests, dict)
+            or set(public_manifests) != PUBLIC_MANIFEST_BINDING_KEYS
+        ):
+            raise PrivateGraderError("private grader public-manifest bindings drifted")
+        for digest in public_manifests.values():
+            if _digest(digest) != digest:
                 raise PrivateGraderError("private grader public-manifest binding drift")
         loaded: dict[str, _PrivateTask] = {}
         for expected_index, raw in enumerate(tasks):
@@ -735,6 +743,17 @@ def _validator_success_forms(value: Any) -> tuple[str, ...]:
     if kind == "bool_message_tuple":
         return ()
     raise PrivateGraderError("validator return convention is not admitted")
+
+
+def _runtime_digest(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.startswith("sha256:")
+        or len(value) != 71
+        or any(character not in "0123456789abcdef" for character in value[7:])
+    ):
+        raise PrivateGraderError("private grader runtime digest is invalid")
+    return value
 
 
 def _digest(value: Any) -> str:

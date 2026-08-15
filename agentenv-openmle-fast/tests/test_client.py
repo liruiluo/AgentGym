@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agentenv_openmle_fast.environment import POLICY_PROMPT
+from tests.support import RELEASE_REVISION
 
 
 def _load_client_module():
@@ -78,8 +79,6 @@ def _load_client_module():
 _CLIENT_MODULE = _load_client_module()
 OPENMLE_FAST_POLICY_SYSTEM_PROMPT = _CLIENT_MODULE.OPENMLE_FAST_POLICY_SYSTEM_PROMPT
 OpenMLEFastEnvClient = _CLIENT_MODULE.OpenMLEFastEnvClient
-
-from tests.support import RELEASE_REVISION
 
 
 class _Response:
@@ -242,6 +241,41 @@ class OpenMLEFastClientTest(unittest.TestCase):
                 "unaudited_evidence_sha256": None,
             },
         }
+
+    def graded_terminal_response(self):
+        terminal = self.step_response(
+            observation="graded",
+            reward=1.0,
+            done=True,
+            action_count=1,
+            action_kind="submit",
+            terminal_reason="graded_submission",
+        )
+        info = terminal["info"]
+        info["action_status"] = "graded"
+        info["runtime_success"] = True
+        info["episode_success"] = True
+        info["counters"]["grading_count"] = 1
+        info["counter_delta"]["action_count"] = 1
+        info["counter_delta"]["grading_count"] = 1
+        info["grade"] = {
+            "schema": "openmle_fast_grade_response_v1",
+            "contract_version": "openmle_fast_v1",
+            "request_id": "request-terminal",
+            "episode_id": "episode-1",
+            "task_id": "tiny-regression@1",
+            "submission_sha256": "f" * 64,
+            "submission_valid": True,
+            "native_score": 0.0,
+            "higher_is_better": False,
+            "normalized_reward": 1.0,
+            "improved_over_baseline": True,
+            "runtime_success": True,
+            "terminal_reason": "graded_submission",
+            "classification": "graded",
+            "audit_digest": "e" * 64,
+        }
+        return terminal
 
     def test_attests_before_create_and_forwards_raw_action(self) -> None:
         calls = []
@@ -518,6 +552,133 @@ class OpenMLEFastClientTest(unittest.TestCase):
                     **self.client_kwargs(),
                 )
             self.assertEqual(request.call_count, 1)
+
+    def test_terminal_step_binds_public_grade_identity_into_action_submission(
+        self,
+    ) -> None:
+        terminal = self.graded_terminal_response()
+
+        def request(_method, url, **_kwargs):
+            if url.endswith("/metadata"):
+                return _Response(self.metadata())
+            if url.endswith("/create"):
+                return _Response({"id": 3, "observation": "unbound", "info": {}})
+            if url.endswith("/reset"):
+                return _Response(self.step_response())
+            if url.endswith("/step"):
+                return _Response(terminal)
+            raise AssertionError(url)
+
+        with patch("requests.request", side_effect=request):
+            client = OpenMLEFastEnvClient(
+                "http://127.0.0.1:9000", **self.client_kwargs()
+            )
+            client.reset(0)
+            result = client.step("submit")
+        self.assertEqual(
+            result.info["action_submission"],
+            {
+                "raw_policy_output": "submit",
+                "request_id": "request-terminal",
+                "episode_id": "episode-1",
+                "submission_sha256": "f" * 64,
+            },
+        )
+
+    def test_rejects_inconsistent_public_grade_receipts(self) -> None:
+        mutations = (
+            ("reward", lambda value: value.__setitem__("reward", 0.5)),
+            (
+                "classification",
+                lambda value: value["info"]["grade"].__setitem__(
+                    "classification", "invalid_submission"
+                ),
+            ),
+            (
+                "native_score",
+                lambda value: value["info"]["grade"].__setitem__(
+                    "native_score", float("nan")
+                ),
+            ),
+            (
+                "episode_id",
+                lambda value: value["info"]["grade"].__setitem__(
+                    "episode_id", "other-episode"
+                ),
+            ),
+            (
+                "grading_count",
+                lambda value: value["info"]["counter_delta"].__setitem__(
+                    "grading_count", 0
+                ),
+            ),
+        )
+        for label, mutate in mutations:
+            response = copy.deepcopy(self.graded_terminal_response())
+            mutate(response)
+            with self.subTest(label=label), self.assertRaises(RuntimeError):
+                _CLIENT_MODULE._validate_step_response(
+                    response,
+                    metadata=self.metadata(),
+                    expected_action_count=1,
+                    expected_action_delta=1,
+                )
+
+    def test_close_retries_a_retryable_receipt_within_client_deadline(self) -> None:
+        calls = []
+        close_receipts = [
+            {
+                "schema": "openmle_fast_cleanup_receipt_v1",
+                "closed": False,
+                "already_closed": False,
+                "workspace_removed": False,
+                "retryable": True,
+                "failure_class": "cleanup_infrastructure_fault",
+                "cleanup_contract": _CLIENT_MODULE._EXPECTED_BOUNDARIES["cleanup"],
+            },
+            {
+                "schema": "openmle_fast_cleanup_receipt_v1",
+                "closed": True,
+                "already_closed": False,
+                "workspace_removed": True,
+                "retryable": False,
+                "failure_class": None,
+                "cleanup_contract": _CLIENT_MODULE._EXPECTED_BOUNDARIES["cleanup"],
+            },
+        ]
+
+        def request(_method, url, **kwargs):
+            calls.append((url, kwargs))
+            if url.endswith("/metadata"):
+                return _Response(self.metadata())
+            if url.endswith("/create"):
+                return _Response({"id": 3, "observation": "unbound", "info": {}})
+            if url.endswith("/close"):
+                return _Response(close_receipts.pop(0))
+            raise AssertionError(url)
+
+        with patch("requests.request", side_effect=request):
+            client = OpenMLEFastEnvClient(
+                "http://127.0.0.1:9000", **self.client_kwargs()
+            )
+            receipt = client.close()
+        self.assertTrue(receipt["closed"])
+        self.assertEqual(sum(url.endswith("/close") for url, _ in calls), 2)
+
+    def test_rejects_nonfinite_timeouts_and_retired_manifest_roles(self) -> None:
+        for value in (float("nan"), float("inf")):
+            with self.subTest(timeout=value), self.assertRaises(ValueError):
+                OpenMLEFastEnvClient(
+                    "http://127.0.0.1:9000",
+                    timeout=value,
+                    **self.client_kwargs(),
+                )
+        with patch("requests.request", return_value=_Response(self.metadata())):
+            with self.assertRaisesRegex(ValueError, "role"):
+                OpenMLEFastEnvClient(
+                    "http://127.0.0.1:9000",
+                    **{**self.client_kwargs(), "expected_role": "mechanism_gate"},
+                )
 
 
 if __name__ == "__main__":

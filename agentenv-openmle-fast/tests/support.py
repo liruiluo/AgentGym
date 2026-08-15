@@ -284,9 +284,14 @@ class TinyRegressionMetric:
         "schema": "openmle_fast_fullpool_private_grader_manifest_v1",
         "contract_version": "openmle_fast_v1",
         "runtime_id": "openmle-fast-unit-v1",
+        "runtime_digest": PRIVATE_RUNTIME_DIGEST,
         "openmle_tasks_revision": RELEASE_REVISION,
         "task_count": 1,
-        "public_manifest_sha256": {"g64": sha256_file(manifest_path)},
+        "public_manifest_sha256": {
+            "g64": sha256_file(manifest_path),
+            "train": sha256_file(manifest_path),
+            "heldout": sha256_file(manifest_path),
+        },
         "records": [
             {
                 "private_data_idx": 0,
@@ -357,3 +362,48 @@ class GraderServiceThread:
         self.thread.join(timeout=5.0)
         if self.thread.is_alive():
             raise RuntimeError("private grader service did not stop")
+
+
+class FakeWorkspaceMountBackend:
+    """In-process mount ledger for portable unit tests; production never imports it."""
+
+    def __init__(self) -> None:
+        self.mounts: dict[Path, Any] = {}
+        self.mount_calls: list[tuple[Path, int, int]] = []
+        self.unmount_calls: list[Path] = []
+
+    def mount(self, path: Path, *, workspace_bytes: int, max_files: int):
+        from agentenv_openmle_fast.materializer import WorkspaceMountIdentity
+
+        absolute = path.absolute()
+        if absolute in self.mounts:
+            raise RuntimeError("test workspace is already mounted")
+        identity = WorkspaceMountIdentity(
+            mount_id=f"test-mount-{len(self.mounts) + 1}",
+            device=10_000 + len(self.mounts),
+            filesystem="tmpfs",
+            options=("nodev", "noexec", "nosuid", "rw"),
+            capacity_bytes=workspace_bytes,
+            inode_capacity=max_files,
+        )
+        self.mounts[absolute] = identity
+        self.mount_calls.append((absolute, workspace_bytes, max_files))
+        return identity
+
+    def inspect(self, path: Path):
+        return self.mounts.get(path.absolute())
+
+    def unmount(
+        self,
+        path: Path,
+        *,
+        expected: Any,
+        workspace_bytes: int,
+        max_files: int,
+    ) -> None:
+        del workspace_bytes, max_files
+        absolute = path.absolute()
+        if self.mounts.get(absolute) != expected:
+            raise RuntimeError("test mount identity drifted")
+        self.mounts.pop(absolute)
+        self.unmount_calls.append(absolute)

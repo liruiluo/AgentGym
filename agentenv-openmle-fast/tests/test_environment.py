@@ -12,7 +12,11 @@ from unittest.mock import patch
 from agentenv_openmle_fast.audit import OpenMLEFastAuditSink
 from agentenv_openmle_fast.dataset import OpenMLEFastDataset
 from agentenv_openmle_fast.deadline import MonotonicDeadline
-from agentenv_openmle_fast.environment import OpenMLEFastEpisodeManager, _bound_text
+from agentenv_openmle_fast.environment import (
+    OpenMLEFastEpisodeManager,
+    _bound_text,
+    _read_submission,
+)
 from agentenv_openmle_fast.executor import (
     LocalCPUExecutionBackend,
     OpenMLEFastExecutor,
@@ -29,6 +33,7 @@ from agentenv_openmle_fast.private_grader_runner import (
 from tests.support import (
     PRIVATE_RUNTIME_DIGEST,
     RELEASE_REVISION,
+    FakeWorkspaceMountBackend,
     GraderServiceThread,
     create_fixture,
 )
@@ -157,7 +162,11 @@ class OpenMLEFastEnvironmentTest(unittest.TestCase):
         return OpenMLEFastEpisodeManager(
             dataset=self.dataset,
             materializer=OpenMLEFastWorkspaceMaterializer(
-                Path(self.fixture["episodes_root"])
+                Path(self.fixture["episodes_root"]),
+                runner_workspace_parent=Path(self.fixture["episodes_root"]),
+                workspace_bytes=2 * 1024**3,
+                max_files=100_000,
+                mount_backend=FakeWorkspaceMountBackend(),
             ),
             executor_factory=lambda: OpenMLEFastExecutor(
                 limits=self.limits,
@@ -242,7 +251,7 @@ class OpenMLEFastEnvironmentTest(unittest.TestCase):
             terminal = manager.step(
                 slot,
                 "shell_command "
-                '{"command":"python -c \'import time; time.sleep(2)\'",'
+                '{"command":"python3 -c \'import time; time.sleep(2)\'",'
                 '"timeout_ms":20000}',
             )
             elapsed = time.monotonic() - started
@@ -282,8 +291,8 @@ class OpenMLEFastEnvironmentTest(unittest.TestCase):
         manager, slot, _ = self.reset()
         first = manager.step(
             slot,
-            'shell_command {"command":"python -c \\"print(1)\\"; '
-            'python -c \\"print(2)\\""}',
+            'shell_command {"command":"python3 -c \\"print(1)\\"; '
+            'python3 -c \\"print(2)\\""}',
         )
         counters = first.info["counters"]
         self.assertEqual(counters["execution_action_count"], 1)
@@ -357,7 +366,7 @@ class OpenMLEFastEnvironmentTest(unittest.TestCase):
         started = time.monotonic()
         terminal = manager.step(
             slot,
-            'shell_command {"command":"python -c \\"import time; time.sleep(2)\\""}',
+            'shell_command {"command":"python3 -c \\"import time; time.sleep(2)\\""}',
         )
         self.assertLess(time.monotonic() - started, 0.8)
         self.assertTrue(terminal.done)
@@ -486,6 +495,41 @@ class OpenMLEFastEnvironmentTest(unittest.TestCase):
         ):
             self.assertIn(key, reset.info)
         self.assertEqual(len(reset.info["audit_digest"]), 64)
+
+    def test_reset_constructor_and_cleanup_fault_retains_workspace_handle(self) -> None:
+        manager = self.build_manager(_FaultingGrader())
+        slot = manager.create()
+        original_close = manager.materializer.close
+        manager.executor_factory = lambda: (_ for _ in ()).throw(
+            RuntimeError("injected executor construction fault")
+        )
+        manager.materializer.close = lambda _workspace: (_ for _ in ()).throw(
+            OSError("injected reset cleanup fault")
+        )
+        step = manager.reset(slot, 0)
+        self.assertTrue(step.done)
+        self.assertTrue(step.info["truncated"])
+        retained = manager._slot(slot).episode
+        assert retained is not None
+        self.assertIsNotNone(retained.workspace)
+        manager.materializer.close = original_close
+        receipt = manager.close(slot)
+        self.assertTrue(receipt["closed"])
+        self.assertTrue(receipt["workspace_removed"])
+
+    def test_fully_sparse_submission_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="openmle-sparse-submission-") as raw:
+            root = Path(raw)
+            submission = root / "submission.csv"
+            with submission.open("wb") as handle:
+                handle.truncate(1024 * 1024)
+            self.assertEqual(submission.stat().st_blocks, 0)
+            with self.assertRaisesRegex(ValueError, "sparse"):
+                _read_submission(
+                    root,
+                    2 * 1024 * 1024,
+                    deadline=MonotonicDeadline.after_ms(1_000),
+                )
 
 
 if __name__ == "__main__":

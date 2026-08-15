@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .deadline import DeadlineExceeded, MonotonicDeadline
+from .runtime_attestation import exact_runtime_identity_is_attested
 
 PRIVATE_RUNNER_CONTRACT = "openmle_fast_private_grader_runner_v1"
 PRIVATE_WORKER_REQUEST_SCHEMA = "openmle_fast_private_worker_request_v1"
@@ -224,6 +225,7 @@ class ExternalPrivateGraderRunnerBackend:
         runner_path: Path | str,
         expected_runner_sha256: str,
         expected_runtime_digest: str,
+        expected_artifact_lock_sha256: str,
         limits: PrivateGraderLimits,
     ) -> None:
         self.runner_path = Path(runner_path).expanduser().absolute()
@@ -234,6 +236,7 @@ class ExternalPrivateGraderRunnerBackend:
         if _file_sha256(self.runner_path) != expected_runner_sha256:
             raise PrivateGraderRunnerError("private runner SHA256 mismatch")
         self.expected_runtime_digest = expected_runtime_digest
+        self.expected_artifact_lock_sha256 = expected_artifact_lock_sha256
         self.limits = limits
         self._metadata = self._load_metadata()
 
@@ -267,6 +270,7 @@ class ExternalPrivateGraderRunnerBackend:
             "fresh_worker_per_grade",
             "selected_task_only_mounts",
             "submission_passed_by_fd",
+            "all_task_inputs_passed_by_fd",
             "result_sanitized_ipc",
             "service_environment_hidden",
             "network_namespace",
@@ -277,9 +281,6 @@ class ExternalPrivateGraderRunnerBackend:
             "pid_namespace",
             "ipc_namespace",
             "mount_namespace",
-            "cgroup_v2_cpu",
-            "cgroup_v2_memory",
-            "cgroup_v2_pids",
             "fresh_unprivileged_uid_gid",
             "capabilities_dropped",
             "no_new_privs",
@@ -291,6 +292,7 @@ class ExternalPrivateGraderRunnerBackend:
             "core_dumps_disabled",
             "hard_wall_supervision",
             "descendant_kill_reap",
+            "parent_death_cleanup_watchdog",
             "worker_teardown_verified",
             "validate_submission_once",
             "evaluate_once_after_validation",
@@ -302,6 +304,10 @@ class ExternalPrivateGraderRunnerBackend:
             or value.get("runtime_digest") != self.expected_runtime_digest
             or value.get("resource_limits") != self.limits.as_dict()
             or any(value.get(key) is not True for key in required_true)
+            or not exact_runtime_identity_is_attested(
+                value,
+                expected_artifact_lock_sha256=self.expected_artifact_lock_sha256,
+            )
         ):
             raise PrivateGraderRunnerError("private runner attestation is incomplete")
         return value
@@ -372,9 +378,7 @@ class ExternalPrivateGraderRunnerBackend:
                     stderr=subprocess.DEVNULL,
                     timeout=min(
                         deadline.remaining_seconds(),
-                        (
-                            runner_timeout_ms + PRIVATE_RUNNER_COMPLETION_GRACE_MS
-                        )
+                        (runner_timeout_ms + PRIVATE_RUNNER_COMPLETION_GRACE_MS)
                         / 1000.0,
                     ),
                     check=False,

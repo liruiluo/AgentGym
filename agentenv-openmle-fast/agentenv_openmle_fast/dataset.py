@@ -15,6 +15,9 @@ from typing import Any
 MANIFEST_SCHEMA = "openmle_fast_public_manifest_v1"
 CONTRACT_VERSION = "openmle_fast_v1"
 GATE_ONLY_ROLE = "gate_only"
+TRAIN_POOL_ROLE = "train_pool"
+HELDOUT_ROLE = "heldout"
+ALLOWED_MANIFEST_ROLES = frozenset({GATE_ONLY_ROLE, TRAIN_POOL_ROLE, HELDOUT_ROLE})
 
 
 class OpenMLEFastDatasetError(RuntimeError):
@@ -106,6 +109,10 @@ class OpenMLEFastDataset:
         expected_release_revision: str,
         expected_role: str,
     ) -> None:
+        if expected_role not in ALLOWED_MANIFEST_ROLES:
+            raise OpenMLEFastDatasetError(
+                "expected task-manifest role is not executable"
+            )
         self.manifest_path = _real_file(Path(manifest_path), "task manifest")
         self.package_root = _real_directory(Path(package_root), "package root")
         self.archive_root = _real_directory(Path(archive_root), "archive root")
@@ -138,6 +145,8 @@ class OpenMLEFastDataset:
         if release_revision != _git_revision(expected_release_revision):
             raise OpenMLEFastDatasetError("OpenMLE release revision mismatch")
         role = _text(manifest, "role")
+        if role not in ALLOWED_MANIFEST_ROLES:
+            raise OpenMLEFastDatasetError("task-manifest role is not executable")
         if role != expected_role:
             raise OpenMLEFastDatasetError("task-manifest role mismatch")
         task_count = manifest.get("task_count")
@@ -181,10 +190,7 @@ class OpenMLEFastDataset:
         task_id_list_sha256 = _sha256_text(
             manifest.get("task_id_list_sha256"), "task-id-list SHA256"
         )
-        if (
-            _sha256(("\n".join(task_ids) + "\n").encode("utf-8"))
-            != task_id_list_sha256
-        ):
+        if _sha256(("\n".join(task_ids) + "\n").encode("utf-8")) != task_id_list_sha256:
             raise OpenMLEFastDatasetError("ordered task identity digest drift")
         if _sha256(("\n".join(source_families) + "\n").encode("utf-8")) != _sha256_text(
             manifest.get("source_family_list_sha256"),

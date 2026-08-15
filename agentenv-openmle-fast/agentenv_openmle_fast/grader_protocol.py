@@ -193,6 +193,19 @@ class GradeResult:
     def as_dict(self) -> dict[str, Any]:
         return self.payload()
 
+    def public_payload(self) -> dict[str, Any]:
+        """Project the private result onto the frozen public PPO receipt."""
+
+        payload = self.payload()
+        for private_field in (
+            "grader_binding_sha256",
+            "package_identity_sha256",
+            "baseline_score",
+            "ideal_score",
+        ):
+            payload.pop(private_field)
+        return payload
+
     def payload(self) -> dict[str, Any]:
         return {
             "schema": RESPONSE_SCHEMA,

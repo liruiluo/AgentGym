@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
 import unittest
+from unittest.mock import patch
 
 from agentenv_openmle_fast.executor import OpenMLEFastResourceLimits
-from agentenv_openmle_fast.launch import _validate_timeout_margins
+from agentenv_openmle_fast.launch import (
+    _required_float,
+    _validate_timeout_margins,
+)
 
 
 class OpenMLEFastLaunchTest(unittest.TestCase):
@@ -38,6 +43,27 @@ class OpenMLEFastLaunchTest(unittest.TestCase):
             client_timeout=200.0,
             client_margin=5.0,
         )
+
+    def test_nonfinite_timeouts_fail_closed(self) -> None:
+        for raw in ("nan", "inf", "-inf"):
+            with (
+                self.subTest(raw=raw),
+                patch.dict(os.environ, {"OPENMLE_TEST_TIMEOUT": raw}),
+                self.assertRaisesRegex(RuntimeError, "finite"),
+            ):
+                _required_float("OPENMLE_TEST_TIMEOUT")
+        for value in (float("nan"), float("inf")):
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(RuntimeError, "finite"),
+            ):
+                _validate_timeout_margins(
+                    limits=self.limits,
+                    grader_timeout=value,
+                    grader_margin=1.0,
+                    client_timeout=200.0,
+                    client_margin=5.0,
+                )
 
 
 if __name__ == "__main__":

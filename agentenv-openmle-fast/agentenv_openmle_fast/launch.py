@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 from pathlib import Path
 
 from . import actions, materializer
 from .audit import OpenMLEFastAuditSink
-from .dataset import OpenMLEFastDataset
+from .dataset import ALLOWED_MANIFEST_ROLES, OpenMLEFastDataset
 from .environment import OpenMLEFastEpisodeManager
 from .executor import (
     ExternalSandboxRunnerBackend,
@@ -29,13 +30,14 @@ def build_manager_from_environment() -> OpenMLEFastEpisodeManager:
     archive_root = _required_directory("OPENMLE_FAST_ARCHIVE_ROOT")
     episodes_root = _required_directory("OPENMLE_FAST_EPISODES_ROOT", create=True)
     expected_release = _required_revision("OPENMLE_FAST_RELEASE_REVISION")
+    manifest_role = _required_manifest_role()
     dataset = OpenMLEFastDataset(
         manifest_path=manifest,
         package_root=package_root,
         archive_root=archive_root,
         expected_manifest_sha256=_required_sha256("OPENMLE_FAST_TASK_MANIFEST_SHA256"),
         expected_release_revision=expected_release,
-        expected_role=_required_text("OPENMLE_FAST_MANIFEST_ROLE"),
+        expected_role=manifest_role,
     )
     _verify_implementation_digest(
         Path(materializer.__file__),
@@ -54,6 +56,9 @@ def build_manager_from_environment() -> OpenMLEFastEpisodeManager:
         runner_path=runner_path,
         expected_runner_sha256=runner_sha256,
         expected_runtime_digest=runtime_digest,
+        expected_artifact_lock_sha256=_required_sha256(
+            "OPENMLE_FAST_RUNTIME_ARTIFACT_LOCK_SHA256"
+        ),
         limits=limits,
     )
 
@@ -79,7 +84,12 @@ def build_manager_from_environment() -> OpenMLEFastEpisodeManager:
 
     return OpenMLEFastEpisodeManager(
         dataset=dataset,
-        materializer=OpenMLEFastWorkspaceMaterializer(episodes_root),
+        materializer=OpenMLEFastWorkspaceMaterializer(
+            episodes_root,
+            runner_workspace_parent=backend.metadata.get("workspace_parent"),
+            workspace_bytes=limits.workspace_bytes,
+            max_files=limits.max_files,
+        ),
         executor_factory=executor_factory,
         grader_client=grader,
         limits=limits,
@@ -146,6 +156,9 @@ def build_private_grader_from_environment() -> PrivateGraderService:
         runner_path=_required_file("OPENMLE_FAST_PRIVATE_RUNNER"),
         expected_runner_sha256=_required_sha256("OPENMLE_FAST_PRIVATE_RUNNER_SHA256"),
         expected_runtime_digest=runtime_digest,
+        expected_artifact_lock_sha256=_required_sha256(
+            "OPENMLE_FAST_RUNTIME_ARTIFACT_LOCK_SHA256"
+        ),
         limits=private_limits,
     )
     return PrivateGraderService(
@@ -219,6 +232,13 @@ _LIMIT_ENVIRONMENT = {
 }
 
 
+def _required_manifest_role() -> str:
+    role = _required_text("OPENMLE_FAST_MANIFEST_ROLE")
+    if role not in ALLOWED_MANIFEST_ROLES:
+        raise RuntimeError("OpenMLE-fast manifest role is not executable")
+    return role
+
+
 def _limits_from_environment() -> OpenMLEFastResourceLimits:
     values = {
         field: _required_nonnegative_integer(name)
@@ -240,6 +260,11 @@ def _validate_timeout_margins(
     client_timeout: float,
     client_margin: float,
 ) -> None:
+    values = (grader_timeout, grader_margin, client_timeout, client_margin)
+    if any(not math.isfinite(value) or value <= 0 for value in values):
+        raise RuntimeError(
+            "OpenMLE-fast timeouts and margins must be finite and positive"
+        )
     if grader_timeout <= limits.grader_total_wall_ms / 1000.0 + grader_margin:
         raise RuntimeError(
             "grader client timeout must exceed the total grader wall plus margin"
@@ -281,8 +306,8 @@ def _required_float(name: str) -> float:
         value = float(raw)
     except ValueError as exc:
         raise RuntimeError(f"{name} must be numeric") from exc
-    if value <= 0:
-        raise RuntimeError(f"{name} must be positive")
+    if not math.isfinite(value) or value <= 0:
+        raise RuntimeError(f"{name} must be finite and positive")
     return value
 
 

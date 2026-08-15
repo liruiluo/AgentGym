@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import subprocess
@@ -13,6 +14,7 @@ from unittest.mock import patch
 from agentenv_openmle_fast.actions import parse_policy_action
 from agentenv_openmle_fast.executor import (
     EXTERNAL_RUNNER_CONTRACT,
+    FIT_HOOK_CONTRACT,
     BackendExecution,
     ExternalSandboxRunnerBackend,
     LocalCPUExecutionBackend,
@@ -85,8 +87,8 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
     def test_shell_receipt_is_bounded_and_honest_about_local_coverage(self) -> None:
         action = parse_policy_action(
             "shell_command "
-            '{"command":"python -c \\"print(\'one\')\\"; '
-            'python -c \\"print(\'two\')\\"","timeout_ms":10000}'
+            '{"command":"python3 -c \\"print(\'one\')\\"; '
+            'python3 -c \\"print(\'two\')\\"","timeout_ms":10000}'
         )
         receipt = self.executor.execute(self.workspace, action)
         self.assertEqual(receipt.status, "completed")
@@ -115,7 +117,7 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
 
     def test_timeout_is_a_policy_resource_violation(self) -> None:
         action = parse_policy_action(
-            'shell_command {"command":"python -c \\"import time; time.sleep(2)\\"",'
+            'shell_command {"command":"python3 -c \\"import time; time.sleep(2)\\"",'
             '"timeout_ms":50}'
         )
         receipt = self.executor.execute(self.workspace, action)
@@ -175,9 +177,7 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
         backend.expected_runtime_digest = "sha256:" + "1" * 64
         with (
             patch("agentenv_openmle_fast.executor.subprocess.Popen") as popen,
-            patch(
-                "agentenv_openmle_fast.executor._kill_process_group"
-            ) as kill_group,
+            patch("agentenv_openmle_fast.executor._kill_process_group") as kill_group,
         ):
             popen.return_value.pid = 43210
             popen.return_value.communicate.side_effect = (
@@ -215,12 +215,8 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
             with self.subTest(command=command):
                 backend = LocalCPUExecutionBackend(self.limits)
                 with (
-                    patch(
-                        "agentenv_openmle_fast.executor.subprocess.Popen"
-                    ) as process,
-                    patch(
-                        "agentenv_openmle_fast.executor._kill_process_group"
-                    ),
+                    patch("agentenv_openmle_fast.executor.subprocess.Popen") as process,
+                    patch("agentenv_openmle_fast.executor._kill_process_group"),
                     patch(
                         "agentenv_openmle_fast.executor._process_group_exists",
                         return_value=False,
@@ -302,6 +298,126 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
                 runner_path=runner,
                 expected_runner_sha256=hashlib.sha256(b"runner").hexdigest(),
                 expected_runtime_digest="sha256:" + "1" * 64,
+                expected_artifact_lock_sha256="a" * 64,
+                limits=self.limits,
+            )
+
+    def test_exact_runner_accepts_truthful_v1_and_pins_artifact_lock(self) -> None:
+        runner = self.workspace / "runner-v1"
+        runner.write_bytes(b"runner-v1")
+        runner.chmod(0o700)
+        artifact_lock = "a" * 64
+        true_fields = (
+            "formal_eligible",
+            "network_namespace",
+            "network_no_egress",
+            "dns_disabled",
+            "metadata_service_blocked",
+            "external_unix_sockets_blocked",
+            "pid_namespace",
+            "ipc_namespace",
+            "mount_namespace",
+            "workspace_quota",
+            "tmpfs_limit",
+            "file_size_limit",
+            "open_files_limit",
+            "fresh_unprivileged_uid_gid",
+            "capabilities_dropped",
+            "no_new_privs",
+            "seccomp",
+            "read_only_rootfs",
+            "workspace_noexec",
+            "instrumented_python_only",
+            "cumulative_managed_runtime_budget",
+            "isolated_proc",
+            "minimal_devices",
+            "gpu_devices_absent",
+            "core_dumps_disabled",
+            "mount_denied",
+            "ptrace_denied",
+            "setuid_denied",
+            "user_namespace_creation_denied",
+            "ebpf_denied",
+            "raw_sockets_denied",
+            "kernel_module_denied",
+            "container_engine_absent",
+            "background_process_detection",
+            "descendant_kill_reap",
+            "parent_death_cleanup_watchdog",
+            "freeze_reap",
+            "read_only_workspace_freeze",
+            "teardown_cgroup_empty",
+            "teardown_mount_empty",
+            "idempotent_teardown",
+        )
+        metadata = {field: True for field in true_fields}
+        metadata.update(
+            {
+                "contract": EXTERNAL_RUNNER_CONTRACT,
+                "runtime_digest": "sha256:" + "1" * 64,
+                "resource_limits": self.limits.as_dict(),
+                "cgroup_version": "v1",
+                "cgroup_controller_attestation": {"version": "v1"},
+                "cgroup_v1_cpu": True,
+                "cgroup_v1_memory": True,
+                "cgroup_v1_pids": True,
+                "cgroup_v2_cpu": False,
+                "cgroup_v2_memory": False,
+                "cgroup_v2_pids": False,
+                "active_verification": {
+                    "admission_stamp_valid": True,
+                    "all_checks_pass": True,
+                },
+                "artifact_identity": {
+                    "artifact_lock_sha256": artifact_lock,
+                    "artifact_lock_expected_sha256": artifact_lock,
+                },
+                "execution_counter_coverage": "complete",
+                "fit_counter_coverage": "partial",
+                "fit_hook_contract": FIT_HOOK_CONTRACT,
+                "fit_hook_digest": hashlib.sha256(
+                    FIT_HOOK_CONTRACT.encode()
+                ).hexdigest(),
+                "workspace_parent": str(self.workspace),
+                "workspace_storage_contract": ("owned_dedicated_tmpfs_at_most_2g_v1"),
+            }
+        )
+
+        def completed(value):
+            return subprocess.CompletedProcess(
+                args=[str(runner), "metadata"],
+                returncode=0,
+                stdout=json.dumps(value).encode(),
+                stderr=b"",
+            )
+
+        with patch(
+            "agentenv_openmle_fast.executor.subprocess.run",
+            return_value=completed(metadata),
+        ):
+            backend = ExternalSandboxRunnerBackend(
+                runner_path=runner,
+                expected_runner_sha256=hashlib.sha256(b"runner-v1").hexdigest(),
+                expected_runtime_digest="sha256:" + "1" * 64,
+                expected_artifact_lock_sha256=artifact_lock,
+                limits=self.limits,
+            )
+        self.assertEqual(backend.metadata["cgroup_version"], "v1")
+
+        drifted = copy.deepcopy(metadata)
+        drifted["artifact_identity"]["artifact_lock_sha256"] = "b" * 64
+        with (
+            patch(
+                "agentenv_openmle_fast.executor.subprocess.run",
+                return_value=completed(drifted),
+            ),
+            self.assertRaisesRegex(OpenMLEFastExecutorError, "attestation"),
+        ):
+            ExternalSandboxRunnerBackend(
+                runner_path=runner,
+                expected_runner_sha256=hashlib.sha256(b"runner-v1").hexdigest(),
+                expected_runtime_digest="sha256:" + "1" * 64,
+                expected_artifact_lock_sha256=artifact_lock,
                 limits=self.limits,
             )
 

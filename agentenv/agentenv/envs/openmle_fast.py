@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import time
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -68,6 +69,30 @@ _FROZEN_RESOURCE_LIMITS = {
 }
 _OPENMLE_RELEASE_REVISION = "f56e4b31252a9b81d95fea100098cd49b7290398"
 
+_ALLOWED_MANIFEST_ROLES = frozenset({"gate_only", "train_pool", "heldout"})
+_CLOSE_MAX_ATTEMPTS = 3
+_GRADE_SCHEMA = "openmle_fast_grade_response_v1"
+_GRADE_CONTRACT_VERSION = "openmle_fast_v1"
+_PUBLIC_GRADE_FIELDS = frozenset(
+    {
+        "schema",
+        "contract_version",
+        "request_id",
+        "episode_id",
+        "task_id",
+        "submission_sha256",
+        "submission_valid",
+        "native_score",
+        "higher_is_better",
+        "normalized_reward",
+        "improved_over_baseline",
+        "runtime_success",
+        "terminal_reason",
+        "classification",
+        "audit_digest",
+    }
+)
+
 
 class OpenMLEFastEnvClient(BaseEnvClient):
     conversation_start = (
@@ -107,12 +132,14 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         if (
             isinstance(timeout, bool)
             or not isinstance(timeout, (int, float))
+            or not math.isfinite(float(timeout))
             or timeout <= 0
         ):
             raise ValueError("OpenMLE-fast client timeout must be positive")
         if (
             isinstance(timeout_margin_seconds, bool)
             or not isinstance(timeout_margin_seconds, (int, float))
+            or not math.isfinite(float(timeout_margin_seconds))
             or timeout_margin_seconds <= 0
         ):
             raise ValueError("OpenMLE-fast timeout margin must be positive")
@@ -281,13 +308,18 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         self._native_call_count += 1
         self._policy_step_count += 1
         self.info = response
+        action_submission = _action_submission(
+            action=action,
+            done=done,
+            env_info=env_info,
+        )
         return StepOutput(
             state=state,
             reward=reward,
             done=done,
             info=build_task_neutral_transition_info(
                 env_info=env_info,
-                action_submission={"raw_policy_output": action},
+                action_submission=action_submission,
                 native_step_before=native_before,
                 native_step_after=self._native_call_count,
                 native_call_count_before=native_before,
@@ -368,57 +400,40 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         )
 
     def close(self) -> dict[str, Any]:
-        response = self._request("POST", "close", json={"id": self.env_id})
-        required = {
-            "schema",
-            "closed",
-            "already_closed",
-            "workspace_removed",
-            "retryable",
-            "failure_class",
-            "cleanup_contract",
-        }
-        if (
-            set(response) != required
-            or response["schema"] != "openmle_fast_cleanup_receipt_v1"
-            or response["cleanup_contract"] != _EXPECTED_BOUNDARIES["cleanup"]
-            or any(
-                type(response[key]) is not bool
-                for key in (
-                    "closed",
-                    "already_closed",
-                    "workspace_removed",
-                    "retryable",
-                )
+        deadline = time.monotonic() + self.timeout
+        response: dict[str, Any] | None = None
+        for _attempt in range(_CLOSE_MAX_ATTEMPTS):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            response = self._request(
+                "POST",
+                "close",
+                json={"id": self.env_id},
+                request_timeout=remaining,
             )
-            or (
-                response["failure_class"] is not None
-                and not isinstance(response["failure_class"], str)
-            )
-        ):
-            raise RuntimeError("OpenMLE-fast cleanup response schema drifted")
-        if (
-            response["closed"]
-            and (
-                response["already_closed"]
-                or response["retryable"]
-                or response["failure_class"] is not None
-            )
-        ) or (
-            response["retryable"] and (response["closed"] or response["already_closed"])
-        ):
-            raise RuntimeError("OpenMLE-fast cleanup response is inconsistent")
-        if response["retryable"] or not (
-            response["closed"] or response["already_closed"]
-        ):
-            raise RuntimeError("OpenMLE-fast cleanup did not complete")
-        return response
+            _validate_cleanup_receipt(response)
+            if response["closed"] or response["already_closed"]:
+                return response
+            if not response["retryable"]:
+                break
+        raise RuntimeError("OpenMLE-fast cleanup did not complete")
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        request_timeout: float | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        timeout = self.timeout if request_timeout is None else request_timeout
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("OpenMLE-fast request timeout must be finite and positive")
         response = requests.request(
             method,
             f"{self.env_server_base}/{path}",
-            timeout=self.timeout,
+            timeout=timeout,
             **kwargs,
         )
         if response.status_code != 200:
@@ -432,6 +447,89 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                 f"OpenMLE-fast {method} /{path} returned a non-object response"
             )
         return value
+
+
+def _action_submission(
+    *,
+    action: str,
+    done: bool,
+    env_info: Mapping[str, Any],
+) -> dict[str, Any]:
+    submission: dict[str, Any] = {"raw_policy_output": action}
+    grade = env_info.get("grade")
+    if grade is None:
+        return submission
+    if not done or not isinstance(grade, Mapping) or set(grade) != _PUBLIC_GRADE_FIELDS:
+        raise RuntimeError("OpenMLE-fast terminal grade receipt schema drifted")
+    request_id = grade.get("request_id")
+    if not isinstance(request_id, str) or not request_id:
+        raise RuntimeError("OpenMLE-fast grade request identity is invalid")
+    if grade.get("episode_id") != env_info.get("episode_id"):
+        raise RuntimeError("OpenMLE-fast grade episode identity drifted")
+    if grade.get("task_id") != env_info.get("task_id"):
+        raise RuntimeError("OpenMLE-fast grade task identity drifted")
+    submission_sha256 = _require_sha256(
+        grade.get("submission_sha256"), "grade submission_sha256"
+    )
+    submission.update(
+        {
+            "request_id": request_id,
+            "episode_id": grade["episode_id"],
+            "submission_sha256": submission_sha256,
+        }
+    )
+    return submission
+
+
+def _validate_cleanup_receipt(response: Mapping[str, Any]) -> None:
+    required = {
+        "schema",
+        "closed",
+        "already_closed",
+        "workspace_removed",
+        "retryable",
+        "failure_class",
+        "cleanup_contract",
+    }
+    if (
+        set(response) != required
+        or response["schema"] != "openmle_fast_cleanup_receipt_v1"
+        or response["cleanup_contract"] != _EXPECTED_BOUNDARIES["cleanup"]
+        or any(
+            type(response[key]) is not bool
+            for key in (
+                "closed",
+                "already_closed",
+                "workspace_removed",
+                "retryable",
+            )
+        )
+        or (
+            response["failure_class"] is not None
+            and not isinstance(response["failure_class"], str)
+        )
+    ):
+        raise RuntimeError("OpenMLE-fast cleanup response schema drifted")
+    if response["closed"] and (
+        response["already_closed"]
+        or response["retryable"]
+        or response["failure_class"] is not None
+    ):
+        raise RuntimeError("OpenMLE-fast cleanup response is inconsistent")
+    if response["already_closed"] and (
+        response["closed"]
+        or response["retryable"]
+        or response["failure_class"] is not None
+    ):
+        raise RuntimeError("OpenMLE-fast cleanup response is inconsistent")
+    if response["retryable"] and (
+        response["closed"]
+        or response["already_closed"]
+        or not isinstance(response["failure_class"], str)
+    ):
+        raise RuntimeError("OpenMLE-fast cleanup response is inconsistent")
+    if not (response["closed"] or response["already_closed"] or response["retryable"]):
+        raise RuntimeError("OpenMLE-fast cleanup response is inconsistent")
 
 
 class OpenMLEFastTask(BaseTask):
@@ -527,8 +625,8 @@ def _validate_expected_configuration(
             or any(character not in "0123456789abcdef" for character in value)
         ):
             raise ValueError(f"OpenMLE-fast {label} must be a full Git revision")
-    if not isinstance(role, str) or not role.strip():
-        raise ValueError("OpenMLE-fast expected role must be non-empty text")
+    if role not in _ALLOWED_MANIFEST_ROLES:
+        raise ValueError("OpenMLE-fast expected role is not executable")
     if (
         not isinstance(executor_runtime_digest, str)
         or not executor_runtime_digest.startswith("sha256:")
@@ -782,9 +880,10 @@ def _validate_step_response(
         raise RuntimeError("OpenMLE-fast receipt terminal flag drifted")
     if type(info["truncated"]) is not bool or (info["truncated"] and not done):
         raise RuntimeError("OpenMLE-fast receipt truncation flag is invalid")
-    if type(response["truncated"]) is not bool or response["truncated"] != info[
-        "truncated"
-    ]:
+    if (
+        type(response["truncated"]) is not bool
+        or response["truncated"] != info["truncated"]
+    ):
         raise RuntimeError("OpenMLE-fast response truncation flag drifted")
     if any(
         type(info[key]) is not bool for key in ("runtime_success", "episode_success")
@@ -811,6 +910,13 @@ def _validate_step_response(
     for key in ("execution", "sandbox_freeze", "sandbox_teardown", "grade"):
         if info[key] is not None and not isinstance(info[key], Mapping):
             raise RuntimeError(f"OpenMLE-fast {key} receipt is invalid")
+    if info["grade"] is not None:
+        _validate_public_grade_receipt(
+            info["grade"],
+            reward=reward,
+            done=done,
+            info=info,
+        )
     audit_digest = info["audit_digest"]
     unaudited = info["unaudited_evidence_sha256"]
     if audit_digest is not None:
@@ -822,6 +928,98 @@ def _validate_step_response(
         if not info["truncated"]:
             raise RuntimeError("unaudited evidence requires truncation")
     return observation, reward, done, info
+
+
+def _validate_public_grade_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    reward: float | None,
+    done: bool,
+    info: Mapping[str, Any],
+) -> None:
+    if set(receipt) != _PUBLIC_GRADE_FIELDS:
+        raise RuntimeError("OpenMLE-fast terminal grade receipt schema drifted")
+    if (
+        receipt["schema"] != _GRADE_SCHEMA
+        or receipt["contract_version"] != _GRADE_CONTRACT_VERSION
+        or done is not True
+        or info["action_kind"] != "submit"
+    ):
+        raise RuntimeError("OpenMLE-fast terminal grade contract drifted")
+    request_id = receipt["request_id"]
+    if not isinstance(request_id, str) or not request_id:
+        raise RuntimeError("OpenMLE-fast grade request identity is invalid")
+    if (
+        receipt["episode_id"] != info["episode_id"]
+        or receipt["task_id"] != info["task_id"]
+    ):
+        raise RuntimeError("OpenMLE-fast grade task identity drifted")
+    _require_sha256(receipt["submission_sha256"], "grade submission_sha256")
+    _require_sha256(receipt["audit_digest"], "grade audit_digest")
+    for field in (
+        "submission_valid",
+        "higher_is_better",
+        "improved_over_baseline",
+        "runtime_success",
+    ):
+        if type(receipt[field]) is not bool:
+            raise RuntimeError(f"OpenMLE-fast grade {field} is not Boolean")
+    native_score = _nullable_finite_number(receipt["native_score"], "native_score")
+    normalized_reward = _nullable_finite_number(
+        receipt["normalized_reward"], "normalized_reward"
+    )
+    if normalized_reward is not None and not -1.0 <= normalized_reward <= 1.0:
+        raise RuntimeError("OpenMLE-fast grade reward is outside [-1, 1]")
+    classification = receipt["classification"]
+    terminal_reason = receipt["terminal_reason"]
+    submission_valid = receipt["submission_valid"]
+    improved = receipt["improved_over_baseline"]
+    runtime_success = receipt["runtime_success"]
+    truncated = info["truncated"]
+    if classification == "graded":
+        consistent = (
+            submission_valid
+            and native_score is not None
+            and normalized_reward is not None
+            and runtime_success
+            and terminal_reason == "graded_submission"
+            and truncated is False
+            and reward == normalized_reward
+        )
+    elif classification == "invalid_submission":
+        consistent = (
+            not submission_valid
+            and native_score is None
+            and normalized_reward == -1.0
+            and not improved
+            and not runtime_success
+            and terminal_reason == "invalid_submission"
+            and truncated is False
+            and reward == -1.0
+        )
+    elif classification == "infrastructure_fault":
+        consistent = (
+            not submission_valid
+            and native_score is None
+            and normalized_reward is None
+            and not improved
+            and not runtime_success
+            and terminal_reason == "grader_infrastructure_fault"
+            and truncated is True
+            and reward is None
+        )
+    else:
+        raise RuntimeError("OpenMLE-fast grade classification is invalid")
+    if not consistent or (improved and not submission_valid):
+        raise RuntimeError("OpenMLE-fast terminal grade receipt is inconsistent")
+    if (
+        info["terminal_reason"] != terminal_reason
+        or info["runtime_success"] != runtime_success
+        or info["episode_success"] != (submission_valid and improved)
+        or info["counters"]["grading_count"] != 1
+        or info["counter_delta"]["grading_count"] != 1
+    ):
+        raise RuntimeError("OpenMLE-fast grade/environment receipt drifted")
 
 
 def _validate_counters(value: Any, expected_action_count: int | None) -> None:
@@ -857,6 +1055,17 @@ def _validate_counters(value: Any, expected_action_count: int | None) -> None:
         raise RuntimeError("OpenMLE-fast bounded counter exceeded its cap")
     if value["execution_completed_count"] > value["execution_attempt_count"]:
         raise RuntimeError("OpenMLE-fast completed count exceeds attempts")
+
+
+def _nullable_finite_number(value: Any, label: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError(f"OpenMLE-fast grade {label} is invalid")
+    result = float(value)
+    if not math.isfinite(result):
+        raise RuntimeError(f"OpenMLE-fast grade {label} is not finite")
+    return result
 
 
 def _require_sha256(value: Any, label: str) -> str:

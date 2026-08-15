@@ -14,7 +14,7 @@ from agentenv_openmle_fast.executor import (
 from agentenv_openmle_fast.materializer import OpenMLEFastWorkspaceMaterializer
 from agentenv_openmle_fast.server import create_app
 from fastapi.testclient import TestClient
-from tests.support import RELEASE_REVISION, create_fixture
+from tests.support import FakeWorkspaceMountBackend, RELEASE_REVISION, create_fixture
 
 
 class _InvalidGrader:
@@ -39,7 +39,11 @@ class OpenMLEFastServerTest(unittest.TestCase):
         manager = OpenMLEFastEpisodeManager(
             dataset=dataset,
             materializer=OpenMLEFastWorkspaceMaterializer(
-                Path(self.fixture["episodes_root"])
+                Path(self.fixture["episodes_root"]),
+                runner_workspace_parent=Path(self.fixture["episodes_root"]),
+                workspace_bytes=2 * 1024**3,
+                max_files=100_000,
+                mount_backend=FakeWorkspaceMountBackend(),
             ),
             executor_factory=lambda: OpenMLEFastExecutor(
                 limits=limits,
@@ -131,10 +135,8 @@ class OpenMLEFastServerTest(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
 
     def test_lifespan_reconciles_and_closes_owned_workspaces(self) -> None:
-        orphan = Path(self.fixture["episodes_root"]) / (
-            "openmle-fast-episode-" + "a" * 32
-        )
-        orphan.mkdir()
+        workspace = self.manager.materializer.materialize(self.manager.dataset[0])
+        orphan = workspace.episode_root
         with TestClient(create_app(self.manager)) as client:
             self.assertFalse(orphan.exists())
             slot = client.post("/create", json={}).json()["id"]
