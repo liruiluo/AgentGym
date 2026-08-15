@@ -191,6 +191,20 @@ class OpenMLEFastEnvironmentTest(unittest.TestCase):
         self.assertFalse(step.done)
         return manager, slot, step
 
+    def test_protected_patch_attempt_is_terminal_minus_one(self) -> None:
+        manager, slot, _ = self.reset()
+        terminal = manager.step(
+            slot,
+            "apply_patch\n*** Begin Patch\n*** Delete File: TASK.md\n*** End Patch",
+        )
+        self.assertTrue(terminal.done)
+        self.assertEqual(terminal.reward, -1.0)
+        self.assertEqual(
+            terminal.info["terminal_reason"],
+            "immutable_public_tree_mutation_attempt",
+        )
+        self.assertEqual(terminal.info["counters"]["execution_attempt_count"], 0)
+
     def test_submit_is_terminal_and_grades_exactly_once(self) -> None:
         manager, slot, _ = self.reset()
         patch = manager.step(

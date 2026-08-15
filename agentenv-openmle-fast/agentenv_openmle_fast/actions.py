@@ -20,6 +20,10 @@ class OpenMLEFastActionError(RuntimeError):
     pass
 
 
+class OpenMLEFastProtectedPathError(OpenMLEFastActionError):
+    pass
+
+
 @dataclass(frozen=True)
 class ParsedPolicyAction:
     kind: ActionKind
@@ -137,7 +141,7 @@ def apply_workspace_patch(workspace: Path | str, patch: str) -> PatchResult:
     for operation, relative, body in operations:
         path = _workspace_path(root, relative)
         if _protected(relative):
-            raise OpenMLEFastActionError("TASK.md and data are immutable")
+            raise OpenMLEFastProtectedPathError("TASK.md and data are immutable")
         if operation == "add":
             if path.exists() or path.is_symlink():
                 raise OpenMLEFastActionError(f"patch add target exists: {relative}")

@@ -115,6 +115,22 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
         self.assertEqual(receipt.execution_action_delta, 0)
         self.assertEqual(receipt.execution_attempt_delta, 0)
 
+    def test_protected_patch_is_terminal_policy_violation_without_execution(self) -> None:
+        (self.workspace / "TASK.md").write_text("contract\n", encoding="utf-8")
+        action = parse_policy_action(
+            "apply_patch\n*** Begin Patch\n*** Delete File: TASK.md\n*** End Patch"
+        )
+        receipt = self.executor.execute(self.workspace, action)
+        self.assertEqual(receipt.status, "policy_violation")
+        self.assertEqual(
+            receipt.failure_class, "immutable_public_tree_mutation_attempt"
+        )
+        self.assertTrue(receipt.policy_terminal)
+        self.assertEqual(receipt.changed_paths, ())
+        self.assertEqual(receipt.execution_action_delta, 0)
+        self.assertEqual(receipt.execution_attempt_delta, 0)
+        self.assertTrue((self.workspace / "TASK.md").is_file())
+
     def test_timeout_is_a_policy_resource_violation(self) -> None:
         action = parse_policy_action(
             'shell_command {"command":"python3 -c \\"import time; time.sleep(2)\\"",'

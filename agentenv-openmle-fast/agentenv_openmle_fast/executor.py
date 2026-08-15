@@ -19,6 +19,7 @@ from typing import Any, Protocol
 
 from .actions import (
     OpenMLEFastActionError,
+    OpenMLEFastProtectedPathError,
     ParsedPolicyAction,
     apply_workspace_patch,
 )
@@ -863,6 +864,9 @@ class OpenMLEFastExecutor:
         try:
             result = apply_workspace_patch(root, action.patch or "")
             changed = result.changed_paths
+        except OpenMLEFastProtectedPathError:
+            status = "policy_violation"
+            failure_class = "immutable_public_tree_mutation_attempt"
         except OpenMLEFastActionError:
             status = "rejected"
             failure_class = "patch_rejected"
