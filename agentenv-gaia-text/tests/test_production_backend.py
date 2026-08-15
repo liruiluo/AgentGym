@@ -439,7 +439,7 @@ def test_not_found_visit_is_a_policy_request_error_without_fallback(
         ]
 
 
-def test_production_backend_is_arm_neutral_in_metadata_and_dispatch(
+def test_production_backend_identity_and_dispatch_are_equal_across_triad(
     tmp_path: Path,
 ) -> None:
     runtime = write_runtime_fixture(tmp_path / "runtime")
@@ -451,51 +451,70 @@ def test_production_backend_is_arm_neutral_in_metadata_and_dispatch(
         contract=contract,
     )
     with FakeLiteResearcher() as service:
-        native_backend = _backend(tmp_path / "native-cert", service)
-        memory_backend = _backend(tmp_path / "memory-cert", service)
-        native = GaiaTextEpisodeManager(
-            dataset,
-            native_backend,
-            SubmissionStore(dataset.task_ids, tmp_path / "native.jsonl"),
-            arm=EvaluationArm.NATIVE,
-        )
-        memory = GaiaTextEpisodeManager(
-            dataset,
-            memory_backend,
-            SubmissionStore(dataset.task_ids, tmp_path / "memory.jsonl"),
-            arm=EvaluationArm.AMG_MEMORY,
-            workspace_factory=lambda env_id, task_id, episode_index: FileWorkspace(
+        backends = {
+            arm: _backend(tmp_path / f"{arm.value}-cert", service)
+            for arm in EvaluationArm
+        }
+
+        def workspace_factory(
+            env_id: int, task_id: str, episode_index: int
+        ) -> FileWorkspace:
+            return FileWorkspace(
                 tmp_path / "workspaces",
                 f"{env_id}-{task_id}-{episode_index}",
-            ),
-        )
-        assert (
-            native.metadata()["paired_runtime_contract"]
-            == memory.metadata()["paired_runtime_contract"]
-        )
-        assert (
-            native.metadata()["paired_runtime_contract_sha256"]
-            == memory.metadata()["paired_runtime_contract_sha256"]
-        )
+            )
 
-        native_id = native.create()["id"]
-        memory_id = memory.create()["id"]
-        native.reset(native_id, 0)
-        memory.reset(memory_id, 0)
+        managers = {
+            arm: GaiaTextEpisodeManager(
+                dataset,
+                backends[arm],
+                SubmissionStore(dataset.task_ids, tmp_path / f"{arm.value}.jsonl"),
+                arm=arm,
+                workspace_factory=(
+                    workspace_factory if arm is EvaluationArm.AMG_MEMORY else None
+                ),
+            )
+            for arm in EvaluationArm
+        }
+        metadata = [manager.metadata() for manager in managers.values()]
+        assert len(
+            {
+                json.dumps(item["backend"], sort_keys=True)
+                for item in metadata
+            }
+        ) == 1
+        assert len(
+            {
+                json.dumps(item["paired_runtime_contract"], sort_keys=True)
+                for item in metadata
+            }
+        ) == 1
+        assert len(
+            {item["paired_runtime_contract_sha256"] for item in metadata}
+        ) == 1
+
+        env_ids = {arm: manager.create()["id"] for arm, manager in managers.items()}
+        reset_observations = {
+            manager.reset(env_ids[arm], 0)["observation"]
+            for arm, manager in managers.items()
+        }
+        assert len(reset_observations) == 1
         action = (
             '<tool_call>{"name":"search","arguments":{"query":"alpha",'
             '"top_k":1}}</tool_call>'
         )
-        assert native.step(native_id, action)["observation"] == memory.step(
-            memory_id, action
-        )["observation"]
+        observations = {
+            manager.step(env_ids[arm], action)["observation"]
+            for arm, manager in managers.items()
+        }
+        assert len(observations) == 1
 
         search_requests = [
             request
             for request in service.state.requests
             if request["path"] == "/search"
         ]
-        assert search_requests[-2:] == [search_requests[-1], search_requests[-1]]
+        assert search_requests[-3:] == [search_requests[-1]] * 3
 
 
 def test_launcher_requires_explicit_backend_and_selects_production(

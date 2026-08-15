@@ -59,7 +59,7 @@ class _Episode:
 
 
 class GaiaTextEpisodeManager:
-    """One action dispatcher shared by native and AMG-memory evaluation arms."""
+    """One domain dispatcher shared by the frozen GAIA-Text evaluation triad."""
 
     def __init__(
         self,
@@ -73,8 +73,15 @@ class GaiaTextEpisodeManager:
         max_policy_steps: int = 40,
     ) -> None:
         self.arm = EvaluationArm(arm)
-        if self.arm is EvaluationArm.NATIVE and workspace_factory is not None:
-            raise ValueError("native arm must not receive a workspace factory")
+        workspace_available = self.arm is EvaluationArm.AMG_MEMORY
+        if not workspace_available and workspace_factory is not None:
+            raise ValueError(
+                f"{self.arm.value} arm must not receive a workspace factory"
+            )
+        if not workspace_available and workspace_runtime is not None:
+            raise ValueError(
+                f"{self.arm.value} arm must not receive workspace runtime"
+            )
         if self.arm is EvaluationArm.AMG_MEMORY and workspace_factory is None:
             raise ValueError("amg_memory arm requires a workspace factory")
         if type(max_policy_steps) is not int or max_policy_steps <= 0:
@@ -106,6 +113,7 @@ class GaiaTextEpisodeManager:
                     if episode.workspace is not None:
                         active_workspace_count += 1
         workspace_available = self.arm is EvaluationArm.AMG_MEMORY
+        compaction_available = self.arm is not EvaluationArm.NATIVE
         return {
             **self.dataset.public_metadata(),
             "domain_id": "gaia_text",
@@ -129,10 +137,10 @@ class GaiaTextEpisodeManager:
             "workspace_runtime": (
                 deepcopy(self._workspace_runtime) if workspace_available else {}
             ),
-            "compaction_available": workspace_available,
+            "compaction_available": compaction_available,
             "compaction_contract": (
                 "task_neutral_client_replace_messages_v1"
-                if workspace_available
+                if compaction_available
                 else "disabled"
             ),
             "compaction_calls_server": False,
@@ -266,11 +274,14 @@ class GaiaTextEpisodeManager:
                 if answer_matches:
                     answer = answer_matches[0].group(1).strip()
                     return self._answer(episode, action, answer)
-                if action.strip().startswith(_WORKSPACE_PREFIXES):
+                if self.arm is EvaluationArm.AMG_MEMORY and action.strip().startswith(
+                    _WORKSPACE_PREFIXES
+                ):
                     return self._workspace(episode, action)
-                raise RequestError(
-                    "expected one search/visit tool_call, one answer, or one workspace action"
-                )
+                expected = "expected one search/visit tool_call or one answer"
+                if self.arm is EvaluationArm.AMG_MEMORY:
+                    expected += ", or one workspace action"
+                raise RequestError(expected)
             except RequestError as exc:
                 return self._ordinary(
                     episode,
@@ -401,8 +412,8 @@ class GaiaTextEpisodeManager:
         return deepcopy(episode.payload)
 
     def _workspace(self, episode: _Episode, raw_action: str) -> dict[str, Any]:
-        if self.arm is EvaluationArm.NATIVE or episode.workspace is None:
-            raise RequestError("workspace actions are unavailable in the native arm")
+        if self.arm is not EvaluationArm.AMG_MEMORY or episode.workspace is None:
+            raise RequestError("workspace actions are unavailable")
         result = episode.workspace.apply(
             raw_action,
             env_step=episode.step_count,

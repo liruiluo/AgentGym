@@ -13,6 +13,11 @@ from .dataset import GaiaTextDataset
 from .submission import SubmissionStore
 from .wrapper import GaiaTextEpisodeManager, WorkspaceFactory
 
+_EXTERNAL_MEMORY_ENVIRONMENT_PREFIXES = (
+    "GAIA_TEXT_WORKSPACE_",
+    "GAIA_TEXT_RG_",
+)
+
 
 def build_manager_from_environment(
     *,
@@ -22,6 +27,7 @@ def build_manager_from_environment(
     values = os.environ if environment is None else environment
     _reject_private_environment(values)
     arm = EvaluationArm(_required_text(values, "GAIA_TEXT_ARM"))
+    _reject_external_memory_environment(values, arm)
     manifest = _required_file(values, "GAIA_TEXT_MANIFEST")
     questions = _required_file(values, "GAIA_TEXT_QUESTIONS")
     backend_kind = _required_text(values, "GAIA_TEXT_BACKEND")
@@ -235,6 +241,24 @@ def _reject_private_environment(environment: Mapping[str, str]) -> None:
     if forbidden:
         raise RuntimeError(
             "GAIA-Text inference refuses gold/scorer environment variables: "
+            + ", ".join(forbidden)
+        )
+
+
+def _reject_external_memory_environment(
+    environment: Mapping[str, str],
+    arm: EvaluationArm,
+) -> None:
+    if arm is EvaluationArm.AMG_MEMORY:
+        return
+    forbidden = sorted(
+        name
+        for name, value in environment.items()
+        if value and name.startswith(_EXTERNAL_MEMORY_ENVIRONMENT_PREFIXES)
+    )
+    if forbidden:
+        raise RuntimeError(
+            f"{arm.value} refuses external-memory environment variables: "
             + ", ".join(forbidden)
         )
 

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from agentenv_gaia_text.contracts import ProtocolContract
+from agentenv_gaia_text.contracts import EvaluationArm, ProtocolContract
 from agentenv_gaia_text.launch import build_manager_from_environment, launch
 from support import protocol_kwargs, write_runtime_fixture
 
@@ -29,16 +29,21 @@ def _contract(runtime) -> ProtocolContract:
     return ProtocolContract(**protocol_kwargs(runtime.rows))
 
 
-def test_native_runtime_uses_only_external_paths_and_never_imports_memory(
+@pytest.mark.parametrize(
+    "arm",
+    [EvaluationArm.NATIVE, EvaluationArm.AMG_COMPACTION_ONLY],
+)
+def test_memory_disabled_runtime_never_imports_or_constructs_memory(
+    arm: EvaluationArm,
     tmp_path: Path,
 ) -> None:
     runtime = write_runtime_fixture(tmp_path)
-    environment = _environment(runtime, "native")
+    environment = _environment(runtime, arm.value)
     real_import = __import__
 
     def guarded_import(name, *args, **kwargs):
         if name.startswith("agentenv_agentmemory"):
-            raise AssertionError("native arm imported the memory runtime")
+            raise AssertionError("memory-disabled arm imported the memory runtime")
         return real_import(name, *args, **kwargs)
 
     with (
@@ -46,9 +51,43 @@ def test_native_runtime_uses_only_external_paths_and_never_imports_memory(
         patch("builtins.__import__", side_effect=guarded_import),
     ):
         manager = build_manager_from_environment(contract=_contract(runtime))
-    assert manager.metadata()["arm"] == "native"
+    assert manager.metadata()["arm"] == arm.value
     assert manager.metadata()["workspace_available"] is False
+    assert manager.metadata()["active_workspace_count"] == 0
+    assert manager.metadata()["compaction_available"] is (
+        arm is EvaluationArm.AMG_COMPACTION_ONLY
+    )
     assert str(tmp_path) not in str(manager.metadata())
+
+
+@pytest.mark.parametrize(
+    "arm",
+    [EvaluationArm.NATIVE, EvaluationArm.AMG_COMPACTION_ONLY],
+)
+@pytest.mark.parametrize(
+    "name",
+    [
+        "GAIA_TEXT_WORKSPACE_ROOT",
+        "GAIA_TEXT_RG_BINARY",
+        "GAIA_TEXT_RG_SHA256",
+    ],
+)
+def test_memory_disabled_runtime_rejects_memory_environment_bundle(
+    arm: EvaluationArm,
+    name: str,
+    tmp_path: Path,
+) -> None:
+    runtime = write_runtime_fixture(tmp_path)
+    environment = {
+        **_environment(runtime, arm.value),
+        name: str(tmp_path / "hidden-memory-path"),
+    }
+    with pytest.raises(RuntimeError, match="external-memory environment") as error:
+        build_manager_from_environment(
+            contract=_contract(runtime),
+            environment=environment,
+        )
+    assert str(tmp_path / "hidden-memory-path") not in str(error.value)
 
 
 @pytest.mark.parametrize("question_sha256", [None, "not-a-digest"])
