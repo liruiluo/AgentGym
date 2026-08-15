@@ -1,0 +1,24 @@
+[project]
+name = "agentenv-mlebench-lite"
+version = "0.1.0"
+description = "Fail-closed MLE-bench Lite adapter for paired AgentMemoryGym evaluation"
+requires-python = ">=3.11"
+readme = "README.md"
+license = {text = "MIT"}
+dependencies = [
+    "fastapi",
+    "pydantic",
+    "requests",
+    "uvicorn",
+]
+
+[project.scripts]
+mlebench-lite = "agentenv_mlebench_lite.launch:launch"
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pytest.ini_options]
+pythonpath = [".", "../agentenv"]
+testpaths = ["tests"]
