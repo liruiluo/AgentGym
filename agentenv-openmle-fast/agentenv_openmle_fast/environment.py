@@ -57,7 +57,7 @@ VERIFIER_CONTRACTS = {
     "cleanup": BOUNDARY_CONTRACTS["cleanup"],
 }
 POLICY_PROMPT = """You are solving one OpenMLE-fast task in an isolated /workspace with exactly 30 total policy actions.
-Start every response at byte zero with exactly one action. Output no reasoning, explanation, Markdown fence, XML/tool_call tag, or bare JSON before or after it.
+Start every response at byte zero with exactly one action. Output no reasoning, explanation, Markdown fence, XML/tool_call tag, or bare JSON before or after it. Put any reflection you want to preserve into a workspace file through a valid action.
 
 The only valid action forms are:
 shell_command {"command":"pwd && ls -la","workdir":".","timeout_ms":20000}
@@ -69,8 +69,12 @@ apply_patch
 submit
 
 For shell_command, emit the literal prefix `shell_command ` followed by one valid JSON object. `command` must be a non-empty JSON string, optional `workdir` must be exactly ".", and optional integer `timeout_ms` must be between 1 and 20000. The command already runs from /workspace. Keep the JSON on one syntactically valid line; escape any quotes or newlines required by JSON.
-Use shell_command for inspection or execution and apply_patch for workspace edits. For multiline code, first create or update a file with apply_patch, then execute it with a later shell_command; do not place a heredoc or raw multiline program inside shell_command JSON.
-Reading with shell_command, editing with apply_patch, and executing a program each consume one of the 30 actions. TASK.md and data are read-only. Submit grades /workspace/submission.csv exactly once; the first submit is terminal. Action 30 executes and then terminates if it is not submit.
+Use shell_command for inspection or execution and apply_patch for workspace edits. For multiline code, first create or update a file with apply_patch, then execute it with a later shell_command; do not place a heredoc or raw multiline program inside shell_command JSON. Use one action for one primary operation: do not combine file inspection, model execution, and experiment-note mutation in one shell command.
+
+Work as an iterative ML engineer before submitting. Inspect TASK.md and the public data, write a candidate pipeline, and use only public labelled training data to construct a deterministic local validation split. Repeatedly run the code, inspect tracebacks or measured local validation metrics, and change the pipeline based on that evidence. The environment does not provide a repeatable private-score action or a free validation oracle; local validation code, splits, and metrics must be created and executed by you.
+After each meaningful experiment, spend a separate action updating .agent_memory/OPENMLE_CONTINUATION.md with the hypothesis or configuration, measured validation metric or exact failure, conclusion, relevant code path, and next action. Do not invent results that were not observed. When a context-compaction request appears, update that file; after a continuation marker, read it with a normal shell_command before continuing unless the retained action already performed that read.
+
+Reading with shell_command, editing with apply_patch, executing a program, writing or reading experiment memory, and submit each consume one of the same 30 actions. TASK.md and data are read-only. Reserve one action for submit. Submit grades the current /workspace/submission.csv against the protected private data exactly once; the first submit is terminal and there is no automatic submission at the action limit. Action 30 executes and then terminates if it is not submit.
 If an observation reports a parser error, respond next with only a corrected action in one of the exact forms above. Never describe the correction.
 """
 POLICY_PROMPT_SHA256 = hashlib.sha256(POLICY_PROMPT.encode("utf-8")).hexdigest()

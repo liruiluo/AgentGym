@@ -3,9 +3,13 @@
 This package implements the `openmle_fast` environment boundary. A policy sees
 only a fresh `/workspace` containing read-only `TASK.md`, read-only copied
 public data, and files it creates. It has exactly three actions
-(`shell_command`, `apply_patch`, and `submit`) and 30 total actions. The first
-`submit` is terminal; a non-submit action 30 executes and then terminates with
-reward `-1`.
+(`shell_command`, `apply_patch`, and `submit`) and 30 total actions. Before
+submitting, the policy may repeatedly inspect public data, edit and run code,
+compute its own validation metric from public labelled training data, and keep
+an ordinary filesystem experiment log across context compaction. The first
+`submit` alone queries protected private data and is terminal; there is no
+repeatable private-score action or automatic submission. A non-submit action 30
+executes and then terminates with reward `-1`.
 
 Private answers and native scoring code belong exclusively to the separately
 launched `openmle-fast-private-grader`. The public service carries only an

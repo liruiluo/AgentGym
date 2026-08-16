@@ -134,6 +134,15 @@ class OpenMLEFastClientTest(unittest.TestCase):
         self.assertIn("do not place a heredoc or raw multiline program", prompt)
         self.assertIn("If an observation reports a parser error", prompt)
         self.assertIn("no reasoning, explanation, Markdown fence, XML/tool_call tag", prompt)
+        self.assertIn("use only public labelled training data", prompt)
+        self.assertIn("deterministic local validation split", prompt)
+        self.assertIn(".agent_memory/OPENMLE_CONTINUATION.md", prompt)
+        self.assertIn("after a continuation marker, read it", prompt)
+        self.assertIn("protected private data exactly once", prompt)
+        self.assertIn("first submit is terminal", prompt)
+        self.assertIn("there is no automatic submission", prompt)
+        self.assertNotIn("evaluate_candidate", prompt)
+        self.assertNotIn("best-so-far", prompt)
         self.assertNotIn("cement-sales-demand", prompt)
 
     def metadata(self):
