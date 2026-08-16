@@ -56,15 +56,22 @@ VERIFIER_CONTRACTS = {
     "grader_boundary": BOUNDARY_CONTRACTS["grader"],
     "cleanup": BOUNDARY_CONTRACTS["cleanup"],
 }
-POLICY_PROMPT = """You are solving one OpenMLE-fast task in an isolated /workspace.
-You have exactly 30 total policy actions. Output exactly one of these actions per turn:
-shell_command {"command":"...","timeout_ms":20000}
+POLICY_PROMPT = """You are solving one OpenMLE-fast task in an isolated /workspace with exactly 30 total policy actions.
+Start every response at byte zero with exactly one action. Output no reasoning, explanation, Markdown fence, XML/tool_call tag, or bare JSON before or after it.
+
+The only valid action forms are:
+shell_command {"command":"pwd && ls -la","workdir":".","timeout_ms":20000}
 apply_patch
 *** Begin Patch
-...
+*** Add File: script.py
++print("ok")
 *** End Patch
 submit
-Use shell_command for inspection or execution, apply_patch for workspace edits, and submit to grade /workspace/submission.csv exactly once. TASK.md and data are read-only. The first submit is terminal. Action 30 executes and then terminates if it is not submit. Do not add prose around an action.
+
+For shell_command, emit the literal prefix `shell_command ` followed by one valid JSON object. `command` must be a non-empty JSON string, optional `workdir` must be exactly ".", and optional integer `timeout_ms` must be between 1 and 20000. The command already runs from /workspace. Keep the JSON on one syntactically valid line; escape any quotes or newlines required by JSON.
+Use shell_command for inspection or execution and apply_patch for workspace edits. For multiline code, first create or update a file with apply_patch, then execute it with a later shell_command; do not place a heredoc or raw multiline program inside shell_command JSON.
+Reading with shell_command, editing with apply_patch, and executing a program each consume one of the 30 actions. TASK.md and data are read-only. Submit grades /workspace/submission.csv exactly once; the first submit is terminal. Action 30 executes and then terminates if it is not submit.
+If an observation reports a parser error, respond next with only a corrected action in one of the exact forms above. Never describe the correction.
 """
 POLICY_PROMPT_SHA256 = hashlib.sha256(POLICY_PROMPT.encode("utf-8")).hexdigest()
 

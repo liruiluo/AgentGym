@@ -95,6 +95,16 @@ class OpenMLEFastClientTest(unittest.TestCase):
     def test_client_and_server_prompt_contracts_are_byte_identical(self) -> None:
         self.assertEqual(OPENMLE_FAST_POLICY_SYSTEM_PROMPT, POLICY_PROMPT)
 
+    def test_prompt_teaches_exact_action_grammar_without_task_content(self) -> None:
+        prompt = OPENMLE_FAST_POLICY_SYSTEM_PROMPT
+        self.assertIn("Start every response at byte zero with exactly one action", prompt)
+        self.assertIn('optional `workdir` must be exactly "."', prompt)
+        self.assertIn("between 1 and 20000", prompt)
+        self.assertIn("do not place a heredoc or raw multiline program", prompt)
+        self.assertIn("If an observation reports a parser error", prompt)
+        self.assertIn("no reasoning, explanation, Markdown fence, XML/tool_call tag", prompt)
+        self.assertNotIn("cement-sales-demand", prompt)
+
     def metadata(self):
         prompt_sha = hashlib.sha256(
             OPENMLE_FAST_POLICY_SYSTEM_PROMPT.encode("utf-8")
