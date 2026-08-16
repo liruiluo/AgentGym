@@ -5,14 +5,19 @@ import math
 import os
 import time
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from typing import Any
 
 import requests
 
 from agentenv.controller import BaseEnvClient, BaseTask
 from agentenv.controller.types import (
+    CONTEXT_OPERATION_REPLACE,
+    POLICY_CONTINUATION_MARKER,
     ConversationMessage,
+    PolicyContextPressure,
     StepOutput,
+    build_task_neutral_context_transition,
     build_task_neutral_transition_info,
 )
 
@@ -36,6 +41,16 @@ If an observation reports a parser error, respond next with only a corrected act
 OPENMLE_FAST_POLICY_PROMPT_SHA256 = hashlib.sha256(
     OPENMLE_FAST_POLICY_SYSTEM_PROMPT.encode("utf-8")
 ).hexdigest()
+OPENMLE_CONTEXT_COMPACTION_REQUEST = (
+    "The conversation is nearing its context limit. Use exactly one normal "
+    "OpenMLE action now to persist the continuation state in the unchanged "
+    "workspace. Use apply_patch to create or update "
+    ".agent_memory/OPENMLE_CONTINUATION.md with only the immediate objective, "
+    "decisive findings, relevant paths or commands, and the next action. Do "
+    "not submit. Output only that valid apply_patch action. This is one of the "
+    "same 30 policy actions and will execute normally; earlier conversation "
+    "will be removed after it executes."
+)
 _EXPECTED_BOUNDARIES = {
     "actions": "openmle_fast_three_tool_v1",
     "workspace": "openmle_fast_public_workspace_v1",
@@ -262,6 +277,10 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         self._native_call_count = 0
         self._context_epoch = 0
         self._session_epoch = 0
+        self._immutable_policy_context: list[dict[str, str]] | None = None
+        self._current_policy_context: list[dict[str, str]] | None = None
+        self._policy_context_bound = False
+        self._selected_policy_control: str | None = None
 
     def __len__(self) -> int:
         return self.data_len
@@ -297,11 +316,74 @@ class OpenMLEFastEnvClient(BaseEnvClient):
             )
         return self.policy_framing() + [{"role": "user", "content": observation}]
 
+    def bind_policy_context(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        initial: bool = False,
+    ) -> None:
+        normalized = _copy_messages(messages)
+        if initial:
+            expected = self.policy_framing() + [
+                {"role": "user", "content": self.observe()}
+            ]
+            if normalized != expected:
+                raise ValueError(
+                    "OpenMLE-fast initial policy context differs from its framing"
+                )
+            self._immutable_policy_context = deepcopy(normalized)
+            self._policy_context_bound = True
+        self._current_policy_context = normalized
+
+    def policy_turn_candidate(self) -> str | None:
+        if not self._policy_context_bound:
+            return None
+        return OPENMLE_CONTEXT_COMPACTION_REQUEST
+
+    def prepare_policy_turn(self, pressure: PolicyContextPressure | None) -> str | None:
+        self._selected_policy_control = None
+        if not self._policy_context_bound:
+            return None
+        if pressure is None:
+            raise RuntimeError(
+                "OpenMLE-fast context compaction requires token pressure"
+            )
+        capacity = pressure.effective_prompt_capacity
+        if (
+            pressure.action_prompt_tokens > capacity
+            or pressure.candidate_prompt_tokens > capacity
+        ):
+            raise RuntimeError(
+                "OpenMLE-fast context reached the prompt cap before a trainable "
+                "persistence action could be sampled"
+            )
+        request_tokens = (
+            pressure.candidate_prompt_tokens - pressure.action_prompt_tokens
+        )
+        if request_tokens <= 0:
+            raise RuntimeError(
+                "OpenMLE-fast context request must extend the action prompt"
+            )
+        projected_next_request = (
+            pressure.action_prompt_tokens
+            + pressure.max_response_tokens
+            + pressure.max_observation_tokens
+            + pressure.action_observation_envelope_tokens
+            + request_tokens
+        )
+        if projected_next_request < capacity:
+            return None
+        self._selected_policy_control = "context_compaction"
+        return OPENMLE_CONTEXT_COMPACTION_REQUEST
+
     def step(self, action: str) -> StepOutput:
         if not isinstance(action, str):
             raise TypeError("OpenMLE-fast action must be raw policy text")
         native_before = self._native_call_count
         policy_before = self._policy_step_count
+        context_before = self._context_epoch
+        session_before = self._session_epoch
+        context_control_selected = self._selected_policy_control == "context_compaction"
         response = self._request(
             "POST", "step", json={"id": self.env_id, "action": action}
         )
@@ -315,11 +397,38 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         self._native_call_count += 1
         self._policy_step_count += 1
         self.info = response
+        self._selected_policy_control = None
         action_submission = _action_submission(
             action=action,
             done=done,
             env_info=env_info,
         )
+        context_transition = None
+        wrapper_evidence = {
+            "event": "native_action",
+            "workspace_continuity_id": self.env_id,
+            "action_contract": _EXPECTED_BOUNDARIES["actions"],
+        }
+        if context_control_selected and not done:
+            framing = self._immutable_policy_context
+            if framing is None:
+                raise RuntimeError(
+                    "OpenMLE-fast compaction lost its immutable task framing"
+                )
+            replacement = deepcopy(framing)
+            replacement.append({"role": "user", "content": POLICY_CONTINUATION_MARKER})
+            self._context_epoch += 1
+            context_transition = build_task_neutral_context_transition(
+                CONTEXT_OPERATION_REPLACE,
+                messages=replacement,
+            )
+            wrapper_evidence = {
+                "event": "context_compaction",
+                "workspace_continuity_id": self.env_id,
+                "action_contract": _EXPECTED_BOUNDARIES["actions"],
+                "native_action_kind": env_info["action_kind"],
+                "native_action_status": env_info["action_status"],
+            }
         return StepOutput(
             state=state,
             reward=reward,
@@ -331,17 +440,14 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                 native_step_after=self._native_call_count,
                 native_call_count_before=native_before,
                 native_call_count_after=self._native_call_count,
-                context_epoch_before=self._context_epoch,
+                context_epoch_before=context_before,
                 context_epoch_after=self._context_epoch,
-                session_epoch_before=self._session_epoch,
+                session_epoch_before=session_before,
                 session_epoch_after=self._session_epoch,
                 policy_step_before=policy_before,
                 policy_step_after=self._policy_step_count,
-                wrapper_evidence={
-                    "event": "native_action",
-                    "workspace_continuity_id": self.env_id,
-                    "action_contract": _EXPECTED_BOUNDARIES["actions"],
-                },
+                context_transition=context_transition,
+                wrapper_evidence=wrapper_evidence,
             ),
         )
 

@@ -45,14 +45,45 @@ def _load_client_module():
             "session_epoch_after": kwargs.get("session_epoch_after"),
             "policy_step_before": kwargs.get("policy_step_before"),
             "policy_step_after": kwargs.get("policy_step_after"),
+            "context_transition": kwargs.get("context_transition"),
             "wrapper_evidence": kwargs.get("wrapper_evidence"),
         }
 
     controller.BaseEnvClient = BaseEnvClient
     controller.BaseTask = BaseTask
     controller_types = types.ModuleType("agentenv.controller.types")
+    @dataclass(frozen=True)
+    class PolicyContextPressure:
+        action_prompt_tokens: int
+        candidate_prompt_tokens: int
+        max_prompt_tokens: int
+        max_model_tokens: int
+        max_response_tokens: int
+        max_observation_tokens: int
+        action_observation_envelope_tokens: int = 0
+
+        @property
+        def effective_prompt_capacity(self):
+            return min(
+                self.max_prompt_tokens,
+                self.max_model_tokens - self.max_response_tokens,
+            )
+
+    def context_transition(operation, *, messages=None):
+        return {
+            "schema": "agentmemory_task_neutral_context_transition_v1",
+            "operation": operation,
+            "messages": [dict(message) for message in messages or ()],
+        }
+
+    controller_types.CONTEXT_OPERATION_REPLACE = "replace_messages"
+    controller_types.POLICY_CONTINUATION_MARKER = (
+        "Continue the same task in the unchanged workspace."
+    )
     controller_types.ConversationMessage = dict
+    controller_types.PolicyContextPressure = PolicyContextPressure
     controller_types.StepOutput = StepOutput
+    controller_types.build_task_neutral_context_transition = context_transition
     controller_types.build_task_neutral_transition_info = transition_info
     agentenv = types.ModuleType("agentenv")
     agentenv.__path__ = []
@@ -240,7 +271,9 @@ class OpenMLEFastClientTest(unittest.TestCase):
                 "counters": counters,
                 "counter_delta": {
                     **counters,
-                    "action_count": 1 if action_kind == "parser_error" else 0,
+                    "action_count": (
+                        0 if action_kind in {"reset", "policy_horizon"} else 1
+                    ),
                 },
                 "fit_counter_coverage": "not_observed",
                 "execution": None,
@@ -353,6 +386,112 @@ class OpenMLEFastClientTest(unittest.TestCase):
             self.assertTrue(terminal.done)
             self.assertEqual(terminal.info["policy_step_after"], 1)
             client.close()
+
+    def test_context_pressure_executes_one_real_action_before_replacement(self) -> None:
+        calls = []
+        metadata = self.metadata()
+
+        def request(method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            path = url.rsplit("/", 1)[-1]
+            if path == "metadata":
+                return _Response(metadata)
+            if path == "create":
+                return _Response({"id": 7, "observation": "unbound", "info": {}})
+            if path == "reset":
+                return _Response(self.step_response(observation="task framing"))
+            if path == "step":
+                return _Response(
+                    self.step_response(
+                        observation="action_status=completed",
+                        action_count=1,
+                        action_kind="apply_patch",
+                    )
+                )
+            raise AssertionError(path)
+
+        with patch("requests.request", side_effect=request):
+            client = OpenMLEFastEnvClient(
+                "http://127.0.0.1:9000",
+                **self.client_kwargs(),
+            )
+            client.reset(0)
+            initial = client.normalize_initial_policy_context(
+                [
+                    {"role": "system", "content": "legacy"},
+                    {"role": "user", "content": client.observe()},
+                ]
+            )
+            client.bind_policy_context(initial, initial=True)
+            candidate = client.policy_turn_candidate()
+            self.assertEqual(
+                candidate, _CLIENT_MODULE.OPENMLE_CONTEXT_COMPACTION_REQUEST
+            )
+            self.assertIsNone(
+                client.prepare_policy_turn(
+                    _CLIENT_MODULE.PolicyContextPressure(
+                        action_prompt_tokens=50,
+                        candidate_prompt_tokens=80,
+                        max_prompt_tokens=300,
+                        max_model_tokens=332,
+                        max_response_tokens=32,
+                        max_observation_tokens=100,
+                        action_observation_envelope_tokens=4,
+                    )
+                )
+            )
+            selected = client.prepare_policy_turn(
+                _CLIENT_MODULE.PolicyContextPressure(
+                    action_prompt_tokens=100,
+                    candidate_prompt_tokens=130,
+                    max_prompt_tokens=300,
+                    max_model_tokens=332,
+                    max_response_tokens=32,
+                    max_observation_tokens=150,
+                    action_observation_envelope_tokens=4,
+                )
+            )
+            self.assertEqual(selected, candidate)
+
+            action = """apply_patch
+*** Begin Patch
+*** Add File: .agent_memory/OPENMLE_CONTINUATION.md
++inspect train.csv; next fit baseline
+*** End Patch"""
+            output = client.step(action)
+
+        step_calls = [call for call in calls if call[1].endswith("/step")]
+        self.assertEqual(len(step_calls), 1)
+        self.assertEqual(step_calls[0][2]["json"]["action"], action)
+        self.assertEqual(metadata["max_policy_actions"], 30)
+        self.assertEqual(
+            (
+                output.info["native_call_count_before"],
+                output.info["native_call_count_after"],
+                output.info["policy_step_before"],
+                output.info["policy_step_after"],
+                output.info["context_epoch_before"],
+                output.info["context_epoch_after"],
+            ),
+            (0, 1, 0, 1, 0, 1),
+        )
+        transition = output.info["context_transition"]
+        self.assertEqual(transition["operation"], "replace_messages")
+        self.assertEqual(transition["messages"][:-1], initial)
+        self.assertEqual(
+            transition["messages"][-1]["content"],
+            "Continue the same task in the unchanged workspace.",
+        )
+        self.assertEqual(
+            output.info["wrapper_evidence"],
+            {
+                "event": "context_compaction",
+                "workspace_continuity_id": 7,
+                "action_contract": _CLIENT_MODULE._EXPECTED_BOUNDARIES["actions"],
+                "native_action_kind": "apply_patch",
+                "native_action_status": "completed",
+            },
+        )
 
     def test_rejects_manifest_or_data_len_mismatch_before_create(self) -> None:
         metadata = self.metadata()
