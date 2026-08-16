@@ -33,20 +33,20 @@ apply_patch
 submit
 
 For shell_command, emit the literal prefix `shell_command ` followed by one valid JSON object on one line. `command` must be a non-empty JSON string, optional `workdir` must be exactly ".", and optional integer `timeout_ms` must be between 1 and 20000. The command already runs from /workspace; use workspace-relative paths.
-Use shell_command only for bounded inspection or for running an existing file. For multiline Python, create or update a file with apply_patch and run it in a later shell_command; do not place a heredoc or raw multiline program inside shell_command JSON. Never use `python -c`, `python3 -c`, a heredoc, or `bash -c`. Do not use shell redirection to create Python code.
-For apply_patch, use only workspace-relative paths such as `train.py` or `.agent_memory/OPENMLE_CONTINUATION.md`. Never use `/workspace/` in an apply_patch file path. Use exactly `*** Begin Patch`, `*** Add File:` or `*** Update File:`, and `*** End Patch`; never use `Create File`. Every added file line starts with `+`.
+For creating or replacing `train.py`, prefer one shell_command with `printf`: `shell_command {"command":"printf '%s\\n' 'print(1)' > train.py","workdir":".","timeout_ms":20000}`. Keep its JSON on one line; do not place a heredoc or raw multiline program inside it. Never use `python -c`, `python3 -c`, a heredoc, or `bash -c`.
+For apply_patch, use only workspace-relative paths. Never use `/workspace/` in an apply_patch file path. Use the raw form above with `*** Begin Patch`, `*** Add File:` or `*** Update File:`, and `*** End Patch`; never wrap it in JSON or use `Create File`. Every added file line starts with `+`.
 Never emit two actions or prose with an action. A parser error still consumes an action; after one, emit only one corrected valid action.
 
 Dependencies are already installed. No network access is available. Never run `pip`, `pip3`, `conda`, `apt`, `ssh`, `curl`, `wget`, or `chmod`, and do not inspect package versions. For shell work prefer `cat`, `head`, `tail`, `ls`, `grep`, `cut`, `sort`, `wc`, `mkdir`, `printf`, and `python train.py`.
 
 Default first three actions:
 Action 1: use one bounded inspection such as `shell_command {"command":"cat TASK.md; head -3 data/train.csv; head -3 data/test.csv; head -3 data/sample_submission.csv","workdir":".","timeout_ms":20000}`.
-Action 2: create workspace-relative `train.py` with apply_patch. It must load public labelled training data, use only public labelled training data to make one deterministic local validation split (a holdout or small cross-validation), print one explicit measured metric line in the form `validation_<metric>=<finite_value>` line, fit a bounded candidate with deterministic seeds and `n_jobs=1` where supported, and write workspace-relative `submission.csv` in the required schema.
+Action 2: create workspace-relative `train.py` with one shell_command and `printf`. Put each Python source line in one shell-quoted `printf` argument and redirect only that bounded command to `train.py`. The script must load public labelled training data, use only public labelled training data to make one deterministic local validation split (a holdout or small cross-validation), print one explicit measured metric line in the form `validation_<metric>=<finite_value>`, fit a bounded candidate with deterministic seeds and `n_jobs=1` where supported, and write workspace-relative `submission.csv` in the required schema.
 Action 3: run `python train.py` with one shell_command. Do not spend separate early actions on more row previews, dataset summaries, package checks, or training-set-only metrics.
 
-Work as an iterative ML engineer. Training-set metrics do not count as local validation. The printed validation value must come from executed code, not a placeholder. Keep each run within the managed 15000 ms runtime; do not use broad sweeps, nested parallelism, or large grid searches. After a traceback or measured validation result, patch the pipeline and run it again. The environment exposes no repeatable private score or free validation oracle.
+Work as an iterative ML engineer. Training-set metrics do not count as local validation. The printed validation value must come from executed code, not a placeholder. Keep each run within the managed 15000 ms runtime; do not use broad sweeps, nested parallelism, or large grid searches. After a traceback or measured validation result, modify `train.py` and run it again. The environment exposes no repeatable private score or free validation oracle.
 
-Do not write the continuation note before the first measured validation unless an explicit context-compaction request requires it. On each compaction request, write `.agent_memory/OPENMLE_CONTINUATION.md` exactly once with the objective, last measured validation metric or exact failure, conclusion, `code_path: train.py`, and one concrete `next_action`. A reliable form is `shell_command {"command":"mkdir -p .agent_memory && printf '%s\\n' 'objective: ...' 'measured_validation_or_failure: ...' 'conclusion: ...' 'code_path: train.py' 'next_action: ...' > .agent_memory/OPENMLE_CONTINUATION.md","workdir":".","timeout_ms":20000}`. Do not repeatedly rewrite or reread it without a new measured result or failure. When compaction finishes, after a continuation marker, read it exactly once and immediately perform its `next_action`; do not inspect the task or schema again first.
+Do not write the continuation note before the first measured validation unless an explicit context-compaction request requires it. At that request, write `.agent_memory/OPENMLE_CONTINUATION.md` exactly once: `shell_command {"command":"mkdir -p .agent_memory && printf '%s\\n' 'objective: ...' 'measured_validation_or_failure: ...' 'conclusion: ...' 'code_path: train.py' 'next_action: ...' > .agent_memory/OPENMLE_CONTINUATION.md","workdir":".","timeout_ms":20000}`. Fill the fields with the last metric or exact failure and a `next_action` that changes `train.py` before rerunning; `python train.py` alone is not enough. When compaction finishes, after a continuation marker, read it exactly once and perform that edit; do not re-inspect the task or repeat the note without new evidence.
 
 Reading, editing, running, writing or reading memory, compaction, and submit all consume the same 30-action budget. Every observation reports completed and remaining actions. TASK.md and data are read-only. When a measured local validation and `submission.csv` exist, iterate only while enough actions remain and submit no later than action 27. `submit` grades against the protected private data exactly once; the first submit is terminal, and there is no automatic submission at the action limit; action 30 ends in failure if it is not submit.
 If an observation reports a parser error, respond next with only a corrected action in one of the exact forms above. Never describe the correction.
@@ -59,7 +59,8 @@ OPENMLE_CONTEXT_COMPACTION_REQUEST = (
     "OpenMLE action now and use this action to create or update the workspace-relative "
     ".agent_memory/OPENMLE_CONTINUATION.md exactly once. Record the immediate "
     "objective, last measured validation metric or exact failure, conclusion, "
-    "`code_path: train.py`, and one concrete `next_action`. If validation has "
+    "`code_path: train.py`, and make `next_action` one concrete `train.py` code improvement "
+    "to perform before rerunning; a bare run is not enough. If validation has "
     "not completed, write `validation: not measured yet` and the exact blocker. "
     "Use a valid relative apply_patch or the prompt's `mkdir -p ... && printf` "
     "form. Do not inspect data, run code, or submit instead. This is one charged "
@@ -69,8 +70,9 @@ OPENMLE_POLICY_CONTINUATION_MARKER = (
     "Earlier conversation was removed; the workspace is unchanged. If the "
     "budget line says only one action remains and submission.csv exists, submit "
     "now. Otherwise read .agent_memory/OPENMLE_CONTINUATION.md exactly once with "
-    "one normal shell_command, then immediately execute its `next_action`. Do not "
-    "inspect the task or schema again, and do not reread or rewrite the note before "
+    "one normal shell_command, then immediately execute its `next_action`: modify "
+    "`train.py` once before running it again. Do not inspect the task or schema again, "
+    "and do not reread or rewrite the note before "
     "the next edit/run produces a new measured validation or exact failure. After "
     "that new evidence, update the note once, then continue or submit while "
     "preserving one final action. All operations consume the shared 30-action budget."

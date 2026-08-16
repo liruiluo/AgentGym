@@ -145,6 +145,15 @@ class OpenMLEFastClientTest(unittest.TestCase):
         self.assertIn("Default first three actions", prompt)
         self.assertIn("cat TASK.md; head -3 data/train.csv", prompt)
         self.assertIn("Every added file line starts with `+`", prompt)
+        self.assertIn(
+            "For creating or replacing `train.py`, prefer one shell_command with `printf`",
+            prompt,
+        )
+        self.assertIn(
+            "Action 2: create workspace-relative `train.py` with one shell_command and `printf`",
+            prompt,
+        )
+        self.assertNotIn("Do not use shell redirection to create Python code", prompt)
         self.assertIn("Never use `python -c`, `python3 -c`, a heredoc, or `bash -c`", prompt)
         self.assertIn("Dependencies are already installed", prompt)
         self.assertIn("Never run `pip`, `pip3`, `conda`, `apt`, `ssh`, `curl`, `wget`, or `chmod`", prompt)
@@ -182,10 +191,14 @@ class OpenMLEFastClientTest(unittest.TestCase):
         self.assertNotIn("but you may instead", request)
         self.assertIn("use this action to create or update", request)
         self.assertIn("not measured yet", request)
+        self.assertIn(
+            "make `next_action` one concrete `train.py` code improvement", request
+        )
         self.assertIsInstance(marker, str)
         self.assertIn("Earlier conversation was removed", marker)
         self.assertIn("read .agent_memory/OPENMLE_CONTINUATION.md exactly once", marker)
         self.assertIn("immediately execute its `next_action`", marker)
+        self.assertIn("modify `train.py` once before running it again", marker)
         self.assertIn("Do not inspect the task or schema again", marker)
         self.assertIn("only one action remains", marker)
         self.assertIn("submit", marker)
