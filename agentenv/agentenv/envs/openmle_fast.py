@@ -21,10 +21,10 @@ from agentenv.controller.types import (
 )
 
 OPENMLE_FAST_POLICY_SYSTEM_PROMPT = """You are solving one OpenMLE-fast task in an isolated /workspace with exactly 30 total policy actions.
-This interface is a plain-text action protocol, not a native tool-calling API. Start every response at byte zero with exactly one action. Output no reasoning, explanation, Markdown fence, XML/tool_call tag, native tool wrapper, action-number prefix, or bare JSON before or after it. Put any reflection you want to preserve into a workspace file through a valid action.
+This interface is a plain-text action protocol, not a native tool-calling API. Start every response at byte zero with exactly one action. Output no reasoning, explanation, Markdown fence, XML/tool_call tag, native tool wrapper, action-number prefix, or bare JSON before or after it. Put reflection that must survive context replacement into a workspace file through a valid action.
 
 The only valid action forms are:
-shell_command {"command":"pwd && ls -la","workdir":".","timeout_ms":20000}
+shell_command {"command":"cat TASK.md","workdir":".","timeout_ms":20000}
 apply_patch
 *** Begin Patch
 *** Add File: script.py
@@ -32,33 +32,23 @@ apply_patch
 *** End Patch
 submit
 
-For shell_command, emit the literal prefix `shell_command ` followed by one valid JSON object. `command` must be a non-empty JSON string, optional `workdir` must be exactly ".", and optional integer `timeout_ms` must be between 1 and 20000. The command already runs from /workspace. Keep the JSON on one syntactically valid line; escape any quotes or newlines required by JSON.
-Use shell_command for inspection or execution and apply_patch for workspace edits. For multiline code, first create or update a file with apply_patch, then execute it with a later shell_command; do not place a heredoc or raw multiline program inside shell_command JSON. Use one action for one primary operation: do not combine file inspection, model execution, and experiment-note mutation in one shell command.
-All apply_patch file paths must be workspace-relative, such as `train.py` or `.agent_memory/OPENMLE_CONTINUATION.md`. Never use `/workspace/` in an apply_patch file path. Use only the exact headers `*** Add File:` and `*** Update File:`, never `Create File`.
+For shell_command, emit the literal prefix `shell_command ` followed by one valid JSON object on one line. `command` must be a non-empty JSON string, optional `workdir` must be exactly ".", and optional integer `timeout_ms` must be between 1 and 20000. The command already runs from /workspace; use workspace-relative paths.
+Use shell_command only for bounded inspection or for running an existing file. For multiline Python, create or update a file with apply_patch and run it in a later shell_command; do not place a heredoc or raw multiline program inside shell_command JSON. Never use `python -c`, `python3 -c`, a heredoc, or `bash -c`. Do not use shell redirection to create Python code.
+For apply_patch, use only workspace-relative paths such as `train.py` or `.agent_memory/OPENMLE_CONTINUATION.md`. Never use `/workspace/` in an apply_patch file path. Use exactly `*** Begin Patch`, `*** Add File:` or `*** Update File:`, and `*** End Patch`; never use `Create File`. Every added file line starts with `+`.
+Never emit two actions or prose with an action. A parser error still consumes an action; after one, emit only one corrected valid action.
 
-Copy the RIGHT form exactly, never the WRONG wrapper:
-WRONG: <tool_call>{"command":"cat TASK.md"}</tool_call>
-RIGHT: shell_command {"command":"cat TASK.md","workdir":".","timeout_ms":20000}
-WRONG: Action 3: shell_command {"command":"python script.py"}
-RIGHT: shell_command {"command":"python script.py","workdir":".","timeout_ms":20000}
-WRONG: {"command":"ls data"}
-RIGHT: shell_command {"command":"ls data","workdir":".","timeout_ms":20000}
-WRONG: apply_patch {"patch":"*** Begin Patch ..."}
-RIGHT:
-apply_patch
-*** Begin Patch
-*** Update File: script.py
-@@
--print("ok")
-+print("validation_metric=0.25")
-*** End Patch
-Never emit two actions in one response. A parser error still consumes an action; correct it with one exact RIGHT form on the next response.
+Dependencies are already installed. No network access is available. Never run `pip`, `pip3`, `conda`, `apt`, `ssh`, `curl`, `wget`, or `chmod`, and do not inspect package versions. For shell work prefer `cat`, `head`, `tail`, `ls`, `grep`, `cut`, `sort`, `wc`, `mkdir`, `printf`, and `python train.py`.
 
-Work as an iterative ML engineer before submitting. Spend at most the first three actions on bounded inspection. No later than completed action 8, create a workspace-relative Python pipeline, and use only public labelled training data to construct and run one real deterministic local validation split, either a holdout or small cross-validation. Repeatedly run the pipeline, inspect tracebacks or measured local validation metrics, and change the pipeline based on that evidence. Training-set metrics do not count as local validation. For each validation run, print one explicit measured metric line such as `validation_rmse=0.123`; its value must come from executed code, not an invented placeholder. The environment does not provide a repeatable private-score action or a free validation oracle; local validation code, splits, and metrics must be created and executed by you.
-No network access is available. Use deterministic seeds, `n_jobs=1` where supported, and a bounded split or small cross-validation that stays within the managed 15000 ms runtime for one action. Do not use broad hyperparameter sweeps, nested parallelism, or large grid searches.
-After each meaningful experiment, spend a separate action updating .agent_memory/OPENMLE_CONTINUATION.md with the hypothesis or configuration, measured validation metric or exact failure, conclusion, relevant workspace-relative code path, and next action. Do not invent results that were not observed. A reliable workspace-relative write form is: shell_command {"command":"mkdir -p .agent_memory && printf '%s\\n' 'objective: ...' 'measured_validation_or_failure: ...' 'conclusion: ...' 'code_path: train.py' 'next_action: ...' > .agent_memory/OPENMLE_CONTINUATION.md","workdir":".","timeout_ms":20000}. When a context-compaction request appears, use that action to update this file; after a continuation marker, read it with a normal shell_command before continuing unless the retained action already printed its complete contents.
+Default first three actions:
+Action 1: use one bounded inspection such as `shell_command {"command":"cat TASK.md; head -3 data/train.csv; head -3 data/test.csv; head -3 data/sample_submission.csv","workdir":".","timeout_ms":20000}`.
+Action 2: create workspace-relative `train.py` with apply_patch. It must load public labelled training data, use only public labelled training data to make one deterministic local validation split (a holdout or small cross-validation), print one explicit measured metric line in the form `validation_<metric>=<finite_value>` line, fit a bounded candidate with deterministic seeds and `n_jobs=1` where supported, and write workspace-relative `submission.csv` in the required schema.
+Action 3: run `python train.py` with one shell_command. Do not spend separate early actions on more row previews, dataset summaries, package checks, or training-set-only metrics.
 
-Reading with shell_command, editing with apply_patch, executing a program, writing or reading experiment memory, and submit each consume one of the same 30 actions. Every observation reports the completed action number and actions remaining. TASK.md and data are read-only. Reserve one action for submit. Submit grades the current /workspace/submission.csv against the protected private data exactly once; the first submit is terminal and there is no automatic submission at the action limit. Action 30 executes and then terminates if it is not submit.
+Work as an iterative ML engineer. Training-set metrics do not count as local validation. The printed validation value must come from executed code, not a placeholder. Keep each run within the managed 15000 ms runtime; do not use broad sweeps, nested parallelism, or large grid searches. After a traceback or measured validation result, patch the pipeline and run it again. The environment exposes no repeatable private score or free validation oracle.
+
+Do not write the continuation note before the first measured validation unless an explicit context-compaction request requires it. On each compaction request, write `.agent_memory/OPENMLE_CONTINUATION.md` exactly once with the objective, last measured validation metric or exact failure, conclusion, `code_path: train.py`, and one concrete `next_action`. A reliable form is `shell_command {"command":"mkdir -p .agent_memory && printf '%s\\n' 'objective: ...' 'measured_validation_or_failure: ...' 'conclusion: ...' 'code_path: train.py' 'next_action: ...' > .agent_memory/OPENMLE_CONTINUATION.md","workdir":".","timeout_ms":20000}`. Do not repeatedly rewrite or reread it without a new measured result or failure. When compaction finishes, after a continuation marker, read it exactly once and immediately perform its `next_action`; do not inspect the task or schema again first.
+
+Reading, editing, running, writing or reading memory, compaction, and submit all consume the same 30-action budget. Every observation reports completed and remaining actions. TASK.md and data are read-only. When a measured local validation and `submission.csv` exist, iterate only while enough actions remain and submit no later than action 27. `submit` grades against the protected private data exactly once; the first submit is terminal, and there is no automatic submission at the action limit; action 30 ends in failure if it is not submit.
 If an observation reports a parser error, respond next with only a corrected action in one of the exact forms above. Never describe the correction.
 """
 OPENMLE_FAST_POLICY_PROMPT_SHA256 = hashlib.sha256(
@@ -66,27 +56,26 @@ OPENMLE_FAST_POLICY_PROMPT_SHA256 = hashlib.sha256(
 ).hexdigest()
 OPENMLE_CONTEXT_COMPACTION_REQUEST = (
     "The conversation is nearing its context limit. Take exactly one normal "
-    "OpenMLE action now and use this action to create or update the workspace-"
-    "relative .agent_memory/OPENMLE_CONTINUATION.md. Record the immediate "
-    "objective, the last measured validation metric or exact failure, decisive "
-    "findings, the workspace-relative code path, and the next exact action. If "
-    "no validation has completed, write `validation: not measured yet` plus the "
-    "current failure or blocker. Do not inspect data, run a model, or submit in "
-    "place of this continuation write. This is one of the same 30 policy actions "
-    "and executes normally. Your exact action and its bounded native observation "
-    "will remain visible after the earlier conversation is removed, so emit only "
-    "one of the three valid action forms."
+    "OpenMLE action now and use this action to create or update the workspace-relative "
+    ".agent_memory/OPENMLE_CONTINUATION.md exactly once. Record the immediate "
+    "objective, last measured validation metric or exact failure, conclusion, "
+    "`code_path: train.py`, and one concrete `next_action`. If validation has "
+    "not completed, write `validation: not measured yet` and the exact blocker. "
+    "Use a valid relative apply_patch or the prompt's `mkdir -p ... && printf` "
+    "form. Do not inspect data, run code, or submit instead. This is one charged "
+    "action; emit only one of the three valid raw action forms."
 )
 OPENMLE_POLICY_CONTINUATION_MARKER = (
-    "Earlier conversation was removed; the workspace is unchanged. First read "
-    ".agent_memory/OPENMLE_CONTINUATION.md with one normal shell_command unless "
-    "the retained action's native observation already contains the complete file "
-    "contents. Then change the pipeline, run another bounded deterministic local "
-    "validation, and print `validation_<metric>=<measured_value>`. Update the "
-    "continuation file with that evidence, and only then use the one terminal "
-    "submit when submission.csv is ready. All of these operations consume the "
-    "remaining shared action budget."
+    "Earlier conversation was removed; the workspace is unchanged. If the "
+    "budget line says only one action remains and submission.csv exists, submit "
+    "now. Otherwise read .agent_memory/OPENMLE_CONTINUATION.md exactly once with "
+    "one normal shell_command, then immediately execute its `next_action`. Do not "
+    "inspect the task or schema again, and do not reread or rewrite the note before "
+    "the next edit/run produces a new measured validation or exact failure. After "
+    "that new evidence, update the note once, then continue or submit while "
+    "preserving one final action. All operations consume the shared 30-action budget."
 )
+
 _OPENMLE_CONTINUATION_PATH = ".agent_memory/OPENMLE_CONTINUATION.md"
 _EXPECTED_BOUNDARIES = {
     "actions": "openmle_fast_three_tool_v1",
