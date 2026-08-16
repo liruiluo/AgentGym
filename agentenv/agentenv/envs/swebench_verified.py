@@ -95,7 +95,8 @@ def _validate_step_response(
     *,
     expected_done: bool | None = None,
 ) -> tuple[str, float, bool, Mapping[str, Any]]:
-    if set(response) != {"observation", "reward", "done", "info"}:
+    required_fields = {"observation", "reward", "done", "info"}
+    if set(response) not in (required_fields, required_fields | {"state"}):
         raise RuntimeError("Verified step response fields drifted")
     observation = response["observation"]
     reward = response["reward"]
@@ -111,6 +112,11 @@ def _validate_step_response(
         or not isinstance(info, Mapping)
     ):
         raise RuntimeError("Verified step response types drifted")
+    if "state" in response and (
+        not isinstance(response["state"], str)
+        or response["state"] != observation
+    ):
+        raise RuntimeError("Verified step response state drifted")
     if expected_done is not None and done is not expected_done:
         raise RuntimeError("Verified step terminal state drifted")
     return observation, float(reward), done, info

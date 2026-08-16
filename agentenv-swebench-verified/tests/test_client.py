@@ -183,6 +183,7 @@ class Backend:
             self.native_steps = 0
             return {
                 "observation": "Repair the fixture issue.",
+                "state": "Repair the fixture issue.",
                 "reward": 0.0,
                 "done": False,
                 "info": {"schema": metadata()["schema"], "step": 0},
@@ -215,6 +216,7 @@ class Backend:
                 info["external_memory_operation"] = memory_operation
             return {
                 "observation": observation,
+                "state": observation,
                 "reward": 0.0,
                 "done": False,
                 "info": info,
@@ -222,6 +224,7 @@ class Backend:
         if method == "POST" and path == "horizon":
             return {
                 "observation": "exported",
+                "state": "exported",
                 "reward": 0.0,
                 "done": True,
                 "info": {"schema": metadata()["schema"]},
@@ -331,6 +334,41 @@ class ClientTests(unittest.TestCase):
                     "step response types drifted",
                 ):
                     client.step('shell_command {"command":"true"}')
+
+    def test_real_endpoint_state_alias_is_accepted_and_must_match(self) -> None:
+        backend = Backend()
+        client = self.TransportClient(
+            backend=backend,
+            arm="native",
+            run_id="endpoint-state-alias",
+            image_manifest_sha256=IMAGE_MANIFEST_SHA256,
+        )
+        reset = client.reset(0)
+        self.assertEqual(reset["state"], reset["observation"])
+        stepped = client.step('shell_command {"command":"true"}')
+        self.assertEqual(stepped.state, "dispatched")
+        horizon = client.finalize_policy_horizon()
+        self.assertEqual(horizon.state, "exported")
+
+        drifted_backend = Backend()
+        request = drifted_backend.request
+
+        def mismatched(method, path, **kwargs):
+            response = request(method, path, **kwargs)
+            if method == "POST" and path == "step":
+                response["state"] = "different observation"
+            return response
+
+        drifted_backend.request = mismatched
+        drifted_client = self.TransportClient(
+            backend=drifted_backend,
+            arm="native",
+            run_id="endpoint-state-drift",
+            image_manifest_sha256=IMAGE_MANIFEST_SHA256,
+        )
+        drifted_client.reset(0)
+        with self.assertRaisesRegex(RuntimeError, "step response state drifted"):
+            drifted_client.step('shell_command {"command":"true"}')
 
     def test_memory_write_survives_policy_compaction_and_later_read(self) -> None:
         backend = Backend()
