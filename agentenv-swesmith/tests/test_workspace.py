@@ -115,6 +115,43 @@ class SwesmithWorkspaceTests(unittest.TestCase):
                     )
                 self.assertEqual(list(self.episodes.iterdir()), [])
 
+    def test_materializer_accepts_safe_parent_segments_in_git_symlinks(self) -> None:
+        self.write("docs/creating-a-site.rst", "safe target\n")
+        link = self.mirror / "docs/sphinx/creating-a-site.rst"
+        link.parent.mkdir(parents=True)
+        link.symlink_to("../creating-a-site.rst")
+        self.git("add", ".")
+        self.git("commit", "-q", "-m", "add safe relative symlink")
+        instance_id = "owner__repo.12345678.safe_symlink__opaque"
+        self.git("branch", instance_id)
+
+        workspace = self.materializer.materialize(
+            {"instance_id": instance_id, "repo": self.instance["repo"]},
+            test_paths=["tests/test_keep.py"],
+        )
+        try:
+            exported = workspace.policy_root / "docs/sphinx/creating-a-site.rst"
+            self.assertTrue(exported.is_symlink())
+            self.assertEqual(os.readlink(exported), "../creating-a-site.rst")
+            self.assertEqual(exported.read_text(encoding="utf-8"), "safe target\n")
+        finally:
+            self.materializer.close(workspace)
+
+    def test_materializer_rejects_git_symlink_that_escapes_workspace(self) -> None:
+        link = self.mirror / "escape"
+        link.symlink_to("../outside")
+        self.git("add", ".")
+        self.git("commit", "-q", "-m", "add escaping symlink")
+        instance_id = "owner__repo.12345678.escape_symlink__opaque"
+        self.git("branch", instance_id)
+
+        with self.assertRaisesRegex(SwesmithWorkspaceError, "symlink target"):
+            self.materializer.materialize(
+                {"instance_id": instance_id, "repo": self.instance["repo"]},
+                test_paths=["tests/test_fix.py", "tests/test_keep.py"],
+            )
+        self.assertEqual(list(self.episodes.iterdir()), [])
+
     def test_materializer_scopes_every_git_call_to_the_exact_mirror(self) -> None:
         real_git = shutil.which("git")
         self.assertIsNotNone(real_git)
