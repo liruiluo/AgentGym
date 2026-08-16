@@ -22,8 +22,14 @@ from agentenv_agentmemory.literesearcher import (
 class _SemanticJudgeStub:
     contract_id = UPSTREAM_LLM_JUDGE_CONTRACT
 
-    def __init__(self, *, correct: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        correct: bool = True,
+        fallback_reason: str | None = None,
+    ) -> None:
         self.correct = correct
+        self.fallback_reason = fallback_reason
         self.calls: list[tuple[str, tuple[str, ...], str]] = []
 
     def judge(self, question, targets, answer):
@@ -32,6 +38,8 @@ class _SemanticJudgeStub:
             correct=self.correct,
             method="semantic_judge_stub",
             attempts=1,
+            primary_model="kimi-k2.6",
+            fallback_reason=self.fallback_reason,
         )
 
     def metadata(self):
@@ -43,7 +51,46 @@ class _SemanticJudgeStub:
         }
 
 
-class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
+class _FormalBackendStub:
+    contract_id = "literesearcher_upstream_hybrid_diskann_v1"
+
+    def __init__(self, tasks) -> None:
+        self.tasks_source = tasks
+        self.split = "train"
+
+    def metadata(self):
+        return {
+            "backend_contract": self.contract_id,
+            "service_identity_verified": True,
+        }
+
+    def search(self, query, *, top_k=None, mask_url=""):
+        del query, top_k
+        hits = [
+            {
+                "url": "https://public.example/evidence",
+                "title": "Independent evidence",
+                "snippet": "Alpha research evidence identifies the public result.",
+                "rank": 1,
+            }
+        ]
+        return [hit for hit in hits if hit["url"] != mask_url]
+
+    def visit(self, url, *, goal="", page=1):
+        if url != "https://public.example/evidence":
+            raise LiteResearchRequestError("visit URL is outside the released corpus")
+        return {
+            "url": url,
+            "title": "Independent evidence",
+            "content": "Alpha research evidence identifies the public result Beta Fact.",
+            "goal": goal,
+            "page": page,
+            "page_count": 1,
+            "next_page": None,
+        }
+
+
+class LiteResearcherFullPoolContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.database = Path(self.temporary.name) / "corpus.sqlite"
@@ -100,6 +147,7 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
             upstream_commit="commit",
         )
         self.backend = SQLiteFTSLiteResearchBackend(self.tasks, self.database, top_k=3)
+        self.formal_backend = _FormalBackendStub(self.tasks)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -122,7 +170,7 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
     def test_wrapper_never_exposes_private_target_or_mask_metadata(self) -> None:
         wrapper = LiteResearcherWrapper(
             self.tasks,
-            self.backend,
+            self.formal_backend,
             split="train",
             surface=LITERESEARCHER_FULLPOOL_SURFACE,
             judge=_SemanticJudgeStub(),
@@ -163,7 +211,7 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
         judge = _SemanticJudgeStub(correct=True)
         wrapper = LiteResearcherWrapper(
             self.tasks,
-            self.backend,
+            self.formal_backend,
             split="train",
             surface=LITERESEARCHER_FULLPOOL_SURFACE,
             judge=judge,
@@ -181,6 +229,16 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
             0.0,
         )
         self.assertEqual(
+            result["info"]["wrapper_evidence"]["judge_primary_model"],
+            "kimi-k2.6",
+        )
+        self.assertFalse(
+            result["info"]["wrapper_evidence"]["judge_fallback_used"]
+        )
+        self.assertIsNone(
+            result["info"]["wrapper_evidence"]["judge_fallback_reason"]
+        )
+        self.assertEqual(
             judge.calls,
             [
                 (
@@ -191,6 +249,36 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
             ],
         )
         wrapper.close(created["id"])
+
+    def test_full_pool_terminal_receipt_records_judge_fallback_reason(self) -> None:
+        judge = _SemanticJudgeStub(
+            correct=False,
+            fallback_reason="timeout",
+        )
+        wrapper = LiteResearcherWrapper(
+            self.tasks,
+            self.formal_backend,
+            split="train",
+            surface=LITERESEARCHER_FULLPOOL_SURFACE,
+            judge=judge,
+        )
+        created = wrapper.create(data_idx=0)
+        result = wrapper.step(created["id"], "<answer>Beta</answer>")
+        evidence = result["info"]["wrapper_evidence"]
+        self.assertTrue(evidence["judge_fallback_used"])
+        self.assertEqual(evidence["judge_fallback_reason"], "timeout")
+        self.assertEqual(evidence["judge_primary_model"], "kimi-k2.6")
+        wrapper.close(created["id"])
+
+    def test_full_pool_rejects_lexical_backend(self) -> None:
+        with self.assertRaisesRegex(ValueError, "upstream hybrid DISKANN"):
+            LiteResearcherWrapper(
+                self.tasks,
+                self.backend,
+                split="train",
+                surface=LITERESEARCHER_FULLPOOL_SURFACE,
+                judge=_SemanticJudgeStub(),
+            )
 
 
 if __name__ == "__main__":

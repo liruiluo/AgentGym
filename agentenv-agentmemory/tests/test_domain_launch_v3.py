@@ -133,12 +133,14 @@ class DomainLaunchTest(unittest.TestCase):
             "/data/literesearcher-fullpool/pool_rows.jsonl",
             "--literesearcher-source-root",
             "/data/literesearcher-fullpool/source",
-            "--literesearcher-fts-database",
-            "/data/literesearcher-fullpool/corpus.sqlite",
+            "--literesearcher-upstream-endpoint",
+            "http://127.0.0.1:8018",
+            "--literesearcher-backend-timeout-seconds",
+            "33.5",
             "--literesearcher-judge-api-base",
             "http://127.0.0.1:18090/v1",
             "--literesearcher-judge-model",
-            "qwen-judge",
+            "kimi-k2.6",
             "--literesearcher-judge-api-key-file",
             judge_key_file,
             "--literesearcher-judge-timeout-seconds",
@@ -173,7 +175,15 @@ class DomainLaunchTest(unittest.TestCase):
             "http://127.0.0.1:18090/v1",
         )
         self.assertEqual(
-            configured["AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL"], "qwen-judge"
+            configured["AGENTMEMORY_LITERESEARCHER_UPSTREAM_ENDPOINT"],
+            "http://127.0.0.1:8018",
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_LITERESEARCHER_BACKEND_TIMEOUT_SECONDS"],
+            "33.5",
+        )
+        self.assertEqual(
+            configured["AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL"], "kimi-k2.6"
         )
         self.assertEqual(
             configured["AGENTMEMORY_LITERESEARCHER_JUDGE_API_KEY"], "private-key"
@@ -197,6 +207,19 @@ class DomainLaunchTest(unittest.TestCase):
             )
             base_index = arguments.index("--literesearcher-judge-api-base")
             del arguments[base_index : base_index + 2]
+            with self.assertRaises(SystemExit):
+                self._launch(arguments)
+
+    def test_literesearcher_fullpool_launch_rejects_non_company_judge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            key_file = Path(directory) / "judge.key"
+            key_file.write_text("private-key", encoding="utf-8")
+            key_file.chmod(0o600)
+            arguments = self._literesearcher_fullpool_arguments(
+                judge_key_file=str(key_file)
+            )
+            model_index = arguments.index("--literesearcher-judge-model") + 1
+            arguments[model_index] = "qwen-local"
             with self.assertRaises(SystemExit):
                 self._launch(arguments)
 
