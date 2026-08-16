@@ -401,13 +401,17 @@ class OpenMLEFastClientTest(unittest.TestCase):
             if path == "reset":
                 return _Response(self.step_response(observation="task framing"))
             if path == "step":
-                return _Response(
-                    self.step_response(
-                        observation="action_status=completed",
-                        action_count=1,
-                        action_kind="apply_patch",
-                    )
+                response = self.step_response(
+                    observation="action_status=completed",
+                    action_count=1,
+                    action_kind="apply_patch",
                 )
+                response["info"]["execution"] = {
+                    "changed_paths": [
+                        ".agent_memory/OPENMLE_CONTINUATION.md"
+                    ],
+                }
+                return _Response(response)
             raise AssertionError(path)
 
         with patch("requests.request", side_effect=request):
@@ -477,9 +481,14 @@ class OpenMLEFastClientTest(unittest.TestCase):
         )
         transition = output.info["context_transition"]
         self.assertEqual(transition["operation"], "replace_messages")
-        self.assertEqual(transition["messages"][:-1], initial)
+        self.assertEqual(transition["messages"][:-2], initial)
+        self.assertEqual(
+            transition["messages"][-2],
+            {"role": "assistant", "content": action},
+        )
         self.assertEqual(
             transition["messages"][-1]["content"],
+            "action_status=completed\n\n"
             "Continue the same task in the unchanged workspace.",
         )
         self.assertEqual(
@@ -490,8 +499,144 @@ class OpenMLEFastClientTest(unittest.TestCase):
                 "action_contract": _CLIENT_MODULE._EXPECTED_BOUNDARIES["actions"],
                 "native_action_kind": "apply_patch",
                 "native_action_status": "completed",
+                "continuation_path": ".agent_memory/OPENMLE_CONTINUATION.md",
+                "continuation_persisted": True,
+                "preserved_policy_output": True,
+                "preserved_native_observation": True,
             },
         )
+
+    def test_context_pressure_preserves_malformed_action_and_native_result(
+        self,
+    ) -> None:
+        metadata = self.metadata()
+
+        def request(method, url, **kwargs):
+            path = url.rsplit("/", 1)[-1]
+            if path == "metadata":
+                return _Response(metadata)
+            if path == "create":
+                return _Response({"id": 7, "observation": "unbound", "info": {}})
+            if path == "reset":
+                return _Response(self.step_response(observation="task framing"))
+            if path == "step":
+                response = self.step_response(
+                    observation="parser_error: expected one exact action",
+                    action_count=1,
+                    action_kind="parser_error",
+                )
+                response["info"]["action_status"] = "parser_error"
+                response["info"]["execution"] = {"changed_paths": []}
+                return _Response(response)
+            raise AssertionError(path)
+
+        with patch("requests.request", side_effect=request):
+            client = OpenMLEFastEnvClient(
+                "http://127.0.0.1:9000",
+                **self.client_kwargs(),
+            )
+            client.reset(0)
+            initial = client.normalize_initial_policy_context(
+                [{"role": "user", "content": client.observe()}]
+            )
+            client.bind_policy_context(initial, initial=True)
+            selected = client.prepare_policy_turn(
+                _CLIENT_MODULE.PolicyContextPressure(
+                    action_prompt_tokens=100,
+                    candidate_prompt_tokens=130,
+                    max_prompt_tokens=300,
+                    max_model_tokens=332,
+                    max_response_tokens=32,
+                    max_observation_tokens=150,
+                    action_observation_envelope_tokens=4,
+                )
+            )
+            self.assertEqual(
+                selected,
+                _CLIENT_MODULE.OPENMLE_CONTEXT_COMPACTION_REQUEST,
+            )
+            malformed = 'apply_patch {"patch":"unfinished state"}'
+            output = client.step(malformed)
+
+        transition = output.info["context_transition"]
+        self.assertEqual(transition["operation"], "replace_messages")
+        self.assertEqual(transition["messages"][:-2], initial)
+        self.assertEqual(
+            transition["messages"][-2],
+            {"role": "assistant", "content": malformed},
+        )
+        self.assertEqual(
+            transition["messages"][-1]["content"],
+            "parser_error: expected one exact action\n\n"
+            "Continue the same task in the unchanged workspace.",
+        )
+        self.assertEqual(
+            (
+                output.info["native_call_count_before"],
+                output.info["native_call_count_after"],
+                output.info["policy_step_before"],
+                output.info["policy_step_after"],
+                output.info["context_epoch_before"],
+                output.info["context_epoch_after"],
+            ),
+            (0, 1, 0, 1, 0, 1),
+        )
+        self.assertEqual(
+            output.info["wrapper_evidence"],
+            {
+                "event": "context_compaction",
+                "workspace_continuity_id": 7,
+                "action_contract": _CLIENT_MODULE._EXPECTED_BOUNDARIES["actions"],
+                "native_action_kind": "parser_error",
+                "native_action_status": "parser_error",
+                "continuation_path": ".agent_memory/OPENMLE_CONTINUATION.md",
+                "continuation_persisted": False,
+                "preserved_policy_output": True,
+                "preserved_native_observation": True,
+            },
+        )
+
+    def test_continuation_receipt_requires_completed_write_to_exact_path(
+        self,
+    ) -> None:
+        for action_kind in ("apply_patch", "shell_command"):
+            self.assertTrue(
+                _CLIENT_MODULE._continuation_write_succeeded(
+                    {
+                        "action_kind": action_kind,
+                        "action_status": "completed",
+                        "execution": {
+                            "changed_paths": [
+                                ".agent_memory/OPENMLE_CONTINUATION.md"
+                            ]
+                        },
+                    }
+                )
+            )
+        for receipt in (
+            {
+                "action_kind": "parser_error",
+                "action_status": "parser_error",
+                "execution": {"changed_paths": []},
+            },
+            {
+                "action_kind": "shell_command",
+                "action_status": "completed",
+                "execution": {"changed_paths": ["solution.py"]},
+            },
+            {
+                "action_kind": "apply_patch",
+                "action_status": "rejected",
+                "execution": {
+                    "changed_paths": [
+                        ".agent_memory/OPENMLE_CONTINUATION.md"
+                    ]
+                },
+            },
+        ):
+            self.assertFalse(
+                _CLIENT_MODULE._continuation_write_succeeded(receipt)
+            )
 
     def test_rejects_manifest_or_data_len_mismatch_before_create(self) -> None:
         metadata = self.metadata()

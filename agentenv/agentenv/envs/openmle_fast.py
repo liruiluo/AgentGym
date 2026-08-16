@@ -42,15 +42,17 @@ OPENMLE_FAST_POLICY_PROMPT_SHA256 = hashlib.sha256(
     OPENMLE_FAST_POLICY_SYSTEM_PROMPT.encode("utf-8")
 ).hexdigest()
 OPENMLE_CONTEXT_COMPACTION_REQUEST = (
-    "The conversation is nearing its context limit. Use exactly one normal "
-    "OpenMLE action now to persist the continuation state in the unchanged "
-    "workspace. Use apply_patch to create or update "
-    ".agent_memory/OPENMLE_CONTINUATION.md with only the immediate objective, "
-    "decisive findings, relevant paths or commands, and the next action. Do "
-    "not submit. Output only that valid apply_patch action. This is one of the "
-    "same 30 policy actions and will execute normally; earlier conversation "
-    "will be removed after it executes."
+    "The conversation is nearing its context limit. Take exactly one normal "
+    "OpenMLE action now. Prefer a short valid action that records the immediate "
+    "objective, decisive findings, relevant paths or commands, and the next "
+    "action in .agent_memory/OPENMLE_CONTINUATION.md, but you may instead take "
+    "the immediate next task action. Do not submit only to perform context "
+    "control. This is one of the same 30 policy actions and executes normally. "
+    "Your exact action and its bounded native observation will remain visible "
+    "after the earlier conversation is removed, so never add reasoning or prose "
+    "outside one of the three valid action forms."
 )
+_OPENMLE_CONTINUATION_PATH = ".agent_memory/OPENMLE_CONTINUATION.md"
 _EXPECTED_BOUNDARIES = {
     "actions": "openmle_fast_three_tool_v1",
     "workspace": "openmle_fast_public_workspace_v1",
@@ -416,18 +418,31 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                     "OpenMLE-fast compaction lost its immutable task framing"
                 )
             replacement = deepcopy(framing)
-            replacement.append({"role": "user", "content": POLICY_CONTINUATION_MARKER})
+            replacement.extend(
+                [
+                    {"role": "assistant", "content": action},
+                    {
+                        "role": "user",
+                        "content": f"{state}\n\n{POLICY_CONTINUATION_MARKER}",
+                    },
+                ]
+            )
             self._context_epoch += 1
             context_transition = build_task_neutral_context_transition(
                 CONTEXT_OPERATION_REPLACE,
                 messages=replacement,
             )
+            continuation_persisted = _continuation_write_succeeded(env_info)
             wrapper_evidence = {
                 "event": "context_compaction",
                 "workspace_continuity_id": self.env_id,
                 "action_contract": _EXPECTED_BOUNDARIES["actions"],
                 "native_action_kind": env_info["action_kind"],
                 "native_action_status": env_info["action_status"],
+                "continuation_path": _OPENMLE_CONTINUATION_PATH,
+                "continuation_persisted": continuation_persisted,
+                "preserved_policy_output": True,
+                "preserved_native_observation": True,
             }
         return StepOutput(
             state=state,
@@ -560,6 +575,24 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                 f"OpenMLE-fast {method} /{path} returned a non-object response"
             )
         return value
+
+
+def _continuation_write_succeeded(env_info: Mapping[str, Any]) -> bool:
+    if (
+        env_info.get("action_kind") not in {"apply_patch", "shell_command"}
+        or env_info.get("action_status") != "completed"
+    ):
+        return False
+    execution = env_info.get("execution")
+    if not isinstance(execution, Mapping):
+        return False
+    changed_paths = execution.get("changed_paths")
+    if (
+        not isinstance(changed_paths, Sequence)
+        or isinstance(changed_paths, (str, bytes))
+    ):
+        return False
+    return _OPENMLE_CONTINUATION_PATH in changed_paths
 
 
 def _action_submission(
