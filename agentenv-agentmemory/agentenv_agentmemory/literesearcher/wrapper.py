@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 import re
+import time
 from copy import deepcopy
 from typing import Any, Callable, Mapping, Protocol
 
@@ -19,6 +21,8 @@ LITERESEARCHER_FULLPOOL_SURFACE = (
     "agentmemory_literesearcher_fullpool_upstream_hybrid_v1"
 )
 _APPEND_SCHEMA = "agentmemory_task_neutral_context_transition_v1"
+_ENV_TIMING_SCHEMA = "agentmemory_literesearcher_env_timing_v1"
+_OTHER_ENV_PHASES = frozenset({"workspace", "invalid", "backend_error"})
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.IGNORECASE | re.DOTALL)
 _ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.IGNORECASE | re.DOTALL)
 
@@ -100,6 +104,12 @@ class LiteResearcherWrapper:
                 "LiteResearcher full pool requires the released upstream "
                 "hybrid DISKANN backend"
             )
+        if surface == LITERESEARCHER_FULLPOOL_SURFACE:
+            for method_name in ("search_with_telemetry", "visit_with_telemetry"):
+                if not callable(getattr(backend, method_name, None)):
+                    raise ValueError(
+                        "LiteResearcher full pool backend must expose per-call telemetry"
+                    )
         self.task_source = task_source
         self.backend = backend
         self.split = split
@@ -180,10 +190,11 @@ class LiteResearcherWrapper:
         episode = self._require(env_id)
         if episode["done"]:
             return deepcopy(episode["payload"])
+        step_started = time.monotonic()
         episode["step_count"] += 1
         step = episode["step_count"]
         if step > self.max_policy_steps:
-            return self._finish(
+            result = self._finish(
                 env_id,
                 episode,
                 reward=0.0,
@@ -195,23 +206,37 @@ class LiteResearcherWrapper:
                 transition=self._append_transition(episode, "Maximum policy-step budget reached."),
                 wrapper_evidence={"step": step, "max_policy_steps": self.max_policy_steps},
             )
+            return self._attach_step_timing(
+                episode,
+                result,
+                phase="invalid",
+                step_started=step_started,
+            )
 
+        phase = "invalid"
         try:
             parsed_tool = _parse_tool_call(str(action))
             answer_match = _ANSWER_RE.search(str(action))
             if parsed_tool is not None and answer_match is not None:
                 raise ValueError("one policy row cannot contain both tool_call and answer")
             if parsed_tool is not None:
-                return self._apply_domain_tool(env_id, episode, str(action), parsed_tool)
-            if answer_match is not None:
-                return self._apply_answer(env_id, episode, str(action), answer_match.group(1))
-            if str(action).startswith("shell_command") or str(action).startswith("apply_patch\n"):
-                return self._apply_workspace(env_id, episode, str(action))
-            raise ValueError(
-                "expected one search/visit tool_call, one answer, or one workspace action"
-            )
+                phase = parsed_tool[0] if parsed_tool[0] in {"search", "visit"} else "invalid"
+                result = self._apply_domain_tool(env_id, episode, str(action), parsed_tool)
+            elif answer_match is not None:
+                phase = "judge"
+                result = self._apply_answer(env_id, episode, str(action), answer_match.group(1))
+            elif str(action).startswith("shell_command") or str(action).startswith(
+                "apply_patch\n"
+            ):
+                phase = "workspace"
+                result = self._apply_workspace(env_id, episode, str(action))
+            else:
+                raise ValueError(
+                    "expected one search/visit tool_call, one answer, or one workspace action"
+                )
         except LiteResearchBackendError as exc:
-            return self._finish(
+            phase = "backend_error"
+            result = self._finish(
                 env_id,
                 episode,
                 reward=0.0,
@@ -224,7 +249,8 @@ class LiteResearcherWrapper:
                 wrapper_evidence={"step": step, "backend_error": type(exc).__name__},
             )
         except (TypeError, ValueError, KeyError) as exc:
-            return self._ordinary_result(
+            phase = "invalid"
+            result = self._ordinary_result(
                 env_id,
                 episode,
                 observation=f"Invalid policy action: {exc}",
@@ -233,6 +259,35 @@ class LiteResearcherWrapper:
                 transition=self._append_transition(episode, f"Invalid policy action: {exc}"),
                 wrapper_evidence={"step": step, "invalid_action": True},
             )
+        return self._attach_step_timing(
+            episode,
+            result,
+            phase=phase,
+            step_started=step_started,
+        )
+
+    @staticmethod
+    def _attach_step_timing(
+        episode: dict[str, Any],
+        result: dict[str, Any],
+        *,
+        phase: str,
+        step_started: float,
+    ) -> dict[str, Any]:
+        elapsed = time.monotonic() - step_started
+        if not math.isfinite(elapsed) or elapsed < 0:
+            raise RuntimeError("LiteResearcher monotonic step timing is invalid")
+        evidence = result["info"]["wrapper_evidence"]
+        evidence.update(
+            {
+                "telemetry_schema": _ENV_TIMING_SCHEMA,
+                "phase": phase,
+                "env_step_wall_seconds": elapsed,
+                "other_env_seconds": elapsed if phase in _OTHER_ENV_PHASES else 0.0,
+            }
+        )
+        episode["payload"] = deepcopy(result)
+        return result
 
     def _new_episode(self, env_id: int, data_idx: int) -> dict[str, Any]:
         task = self.task_source.task(data_idx, split=self.split)
@@ -296,7 +351,17 @@ class LiteResearcherWrapper:
         name, arguments = parsed
         if name == "search":
             query = arguments.get("query")
-            result = self.backend.search(query, mask_url=episode["task"].mask_url)
+            backend_timing = {}
+            if self.surface == LITERESEARCHER_FULLPOOL_SURFACE:
+                call = self.backend.search_with_telemetry(
+                    query, mask_url=episode["task"].mask_url
+                )
+                result = call.public_results()
+                backend_timing = call.timing_evidence()
+            else:
+                result = self.backend.search(
+                    query, mask_url=episode["task"].mask_url
+                )
             observation = json.dumps({"tool": "search", "results": result}, ensure_ascii=False)
             episode["backend_call_count"] += 1
             return self._ordinary_result(
@@ -313,6 +378,7 @@ class LiteResearcherWrapper:
                 wrapper_evidence={
                     "step": episode["step_count"],
                     "native_environment_call_count": 1,
+                    **backend_timing,
                 },
             )
         if name == "visit":
@@ -320,11 +386,21 @@ class LiteResearcherWrapper:
             if not isinstance(url, str) or not url.strip():
                 raise ValueError("visit arguments require exactly one non-empty url string")
             page = arguments.get("page", 1)
-            visited = self.backend.visit(
-                url,
-                goal=str(arguments.get("goal", "")),
-                page=page,
-            )
+            backend_timing = {}
+            if self.surface == LITERESEARCHER_FULLPOOL_SURFACE:
+                call = self.backend.visit_with_telemetry(
+                    url,
+                    goal=str(arguments.get("goal", "")),
+                    page=page,
+                )
+                visited = call.public_page()
+                backend_timing = call.timing_evidence()
+            else:
+                visited = self.backend.visit(
+                    url,
+                    goal=str(arguments.get("goal", "")),
+                    page=page,
+                )
             episode["backend_call_count"] += 1
             if visited["url"] not in episode["visited_urls"]:
                 episode["visited_urls"].append(visited["url"])
@@ -345,6 +421,7 @@ class LiteResearcherWrapper:
                     "native_environment_call_count": 1,
                     "visit_page": visited["page"],
                     "visit_page_count": visited["page_count"],
+                    **backend_timing,
                 },
             )
         raise ValueError("only search and visit are available in the LiteResearcher gate")

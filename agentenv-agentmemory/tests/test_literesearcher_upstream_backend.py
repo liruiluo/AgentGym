@@ -112,6 +112,12 @@ def _handler(state: _State):
                         time.sleep(0.15)
                     elif query.startswith("parallel-"):
                         time.sleep(0.02)
+                    timing_index = (
+                        int(query.removeprefix("telemetry-"))
+                        if query.startswith("telemetry-")
+                        else 20
+                    )
+                    search_seconds = timing_index / 1000.0
                     results = [
                         {
                             "link": f"https://docs.test/{query}",
@@ -129,9 +135,9 @@ def _handler(state: _State):
                     response = {
                         "results": results,
                         "total": len(results),
-                        "search_time": 0.02,
-                        "embedding_time": 0.01,
-                        "milvus_time": 0.01,
+                        "search_time": search_seconds,
+                        "embedding_time": search_seconds / 2.0,
+                        "milvus_time": search_seconds / 4.0,
                         "search_type": "hybrid",
                         "sparse_weight": 0.7,
                         "dense_weight": 1.0,
@@ -272,11 +278,18 @@ class UpstreamHybridLiteResearchBackendTests(unittest.TestCase):
 
     def test_visit_reads_only_released_web_parser_and_paginates(self) -> None:
         backend = self.backend()
-        page = backend.visit("https://docs.test/known", goal="alpha", page=1)
+        call = backend.visit_with_telemetry(
+            "https://docs.test/known", goal="alpha", page=1
+        )
+        page = call.public_page()
         self.assertEqual(page["url"], "https://docs.test/known")
         self.assertEqual(page["title"], "Known page")
         self.assertIn("alpha evidence", page["content"])
         self.assertGreater(page["page_count"], 1)
+        self.assertEqual(call.visit_seconds, 0.01)
+        self.assertEqual(
+            call.timing_evidence()["backend_reported_visit_seconds"], 0.01
+        )
         self.assertEqual(self.state.requests[-1][0], "/web_parser")
 
     def test_unknown_visit_fails_closed(self) -> None:
@@ -323,6 +336,29 @@ class UpstreamHybridLiteResearchBackendTests(unittest.TestCase):
             {f"https://docs.test/parallel-{index}" for index in range(64)},
         )
         self.assertGreater(self.state.max_active, 1)
+
+    def test_concurrent_search_telemetry_is_returned_per_call(self) -> None:
+        backend = self.backend(top_k=1, timeout_seconds=5)
+        with ThreadPoolExecutor(max_workers=64) as executor:
+            futures = [
+                executor.submit(
+                    backend.search_with_telemetry,
+                    f"telemetry-{index + 1}",
+                    top_k=1,
+                )
+                for index in range(64)
+            ]
+        calls = [future.result() for future in futures]
+        for index, call in enumerate(calls, start=1):
+            expected = index / 1000.0
+            self.assertEqual(call.search_seconds_by_query, (expected,))
+            self.assertEqual(call.embedding_seconds_by_query, (expected / 2.0,))
+            self.assertEqual(call.milvus_seconds_by_query, (expected / 4.0,))
+            evidence = call.timing_evidence()
+            self.assertEqual(evidence["backend_query_count"], 1)
+            self.assertEqual(
+                evidence["backend_reported_search_seconds_by_query"], [expected]
+            )
 
 
 if __name__ == "__main__":

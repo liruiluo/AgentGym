@@ -6,6 +6,7 @@ import math
 import socket
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Any
 from urllib import error, parse, request
 
@@ -28,6 +29,56 @@ UPSTREAM_SPARSE_WEIGHT = 0.7
 UPSTREAM_DENSE_WEIGHT = 1.0
 _MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 UPSTREAM_BACKEND_CONTRACT = "literesearcher_upstream_hybrid_diskann_v1"
+UPSTREAM_TELEMETRY_CONTRACT = "agentmemory_literesearcher_backend_timing_v1"
+
+
+@dataclass(frozen=True)
+class _ParsedSearchResponse:
+    results: tuple[dict[str, Any], ...]
+    search_seconds: float
+    embedding_seconds: float
+    milvus_seconds: float
+
+
+@dataclass(frozen=True)
+class UpstreamSearchCall:
+    results: tuple[dict[str, Any], ...]
+    search_seconds_by_query: tuple[float, ...]
+    embedding_seconds_by_query: tuple[float, ...]
+    milvus_seconds_by_query: tuple[float, ...]
+
+    def public_results(self) -> list[dict[str, Any]]:
+        return [dict(result) for result in self.results]
+
+    def timing_evidence(self) -> dict[str, Any]:
+        return {
+            "backend_telemetry_schema": UPSTREAM_TELEMETRY_CONTRACT,
+            "backend_query_count": len(self.search_seconds_by_query),
+            "backend_reported_search_seconds_by_query": list(
+                self.search_seconds_by_query
+            ),
+            "backend_reported_embedding_seconds_by_query": list(
+                self.embedding_seconds_by_query
+            ),
+            "backend_reported_milvus_seconds_by_query": list(
+                self.milvus_seconds_by_query
+            ),
+        }
+
+
+@dataclass(frozen=True)
+class UpstreamVisitCall:
+    page: Mapping[str, Any]
+    visit_seconds: float
+
+    def public_page(self) -> dict[str, Any]:
+        return dict(self.page)
+
+    def timing_evidence(self) -> dict[str, Any]:
+        return {
+            "backend_telemetry_schema": UPSTREAM_TELEMETRY_CONTRACT,
+            "backend_reported_visit_seconds": self.visit_seconds,
+        }
 
 
 class UpstreamHybridLiteResearchBackend:
@@ -183,7 +234,7 @@ class UpstreamHybridLiteResearchBackend:
     def _parse_search_response(
         self,
         payload: Mapping[str, Any],
-    ) -> list[dict[str, Any]]:
+    ) -> _ParsedSearchResponse:
         if payload.get("server_id") != UPSTREAM_SERVER_ID:
             raise LiteResearchBackendError("LiteResearcher upstream server identity mismatch")
         if payload.get("service_id") != UPSTREAM_SERVICE_ID:
@@ -214,8 +265,15 @@ class UpstreamHybridLiteResearchBackend:
             raise LiteResearchBackendError("LiteResearcher sparse weight mismatch")
         if not math.isclose(dense_weight, UPSTREAM_DENSE_WEIGHT, abs_tol=1e-12):
             raise LiteResearchBackendError("LiteResearcher dense weight mismatch")
-        for field in ("search_time", "embedding_time", "milvus_time"):
-            self._finite_number(payload.get(field), field, nonnegative=True)
+        search_seconds = self._finite_number(
+            payload.get("search_time"), "search_time", nonnegative=True
+        )
+        embedding_seconds = self._finite_number(
+            payload.get("embedding_time"), "embedding_time", nonnegative=True
+        )
+        milvus_seconds = self._finite_number(
+            payload.get("milvus_time"), "milvus_time", nonnegative=True
+        )
 
         results = payload.get("results")
         total = payload.get("total")
@@ -245,7 +303,12 @@ class UpstreamHybridLiteResearchBackend:
                     rank=rank,
                 ).public_record()
             )
-        return parsed
+        return _ParsedSearchResponse(
+            results=tuple(parsed),
+            search_seconds=search_seconds,
+            embedding_seconds=embedding_seconds,
+            milvus_seconds=milvus_seconds,
+        )
 
     def metadata(self) -> dict[str, Any]:
         return {
@@ -276,9 +339,10 @@ class UpstreamHybridLiteResearchBackend:
             "lexical_fallback": False,
             "failure_mode": "fail_closed",
             "timeout_seconds": self.timeout_seconds,
+            "per_call_telemetry_contract": UPSTREAM_TELEMETRY_CONTRACT,
         }
 
-    def _search_one(self, query_text: str, limit: int) -> list[dict[str, Any]]:
+    def _search_one(self, query_text: str, limit: int) -> _ParsedSearchResponse:
         payload = self._request_json(
             "/search",
             {
@@ -290,19 +354,19 @@ class UpstreamHybridLiteResearchBackend:
             },
         )
         parsed = self._parse_search_response(payload)
-        if len(parsed) != limit:
+        if len(parsed.results) != limit:
             raise LiteResearchBackendError(
                 "LiteResearcher upstream did not return the requested result count"
             )
         return parsed
 
-    def search(
+    def search_with_telemetry(
         self,
         query: str | list[str],
         *,
         top_k: int | None = None,
         mask_url: str = "",
-    ) -> list[dict[str, Any]]:
+    ) -> UpstreamSearchCall:
         queries = [query] if isinstance(query, str) else query
         if not isinstance(queries, list) or not queries or any(
             not isinstance(item, str) for item in queries
@@ -332,7 +396,7 @@ class UpstreamHybridLiteResearchBackend:
         seen_urls: set[str] = set()
         for query_text, batch in zip(query_texts, result_batches):
             query_rank = 0
-            for hit in batch:
+            for hit in batch.results:
                 url = hit["url"]
                 if (masked and masked == url) or url in seen_urls:
                     continue
@@ -342,9 +406,35 @@ class UpstreamHybridLiteResearchBackend:
                 public_hit["rank"] = query_rank
                 public_hit["query"] = query_text
                 hits.append(public_hit)
-        return hits
+        return UpstreamSearchCall(
+            results=tuple(hits),
+            search_seconds_by_query=tuple(
+                batch.search_seconds for batch in result_batches
+            ),
+            embedding_seconds_by_query=tuple(
+                batch.embedding_seconds for batch in result_batches
+            ),
+            milvus_seconds_by_query=tuple(
+                batch.milvus_seconds for batch in result_batches
+            ),
+        )
 
-    def visit(self, url: str, *, goal: str = "", page: int = 1) -> dict[str, Any]:
+    def search(
+        self,
+        query: str | list[str],
+        *,
+        top_k: int | None = None,
+        mask_url: str = "",
+    ) -> list[dict[str, Any]]:
+        return self.search_with_telemetry(
+            query,
+            top_k=top_k,
+            mask_url=mask_url,
+        ).public_results()
+
+    def visit_with_telemetry(
+        self, url: str, *, goal: str = "", page: int = 1
+    ) -> UpstreamVisitCall:
         if not isinstance(url, str) or not url.strip():
             raise LiteResearchRequestError("visit URL must be a non-empty string")
         if isinstance(page, bool) or not isinstance(page, int) or page < 1:
@@ -361,7 +451,9 @@ class UpstreamHybridLiteResearchBackend:
             raise LiteResearchBackendError("LiteResearcher web_parser identity mismatch")
         if payload.get("backend") != "postgresql_exact_url":
             raise LiteResearchBackendError("LiteResearcher web_parser backend mismatch")
-        self._finite_number(payload.get("visit_time"), "visit_time", nonnegative=True)
+        visit_seconds = self._finite_number(
+            payload.get("visit_time"), "visit_time", nonnegative=True
+        )
         if not found:
             raise LiteResearchRequestError("visit URL is outside the released corpus")
         title = payload.get("title")
@@ -373,12 +465,18 @@ class UpstreamHybridLiteResearchBackend:
             raise LiteResearchRequestError(
                 f"visit page {page} exceeds page_count {len(pages)}"
             )
-        return {
-            "url": resolved_url,
-            "title": title,
-            "content": pages[page - 1],
-            "goal": str(goal),
-            "page": page,
-            "page_count": len(pages),
-            "next_page": page + 1 if page < len(pages) else None,
-        }
+        return UpstreamVisitCall(
+            page={
+                "url": resolved_url,
+                "title": title,
+                "content": pages[page - 1],
+                "goal": str(goal),
+                "page": page,
+                "page_count": len(pages),
+                "next_page": page + 1 if page < len(pages) else None,
+            },
+            visit_seconds=visit_seconds,
+        )
+
+    def visit(self, url: str, *, goal: str = "", page: int = 1) -> dict[str, Any]:
+        return self.visit_with_telemetry(url, goal=goal, page=page).public_page()
