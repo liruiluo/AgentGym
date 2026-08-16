@@ -952,6 +952,7 @@ class OpenMLEFastExecutor:
         except DeadlineExceeded as exc:
             raise OpenMLEFastExecutionDeadlineExceeded(backend) from exc
         except WorkspaceInvariantError:
+            _clear_invalid_workspace_for_teardown(root)
             after = before
             status = "policy_violation"
             failure_class = "workspace_invariant_violation"
@@ -1087,6 +1088,45 @@ _PYTHON_ENTRYPOINT_RE = re.compile(
 def _estimated_subprocesses(command: str) -> int:
     segments = re.split(r"(?:&&|\|\||[;|])", command)
     return sum(1 for segment in segments if segment.strip())
+
+
+def _clear_invalid_workspace_for_teardown(root: Path) -> None:
+    """Empty a terminally invalid policy tree without following its entries."""
+
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(root, flags)
+    original_mode = stat.S_IMODE(os.fstat(descriptor).st_mode)
+    try:
+        _clear_directory_descriptor(descriptor, flags)
+    finally:
+        os.fchmod(descriptor, original_mode)
+        os.close(descriptor)
+
+
+def _clear_directory_descriptor(descriptor: int, directory_flags: int) -> None:
+    os.fchmod(descriptor, stat.S_IRWXU)
+    parent_device = os.fstat(descriptor).st_dev
+    with os.scandir(descriptor) as iterator:
+        names = sorted(entry.name for entry in iterator)
+    for name in names:
+        info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        if stat.S_ISDIR(info.st_mode):
+            if info.st_dev != parent_device:
+                raise WorkspaceInvariantError(
+                    "workspace contains an unexpected nested mount"
+                )
+            child = os.open(name, directory_flags, dir_fd=descriptor)
+            try:
+                _clear_directory_descriptor(child, directory_flags)
+            finally:
+                os.close(child)
+            os.rmdir(name, dir_fd=descriptor)
+        else:
+            os.unlink(name, dir_fd=descriptor)
 
 
 def _snapshot_tree(

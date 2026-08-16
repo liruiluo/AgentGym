@@ -168,6 +168,7 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
         self.assertEqual(receipt.failure_class, "workspace_invariant_violation")
         self.assertTrue(receipt.policy_terminal)
         self.assertFalse(receipt.infrastructure_fault)
+        self.assertEqual(tuple(self.workspace.iterdir()), ())
 
     def test_timeout_is_a_policy_resource_violation(self) -> None:
         action = parse_policy_action(

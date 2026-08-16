@@ -237,6 +237,9 @@ class OpenMLEFastEnvironmentTest(unittest.TestCase):
             terminal.info["terminal_reason"], "workspace_invariant_violation"
         )
         self.assertEqual(terminal.info["action_status"], "policy_violation")
+        cleanup = manager.close(slot)
+        self.assertTrue(cleanup["closed"])
+        self.assertTrue(cleanup["workspace_removed"])
 
     def test_submit_is_terminal_and_grades_exactly_once(self) -> None:
         manager, slot, _ = self.reset()
