@@ -190,6 +190,29 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
         self.assertTrue(result.infrastructure_fault)
         self.assertEqual(result.failure_class, "runner_protocol_fault")
 
+    def test_external_runner_process_uses_utf8_locale_for_policy_commands(self) -> None:
+        backend = object.__new__(ExternalSandboxRunnerBackend)
+        backend.runner_path = self.workspace / "runner"
+        backend.limits = self.limits
+        backend.expected_runtime_digest = "sha256:" + "1" * 64
+        command = "printf 'unicode: 中文 ° µ\\n'"
+        with patch(
+            "agentenv_openmle_fast.executor.subprocess.run",
+            side_effect=subprocess.TimeoutExpired("runner", 1.0),
+        ) as run:
+            backend.run(
+                self.workspace,
+                command=command,
+                timeout_ms=1_000,
+                managed_runtime_budget_ms=15_000,
+            )
+        self.assertEqual(
+            run.call_args.kwargs["env"],
+            {"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8"},
+        )
+        request = json.loads(run.call_args.kwargs["input"].decode("utf-8"))
+        self.assertEqual(request["command"], command)
+
     def test_lifecycle_timeout_kills_the_owned_runner_process_group(self) -> None:
         backend = object.__new__(ExternalSandboxRunnerBackend)
         backend.runner_path = self.workspace / "runner"

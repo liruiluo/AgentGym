@@ -33,6 +33,14 @@ FIT_HOOK_CONTRACT = "openmle_fast_fit_hook_v1"
 EXTERNAL_RUNNER_COMPLETION_GRACE_MS = 3_000
 
 
+def _external_runner_environment() -> dict[str, str]:
+    # Policy-authored shell text may contain arbitrary Unicode.  The exact
+    # runner is a Python 3.6 executable, so its filesystem encoding is fixed at
+    # interpreter startup from LC_ALL; the plain C locale makes argv encoding
+    # ASCII and turns valid policy commands into infrastructure exclusions.
+    return {"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8"}
+
+
 class OpenMLEFastExecutorError(RuntimeError):
     pass
 
@@ -479,7 +487,7 @@ class ExternalSandboxRunnerBackend:
                 stderr=subprocess.DEVNULL,
                 timeout=5.0,
                 check=False,
-                env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+                env=_external_runner_environment(),
             )
             value = _strict_json_loads(result.stdout)
         except (
@@ -582,7 +590,7 @@ class ExternalSandboxRunnerBackend:
                 stderr=subprocess.DEVNULL,
                 timeout=(timeout_ms + EXTERNAL_RUNNER_COMPLETION_GRACE_MS) / 1000.0,
                 check=False,
-                env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+                env=_external_runner_environment(),
             )
             value = _strict_json_loads(result.stdout)
             return _decode_runner_execution(value, result.returncode)
@@ -671,7 +679,7 @@ class ExternalSandboxRunnerBackend:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-                env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+                env=_external_runner_environment(),
                 start_new_session=True,
             )
             request_bytes = json.dumps(
