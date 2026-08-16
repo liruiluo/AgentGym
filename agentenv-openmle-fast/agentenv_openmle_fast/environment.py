@@ -660,7 +660,18 @@ class OpenMLEFastEpisodeManager:
                 "The episode wall expired while freezing the workspace."
             )
             return "policy_violation"
-        except Exception:  # noqa: BLE001 - freeze faults require resampling
+        except Exception:  # noqa: BLE001 - classify deadline-limited freeze faults
+            try:
+                remaining_ms = deadline.remaining_milliseconds()
+            except DeadlineExceeded:
+                remaining_ms = 0
+            if remaining_ms <= self.limits.grader_total_wall_ms:
+                self._policy_terminal(episode, "episode_wall_limit")
+                episode.observation = (
+                    "The episode no longer had enough wall time to freeze the "
+                    "workspace and complete private grading."
+                )
+                return "policy_violation"
             self._infrastructure_terminal(episode, "sandbox_freeze_fault")
             return "infrastructure_fault"
         submission = b""

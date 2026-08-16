@@ -318,6 +318,50 @@ class OpenMLEFastEnvironmentTest(unittest.TestCase):
         self.assertEqual(terminal.info["counters"]["execution_attempt_count"], 1)
         self.assertEqual(terminal.info["counters"]["execution_completed_count"], 0)
 
+    def test_early_freeze_failure_remains_infrastructure_truncation(self) -> None:
+        manager, slot, _ = self.reset()
+        episode = manager._slot(slot).episode
+        assert episode is not None
+        assert episode.executor is not None
+        with patch.object(
+            episode.executor,
+            "freeze_for_grading",
+            side_effect=RuntimeError("freeze backend failed"),
+        ):
+            terminal = manager.step(slot, "submit")
+        self.assertTrue(terminal.done)
+        self.assertIsNone(terminal.reward)
+        self.assertTrue(terminal.info["truncated"])
+        self.assertEqual(terminal.info["action_status"], "infrastructure_fault")
+        self.assertEqual(terminal.info["terminal_reason"], "sandbox_freeze_fault")
+
+    def test_late_freeze_failure_is_policy_deadline_not_truncation(self) -> None:
+        grader = _CountingGrader()
+        manager = self.build_manager(grader)
+        manager, slot, _ = self.reset(manager)
+        episode = manager._slot(slot).episode
+        assert episode is not None
+        episode.started_monotonic = (
+            time.monotonic()
+            - self.limits.episode_wall_ms / 1000.0
+            + (self.limits.grader_total_wall_ms - 500) / 1000.0
+        )
+        assert episode.executor is not None
+        with patch.object(
+            episode.executor,
+            "freeze_for_grading",
+            side_effect=RuntimeError("freeze missed the episode deadline"),
+        ):
+            terminal = manager.step(slot, "submit")
+        self.assertTrue(terminal.done)
+        self.assertEqual(terminal.reward, -1.0)
+        self.assertFalse(terminal.info["truncated"])
+        self.assertEqual(terminal.info["action_status"], "policy_violation")
+        self.assertEqual(terminal.info["terminal_reason"], "episode_wall_limit")
+        self.assertEqual(terminal.info["counters"]["action_count"], 1)
+        self.assertEqual(terminal.info["counters"]["grading_count"], 0)
+        self.assertEqual(grader.calls, 0)
+
     def test_submit_receives_only_the_remaining_episode_deadline(self) -> None:
         grader = _DeadlineRecordingGrader()
         manager = self.build_manager(grader)
