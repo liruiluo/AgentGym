@@ -38,6 +38,7 @@ MODE_AMG_MEMORY = "amg_memory"
 MODES = (MODE_NATIVE, MODE_AMG_COMPACTION_ONLY, MODE_AMG_MEMORY)
 COMPACTION_MODES = (MODE_AMG_COMPACTION_ONLY, MODE_AMG_MEMORY)
 SUBMISSION_PATH = "/home/submission/submission.csv"
+EXTERNAL_MEMORY_PATH = "/run/amg_memory"
 
 _DIRECTORY_FLAGS = (
     os.O_RDONLY
@@ -74,6 +75,7 @@ class EpisodeWorkspace:
     mode: str
     episode_root: Path
     workspace_root: Path
+    memory_root: Path | None
     submission_root: Path
     public_root: Path
     public_tree_sha256: str
@@ -95,6 +97,13 @@ class EpisodeWorkspace:
         target = root.joinpath(*parts)
         _reject_symlink_path(root, target)
         return target
+
+    def is_external_memory_path(self, value: str) -> bool:
+        try:
+            root, _parts = self._policy_route(value, write=False)
+        except MLEBenchLitePolicyPathError:
+            return False
+        return self.memory_root is not None and root == self.memory_root
 
     def read_policy_file(self, value: str, *, offset: int, max_bytes: int) -> bytes:
         root, parts = self._policy_route(value, write=False)
@@ -180,14 +189,18 @@ class EpisodeWorkspace:
         virtual = PurePosixPath(value)
         if not virtual.is_absolute() or ".." in virtual.parts:
             raise MLEBenchLitePolicyPathError("policy path is unavailable")
-        routes = {
-            ("/", "home", "data"): (self.public_root, True),
-            ("/", "home", "workspace"): (self.workspace_root, False),
-            ("/", "home", "submission"): (self.submission_root, False),
-        }
+        routes = [
+            (("/", "home", "data"), (self.public_root, True)),
+            (("/", "home", "workspace"), (self.workspace_root, False)),
+            (("/", "home", "submission"), (self.submission_root, False)),
+        ]
+        if self.memory_root is not None:
+            routes.append(
+                (("/", "run", "amg_memory"), (self.memory_root, False))
+            )
         selected: tuple[Path, bool] | None = None
         parts: tuple[str, ...] = ()
-        for prefix, route in routes.items():
+        for prefix, route in routes:
             if virtual.parts[: len(prefix)] == prefix:
                 selected = route
                 parts = tuple(virtual.parts[len(prefix) :])
@@ -196,13 +209,6 @@ class EpisodeWorkspace:
             raise MLEBenchLitePolicyPathError("policy path is unavailable")
         root, read_only = selected
         if write and read_only:
-            raise MLEBenchLitePolicyPathError("policy path is unavailable")
-        if (
-            self.mode != MODE_AMG_MEMORY
-            and parts
-            and parts[0] == ".agent_memory"
-            and root == self.workspace_root
-        ):
             raise MLEBenchLitePolicyPathError("policy path is unavailable")
         if write and root == self.submission_root and parts != ("submission.csv",):
             raise MLEBenchLitePolicyPathError("policy path is unavailable")
@@ -318,7 +324,7 @@ class WorkspaceManager:
             submission_staging.mkdir(mode=0o700)
             self._stage("submission_created", submission_staging)
             if mode == MODE_AMG_MEMORY:
-                memory = workspace_staging / ".agent_memory"
+                memory = staging / "external-memory"
                 memory.mkdir(mode=0o700)
                 self._stage("memory_created", memory)
             self._stage("before_publish", staging)
@@ -339,6 +345,11 @@ class WorkspaceManager:
             mode=mode,
             episode_root=final_root,
             workspace_root=final_root / "workspace",
+            memory_root=(
+                final_root / "external-memory"
+                if mode == MODE_AMG_MEMORY
+                else None
+            ),
             submission_root=final_root / "submission",
             public_root=record.public_root,
             public_tree_sha256=record.public_tree_sha256,

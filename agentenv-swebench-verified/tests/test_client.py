@@ -161,6 +161,7 @@ class Backend:
         self.calls: list[tuple[str, str, dict[str, object]]] = []
         self.memory: dict[str, str] = {}
         self.native_steps = 0
+        self.arm = "native"
         self.endpoint_metadata = endpoint_metadata or metadata()
 
     def request(self, method: str, path: str, **kwargs):
@@ -168,6 +169,7 @@ class Backend:
         if method == "GET" and path == "metadata":
             return self.endpoint_metadata
         if method == "POST" and path == "create":
+            self.arm = str(kwargs["json"]["arm"])
             return {
                 "id": 1,
                 "capability": "test-client-slot-capability",
@@ -188,22 +190,34 @@ class Backend:
         if method == "POST" and path == "step":
             self.native_steps += 1
             action = kwargs["json"]["action"]
-            if ".agent_memory/notes" in action and "printf clue" in action:
-                self.memory[".agent_memory/notes"] = "clue"
+            if action == (
+                'shell_command {"command":"printf clue > '
+                '/run/amg_memory/notes.md"}'
+            ):
+                self.memory["notes.md"] = "clue"
                 observation = "memory written"
-            elif "cat .agent_memory/notes" in action:
-                observation = self.memory.get(".agent_memory/notes", "missing")
+                action_kind = "shell_command"
+                memory_operation = "write"
+            elif action == 'shell_command {"command":"cat /run/amg_memory/notes.md"}':
+                observation = self.memory.get("notes.md", "missing")
+                action_kind = "shell_command"
+                memory_operation = "read"
             else:
                 observation = "dispatched"
+                action_kind = "shell_command"
+                memory_operation = None
+            info = {
+                "schema": metadata()["schema"],
+                "step": self.native_steps,
+                "action_kind": action_kind,
+            }
+            if self.arm == "amg_memory" and memory_operation is not None:
+                info["external_memory_operation"] = memory_operation
             return {
                 "observation": observation,
                 "reward": 0.0,
                 "done": False,
-                "info": {
-                    "schema": metadata()["schema"],
-                    "step": self.native_steps,
-                    "action_kind": "shell_command",
-                },
+                "info": info,
             }
         if method == "POST" and path == "horizon":
             return {
@@ -276,11 +290,47 @@ class ClientTests(unittest.TestCase):
         client.reset(0)
         prompt = client.conversation_start[0]["value"]
         self.assertNotIn(".agent_memory", prompt)
+        self.assertNotIn("/run/amg_memory", prompt)
         self.assertNotIn("context compaction", prompt.lower())
         self.bind_initial_context(client)
         self.assertIsNone(client.policy_turn_candidate())
         self.assertIsNone(client.prepare_policy_turn(None))
         self.assertEqual(backend.memory, {})
+
+    def test_client_rejects_malformed_step_fields(self) -> None:
+        invalid_fields = (
+            {"observation": {"not": "text"}},
+            {"reward": "0.0"},
+            {"reward": True},
+            {"reward": float("inf")},
+            {"done": "false"},
+            {"info": []},
+        )
+
+        for drift in invalid_fields:
+            with self.subTest(drift=drift):
+                backend = Backend()
+                request = backend.request
+
+                def malformed(method, path, **kwargs):
+                    response = request(method, path, **kwargs)
+                    if method == "POST" and path == "step":
+                        response.update(drift)
+                    return response
+
+                backend.request = malformed
+                client = self.TransportClient(
+                    backend=backend,
+                    arm="native",
+                    run_id="malformed-step",
+                    image_manifest_sha256=IMAGE_MANIFEST_SHA256,
+                )
+                client.reset(0)
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "step response types drifted",
+                ):
+                    client.step('shell_command {"command":"true"}')
 
     def test_memory_write_survives_policy_compaction_and_later_read(self) -> None:
         backend = Backend()
@@ -292,13 +342,18 @@ class ClientTests(unittest.TestCase):
         )
         client.reset(0)
         prompt = client.conversation_start[0]["value"]
-        self.assertIn(".agent_memory", prompt)
+        self.assertIn("/run/amg_memory", prompt)
+        self.assertIn("shell_command", prompt)
+        self.assertNotIn("memory_write", prompt)
+        self.assertNotIn("memory_read", prompt)
+        self.assertNotIn(".agent_memory", prompt)
         framing = self.bind_initial_context(client)
         write = (
-            'shell_command {"command":"mkdir -p .agent_memory && '
-            "printf clue > .agent_memory/notes\"}"
+            'shell_command {"command":"printf clue > '
+            '/run/amg_memory/notes.md"}'
         )
-        client.step(write)
+        written = client.step(write)
+        self.assertEqual(written.info["env_info"]["external_memory_operation"], "write")
         native_calls_before = len(
             [call for call in backend.calls if call[:2] == ("POST", "step")]
         )
@@ -307,18 +362,26 @@ class ClientTests(unittest.TestCase):
             client.prepare_policy_turn(pressure),
             self.module.SBV_CONTEXT_COMPACTION_REQUEST,
         )
-        compacted = client.step("objective fixed; notes at .agent_memory/notes")
+        compacted = client.step("objective fixed; durable note key notes.md")
         native_calls_after = len(
             [call for call in backend.calls if call[:2] == ("POST", "step")]
         )
         self.assertEqual(native_calls_before, native_calls_after)
+        self.assertNotIn(
+            "external_memory_operation",
+            compacted.info["env_info"],
+        )
         transition = compacted.info["context_transition"]
         self.assertEqual(transition["operation"], "replace_messages")
         self.assertEqual(transition["messages"][: len(framing)], framing)
         read = client.step(
-            'shell_command {"command":"cat .agent_memory/notes"}'
+            'shell_command {"command":"cat /run/amg_memory/notes.md"}'
         )
         self.assertEqual(read.state, "clue")
+        self.assertEqual(
+            read.info["env_info"]["external_memory_operation"],
+            "read",
+        )
         self.assertEqual(read.info["native_call_count_after"], 2)
         self.assertEqual(read.info["policy_step_after"], 3)
 
@@ -333,6 +396,7 @@ class ClientTests(unittest.TestCase):
         client.reset(0)
         prompt = client.conversation_start[0]["value"]
         self.assertNotIn(".agent_memory", prompt)
+        self.assertNotIn("/run/amg_memory", prompt)
         self.assertNotIn("durable task memory", prompt.lower())
         framing = self.bind_initial_context(client)
         self.assertEqual(

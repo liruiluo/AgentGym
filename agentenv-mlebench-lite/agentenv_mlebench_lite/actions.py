@@ -55,7 +55,7 @@ def parse_policy_action(raw: str) -> PolicyAction:
             or not _plain_int(max_bytes, minimum=1, maximum=MAX_INSPECT_BYTES)
         ):
             return PolicyAction("parser_error")
-        return PolicyAction("inspect", path=path, offset=offset, max_bytes=max_bytes)
+        return PolicyAction(kind, path=path, offset=offset, max_bytes=max_bytes)
     if kind == "edit":
         if set(value) != {"path", "content"}:
             return PolicyAction("parser_error")
@@ -70,7 +70,7 @@ def parse_policy_action(raw: str) -> PolicyAction:
             or _utf8_size(content) > MAX_EDIT_BYTES
         ):
             return PolicyAction("parser_error")
-        return PolicyAction("edit", path=path, content=content)
+        return PolicyAction(kind, path=path, content=content)
     if set(value) - {"command", "timeout_ms"} or "command" not in value:
         return PolicyAction("parser_error")
     command = value.get("command")

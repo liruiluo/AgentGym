@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from typing import Any, Mapping, Sequence
 
 import requests
@@ -72,18 +73,47 @@ SBV_BASE_POLICY_SYSTEM_PROMPT = (
 
 SBV_MEMORY_ADDENDUM = (
     "\n\n# AMG durable task memory and context compaction\n"
-    "This arm provides clean per-task durable notes through ordinary files under "
-    ".agent_memory. Use the same shell_command or apply_patch actions to write and "
-    "later read those notes. Keep high-value debugging evidence there when it may need "
-    "to survive context compaction: hypotheses, commands/tests already tried, exact "
+    "This arm mounts a separate clean per-task durable-note store at "
+    "/run/amg_memory. Use the existing shell_command action to read and write files "
+    "there, for example `printf '%s' '...' > /run/amg_memory/debugging.md` and "
+    "`cat /run/amg_memory/debugging.md`. This path is outside /testbed and never "
+    "enters the submitted repository patch. Keep high-value debugging evidence there "
+    "when it may need to "
+    "survive context compaction: hypotheses, commands/tests already tried, exact "
     "observations, failed approaches, verified partial fixes, and next checks. Notes "
-    "persist in this task workspace across policy-authored context compactions, start "
-    "empty on the next task, and are excluded from the submitted solution patch. "
+    "persist across policy-authored context compactions, start empty on the next task, "
+    "and are available only in this arm. "
     "A compaction response is only a short working-state handoff; it does not execute "
-    "a tool and has no separate task reward. After compaction, read any needed note "
-    "again with an ordinary shell action before relying on it."
+    "a tool and has no separate task reward. After compaction, read the note again "
+    "before relying on it."
 )
 SBV_COMPACTION_ARMS = frozenset({"amg_compaction_only", "amg_memory"})
+
+
+def _validate_step_response(
+    response: Mapping[str, Any],
+    *,
+    expected_done: bool | None = None,
+) -> tuple[str, float, bool, Mapping[str, Any]]:
+    if set(response) != {"observation", "reward", "done", "info"}:
+        raise RuntimeError("Verified step response fields drifted")
+    observation = response["observation"]
+    reward = response["reward"]
+    done = response["done"]
+    info = response["info"]
+    if (
+        not isinstance(observation, str)
+        or isinstance(reward, bool)
+        or not isinstance(reward, (int, float))
+        or not math.isfinite(float(reward))
+        or float(reward) != 0.0
+        or type(done) is not bool
+        or not isinstance(info, Mapping)
+    ):
+        raise RuntimeError("Verified step response types drifted")
+    if expected_done is not None and done is not expected_done:
+        raise RuntimeError("Verified step terminal state drifted")
+    return observation, float(reward), done, info
 
 
 class SwebenchVerifiedEnvClient(BaseEnvClient):
@@ -251,7 +281,10 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
         return self.data_len
 
     def observe(self) -> str:
-        return str(self.info["observation"])
+        observation = self.info.get("observation")
+        if not isinstance(observation, str):
+            raise RuntimeError("Verified observation must be text")
+        return observation
 
     def policy_framing(self) -> list[dict[str, str]]:
         return [{"role": "system", "content": self.system_prompt}]
@@ -352,19 +385,20 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
             json=self._slot_transport(action=action),
             headers=self._bearer_headers(self._slot_capability),
         )
+        state, reward, done, env_info = _validate_step_response(response)
         self._native_call_count += 1
         self._policy_step_count += 1
         self.info = response
-        env_info = response.get("info", {})
-        if not isinstance(env_info, Mapping):
-            raise RuntimeError("Verified step info must be an object")
         server_step = env_info.get("step")
-        if server_step is not None and int(server_step) != self._native_call_count:
+        if server_step is not None and (
+            type(server_step) is not int
+            or server_step != self._native_call_count
+        ):
             raise RuntimeError("Verified native action counter drifted")
         return StepOutput(
-            state=str(response["observation"]),
-            reward=float(response["reward"]),
-            done=bool(response["done"]),
+            state=state,
+            reward=reward,
+            done=done,
             info=build_task_neutral_transition_info(
                 env_info=env_info,
                 action_submission={"raw_policy_output": action},
@@ -403,12 +437,17 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
         self._policy_step_count += 1
         self._context_epoch += 1
         self._selected_policy_control = None
+        prior_env_info = self.info.get("info", {})
+        if not isinstance(prior_env_info, Mapping):
+            raise RuntimeError("Verified step info must be an object")
+        env_info = dict(prior_env_info)
+        env_info.pop("external_memory_operation", None)
         return StepOutput(
             state=self.observe(),
             reward=0.0,
             done=False,
             info=build_task_neutral_transition_info(
-                env_info=self.info.get("info", {}),
+                env_info=env_info,
                 action_submission={
                     "raw_policy_output": action,
                     "submitted_action": None,
@@ -442,6 +481,7 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
             json=self._slot_transport(data_idx=idx),
             headers=self._bearer_headers(self._slot_capability),
         )
+        _validate_step_response(response, expected_done=False)
         self.info = response
         self._reset_policy_state()
         return response
@@ -453,12 +493,15 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
             json=self._slot_transport(),
             headers=self._bearer_headers(self._slot_capability),
         )
+        state, reward, done, env_info = _validate_step_response(
+            response,
+            expected_done=True,
+        )
         self.info = response
-        env_info = response.get("info", {})
         return StepOutput(
-            state=str(response["observation"]),
-            reward=float(response["reward"]),
-            done=bool(response["done"]),
+            state=state,
+            reward=reward,
+            done=done,
             info=build_task_neutral_transition_info(
                 env_info=env_info,
                 action_submission={"control_action": "unified_policy_horizon"},

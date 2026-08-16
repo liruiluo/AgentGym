@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import tempfile
 import threading
@@ -16,6 +17,7 @@ from agentenv_agentmemory.workspace_sandbox import (
     ShellExecutionResult,
     ShellSandboxLimits,
 )
+from agentenv_swesmith.sandbox import EXTERNAL_MEMORY_MOUNT_PATH
 from agentenv_swebench_verified.dataset import (
     DATASET_MANIFEST_SCHEMA,
     VerifiedDataset,
@@ -93,6 +95,12 @@ class LocalSandbox(VerifiedLinuxNamespaceEpisodeSandbox):
         workdir: str,
         timeout_ms: int,
     ) -> ShellExecutionResult:
+        memory_root = self.external_memory_root
+        if memory_root is not None:
+            command = command.replace(
+                EXTERNAL_MEMORY_MOUNT_PATH,
+                shlex.quote(str(memory_root)),
+            )
         completed = subprocess.run(
             ["bash", "-c", command],
             cwd=workspace_root / workdir,
@@ -336,7 +344,7 @@ class VerifiedEnvironmentTests(unittest.TestCase):
 
         absent = self.manager.step(
             slot,
-            'shell_command {"command":"test ! -e .agent_memory && printf clean"}',
+            'shell_command {"command":"test ! -e /run/amg_memory && printf clean"}',
         )
 
         self.assertIn("clean", absent.observation)
@@ -374,16 +382,18 @@ class VerifiedEnvironmentTests(unittest.TestCase):
             run_capability=RUN_CAPABILITY,
         )
         self.manager.reset(slot, 0)
-        self.manager.step(
+        written = self.manager.step(
             slot,
-            'shell_command {"command":"mkdir -p .agent_memory && '
-            'printf clue > .agent_memory/notes"}',
+            'shell_command {"command":"printf clue > /run/amg_memory/notes.md"}',
         )
+        self.assertEqual(written.info["action_kind"], "shell_command")
+        self.assertEqual(written.info["external_memory_operation"], "write")
         read = self.manager.step(
             slot,
-            'shell_command {"command":"cat .agent_memory/notes"}',
+            'shell_command {"command":"cat /run/amg_memory/notes.md"}',
         )
         self.assertIn("clue", read.observation)
+        self.assertEqual(read.info["external_memory_operation"], "read")
         self.manager.step(slot, "Submit memory-only workspace.")
         self.assertEqual(self.manager.prediction(slot)["model_patch"], "")
         self.manager.close(slot)
@@ -396,10 +406,67 @@ class VerifiedEnvironmentTests(unittest.TestCase):
         self.manager.reset(fresh, 0)
         absent = self.manager.step(
             fresh,
-            'shell_command {"command":"test ! -e .agent_memory && printf clean"}',
+            'shell_command {"command":"find /run/amg_memory -mindepth 1 '
+            '-maxdepth 1 -print -quit; test ! -e /run/amg_memory/notes.md '
+            '&& printf absent"}',
         )
-        self.assertIn("clean", absent.observation)
+        self.assertIn("absent", absent.observation)
+        self.assertEqual(absent.info["external_memory_operation"], "read")
         self.manager.close(fresh)
+
+    def test_external_memory_receipts_follow_actual_filesystem_access(self) -> None:
+        memory_slot = self.manager.create(
+            arm="amg_memory",
+            run_id="memory-wrapper-route",
+            run_capability=RUN_CAPABILITY,
+        )
+        self.manager.reset(memory_slot, 0)
+
+        written = self.manager.step(
+            memory_slot,
+            'shell_command {"command":"printf private-clue > /run/amg_memory/notes.md"}',
+        )
+        self.assertEqual(written.info["action_kind"], "shell_command")
+        self.assertEqual(written.info["external_memory_operation"], "write")
+        mentioned = self.manager.step(
+            memory_slot,
+            'shell_command {"command":"printf /run/amg_memory"}',
+        )
+        self.assertNotIn("external_memory_operation", mentioned.info)
+
+        commands = (
+            "cat /run/amg_memory/notes.md",
+            "memory=/run/amg_memory; cat \"$memory/notes.md\"",
+            "cat /run/amg_memory/*.md",
+            "find /run/amg_memory -type f -maxdepth 1 -exec cat {} \\;",
+        )
+        for index, command in enumerate(commands):
+            with self.subTest(index=index):
+                read = self.manager.step(
+                    memory_slot,
+                    "shell_command " + json.dumps({"command": command}),
+                )
+                self.assertEqual(read.info["action_kind"], "shell_command")
+                self.assertEqual(read.info["external_memory_operation"], "read")
+                self.assertIn("private-clue", read.observation)
+        self.manager.close(memory_slot)
+
+        for arm in ("native", "amg_compaction_only"):
+            with self.subTest(arm=arm):
+                slot = self.manager.create(
+                    arm=arm,
+                    run_id=f"{arm}-no-memory-route",
+                    run_capability=RUN_CAPABILITY,
+                )
+                self.manager.reset(slot, 0)
+                denied = self.manager.step(
+                    slot,
+                    'memory_write {"path":"notes.md","content":"forbidden"}',
+                )
+                self.assertEqual(denied.info["action_kind"], "final")
+                self.assertNotIn("external_memory_operation", denied.info)
+                self.assertIsNone(self.manager._slot(slot).episode.memory_root)
+                self.manager.close(slot)
 
     def test_shell_observation_is_bounded_and_horizon_exports(self) -> None:
         slot = self.manager.create(

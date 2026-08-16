@@ -29,7 +29,6 @@ PREDICTION_SCHEMA_FIELDS = (
     "model_patch",
 )
 ARTIFACT_ROOTS = (
-    ".agent_memory",
     ".agent_logs",
     ".agent_receipts",
     ".agent_telemetry",

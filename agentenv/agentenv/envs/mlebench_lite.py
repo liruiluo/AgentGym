@@ -100,11 +100,12 @@ BASE_POLICY_PROMPT = (
     "/home/submission/submission.csv. Do not add prose or Markdown around actions."
 )
 MEMORY_POLICY_ADDITION = (
-    " This arm also provides an empty task-local .agent_memory directory inside "
-    "/home/workspace. It is an ordinary workspace directory: write concise notes "
-    "with edit or shell and inspect them later. Before context compaction, keep "
-    "detailed durable evidence there and return only a short handoff with the note "
-    "path and immediate next action."
+    " This arm also mounts a separate empty per-task durable-note store at "
+    "/run/amg_memory. Use the existing edit and inspect actions with absolute paths "
+    "under /run/amg_memory, or the existing shell action, to write and read notes. "
+    "This store is separate from /home/workspace and is never part of the submission. "
+    "Before context compaction, keep detailed durable evidence there and return only "
+    "a short handoff with the note path and immediate next action."
 )
 COMPACTION_REQUEST = (
     "The context is nearing its limit. Return a short continuation handoff only. "
@@ -636,11 +637,18 @@ class MLEBenchLiteEnvClient(BaseEnvClient):
             "counters",
             "counter_delta",
             "control_receipt",
+            "external_memory_operation",
             "terminal_reason",
             "terminal_receipt",
         }
         if set(response["info"]) - allowed_info:
             raise RuntimeError("MLE-bench Lite step info fields drifted")
+        memory_operation = response["info"].get("external_memory_operation")
+        if memory_operation is not None and (
+            self.mode != MODE_AMG_MEMORY
+            or memory_operation not in {"read", "write", "read_write"}
+        ):
+            raise RuntimeError("MLE-bench Lite memory-operation receipt drifted")
         if _contains_forbidden_result(response["info"]):
             raise RuntimeError("MLE-bench Lite response exposed forbidden result data")
         if expected_before is None:

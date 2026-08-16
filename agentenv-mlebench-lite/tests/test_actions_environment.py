@@ -122,7 +122,15 @@ class MLEBenchLiteActionsEnvironmentTest(unittest.TestCase):
         for raw, expected in cases.items():
             with self.subTest(raw=raw):
                 self.assertEqual(parse_policy_action(raw).kind, expected)
-        for raw in ("", "submit now", "```submit```", "inspect {}", "unknown {}"):
+        for raw in (
+            "",
+            "submit now",
+            "```submit```",
+            "inspect {}",
+            "unknown {}",
+            'memory_read {"path":"notes.md"}',
+            'memory_write {"path":"notes.md","content":"x"}',
+        ):
             with self.subTest(raw=raw):
                 self.assertEqual(parse_policy_action(raw).kind, "parser_error")
         self.assertEqual(
@@ -139,13 +147,17 @@ class MLEBenchLiteActionsEnvironmentTest(unittest.TestCase):
         slot, _ = self.reset(manager)
         written = manager.step(
             slot,
-            'edit {"path":"/home/workspace/.agent_memory/notes.md",'
+            'edit {"path":"/run/amg_memory/notes.md",'
             '"content":"hypothesis: normalize labels\\n"}',
         )
         self.assertEqual(written.info["counters"]["action_count"], 1)
+        self.assertEqual(
+            written.info["external_memory_operation"],
+            "write",
+        )
         compacted = manager.step(
             slot,
-            "notes at .agent_memory/notes.md; next inspect labels",
+            "durable note key notes.md; next inspect labels",
             control="compaction",
         )
         self.assertEqual(compacted.info["counters"]["action_count"], 2)
@@ -161,11 +173,126 @@ class MLEBenchLiteActionsEnvironmentTest(unittest.TestCase):
         )
         read = manager.step(
             slot,
-            'inspect {"path":"/home/workspace/.agent_memory/notes.md",'
+            'inspect {"path":"/run/amg_memory/notes.md",'
             '"offset":0,"max_bytes":1024}',
         )
         self.assertIn("normalize labels", read.observation)
         self.assertEqual(read.info["counters"]["action_count"], 3)
+        self.assertEqual(read.info["external_memory_operation"], "read")
+
+    def test_external_memory_mount_is_separate_from_task_workspace(self) -> None:
+        manager = self.build_manager()
+        slot, _ = self.reset(manager, MODE_AMG_MEMORY)
+        workspace = manager._testing_workspace(slot)
+        self.assertIsNotNone(workspace.memory_root)
+        self.assertNotEqual(workspace.memory_root, workspace.workspace_root)
+
+        written = manager.step(
+            slot,
+            'edit {"path":"/run/amg_memory/notes.md","content":"private clue"}',
+        )
+        self.assertEqual(written.info["action_kind"], "edit")
+        self.assertEqual(written.info["external_memory_operation"], "write")
+        indirect = manager.step(
+            slot,
+            'shell {"command":"cat /home/workspace/.agent_*/notes.md 2>/dev/null || printf unavailable","timeout_ms":1000}',
+        )
+        self.assertNotIn("external_memory_operation", indirect.info)
+        self.assertNotIn("private clue", indirect.observation)
+        read = manager.step(
+            slot,
+            'inspect {"path":"/run/amg_memory/notes.md","offset":0,"max_bytes":1024}',
+        )
+        self.assertEqual(read.info["action_kind"], "inspect")
+        self.assertEqual(read.info["external_memory_operation"], "read")
+        self.assertIn("private clue", read.observation)
+
+        for mode in (MODE_NATIVE, MODE_AMG_COMPACTION_ONLY):
+            with self.subTest(mode=mode):
+                disabled_slot, _ = self.reset(manager, mode)
+                disabled = manager._testing_workspace(disabled_slot)
+                self.assertIsNone(disabled.memory_root)
+                denied = manager.step(
+                    disabled_slot,
+                    'edit {"path":"/run/amg_memory/notes.md","content":"forbidden"}',
+                )
+                self.assertEqual(denied.info["action_kind"], "edit")
+                self.assertEqual(denied.observation, "Path is unavailable.")
+                self.assertNotIn("external_memory_operation", denied.info)
+
+    def test_failed_memory_inspect_and_edit_emit_no_access_receipt(self) -> None:
+        manager = self.build_manager()
+        slot, _ = self.reset(manager, MODE_AMG_MEMORY)
+
+        missing = manager.step(
+            slot,
+            'inspect {"path":"/run/amg_memory/missing","max_bytes":64}',
+        )
+        self.assertEqual(missing.observation, "Path is unavailable.")
+        self.assertNotIn("external_memory_operation", missing.info)
+
+        denied = manager.step(
+            slot,
+            'edit {"path":"/run/amg_memory","content":"not a file"}',
+        )
+        self.assertEqual(denied.observation, "Path is unavailable.")
+        self.assertNotIn("external_memory_operation", denied.info)
+
+        with patch(
+            "agentenv_mlebench_lite.workspace.os.fsync",
+            side_effect=OSError(errno.ENOSPC, "injected no space"),
+        ):
+            failed = manager.step(
+                slot,
+                'edit {"path":"/run/amg_memory/note","content":"x"}',
+            )
+        self.assertTrue(failed.done)
+        self.assertEqual(failed.info["terminal_reason"], "infrastructure_failure")
+        self.assertNotIn("external_memory_operation", failed.info)
+
+    def test_shell_memory_receipt_comes_only_from_sandbox_access_evidence(
+        self,
+    ) -> None:
+        manager = self.build_manager()
+        slot, _ = self.reset(manager, MODE_AMG_MEMORY)
+        backend = self.backends[-1]
+
+        mentioned = manager.step(
+            slot,
+            'shell {"command":"printf /run/amg_memory","timeout_ms":1000}',
+        )
+        self.assertNotIn("external_memory_operation", mentioned.info)
+
+        commands = (
+            "cat /run/amg_memory/notes.md",
+            'root=/run/amg_memory; cat "$root/notes.md"',
+            "cat /run/amg_memory/*.md",
+            "find /run/amg_memory -maxdepth 1 -type f -print",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                backend.next_external_memory_access = "read"
+                step = manager.step(
+                    slot,
+                    "shell "
+                    + json.dumps({"command": command, "timeout_ms": 1000}),
+                )
+                self.assertEqual(step.info["external_memory_operation"], "read")
+
+        backend.next_external_memory_access = "read_write"
+        both = manager.step(
+            slot,
+            'shell {"command":"cat /run/amg_memory/in >> '
+            '/run/amg_memory/out","timeout_ms":1000}',
+        )
+        self.assertEqual(both.info["external_memory_operation"], "read_write")
+
+        ordinary = manager.step(
+            slot,
+            'edit {"path":"/home/workspace/note.txt",'
+            '"content":"mention /run/amg_memory only"}',
+        )
+        self.assertNotIn("external_memory_operation", ordinary.info)
 
     def test_compaction_only_accepts_compaction_but_denies_memory_residue(
         self,
@@ -173,7 +300,7 @@ class MLEBenchLiteActionsEnvironmentTest(unittest.TestCase):
         manager = self.build_manager()
         slot, _ = self.reset(manager, MODE_AMG_COMPACTION_ONLY)
         workspace = manager._testing_workspace(slot)
-        self.assertFalse((workspace.workspace_root / ".agent_memory").exists())
+        self.assertIsNone(workspace.memory_root)
 
         written = manager.step(
             slot,
@@ -191,18 +318,13 @@ class MLEBenchLiteActionsEnvironmentTest(unittest.TestCase):
         self.assertEqual(survived.observation, "durable state")
 
         for raw in (
-            'inspect {"path":"/home/workspace/.agent_memory/note"}',
-            'edit {"path":"/home/workspace/.agent_memory/note","content":"x"}',
-            (
-                'shell {"command":"mkdir -p /home/workspace/.agent_memory",'
-                '"timeout_ms":1000}'
-            ),
+            'inspect {"path":"/run/amg_memory/note"}',
+            'edit {"path":"/run/amg_memory/note","content":"x"}',
         ):
             denied = manager.step(slot, raw)
-            self.assertRegex(
-                denied.observation.lower(), r"(?:unavailable|not available)"
-            )
-        self.assertFalse((workspace.workspace_root / ".agent_memory").exists())
+            self.assertEqual(denied.observation, "Path is unavailable.")
+            self.assertNotIn("external_memory_operation", denied.info)
+        self.assertIsNone(workspace.memory_root)
 
     def test_compacting_arms_have_identical_server_compaction_receipts(self) -> None:
         manager = self.build_manager()
@@ -220,7 +342,7 @@ class MLEBenchLiteActionsEnvironmentTest(unittest.TestCase):
             ("not an action", None),
             ('inspect {"path":"/home/data/train.csv"}', None),
             (
-                'edit {"path":"/home/workspace/.agent_memory/note","content":"durable"}',
+                'edit {"path":"/run/amg_memory/note","content":"durable"}',
                 None,
             ),
             ('shell {"command":"python -V","timeout_ms":1000}', None),
@@ -914,19 +1036,17 @@ class MLEBenchLiteActionsEnvironmentTest(unittest.TestCase):
         self.assertEqual(compact.info["counters"]["action_count"], 1)
         note = manager.step(
             slot,
-            'edit {"path":"/home/workspace/.agent_memory/note",'
-            '"content":"should fail"}',
+            'edit {"path":"/run/amg_memory/note","content":"should fail"}',
         )
         self.assertEqual(note.observation, "Path is unavailable.")
+        self.assertNotIn("external_memory_operation", note.info)
         shell = manager.step(
             slot,
-            'shell {"command":"mkdir -p /home/workspace/.agent_memory",'
+            'shell {"command":"mkdir -p /home/workspace/ordinary_notes",'
             '"timeout_ms":1000}',
         )
-        self.assertIn("not available", shell.observation)
-        self.assertFalse(
-            (manager._testing_workspace(slot).workspace_root / ".agent_memory").exists()
-        )
+        self.assertNotIn("external_memory_operation", shell.info)
+        self.assertIsNone(manager._testing_workspace(slot).memory_root)
 
     def test_triad_metadata_pins_modes_ids_runtime_resources_and_budgets(self) -> None:
         manager = self.build_manager()
@@ -948,7 +1068,7 @@ class MLEBenchLiteActionsEnvironmentTest(unittest.TestCase):
         slot, _ = self.reset(manager)
         manager.step(
             slot,
-            'edit {"path":"/home/workspace/.agent_memory/note","content":"old"}',
+            'edit {"path":"/run/amg_memory/note","content":"old"}',
         )
         manager.step(
             slot,
@@ -960,7 +1080,7 @@ class MLEBenchLiteActionsEnvironmentTest(unittest.TestCase):
         self.assertEqual(len(self.backends[0].torn_down), 1)
         missing_note = manager.step(
             slot,
-            'inspect {"path":"/home/workspace/.agent_memory/note"}',
+            'inspect {"path":"/run/amg_memory/note"}',
         )
         missing_submission = manager.step(
             slot,

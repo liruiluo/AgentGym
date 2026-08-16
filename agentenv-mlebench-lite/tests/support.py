@@ -88,8 +88,34 @@ def write_fixture(root: Path) -> dict[str, Any]:
 
 
 def sandbox_attestation(workspace) -> dict[str, Any]:
+    mounts = [
+        {
+            "source": str(workspace.public_root),
+            "target": "/home/data",
+            "read_only": True,
+            "source_tree_sha256": workspace.public_tree_sha256,
+        },
+        {
+            "source": str(workspace.workspace_root),
+            "target": "/home/workspace",
+            "read_only": False,
+        },
+        {
+            "source": str(workspace.submission_root),
+            "target": "/home/submission",
+            "read_only": False,
+        },
+    ]
+    if workspace.memory_root is not None:
+        mounts.append(
+            {
+                "source": str(workspace.memory_root),
+                "target": "/run/amg_memory",
+                "read_only": False,
+            }
+        )
     return {
-        "schema": "mlebench_lite_sandbox_attestation_v2",
+        "schema": "mlebench_lite_sandbox_attestation_v3",
         "runner_sha256": FAKE_RUNNER_SHA256,
         "runtime_digest": FAKE_RUNTIME_DIGEST,
         "resource_contract": dict(workspace.resource_contract),
@@ -103,32 +129,18 @@ def sandbox_attestation(workspace) -> dict[str, Any]:
             "cgroup_enforced": True,
             "isolated_process_group": True,
         },
-        "memory_namespace": {
-            "path": "/home/workspace/.agent_memory",
-            "state": (
-                "task_local_rw"
+        "external_memory_isolation": {
+            "sandbox_access": (
+                "read_write_mount_v1"
                 if workspace.mode == "amg_memory"
-                else "absent_and_denied"
+                else "none"
+            ),
+            "native_tool_surface": "inspect_edit_shell_v1",
+            "private_root_state": (
+                "allocated" if workspace.mode == "amg_memory" else "absent"
             ),
         },
-        "mounts": [
-            {
-                "source": str(workspace.public_root),
-                "target": "/home/data",
-                "read_only": True,
-                "source_tree_sha256": workspace.public_tree_sha256,
-            },
-            {
-                "source": str(workspace.workspace_root),
-                "target": "/home/workspace",
-                "read_only": False,
-            },
-            {
-                "source": str(workspace.submission_root),
-                "target": "/home/submission",
-                "read_only": False,
-            },
-        ],
+        "mounts": mounts,
         "denied_mount_prefixes": ["/host", "/private"],
     }
 
@@ -152,6 +164,7 @@ class RecordingFormalBackend:
         self.torn_down: list[Any] = []
         self.attestation_override: dict[str, Any] | None = None
         self.resource_usage: dict[str, dict[str, int]] = {}
+        self.next_external_memory_access: str | None = None
 
     def attest(self, workspace):
         self.attested.append(workspace)
@@ -176,7 +189,6 @@ class RecordingFormalBackend:
         if (
             "/private" in command
             or str(workspace.public_root.parent.parent) in command
-            or (workspace.mode != "amg_memory" and ".agent_memory" in command)
         ):
             return self._result(
                 workspace,
@@ -221,7 +233,7 @@ class RecordingFormalBackend:
         cumulative = {key: prior[key] + delta[key] for key in prior}
         self.resource_usage[workspace.episode_id] = cumulative
         receipt = {
-            "schema": "mlebench_lite_sandbox_execution_v2",
+            "schema": "mlebench_lite_sandbox_execution_v3",
             "operation_id": operation_id,
             "runner_sha256": FAKE_RUNNER_SHA256,
             "runtime_digest": FAKE_RUNTIME_DIGEST,
@@ -240,6 +252,12 @@ class RecordingFormalBackend:
                 "descendant_process_count": 0,
             },
         }
+        if self.next_external_memory_access is not None:
+            receipt["external_memory_access"] = {
+                "schema": "amg_external_memory_access_v1",
+                "operation": self.next_external_memory_access,
+            }
+            self.next_external_memory_access = None
         return FakeExecutionResult(
             returncode=returncode,
             stdout=stdout,

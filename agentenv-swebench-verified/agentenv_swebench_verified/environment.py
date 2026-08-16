@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
 import threading
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Protocol
 
 from agentenv_agentmemory.workspace_patch import (
@@ -17,6 +18,7 @@ from agentenv_agentmemory.workspace_patch import (
 )
 from agentenv_swesmith.actions import ParsedPolicyAction, parse_policy_action
 from agentenv_swesmith.sandbox import (
+    EXTERNAL_MEMORY_ACCESS_SCHEMA,
     SwesmithSandboxError,
     snapshot_workspace_tree,
 )
@@ -88,6 +90,7 @@ class _Episode:
     workspace: VerifiedWorkspace
     sandbox: VerifiedLinuxNamespaceEpisodeSandbox
     observation: str
+    memory_root: Path | None = None
     step_count: int = 0
     done: bool = False
     prediction: dict[str, str] | None = None
@@ -215,7 +218,20 @@ class VerifiedEpisodeManager:
                     model_uid=sandbox.model_uid,
                     model_gid=sandbox.model_gid,
                 )
+                memory_root = None
+                if slot.arm == "amg_memory":
+                    memory_root = workspace.private_root / "external-memory"
+                    memory_root.mkdir(mode=0o700)
+                    os.chmod(memory_root, 0o700, follow_symlinks=False)
+                    owner = os.stat(memory_root, follow_symlinks=False)
+                    if (
+                        owner.st_uid != sandbox.model_uid
+                        or owner.st_gid != sandbox.model_gid
+                    ):
+                        os.chown(memory_root, sandbox.model_uid, sandbox.model_gid)
                 initial = sandbox.attach_workspace(workspace.policy_root)
+                if memory_root is not None:
+                    sandbox.attach_external_memory(memory_root)
                 observation = initial_observation(record.problem_statement)
                 episode = _Episode(
                     record=record,
@@ -223,6 +239,7 @@ class VerifiedEpisodeManager:
                     workspace=workspace,
                     sandbox=sandbox,
                     observation=observation,
+                    memory_root=memory_root,
                 )
                 episode.evidence.append(
                     {
@@ -272,12 +289,14 @@ class VerifiedEpisodeManager:
             episode.evidence.append(evidence)
             if not episode.done and episode.step_count >= self.max_native_actions:
                 self._export_terminal(slot, episode, reason="native_action_cap")
+            memory_operation = evidence.get("external_memory_operation")
             return self._public_step(
                 slot,
                 episode,
                 action_kind=action.kind,
                 actor_credit=actor_credit,
                 action_progress=evidence.get("action_progress"),
+                external_memory_operation=memory_operation,
             )
 
     def observation(self, slot_id: int) -> str:
@@ -392,6 +411,16 @@ class VerifiedEpisodeManager:
                 episode.observation += " The workspace was sealed for export."
             return build_actor_credit(False, "executor_rejected")
         result = execution.result
+        access = execution.external_memory_access
+        if access is not None:
+            if (
+                set(access) != {"schema", "operation"}
+                or access.get("schema") != EXTERNAL_MEMORY_ACCESS_SCHEMA
+                or access.get("operation") not in {"read", "write", "read_write"}
+                or episode.memory_root is None
+            ):
+                raise RuntimeError("external-memory access receipt drifted")
+            evidence["external_memory_operation"] = access["operation"]
         stdout = result.stdout.decode("utf-8", errors="replace")
         stderr = result.stderr.decode("utf-8", errors="replace")
         result_evidence = {
@@ -476,6 +505,7 @@ class VerifiedEpisodeManager:
         action_kind: str,
         actor_credit: Mapping[str, Any] | None = None,
         action_progress: Mapping[str, Any] | None = None,
+        external_memory_operation: str | None = None,
     ) -> EpisodeStep:
         episode.observation = bound_policy_observation(
             episode.observation,
@@ -493,6 +523,10 @@ class VerifiedEpisodeManager:
             info["actor_credit"] = dict(actor_credit)
         if action_progress is not None:
             info["action_progress"] = dict(action_progress)
+        if external_memory_operation is not None:
+            if external_memory_operation not in {"read", "write", "read_write"}:
+                raise RuntimeError("unsupported external-memory operation receipt")
+            info["external_memory_operation"] = external_memory_operation
         return EpisodeStep(
             observation=episode.observation,
             reward=0.0,

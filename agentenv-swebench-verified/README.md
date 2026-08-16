@@ -120,7 +120,10 @@ budget, runtime identity, and patch exporter. Native has no AMG memory or
 compaction candidate. `amg_compaction_only` and `amg_memory` use the exact same
 compaction request, token-pressure trigger, task-neutral `replace_messages`
 transition, and action accounting. Only `amg_memory` receives the durable-memory
-prompt convention for clean per-task `.agent_memory` files. Compaction-only has
+prompt convention and a private per-task root mounted at `/run/amg_memory`
+outside `/testbed`. It uses the same native `shell_command` schema as every
+other arm; the sandbox emits structured read/write evidence from actual
+filesystem events, not command text. Compaction-only has
 no dedicated memory namespace, root, mount, endpoint, environment variable,
 prompt declaration, tool schema, parser/dispatch path, memory action receipt,
 private evidence store, or cleanup handle. A compaction consumes one policy turn
@@ -140,9 +143,9 @@ ledgers and writes a separate JSONL for each arm in canonical dataset order.
 
 The diff is produced against the exact base commit with a private Git index and
 private object database. It includes modified, deleted, binary, executable-mode,
-ignored-but-created, and newly created solution files. Reserved
-`.agent_memory`, `.agent_logs`, `.agent_receipts`, and `.agent_telemetry` roots
-are excluded. Unsupported nested Git metadata or base-gitlink replacement yields
+ignored-but-created, and newly created solution files. Reserved `.agent_logs`,
+`.agent_receipts`, and `.agent_telemetry` roots are excluded; external memory
+never enters `/testbed`. Unsupported nested Git metadata or base-gitlink replacement yields
 the required explicit empty prediction row rather than an unusable gitlink patch.
 Model patches are capped at 16 MiB and Git export has a five-minute timeout.
 Official test patches, eval scripts, parsers, and scoring remain entirely in the

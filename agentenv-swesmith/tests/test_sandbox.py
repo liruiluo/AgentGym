@@ -62,11 +62,11 @@ class _LeaseContext:
 
 
 class _FakeEpisodeSandbox(LinuxNamespaceEpisodeSandbox):
-    def __init__(self, mutation=None) -> None:
+    def __init__(self, mutation=None, *, sandbox_limits=None) -> None:
         self.lease = _LeaseContext()
         self.mutation = mutation
         super().__init__(
-            limits=limits(),
+            limits=limits() if sandbox_limits is None else sandbox_limits,
             rg_binary=Path("/unused/rg"),
             expected_rg_sha256="0" * 64,
             rg_sha256="0" * 64,
@@ -463,6 +463,141 @@ class EpisodeStateTests(unittest.TestCase):
             sandbox.run(command="test", workdir=".", timeout_ms=100)
         self.assertIn("validation failed", sandbox.poisoned_reason or "")
         sandbox.close()
+
+    def test_optional_external_memory_reports_actual_access_only(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            memory = Path(raw) / "memory"
+            memory.mkdir(mode=0o700)
+            note = memory / "note.txt"
+            note.write_text("clue", encoding="utf-8")
+
+            operations = (
+                (lambda _root: note.read_text(encoding="utf-8"), "read"),
+                (lambda _root: note.write_text("next", encoding="utf-8"), "write"),
+                (
+                    lambda _root: note.write_text(
+                        note.read_text(encoding="utf-8") + "!",
+                        encoding="utf-8",
+                    ),
+                    "read_write",
+                ),
+            )
+            for mutation, expected in operations:
+                with self.subTest(operation=expected):
+                    sandbox = _FakeEpisodeSandbox(mutation)
+                    sandbox.attach_workspace(self.root)
+                    sandbox.attach_external_memory(memory)
+                    execution = sandbox.run(
+                        command="fixture", workdir=".", timeout_ms=100
+                    )
+                    self.assertEqual(
+                        execution.external_memory_access,
+                        {
+                            "schema": "amg_external_memory_access_v1",
+                            "operation": expected,
+                        },
+                    )
+                    sandbox.close()
+
+            untouched = _FakeEpisodeSandbox()
+            untouched.attach_workspace(self.root)
+            untouched.attach_external_memory(memory)
+            execution = untouched.run(
+                command="printf /run/amg_memory", workdir=".", timeout_ms=100
+            )
+            self.assertIsNone(execution.external_memory_access)
+            untouched.close()
+
+    def test_external_memory_root_must_be_private_and_disjoint(self) -> None:
+        sandbox = _FakeEpisodeSandbox()
+        sandbox.attach_workspace(self.root)
+        inside = self.root / "external-memory"
+        inside.mkdir(mode=0o700)
+        with self.assertRaisesRegex(SwesmithSandboxError, "disjoint"):
+            sandbox.attach_external_memory(inside)
+
+        with tempfile.TemporaryDirectory() as raw:
+            public = Path(raw) / "memory"
+            public.mkdir(mode=0o755)
+            with self.assertRaisesRegex(SwesmithSandboxError, "private"):
+                sandbox.attach_external_memory(public)
+        sandbox.close()
+
+        with tempfile.TemporaryDirectory() as raw:
+            memory = Path(raw) / "memory"
+            workspace = memory / "workspace"
+            memory.mkdir(mode=0o700)
+            workspace.mkdir(mode=0o700)
+            reverse = _FakeEpisodeSandbox()
+            reverse.attach_external_memory(memory)
+            with self.assertRaisesRegex(SwesmithSandboxError, "disjoint"):
+                reverse.attach_workspace(workspace)
+            reverse.close()
+
+    def test_external_memory_enforces_aggregate_bytes_and_inodes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            memory = Path(raw) / "memory"
+            memory.mkdir(mode=0o700)
+            (memory / "first").write_bytes(b"12345")
+            (memory / "second").write_bytes(b"67890")
+            byte_limited = _FakeEpisodeSandbox(
+                sandbox_limits=limits(workspace_bytes=8, max_file_bytes=8)
+            )
+            byte_limited.attach_workspace(self.root)
+            with self.assertRaisesRegex(SwesmithSandboxError, "aggregate byte"):
+                byte_limited.attach_external_memory(memory)
+            byte_limited.close()
+
+            (memory / "first").write_bytes(b"1")
+            (memory / "second").write_bytes(b"2")
+            inode_limited = _FakeEpisodeSandbox(
+                sandbox_limits=limits(workspace_inodes=2)
+            )
+            inode_limited.attach_workspace(self.root)
+            with self.assertRaisesRegex(SwesmithSandboxError, "inode limit"):
+                inode_limited.attach_external_memory(memory)
+            inode_limited.close()
+
+    def test_unattested_external_memory_mutation_poisons_episode(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            memory = Path(raw) / "memory"
+            memory.mkdir(mode=0o700)
+            note = memory / "note.txt"
+            note.write_text("before", encoding="utf-8")
+            sandbox = _FakeEpisodeSandbox()
+            sandbox.attach_workspace(self.root)
+            sandbox.attach_external_memory(memory)
+
+            note.write_text("outside", encoding="utf-8")
+            with self.assertRaisesRegex(SwesmithSandboxError, "outside the attested"):
+                sandbox.run(command="test", workdir=".", timeout_ms=100)
+            self.assertIn("external memory changed outside", sandbox.poisoned_reason or "")
+            sandbox.close()
+
+    def test_external_memory_quota_violation_after_command_poisons_episode(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            memory = Path(raw) / "memory"
+            memory.mkdir(mode=0o700)
+
+            def overflow(_root: Path) -> None:
+                (memory / "first").write_bytes(b"12345")
+                (memory / "second").write_bytes(b"67890")
+
+            sandbox = _FakeEpisodeSandbox(
+                overflow,
+                sandbox_limits=limits(workspace_bytes=8, max_file_bytes=8),
+            )
+            sandbox.attach_workspace(self.root)
+            sandbox.attach_external_memory(memory)
+            with self.assertRaisesRegex(SwesmithSandboxError, "aggregate byte"):
+                sandbox.run(command="test", workdir=".", timeout_ms=100)
+            self.assertIn(
+                "external-memory validation failed after shell_command",
+                sandbox.poisoned_reason or "",
+            )
+            with self.assertRaisesRegex(SwesmithSandboxError, "poisoned"):
+                sandbox.run(command="test", workdir=".", timeout_ms=100)
+            sandbox.close()
 
 
 if __name__ == "__main__":

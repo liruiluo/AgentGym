@@ -1,27 +1,15 @@
 from __future__ import annotations
 
 import copy
+import importlib.util
 import json
+import sys
+import types
 import unittest
 import uuid
+from pathlib import Path
 
 import requests
-from agentenv.controller.types import (
-    CONTEXT_OPERATION_REPLACE,
-    PolicyContextPressure,
-)
-from agentenv.envs.mlebench_lite import (
-    LITE_COMPETITION_IDS as CLIENT_LITE_COMPETITION_IDS,
-)
-from agentenv.envs.mlebench_lite import (
-    MODES as CLIENT_MODES,
-)
-from agentenv.envs.mlebench_lite import (
-    MLEBenchLiteEnvClient,
-    _resource_contract,
-    _resource_contract_sha256,
-    _zero_counters,
-)
 from agentenv_mlebench_lite.identity import (
     LITE_COMPETITION_IDS,
     SPLIT_SHA256,
@@ -30,7 +18,82 @@ from agentenv_mlebench_lite.identity import (
 
 from tests.support import FAKE_RUNNER_SHA256, FAKE_RUNTIME_DIGEST
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CLIENT_PATH = REPO_ROOT / "agentenv" / "agentenv" / "envs" / "mlebench_lite.py"
+TYPES_PATH = REPO_ROOT / "agentenv" / "agentenv" / "controller" / "types.py"
 PUBLIC_MANIFEST_SHA256 = "4" * 64
+
+
+def _load_client_module():
+    saved = {
+        name: sys.modules.get(name)
+        for name in (
+            "agentenv",
+            "agentenv.controller",
+            "agentenv.controller.types",
+            "mlebench_lite_client_under_test",
+        )
+    }
+    agentenv_module = types.ModuleType("agentenv")
+    agentenv_module.__path__ = []
+    controller_module = types.ModuleType("agentenv.controller")
+    controller_module.__path__ = []
+
+    class BaseEnvClient:
+        def __init__(self, action_format="react") -> None:
+            self.action_format = action_format
+
+    class BaseTask:
+        def __init__(self, client_args, n_clients=1, *args, **kwargs) -> None:
+            del args, kwargs
+            self.clients = [
+                self.env_client_cls(**client_args) for _ in range(n_clients)
+            ]
+
+    sys.modules["agentenv"] = agentenv_module
+    sys.modules["agentenv.controller"] = controller_module
+    types_spec = importlib.util.spec_from_file_location(
+        "agentenv.controller.types", TYPES_PATH
+    )
+    assert types_spec is not None and types_spec.loader is not None
+    types_module = importlib.util.module_from_spec(types_spec)
+    sys.modules["agentenv.controller.types"] = types_module
+    types_spec.loader.exec_module(types_module)
+    controller_module.BaseEnvClient = BaseEnvClient
+    controller_module.BaseTask = BaseTask
+    controller_module.StepOutput = types_module.StepOutput
+
+    client_spec = importlib.util.spec_from_file_location(
+        "mlebench_lite_client_under_test", CLIENT_PATH
+    )
+    assert client_spec is not None and client_spec.loader is not None
+    client_module = importlib.util.module_from_spec(client_spec)
+    sys.modules["mlebench_lite_client_under_test"] = client_module
+    client_spec.loader.exec_module(client_module)
+
+    def restore() -> None:
+        for name, value in saved.items():
+            if value is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = value
+
+    return client_module, types_module, restore
+
+
+_CLIENT, _TYPES, _RESTORE_MODULES = _load_client_module()
+CONTEXT_OPERATION_REPLACE = _TYPES.CONTEXT_OPERATION_REPLACE
+PolicyContextPressure = _TYPES.PolicyContextPressure
+CLIENT_LITE_COMPETITION_IDS = _CLIENT.LITE_COMPETITION_IDS
+CLIENT_MODES = _CLIENT.MODES
+MLEBenchLiteEnvClient = _CLIENT.MLEBenchLiteEnvClient
+_resource_contract = _CLIENT._resource_contract
+_resource_contract_sha256 = _CLIENT._resource_contract_sha256
+_zero_counters = _CLIENT._zero_counters
+
+
+def tearDownModule() -> None:
+    _RESTORE_MODULES()
 
 
 class _Response:
@@ -48,6 +111,7 @@ class _FakeRequester:
     def __init__(self) -> None:
         self.calls = []
         self.capability_token = "a" * 64
+        self.mode = "native"
         self.counters = _zero_counters()
         self.competition_id = LITE_COMPETITION_IDS[0]
         self.action_cache = {}
@@ -92,7 +156,8 @@ class _FakeRequester:
         if path == "metadata":
             return _Response(self.metadata())
         if path == "create":
-            if kwargs.get("json", {}).get("mode") not in {
+            self.mode = kwargs.get("json", {}).get("mode")
+            if self.mode not in {
                 "native",
                 "amg_compaction_only",
                 "amg_memory",
@@ -224,6 +289,14 @@ class _FakeRequester:
                     **self.info_extra,
                 },
             }
+            if self.mode == "amg_memory" and request["action"].startswith(
+                'inspect {"path":"/run/amg_memory/'
+            ):
+                value["info"]["external_memory_operation"] = "read"
+            elif self.mode == "amg_memory" and request["action"].startswith(
+                'edit {"path":"/run/amg_memory/'
+            ):
+                value["info"]["external_memory_operation"] = "write"
         if self.cumulative_counter_drift:
             value["info"]["counters"]["cpu_time_ms"] += 1
         self.action_cache[action_id] = (canonical_payload, copy.deepcopy(value))
@@ -411,6 +484,7 @@ class MLEBenchLiteClientTest(unittest.TestCase):
         self.assertNotIn("memory", lowered)
         self.assertNotIn("compaction", lowered)
         self.assertNotIn(".agent_memory", lowered)
+        self.assertNotIn("/run/amg_memory", lowered)
         self.bind_initial_context(client)
         self.assertIsNone(client.policy_turn_candidate())
         self.assertIsNone(client.prepare_policy_turn(self.pressure()))
@@ -435,6 +509,7 @@ class MLEBenchLiteClientTest(unittest.TestCase):
         framing = compact_only.policy_framing()[0]["content"].lower()
         self.assertNotIn("memory", framing)
         self.assertNotIn(".agent_memory", framing)
+        self.assertNotIn("/run/amg_memory", framing)
         self.bind_initial_context(compact_only)
         candidate = compact_only.policy_turn_candidate()
         self.assertIsNotNone(candidate)
@@ -477,23 +552,58 @@ class MLEBenchLiteClientTest(unittest.TestCase):
     def test_memory_compaction_is_server_counted_before_replace_then_read(self) -> None:
         client, requester = self.make_client("amg_memory")
         framing = "\n".join(message["content"] for message in client.policy_framing())
-        self.assertIn(".agent_memory", framing)
+        self.assertIn("/run/amg_memory", framing)
+        self.assertIn("inspect", framing)
+        self.assertIn("edit", framing)
+        self.assertNotIn("memory_write", framing)
+        self.assertNotIn("memory_read", framing)
+        self.assertNotIn(".agent_memory", framing)
         self.bind_initial_context(client)
+        written = client.step(
+            'edit {"path":"/run/amg_memory/notes.md","content":"durable clue"}'
+        )
+        self.assertEqual(
+            written.info["env_info"]["external_memory_operation"], "write"
+        )
         self.assertIsNotNone(client.policy_turn_candidate())
         self.assertIsNotNone(client.prepare_policy_turn(self.pressure()))
 
-        compacted = client.step("notes at .agent_memory/notes.md; inspect next")
+        compacted = client.step("durable note key notes.md; inspect next")
         transition = compacted.info["context_transition"]
         self.assertEqual(transition["operation"], CONTEXT_OPERATION_REPLACE)
-        self.assertIn(".agent_memory/notes.md", transition["messages"][-2]["content"])
+        self.assertIn("notes.md", transition["messages"][-2]["content"])
         request = requester.calls[-1]["json"]
         self.assertEqual(request["control"], "compaction")
-        self.assertEqual(request["expected_action_count"], 0)
+        self.assertEqual(request["expected_action_count"], 1)
 
-        later = client.step('inspect {"path":"/home/workspace/.agent_memory/notes.md"}')
+        later = client.step(
+            'inspect {"path":"/run/amg_memory/notes.md",'
+            '"offset":0,"max_bytes":1024}'
+        )
         self.assertFalse(later.done)
+        self.assertEqual(later.info["env_info"]["external_memory_operation"], "read")
         self.assertNotIn("control", requester.calls[-1]["json"])
-        self.assertEqual(requester.calls[-1]["json"]["expected_action_count"], 1)
+        self.assertEqual(requester.calls[-1]["json"]["expected_action_count"], 2)
+
+    def test_memory_operation_receipt_fails_closed_outside_exact_marker(self) -> None:
+        cases = (
+            ("native", "read_write"),
+            ("amg_compaction_only", "read_write"),
+            ("amg_memory", "delete"),
+        )
+        for mode, marker in cases:
+            with self.subTest(mode=mode, marker=marker):
+                client, requester = self.make_client(mode)
+                requester.info_extra = {"external_memory_operation": marker}
+                with self.assertRaises(RuntimeError):
+                    client.step('inspect {"path":"/home/workspace/train.py"}')
+
+        client, requester = self.make_client("amg_memory")
+        requester.info_extra = {"external_memory_operation": "read_write"}
+        step = client.step('shell {"command":"fixture"}')
+        self.assertEqual(
+            step.info["env_info"]["external_memory_operation"], "read_write"
+        )
 
     def test_compaction_counter_drift_fails_before_context_replacement(self) -> None:
         client, requester = self.make_client("amg_memory")

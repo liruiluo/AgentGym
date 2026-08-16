@@ -68,9 +68,11 @@ class MLEBenchLiteWorkspaceExecutorTest(unittest.TestCase):
         compact_only = self.manager.create(record, MODE_AMG_COMPACTION_ONLY)
 
         self.assertNotEqual(first.episode_root, second.episode_root)
-        self.assertTrue((first.workspace_root / ".agent_memory").is_dir())
-        self.assertFalse((native.workspace_root / ".agent_memory").exists())
-        self.assertFalse((compact_only.workspace_root / ".agent_memory").exists())
+        self.assertIsNotNone(first.memory_root)
+        self.assertTrue(first.memory_root.is_dir())
+        self.assertNotEqual(first.memory_root, first.workspace_root)
+        self.assertIsNone(native.memory_root)
+        self.assertIsNone(compact_only.memory_root)
         self.assertEqual(list(first.submission_root.iterdir()), [])
         self.assertFalse((first.workspace_root / "train.csv").exists())
         self.assertEqual(first.public_root, record.public_root)
@@ -162,22 +164,17 @@ class MLEBenchLiteWorkspaceExecutorTest(unittest.TestCase):
         with self.assertRaises(MLEBenchLiteWorkspaceError):
             memory.resolve_policy_path("/home/data/train.csv", write=True)
         with self.assertRaises(MLEBenchLiteWorkspaceError):
-            native.resolve_policy_path(
-                "/home/workspace/.agent_memory/notes.md", write=True
-            )
+            native.resolve_policy_path("/run/amg_memory/notes.md", write=True)
         with self.assertRaises(MLEBenchLiteWorkspaceError):
             compact_only.resolve_policy_path(
-                "/home/workspace/.agent_memory/notes.md", write=True
+                "/run/amg_memory/notes.md", write=True
             )
 
         for workspace in (native, compact_only):
             attestation = sandbox_attestation(workspace)
             self.assertEqual(
-                attestation["memory_namespace"]["state"], "absent_and_denied"
-            )
-            self.assertNotIn(
-                "/home/workspace/.agent_memory",
-                {mount["target"] for mount in attestation["mounts"]},
+                attestation["external_memory_isolation"]["sandbox_access"],
+                "none",
             )
 
         link = memory.workspace_root / "escape"
@@ -235,9 +232,20 @@ class MLEBenchLiteWorkspaceExecutorTest(unittest.TestCase):
         self.assertTrue(mounts["/home/data"]["read_only"])
         self.assertFalse(mounts["/home/workspace"]["read_only"])
         self.assertFalse(mounts["/home/submission"]["read_only"])
+        self.assertFalse(mounts["/run/amg_memory"]["read_only"])
+        self.assertEqual(
+            mounts["/run/amg_memory"]["source"], str(workspace.memory_root)
+        )
         self.assertNotIn("/private", mounts)
         self.assertNotIn("/host", mounts)
-        self.assertEqual(attestation["memory_namespace"]["state"], "task_local_rw")
+        self.assertEqual(
+            attestation["external_memory_isolation"],
+            {
+                "sandbox_access": "read_write_mount_v1",
+                "native_tool_surface": "inspect_edit_shell_v1",
+                "private_root_state": "allocated",
+            },
+        )
 
     def test_full_resource_contract_is_bound_to_requests_and_attestation(self) -> None:
         contract = build_resource_contract(
@@ -432,6 +440,43 @@ class MLEBenchLiteWorkspaceExecutorTest(unittest.TestCase):
         with self.assertRaises(MLEBenchLiteExecutorError):
             executor.run(workspace, "python -V", timeout_ms=1000)
 
+    def test_external_memory_access_receipt_is_capability_bound(self) -> None:
+        memory = self.manager.create(self.dataset[0], MODE_AMG_MEMORY)
+        backend = RecordingFormalBackend()
+        backend.next_external_memory_access = "read_write"
+        executor = SandboxExecutor(
+            backend,
+            expected_runner_sha256=FAKE_RUNNER_SHA256,
+            expected_runtime_digest=FAKE_RUNTIME_DIGEST,
+        )
+        executor.preflight(memory)
+        result = executor.run(memory, "fixture", timeout_ms=1000)
+        self.assertEqual(
+            result.receipt["external_memory_access"],
+            {
+                "schema": "amg_external_memory_access_v1",
+                "operation": "read_write",
+            },
+        )
+
+        for mode, operation in (
+            (MODE_NATIVE, "read"),
+            (MODE_AMG_COMPACTION_ONLY, "write"),
+            (MODE_AMG_MEMORY, "delete"),
+        ):
+            with self.subTest(mode=mode, operation=operation):
+                workspace = self.manager.create(self.dataset[0], mode)
+                bad_backend = RecordingFormalBackend()
+                bad_backend.next_external_memory_access = operation
+                bad = SandboxExecutor(
+                    bad_backend,
+                    expected_runner_sha256=FAKE_RUNNER_SHA256,
+                    expected_runtime_digest=FAKE_RUNTIME_DIGEST,
+                )
+                bad.preflight(workspace)
+                with self.assertRaises(MLEBenchLiteExecutorError):
+                    bad.run(workspace, "fixture", timeout_ms=1000)
+
     def test_timed_out_execution_must_reap_every_descendant(self) -> None:
         workspace = self.manager.create(self.dataset[0], MODE_NATIVE)
 
@@ -565,6 +610,24 @@ class MLEBenchLiteWorkspaceExecutorTest(unittest.TestCase):
         self.assertEqual(
             request["resource_contract_sha256"],
             workspace.resource_contract_sha256,
+        )
+        self.assertNotIn("external_memory_root", request)
+
+        memory = self.manager.create(self.dataset[0], MODE_AMG_MEMORY)
+        memory_completed = subprocess.CompletedProcess(
+            args=[str(runner), "attest"],
+            returncode=0,
+            stdout=json.dumps(sandbox_attestation(memory)).encode("utf-8"),
+            stderr=b"",
+        )
+        with patch(
+            "agentenv_mlebench_lite.executor.subprocess.run",
+            return_value=memory_completed,
+        ) as memory_run:
+            backend.attest(memory)
+        memory_request = json.loads(memory_run.call_args.kwargs["input"])
+        self.assertEqual(
+            memory_request["external_memory_root"], str(memory.memory_root)
         )
 
     def test_runner_parent_must_be_owned_and_not_group_or_world_writable(self) -> None:

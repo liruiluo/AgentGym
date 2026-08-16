@@ -121,6 +121,49 @@ def test_native_prompt_and_client_have_zero_memory_or_compaction(
         assert client.context_epoch == 0
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("observation", {"not": "text"}),
+        ("reward", "0.0"),
+        ("reward", True),
+        ("reward", float("inf")),
+        ("done", "false"),
+        ("info", []),
+    ),
+)
+def test_client_rejects_malformed_step_fields(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    app, contract, _, _ = _app_and_contract(tmp_path, EvaluationArm.NATIVE)
+    with (
+        TestClient(app) as http,
+        patch(
+            "agentenv.envs.gaia_text.requests.request",
+            side_effect=_requests_adapter(http),
+        ),
+    ):
+        client = GaiaTextEnvClient(
+            "http://gaia.test",
+            arm="native",
+            expected_protocol=contract,
+        )
+        client.reset(0)
+        request = client._request
+
+        def malformed(method: str, path: str, **kwargs):
+            response = request(method, path, **kwargs)
+            if method == "POST" and path == "step":
+                response[field] = value
+            return response
+
+        client._request = malformed  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="step response types drifted"):
+            client.step('<answer>fixture</answer>')
+
+
 def test_memory_prompt_diff_is_only_memory_and_compaction_affordance(
     tmp_path: Path,
 ) -> None:

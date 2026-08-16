@@ -100,7 +100,7 @@ with networking disabled, a read-only root filesystem, only the selected
 public source mounted read-only at `/home/data`, and only the current episode's
 workspace/submission roots writable. It must independently verify the public
 tree digest, deny host/private/sibling mounts, enforce the mode-specific
-`.agent_memory` namespace state, enforce the pinned cgroup/CPU/RAM/PID/GPU and
+external-memory isolation attestation, enforce the pinned cgroup/CPU/RAM/PID/GPU and
 writable-volume limits, and return strictly allowlisted execution,
 freeze/reap, and teardown receipts. Each execution receipt must prove exact
 prior-plus-delta resource counters and zero surviving descendants, including
@@ -109,8 +109,12 @@ timeouts. The adapter has no `subprocess(cwd=workspace)` policy fallback.
 `native` has no memory prompt, namespace, or compaction candidate.
 `amg_compaction_only` has the exact policy-authored task-neutral compaction
 trigger, request, transition, and action accounting used by `amg_memory`, but
-has no memory prompt or `.agent_memory` capability. `amg_memory` additionally
-gets a fresh task/reset-local `.agent_memory` directory. Compaction is sent to
+has no memory prompt, private root, or memory action parser. `amg_memory`
+additionally gets a fresh task/reset-local private root mounted read/write only
+at `/run/amg_memory`. The native `inspect`, `edit`, and `shell` schemas are
+unchanged across all arms. The pinned sandbox runner supplies a strictly
+validated structured receipt only when execution actually accesses that mount;
+mentioning its pathname is not an access receipt. Compaction is sent to
 `/step` first and atomically consumes the same server action budget; the client
 emits `replace_messages` only after validating the `n -> n+1` receipt. A
 compaction that exhausts the budget is terminal and never replaces context.

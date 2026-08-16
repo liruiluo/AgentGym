@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import ctypes
 import errno
 import hashlib
 import json
 import os
 import platform
 import re
+import select
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -16,7 +19,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Iterator, Mapping
 
 from agentenv_agentmemory.workspace_sandbox import (
     ExecutableFingerprint,
@@ -35,6 +38,8 @@ from agentenv_agentmemory.workspace_sandbox import (
 
 SWE_SHELL_SANDBOX_CONTRACT = "swesmith_linux_namespace_oci_rootfs_v1"
 OCI_ROOTFS_CACHE_SCHEMA = "swesmith_oci_rootfs_cache_v1"
+EXTERNAL_MEMORY_ACCESS_SCHEMA = "amg_external_memory_access_v1"
+EXTERNAL_MEMORY_MOUNT_PATH = "/run/amg_memory"
 _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _LOCAL_SANDBOX_SCRATCH_ROOT = Path("/tmp")
 _SANDBOX_CLEANUP_TIMEOUT_SECONDS = 2.0
@@ -176,6 +181,7 @@ class SwesmithShellExecution:
     workspace_before: WorkspaceTreeSnapshot
     workspace_after: WorkspaceTreeSnapshot
     workspace_diff: WorkspaceDiff
+    external_memory_access: Mapping[str, str] | None = None
 
 
 class LinuxNamespaceEpisodeSandbox:
@@ -211,7 +217,9 @@ class LinuxNamespaceEpisodeSandbox:
         self._model_uid = model_uid
         self._oci_rootfs_identity = oci_rootfs_identity
         self._workspace_root: Path | None = None
+        self._external_memory_root: Path | None = None
         self._snapshot: WorkspaceTreeSnapshot | None = None
+        self._external_memory_snapshot: WorkspaceTreeSnapshot | None = None
         self._closed = False
         self._poisoned_reason: str | None = None
         self._run_lock = threading.Lock()
@@ -310,6 +318,10 @@ class LinuxNamespaceEpisodeSandbox:
         return self._poisoned_reason
 
     @property
+    def external_memory_root(self) -> Path | None:
+        return self._external_memory_root
+
+    @property
     def metadata(self) -> Mapping[str, Any]:
         rootfs = (
             None
@@ -324,6 +336,9 @@ class LinuxNamespaceEpisodeSandbox:
             "oci_rootfs": rootfs,
             "workspace_mount": "episode_persistent_direct_rw_bind",
             "workspace_quota": "rlimit_fsize_plus_post_command_full_tree_validation",
+            "external_memory_quota": (
+                "same_full_tree_byte_inode_and_file_limits_as_workspace"
+            ),
             "tmp_mount": "bounded_tmpfs",
             "shell": "bash_no_profile_no_rc",
             "ripgrep_path": "/run/tools/rg",
@@ -386,6 +401,11 @@ class LinuxNamespaceEpisodeSandbox:
         if self._workspace_root is not None:
             raise SwesmithSandboxError("a SWE-smith sandbox may attach one workspace only")
         root = _require_workspace_root(Path(workspace_root))
+        memory_root = self._external_memory_root
+        if memory_root is not None and _roots_overlap(root, memory_root):
+            raise SwesmithSandboxError(
+                "external-memory root must be disjoint from the task workspace"
+            )
         info = os.stat(root, follow_symlinks=False)
         if info.st_uid != self.model_uid or info.st_gid != self.model_gid:
             raise SwesmithSandboxError(
@@ -395,6 +415,29 @@ class LinuxNamespaceEpisodeSandbox:
         self._workspace_root = root
         self._snapshot = snapshot
         return snapshot
+
+    def attach_external_memory(self, memory_root: Path | str) -> None:
+        """Attach one dedicated store for the optional AMG capability mount."""
+
+        self._require_open()
+        if self._external_memory_root is not None:
+            raise SwesmithSandboxError(
+                "a SWE-smith sandbox may attach one external-memory root only"
+            )
+        root = _require_external_memory_root(Path(memory_root))
+        info = os.stat(root, follow_symlinks=False)
+        if info.st_uid != self.model_uid or info.st_gid != self.model_gid:
+            raise SwesmithSandboxError(
+                "external-memory root must be owned by the episode's leased UID/GID"
+            )
+        workspace = self._workspace_root
+        if workspace is not None and _roots_overlap(root, workspace):
+            raise SwesmithSandboxError(
+                "external-memory root must be disjoint from the task workspace"
+            )
+        snapshot = snapshot_workspace_tree(root, self.limits)
+        self._external_memory_root = root
+        self._external_memory_snapshot = snapshot
 
     def refresh_after_host_mutation(self) -> WorkspaceDiff:
         """Validate and attest a trusted host-side mutation such as apply_patch."""
@@ -434,24 +477,69 @@ class LinuxNamespaceEpisodeSandbox:
             if before.tree_sha256 != expected_before.tree_sha256:
                 self._poison("workspace changed outside the attested episode action path")
                 raise SwesmithSandboxError(self._poisoned_reason or "workspace changed")
-            result = self._run_namespace(
-                root,
-                command=command,
-                workdir=normalized_workdir,
-                timeout_ms=timeout_ms,
-            )
+            memory_root = self._external_memory_root
+            expected_memory_before = self._external_memory_snapshot
+            if (memory_root is None) != (expected_memory_before is None):
+                self._poison("external-memory attachment state is inconsistent")
+                raise SwesmithSandboxError(self._poisoned_reason)
+            memory_before = None
+            if memory_root is not None and expected_memory_before is not None:
+                memory_before = self._snapshot_external_memory(
+                    memory_root,
+                    previous=expected_memory_before,
+                )
+                if memory_before.tree_sha256 != expected_memory_before.tree_sha256:
+                    self._poison(
+                        "external memory changed outside the attested episode action path"
+                    )
+                    raise SwesmithSandboxError(self._poisoned_reason)
+
+            monitor = _external_memory_monitor(memory_root)
+            execution_error: BaseException | None = None
+            result: ShellExecutionResult | None = None
+            try:
+                with monitor:
+                    result = self._run_namespace(
+                        root,
+                        command=command,
+                        workdir=normalized_workdir,
+                        timeout_ms=timeout_ms,
+                    )
+            except BaseException as exc:
+                execution_error = exc
             try:
                 after = snapshot_workspace_tree(root, self.limits, previous=before)
             except BaseException as exc:
                 self._poison(f"workspace validation failed after shell_command: {exc}")
                 raise
+            memory_after = None
+            if memory_root is not None and memory_before is not None:
+                try:
+                    memory_after = self._snapshot_external_memory(
+                        memory_root,
+                        previous=memory_before,
+                    )
+                except BaseException as exc:
+                    self._poison(
+                        "external-memory validation failed after shell_command: "
+                        f"{exc}"
+                    )
+                    raise
+            if execution_error is not None:
+                self._poison(f"shell_command execution failed: {execution_error}")
+                raise execution_error
+            if result is None:
+                raise AssertionError("shell command completed without a result")
+            external_memory_access = monitor.receipt()
             diff = diff_workspace_trees(before, after)
             self._snapshot = after
+            self._external_memory_snapshot = memory_after
             return SwesmithShellExecution(
                 result=result,
                 workspace_before=before,
                 workspace_after=after,
                 workspace_diff=diff,
+                external_memory_access=external_memory_access,
             )
         finally:
             self._run_lock.release()
@@ -461,7 +549,9 @@ class LinuxNamespaceEpisodeSandbox:
             return
         self._closed = True
         self._workspace_root = None
+        self._external_memory_root = None
         self._snapshot = None
+        self._external_memory_snapshot = None
         context = self._uid_lease_context
         self._uid_lease_context = None
         if context is not None:
@@ -484,6 +574,24 @@ class LinuxNamespaceEpisodeSandbox:
     def _poison(self, reason: str) -> None:
         if self._poisoned_reason is None:
             self._poisoned_reason = reason
+
+    def _snapshot_external_memory(
+        self,
+        root: Path,
+        *,
+        previous: WorkspaceTreeSnapshot,
+    ) -> WorkspaceTreeSnapshot:
+        checked_root = _require_external_memory_root(root)
+        info = os.stat(checked_root, follow_symlinks=False)
+        if info.st_uid != self.model_uid or info.st_gid != self.model_gid:
+            raise SwesmithSandboxError(
+                "external-memory root ownership changed outside the episode"
+            )
+        return snapshot_workspace_tree(
+            checked_root,
+            self.limits,
+            previous=previous,
+        )
 
     def _run_namespace(
         self,
@@ -540,6 +648,11 @@ class LinuxNamespaceEpisodeSandbox:
                     str(self._binaries["chroot"]),
                     str(self._binaries["hostname"]),
                     str(self._binaries["mknod"]),
+                    (
+                        ""
+                        if self._external_memory_root is None
+                        else str(self._external_memory_root)
+                    ),
                 ],
                 cwd=parent,
                 env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"},
@@ -649,6 +762,283 @@ def _remove_temporary_sandbox_directory(
                 f"last_error={last_error}"
             ) from last_error
         time.sleep(min(_SANDBOX_CLEANUP_RETRY_SECONDS, remaining))
+
+
+class _ExternalMemoryMonitor:
+    def __enter__(self) -> _ExternalMemoryMonitor:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+    def receipt(self) -> Mapping[str, str] | None:
+        return None
+
+
+class _PortableExternalMemoryMonitor(_ExternalMemoryMonitor):
+    """Metadata fallback for local non-Linux adapter tests.
+
+    Formal execution uses inotify below.  The fallback forces old access times
+    before the command and compares metadata without reading file contents.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self._before: dict[Path, os.stat_result] = {}
+        self._read = False
+        self._write = False
+
+    def __enter__(self) -> _PortableExternalMemoryMonitor:
+        paths = _external_memory_paths(self.root)
+        for path in paths:
+            info = os.lstat(path)
+            if not stat.S_ISLNK(info.st_mode):
+                os.utime(
+                    path,
+                    ns=(0, info.st_mtime_ns),
+                    follow_symlinks=False,
+                )
+        self._before = {path: os.lstat(path) for path in paths}
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        after_known: dict[Path, os.stat_result] = {}
+        for path in self._before:
+            try:
+                after_known[path] = os.lstat(path)
+            except FileNotFoundError:
+                self._write = True
+        after_paths = set(_external_memory_paths(self.root))
+        if after_paths != set(self._before):
+            self._write = True
+        for path, before in self._before.items():
+            after = after_known.get(path)
+            if after is None:
+                continue
+            if after.st_atime_ns > before.st_atime_ns:
+                self._read = True
+            if (
+                after.st_mode != before.st_mode
+                or after.st_size != before.st_size
+                or after.st_mtime_ns != before.st_mtime_ns
+                or after.st_ctime_ns != before.st_ctime_ns
+            ):
+                self._write = True
+
+    def receipt(self) -> Mapping[str, str] | None:
+        return _memory_access_receipt(read=self._read, write=self._write)
+
+
+class _InotifyExternalMemoryMonitor(_ExternalMemoryMonitor):
+    _EVENT = struct.Struct("iIII")
+    _IN_ACCESS = 0x00000001
+    _IN_MODIFY = 0x00000002
+    _IN_ATTRIB = 0x00000004
+    _IN_CLOSE_WRITE = 0x00000008
+    _IN_CLOSE_NOWRITE = 0x00000010
+    _IN_OPEN = 0x00000020
+    _IN_MOVED_FROM = 0x00000040
+    _IN_MOVED_TO = 0x00000080
+    _IN_CREATE = 0x00000100
+    _IN_DELETE = 0x00000200
+    _IN_DELETE_SELF = 0x00000400
+    _IN_MOVE_SELF = 0x00000800
+    _IN_Q_OVERFLOW = 0x00004000
+    _IN_IGNORED = 0x00008000
+    _IN_ISDIR = 0x40000000
+    _READ_MASK = _IN_ACCESS | _IN_CLOSE_NOWRITE
+    _WRITE_MASK = (
+        _IN_MODIFY
+        | _IN_ATTRIB
+        | _IN_CLOSE_WRITE
+        | _IN_MOVED_FROM
+        | _IN_MOVED_TO
+        | _IN_CREATE
+        | _IN_DELETE
+        | _IN_DELETE_SELF
+        | _IN_MOVE_SELF
+    )
+    _WATCH_MASK = _READ_MASK | _WRITE_MASK | _IN_OPEN
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self._fd = -1
+        self._watches: dict[int, Path] = {}
+        self._read = False
+        self._write = False
+        self._overflow = False
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._collector_error: BaseException | None = None
+        self._libc = ctypes.CDLL(None, use_errno=True)
+
+    def __enter__(self) -> _InotifyExternalMemoryMonitor:
+        initializer = self._libc.inotify_init1
+        initializer.argtypes = [ctypes.c_int]
+        initializer.restype = ctypes.c_int
+        self._fd = initializer(os.O_NONBLOCK | os.O_CLOEXEC)
+        if self._fd < 0:
+            error = ctypes.get_errno()
+            raise SwesmithSandboxError(
+                f"cannot initialize external-memory access monitor: errno={error}"
+            )
+        try:
+            self._add_tree(self.root)
+            self._drain(record=False)
+            self._thread = threading.Thread(
+                target=self._collect,
+                name="swesmith-external-memory-monitor",
+                daemon=True,
+            )
+            self._thread.start()
+            return self
+        except BaseException:
+            os.close(self._fd)
+            self._fd = -1
+            raise
+
+    def __exit__(self, *_exc: object) -> None:
+        self._stop.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=2.0)
+        try:
+            self._drain(record=True)
+        finally:
+            if self._fd >= 0:
+                os.close(self._fd)
+                self._fd = -1
+        if thread is not None and thread.is_alive():
+            raise SwesmithSandboxError(
+                "external-memory access monitor did not stop"
+            )
+        if self._collector_error is not None:
+            raise SwesmithSandboxError(
+                "external-memory access monitor failed"
+            ) from self._collector_error
+        if self._overflow:
+            raise SwesmithSandboxError(
+                "external-memory access monitor overflowed"
+            )
+
+    def receipt(self) -> Mapping[str, str] | None:
+        return _memory_access_receipt(read=self._read, write=self._write)
+
+    def _add_tree(self, root: Path) -> None:
+        self._add_watch(root)
+        for current, directory_names, _file_names in os.walk(
+            root, topdown=True, followlinks=False
+        ):
+            current_path = Path(current)
+            directory_names.sort()
+            for name in directory_names:
+                path = current_path / name
+                try:
+                    info = os.lstat(path)
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISDIR(info.st_mode):
+                    self._add_watch(path)
+
+    def _add_watch(self, path: Path) -> None:
+        adder = self._libc.inotify_add_watch
+        adder.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+        adder.restype = ctypes.c_int
+        descriptor = adder(
+            self._fd,
+            os.fsencode(path),
+            self._WATCH_MASK,
+        )
+        if descriptor < 0:
+            error = ctypes.get_errno()
+            raise SwesmithSandboxError(
+                f"cannot watch external-memory root: errno={error}"
+            )
+        self._watches[descriptor] = path
+
+    def _collect(self) -> None:
+        try:
+            while not self._stop.is_set():
+                ready, _, _ = select.select([self._fd], [], [], 0.05)
+                if ready:
+                    self._drain(record=True)
+        except BaseException as exc:
+            if not self._stop.is_set():
+                self._collector_error = exc
+                self._stop.set()
+
+    def _drain(self, *, record: bool) -> None:
+        while self._fd >= 0:
+            try:
+                payload = os.read(self._fd, 64 * 1024)
+            except BlockingIOError:
+                return
+            if not payload:
+                return
+            offset = 0
+            while offset + self._EVENT.size <= len(payload):
+                descriptor, mask, _cookie, name_length = self._EVENT.unpack_from(
+                    payload, offset
+                )
+                offset += self._EVENT.size
+                raw_name = payload[offset : offset + name_length]
+                offset += name_length
+                name = os.fsdecode(raw_name.rstrip(b"\0"))
+                if mask & self._IN_Q_OVERFLOW:
+                    self._overflow = True
+                if record:
+                    self._read = self._read or bool(mask & self._READ_MASK)
+                    self._write = self._write or bool(mask & self._WRITE_MASK)
+                if mask & self._IN_IGNORED:
+                    self._watches.pop(descriptor, None)
+                if mask & self._IN_ISDIR and mask & (
+                    self._IN_CREATE | self._IN_MOVED_TO
+                ):
+                    parent = self._watches.get(descriptor)
+                    if parent is not None and name:
+                        child = parent / name
+                        try:
+                            if child.is_dir() and not child.is_symlink():
+                                self._add_tree(child)
+                        except FileNotFoundError:
+                            pass
+
+
+def _external_memory_monitor(root: Path | None) -> _ExternalMemoryMonitor:
+    if root is None:
+        return _ExternalMemoryMonitor()
+    if platform.system() == "Linux":
+        return _InotifyExternalMemoryMonitor(root)
+    return _PortableExternalMemoryMonitor(root)
+
+
+def _memory_access_receipt(
+    *, read: bool, write: bool
+) -> Mapping[str, str] | None:
+    if not read and not write:
+        return None
+    operation = "read_write" if read and write else "read" if read else "write"
+    return {
+        "schema": EXTERNAL_MEMORY_ACCESS_SCHEMA,
+        "operation": operation,
+    }
+
+
+def _external_memory_paths(root: Path) -> tuple[Path, ...]:
+    paths = [root]
+    for current, directory_names, file_names in os.walk(
+        root, topdown=True, followlinks=False
+    ):
+        current_path = Path(current)
+        directory_names.sort()
+        file_names.sort()
+        paths.extend(current_path / name for name in directory_names)
+        paths.extend(current_path / name for name in file_names)
+    return tuple(paths)
+
+
+def _roots_overlap(left: Path, right: Path) -> bool:
+    return left == right or left in right.parents or right in left.parents
 
 
 def snapshot_workspace_tree(
@@ -904,6 +1294,25 @@ def _require_workspace_root(path: Path) -> Path:
         raise SwesmithSandboxError("workspace root must be a real directory") from exc
     if not stat.S_ISDIR(info.st_mode):
         raise SwesmithSandboxError("workspace root must be a real directory")
+    return expanded.resolve(strict=True)
+
+
+def _require_external_memory_root(path: Path) -> Path:
+    expanded = path.expanduser()
+    try:
+        info = os.lstat(expanded)
+    except OSError as exc:
+        raise SwesmithSandboxError(
+            "external-memory root must be a real private directory"
+        ) from exc
+    if (
+        stat.S_ISLNK(info.st_mode)
+        or not stat.S_ISDIR(info.st_mode)
+        or stat.S_IMODE(info.st_mode) & 0o077
+    ):
+        raise SwesmithSandboxError(
+            "external-memory root must be a real private directory"
+        )
     return expanded.resolve(strict=True)
 
 
@@ -1195,6 +1604,7 @@ mount_binary=${16}
 chroot_binary=${17}
 hostname_binary=${18}
 mknod_binary=${19}
+external_memory=${20}
 
 "$mount_binary" --make-rprivate /
 "$mount_binary" --bind "$oci_rootfs" "$mount_root"
@@ -1223,6 +1633,12 @@ touch "$mount_root/run/tools/rg"
 chmod 0755 "$mount_root/run/tools/rg"
 "$mount_binary" --bind "$rg_binary" "$mount_root/run/tools/rg"
 "$mount_binary" -o remount,bind,ro,nosuid,nodev "$mount_root/run/tools/rg"
+if [ -n "$external_memory" ]; then
+    mkdir "$mount_root/run/amg_memory"
+    chmod 0700 "$mount_root/run/amg_memory"
+    "$mount_binary" --bind "$external_memory" "$mount_root/run/amg_memory"
+    "$mount_binary" -o remount,bind,rw,nosuid,nodev,noexec "$mount_root/run/amg_memory"
+fi
 "$mount_binary" --bind "$workspace" "$mount_root/testbed"
 "$mount_binary" -o remount,bind,rw,nosuid,nodev "$mount_root/testbed"
 "$hostname_binary" swesmith-sandbox

@@ -20,12 +20,13 @@ from .resources import (
 from .resources import (
     validate_resource_contract as _validate_resource_contract,
 )
-from .workspace import MODE_AMG_MEMORY, EpisodeWorkspace
+from .workspace import EXTERNAL_MEMORY_PATH, MODE_AMG_MEMORY, EpisodeWorkspace
 
-ATTESTATION_SCHEMA = "mlebench_lite_sandbox_attestation_v2"
-EXECUTION_SCHEMA = "mlebench_lite_sandbox_execution_v2"
+ATTESTATION_SCHEMA = "mlebench_lite_sandbox_attestation_v3"
+EXECUTION_SCHEMA = "mlebench_lite_sandbox_execution_v3"
 FREEZE_SCHEMA = "mlebench_lite_sandbox_freeze_v2"
 TEARDOWN_SCHEMA = "mlebench_lite_sandbox_teardown_v2"
+EXTERNAL_MEMORY_ACCESS_SCHEMA = "amg_external_memory_access_v1"
 
 
 class MLEBenchLiteExecutorError(RuntimeError):
@@ -167,6 +168,7 @@ class SandboxExecutor:
             raise MLEBenchLiteExecutorError("sandbox execution failed") from exc
         cumulative = self._validate_execution_receipt(
             result,
+            workspace=workspace,
             command=command,
             timeout_ms=timeout_ms,
             operation_id=operation,
@@ -270,12 +272,42 @@ class SandboxExecutor:
             ) from exc
 
     def _validate_workspace_contract(self, workspace: EpisodeWorkspace) -> None:
+        if (workspace.mode == MODE_AMG_MEMORY) != (workspace.memory_root is not None):
+            raise MLEBenchLiteExecutorError(
+                "external-memory workspace contract drifted"
+            )
         self.validate_resource_contract(
             workspace.resource_contract,
             workspace.resource_contract_sha256,
         )
 
     def _expected_attestation(self, workspace: EpisodeWorkspace) -> dict[str, Any]:
+        mounts = [
+            {
+                "source": str(workspace.public_root),
+                "target": "/home/data",
+                "read_only": True,
+                "source_tree_sha256": workspace.public_tree_sha256,
+            },
+            {
+                "source": str(workspace.workspace_root),
+                "target": "/home/workspace",
+                "read_only": False,
+            },
+            {
+                "source": str(workspace.submission_root),
+                "target": "/home/submission",
+                "read_only": False,
+            },
+        ]
+        if workspace.memory_root is not None:
+            mounts.append(
+                {
+                    "source": str(workspace.memory_root),
+                    "target": EXTERNAL_MEMORY_PATH,
+                    "read_only": False,
+                }
+            )
         return {
             "schema": ATTESTATION_SCHEMA,
             "runner_sha256": self.expected_runner_sha256,
@@ -291,32 +323,20 @@ class SandboxExecutor:
                 "cgroup_enforced": True,
                 "isolated_process_group": True,
             },
-            "memory_namespace": {
-                "path": "/home/workspace/.agent_memory",
-                "state": (
-                    "task_local_rw"
+            "external_memory_isolation": {
+                "sandbox_access": (
+                    "read_write_mount_v1"
                     if workspace.mode == MODE_AMG_MEMORY
-                    else "absent_and_denied"
+                    else "none"
+                ),
+                "native_tool_surface": "inspect_edit_shell_v1",
+                "private_root_state": (
+                    "allocated"
+                    if workspace.mode == MODE_AMG_MEMORY
+                    else "absent"
                 ),
             },
-            "mounts": [
-                {
-                    "source": str(workspace.public_root),
-                    "target": "/home/data",
-                    "read_only": True,
-                    "source_tree_sha256": workspace.public_tree_sha256,
-                },
-                {
-                    "source": str(workspace.workspace_root),
-                    "target": "/home/workspace",
-                    "read_only": False,
-                },
-                {
-                    "source": str(workspace.submission_root),
-                    "target": "/home/submission",
-                    "read_only": False,
-                },
-            ],
+            "mounts": mounts,
             "denied_mount_prefixes": ["/host", "/private"],
         }
 
@@ -324,6 +344,7 @@ class SandboxExecutor:
         self,
         result: Any,
         *,
+        workspace: EpisodeWorkspace,
         command: str,
         timeout_ms: int,
         operation_id: str,
@@ -377,6 +398,19 @@ class SandboxExecutor:
                 "descendant_process_count": 0,
             },
         }
+        access = receipt.get("external_memory_access")
+        if access is not None:
+            if (
+                workspace.mode != MODE_AMG_MEMORY
+                or not isinstance(access, Mapping)
+                or set(access) != {"schema", "operation"}
+                or access.get("schema") != EXTERNAL_MEMORY_ACCESS_SCHEMA
+                or access.get("operation") not in {"read", "write", "read_write"}
+            ):
+                raise MLEBenchLiteExecutorError(
+                    "external-memory access receipt drifted"
+                )
+            expected["external_memory_access"] = dict(access)
         if not _strict_equal(dict(receipt), expected):
             raise MLEBenchLiteExecutorError("sandbox execution receipt drifted")
         return cumulative
@@ -563,8 +597,11 @@ def _workspace_request(workspace: EpisodeWorkspace) -> dict[str, Any]:
         raise MLEBenchLiteExecutorError("resource contract is invalid") from exc
     if contract_sha256 != workspace.resource_contract_sha256:
         raise MLEBenchLiteExecutorError("resource contract SHA256 mismatch")
-    return {
-        "schema": "mlebench_lite_sandbox_request_v2",
+    memory_enabled = workspace.mode == MODE_AMG_MEMORY
+    if memory_enabled != (workspace.memory_root is not None):
+        raise MLEBenchLiteExecutorError("external-memory workspace contract drifted")
+    request = {
+        "schema": "mlebench_lite_sandbox_request_v3",
         "episode_id": workspace.episode_id,
         "competition_id": workspace.competition_id,
         "mode": workspace.mode,
@@ -575,6 +612,9 @@ def _workspace_request(workspace: EpisodeWorkspace) -> dict[str, Any]:
         "workspace_root": str(workspace.workspace_root),
         "submission_root": str(workspace.submission_root),
     }
+    if workspace.memory_root is not None:
+        request["external_memory_root"] = str(workspace.memory_root)
+    return request
 
 
 def _descriptor_path(descriptor: int) -> str:

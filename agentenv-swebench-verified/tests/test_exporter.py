@@ -104,8 +104,10 @@ class ExporterTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (workspace.policy_root / "script.sh").chmod(0o755)
+            ordinary_note = workspace.policy_root / ".agent_memory" / "debugging.md"
+            ordinary_note.parent.mkdir(parents=True)
+            ordinary_note.write_text("ordinary repository state", encoding="utf-8")
             artifacts = {
-                ".agent_memory/debugging.md": "private memory",
                 ".agent_logs/tool.log": "private log",
                 ".agent_receipts/action.json": "private receipt",
                 ".agent_telemetry/trace.json": "private telemetry",
@@ -143,13 +145,13 @@ class ExporterTests(unittest.TestCase):
         self.assertIn("GIT binary patch", patch)
         self.assertIn("old mode 100644", patch)
         self.assertIn("new mode 100755", patch)
+        self.assertIn(".agent_memory/debugging.md", patch)
+        self.assertIn("ordinary repository state", patch)
         self.assertEqual(object_inventory_after, object_inventory_before)
         for forbidden in (
-            ".agent_memory",
             ".agent_logs",
             ".agent_receipts",
             ".agent_telemetry",
-            "private memory",
             "private log",
             "private receipt",
             "private telemetry",

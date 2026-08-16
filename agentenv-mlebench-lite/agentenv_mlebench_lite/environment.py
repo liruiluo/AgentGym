@@ -517,9 +517,17 @@ class MLEBenchLiteEpisodeManager:
         if action.kind == "parser_error":
             return "Action could not be parsed."
         if action.kind == "inspect":
-            return self._inspect(episode.workspace, action)
+            assert action.path is not None
+            observation, succeeded = self._inspect(episode.workspace, action)
+            if succeeded and episode.workspace.is_external_memory_path(action.path):
+                info["external_memory_operation"] = "read"
+            return observation
         if action.kind == "edit":
-            return self._edit(episode.workspace, action)
+            assert action.path is not None
+            observation, succeeded = self._edit(episode.workspace, action)
+            if succeeded and episode.workspace.is_external_memory_path(action.path):
+                info["external_memory_operation"] = "write"
+            return observation
         if action.kind == "shell":
             episode.counters.execution_count += 1
             delta["execution_count"] = 1
@@ -528,6 +536,7 @@ class MLEBenchLiteEpisodeManager:
                 action,
                 action_id=action_id,
                 delta=delta,
+                info=info,
             )
         if action.kind == "submit":
             receipt = self._submit(episode)
@@ -540,7 +549,10 @@ class MLEBenchLiteEpisodeManager:
         raise RuntimeError("unreachable action kind")
 
     @staticmethod
-    def _inspect(workspace: EpisodeWorkspace, action: PolicyAction) -> str:
+    def _inspect(
+        workspace: EpisodeWorkspace,
+        action: PolicyAction,
+    ) -> tuple[str, bool]:
         assert action.path is not None
         try:
             payload = workspace.read_policy_file(
@@ -548,21 +560,24 @@ class MLEBenchLiteEpisodeManager:
                 offset=action.offset,
                 max_bytes=action.max_bytes,
             )
-            return payload.decode("utf-8", errors="replace")
+            return payload.decode("utf-8", errors="replace"), True
         except MLEBenchLitePolicyPathError:
-            return "Path is unavailable."
+            return "Path is unavailable.", False
 
     @staticmethod
-    def _edit(workspace: EpisodeWorkspace, action: PolicyAction) -> str:
+    def _edit(
+        workspace: EpisodeWorkspace,
+        action: PolicyAction,
+    ) -> tuple[str, bool]:
         assert action.path is not None and action.content is not None
         try:
             workspace.atomic_write_policy_file(
                 action.path,
                 action.content.encode("utf-8"),
             )
-            return "Edit completed."
+            return "Edit completed.", True
         except (UnicodeEncodeError, MLEBenchLitePolicyPathError):
-            return "Path is unavailable."
+            return "Path is unavailable.", False
 
     def _shell(
         self,
@@ -571,6 +586,7 @@ class MLEBenchLiteEpisodeManager:
         *,
         action_id: str,
         delta: dict[str, int],
+        info: dict[str, Any],
     ) -> str:
         assert action.command is not None
         now_ns = time.monotonic_ns()
@@ -595,6 +611,9 @@ class MLEBenchLiteEpisodeManager:
             operation_id=action_id,
         )
         receipt = result.receipt
+        access = receipt.get("external_memory_access")
+        if access is not None:
+            info["external_memory_operation"] = access["operation"]
         resource_delta = dict(receipt["resource_delta"])
         resource_cumulative = dict(receipt["resource_cumulative"])
         for key in RESOURCE_USAGE_KEYS:

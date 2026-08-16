@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
@@ -96,6 +97,32 @@ _PAIRED_STATIC_CONTRACTS = {
     "reward_contract": "external_official_scoring_zero_online_reward_v1",
     "submission_contract": "gaia_task_id_model_answer_jsonl_v1",
 }
+
+
+def _validate_step_response(
+    response: Mapping[str, Any],
+    *,
+    expected_done: bool | None = None,
+) -> tuple[str, float, bool, Mapping[str, Any]]:
+    if set(response) != {"observation", "reward", "done", "info"}:
+        raise RuntimeError("GAIA-Text step response fields drifted")
+    observation = response["observation"]
+    reward = response["reward"]
+    done = response["done"]
+    info = response["info"]
+    if (
+        not isinstance(observation, str)
+        or isinstance(reward, bool)
+        or not isinstance(reward, (int, float))
+        or not math.isfinite(float(reward))
+        or float(reward) != 0.0
+        or type(done) is not bool
+        or not isinstance(info, Mapping)
+    ):
+        raise RuntimeError("GAIA-Text step response types drifted")
+    if expected_done is not None and done is not expected_done:
+        raise RuntimeError("GAIA-Text step terminal state drifted")
+    return observation, float(reward), done, info
 
 
 class GaiaTextEnvClient(BaseEnvClient):
@@ -259,7 +286,10 @@ class GaiaTextEnvClient(BaseEnvClient):
         return self.data_len
 
     def observe(self) -> str:
-        return str(self.info["observation"])
+        observation = self.info.get("observation")
+        if not isinstance(observation, str):
+            raise RuntimeError("GAIA-Text observation must be text")
+        return observation
 
     def policy_framing(self) -> list[dict[str, str]]:
         return [{"role": "system", "content": self._system_prompt}]
@@ -350,14 +380,15 @@ class GaiaTextEnvClient(BaseEnvClient):
         response = self._request(
             "POST", "step", json={"id": self.env_id, "action": action}
         )
+        state, reward, done, response_info = _validate_step_response(response)
         self._native_call_count += 1
         self._policy_step_count += 1
         self.info = response
-        response_info = response.get("info", {})
-        if not isinstance(response_info, Mapping):
-            raise TypeError("GAIA-Text step info must be an object")
         server_step = response_info.get("step")
-        if server_step is not None and int(server_step) != self._native_call_count:
+        if server_step is not None and (
+            type(server_step) is not int
+            or server_step != self._native_call_count
+        ):
             raise RuntimeError(
                 "GAIA-Text native step counter drifted from client calls"
             )
@@ -365,9 +396,9 @@ class GaiaTextEnvClient(BaseEnvClient):
         if not isinstance(action_submission, Mapping):
             action_submission = {"raw_policy_output": action}
         return StepOutput(
-            state=str(response["observation"]),
-            reward=float(response["reward"]),
-            done=bool(response["done"]),
+            state=state,
+            reward=reward,
+            done=done,
             info=build_task_neutral_transition_info(
                 env_info=response_info,
                 action_submission=action_submission,
@@ -445,18 +476,22 @@ class GaiaTextEnvClient(BaseEnvClient):
         response = self._request(
             "POST", "reset", json={"id": self.env_id, "data_idx": idx}
         )
+        _validate_step_response(response, expected_done=False)
         self.info = response
         self._reset_policy_transition_state()
         return response
 
     def finalize_policy_horizon(self) -> StepOutput:
         response = self._request("POST", "horizon", json={"id": self.env_id})
+        state, reward, done, response_info = _validate_step_response(
+            response,
+            expected_done=True,
+        )
         self.info = response
-        response_info = response.get("info", {})
         return StepOutput(
-            state=str(response["observation"]),
-            reward=float(response["reward"]),
-            done=bool(response["done"]),
+            state=state,
+            reward=reward,
+            done=done,
             info=build_task_neutral_transition_info(
                 env_info=response_info,
                 action_submission={"control_action": "horizon"},
