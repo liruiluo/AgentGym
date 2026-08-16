@@ -550,10 +550,13 @@ class MLEBenchLiteWorkspaceExecutorTest(unittest.TestCase):
 
     def test_runner_permissions_and_replacement_are_checked_for_each_call(self) -> None:
         workspace = self.manager.create(self.dataset[0], MODE_NATIVE)
-        runner = self.root / "mutable-runner"
+        parent = self.root / "mutable-runner-bundle"
+        parent.mkdir(mode=0o700)
+        runner = parent / "mutable-runner"
         runner.write_bytes(b"#!/bin/sh\nexit 1\n")
         runner.chmod(0o500)
         digest = sha256_bytes(runner.read_bytes())
+        parent.chmod(0o500)
         backend = ExternalSandboxRunnerBackend(
             runner,
             expected_runner_sha256=digest,
@@ -567,16 +570,22 @@ class MLEBenchLiteWorkspaceExecutorTest(unittest.TestCase):
         replacement = self.root / "replacement"
         replacement.write_bytes(b"#!/bin/sh\nexit 2\n")
         replacement.chmod(0o500)
+        parent.chmod(0o700)
         os.replace(replacement, runner)
+        parent.chmod(0o500)
         with self.assertRaises(MLEBenchLiteExecutorError):
             backend.attest(workspace)
+        parent.chmod(0o700)
 
     def test_external_runner_receives_a_minimal_nonsecret_environment(self) -> None:
         workspace = self.manager.create(self.dataset[0], MODE_NATIVE)
-        runner = self.root / "runner"
+        parent = self.root / "sealed-runner-bundle"
+        parent.mkdir(mode=0o700)
+        runner = parent / "runner"
         runner.write_bytes(b"#!/bin/sh\nexit 1\n")
         runner.chmod(0o500)
         runner_sha256 = sha256_bytes(runner.read_bytes())
+        parent.chmod(0o500)
         backend = ExternalSandboxRunnerBackend(
             runner,
             expected_runner_sha256=runner_sha256,
@@ -601,6 +610,14 @@ class MLEBenchLiteWorkspaceExecutorTest(unittest.TestCase):
         )
         self.assertNotIn("KAGGLE_CONFIG_DIR", environment)
         self.assertTrue(run.call_args.kwargs["close_fds"])
+        self.assertEqual(
+            run.call_args.args[0][1:],
+            ["--expected-runtime-digest", FAKE_RUNTIME_DIGEST, "attest"],
+        )
+        self.assertEqual(
+            run.call_args.kwargs["timeout"],
+            workspace.resource_contract["max_step_response_ms"] / 1000.0,
+        )
         self.assertEqual(len(run.call_args.kwargs["pass_fds"]), 1)
         self.assertIn("/fd/", run.call_args.args[0][0])
         request = json.loads(run.call_args.kwargs["input"])
@@ -629,21 +646,24 @@ class MLEBenchLiteWorkspaceExecutorTest(unittest.TestCase):
         self.assertEqual(
             memory_request["external_memory_root"], str(memory.memory_root)
         )
+        parent.chmod(0o700)
 
-    def test_runner_parent_must_be_owned_and_not_group_or_world_writable(self) -> None:
-        parent = self.root / "unsafe-runner-parent"
-        parent.mkdir(mode=0o700)
-        runner = parent / "runner"
-        runner.write_bytes(b"#!/bin/sh\nexit 1\n")
-        runner.chmod(0o500)
-        parent.chmod(0o770)
-        with self.assertRaises(MLEBenchLiteExecutorError):
-            ExternalSandboxRunnerBackend(
-                runner,
-                expected_runner_sha256=sha256_bytes(runner.read_bytes()),
-                expected_runtime_digest=FAKE_RUNTIME_DIGEST,
-                expected_runner_uid=os.geteuid(),
-            )
+    def test_runner_parent_must_be_owned_and_not_writable_by_anyone(self) -> None:
+        for mode in (0o755, 0o770):
+            with self.subTest(mode=oct(mode)):
+                parent = self.root / f"unsafe-runner-parent-{mode:o}"
+                parent.mkdir(mode=0o700)
+                runner = parent / "runner"
+                runner.write_bytes(b"#!/bin/sh\nexit 1\n")
+                runner.chmod(0o500)
+                parent.chmod(mode)
+                with self.assertRaises(MLEBenchLiteExecutorError):
+                    ExternalSandboxRunnerBackend(
+                        runner,
+                        expected_runner_sha256=sha256_bytes(runner.read_bytes()),
+                        expected_runtime_digest=FAKE_RUNTIME_DIGEST,
+                        expected_runner_uid=os.geteuid(),
+                    )
 
 
 if __name__ == "__main__":

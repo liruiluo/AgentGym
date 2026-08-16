@@ -154,3 +154,19 @@ so a stale concurrent reset cannot create an unreachable workspace.
 The real dynamic namespace/cgroup/process/network probes remain a runtime-host
 gate. Unit tests validate the adapter protocol with a synthetic attested
 backend; they do not claim that this Mac is a formal MLE-bench execution host.
+
+## Bundled approved-equivalent bridge
+
+`runtime_bridge/` now provides the exact external-runner operations using a
+hash-locked MLE-specific supervisor. It preserves the adapter protocol and the
+36-CPU / 440,000,000,000-byte memory / 4,096-PID / one-GPU contract; it does
+not substitute OpenMLE tasks or grading semantics. The deployment identity
+also pins a complete sealed rootfs runtime: native launcher, loader, Python,
+ELF dependency closure, mapped-object audit, `nvidia-smi`, GPU UUID and device
+minors, plus reusable OpenMLE-v7 isolation provenance.
+
+See [`runtime_bridge/README.md`](runtime_bridge/README.md) for rootfs locking,
+private-mount provisioning, reproducible build, and verifier commands. Local
+source/protocol success is only a pre-host certificate. Linux/B200 admission,
+Kaggle assets plus the 22-task checksum manifest, a matched one-task three-arm
+gate, and the official host-only grader remain explicitly pending.

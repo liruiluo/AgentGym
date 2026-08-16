@@ -443,7 +443,11 @@ class ExternalSandboxRunnerBackend:
         os.close(descriptor)
 
     def attest(self, workspace: EpisodeWorkspace) -> Mapping[str, Any]:
-        return self._invoke("attest", _workspace_request(workspace))
+        return self._invoke(
+            "attest",
+            _workspace_request(workspace),
+            timeout=self._operation_timeout(workspace),
+        )
 
     def execute(
         self,
@@ -461,7 +465,7 @@ class ExternalSandboxRunnerBackend:
                 "command": command,
                 "timeout_ms": timeout_ms,
             },
-            timeout=max(self.protocol_timeout_seconds, timeout_ms / 1000.0 + 5.0),
+            timeout=self._operation_timeout(workspace),
         )
         if not isinstance(value, dict) or set(value) != {
             "returncode",
@@ -488,6 +492,7 @@ class ExternalSandboxRunnerBackend:
         return self._invoke(
             "freeze",
             {**_workspace_request(workspace), "operation_id": operation_id},
+            timeout=self._operation_timeout(workspace),
         )
 
     def teardown(
@@ -499,7 +504,15 @@ class ExternalSandboxRunnerBackend:
         return self._invoke(
             "teardown",
             {**_workspace_request(workspace), "operation_id": operation_id},
+            timeout=self._operation_timeout(workspace),
         )
+
+    @staticmethod
+    def _operation_timeout(workspace: EpisodeWorkspace) -> float:
+        value = workspace.resource_contract.get("max_step_response_ms")
+        if type(value) is not int or value <= 0:
+            raise MLEBenchLiteExecutorError("max step response budget drifted")
+        return value / 1000.0
 
     def _invoke(
         self,
@@ -512,7 +525,12 @@ class ExternalSandboxRunnerBackend:
         executable = _descriptor_path(descriptor)
         try:
             completed = subprocess.run(
-                [executable, operation],
+                [
+                    executable,
+                    "--expected-runtime-digest",
+                    self.expected_runtime_digest,
+                    operation,
+                ],
                 input=_canonical_bytes(payload),
                 stdin=None,
                 stdout=subprocess.PIPE,
@@ -552,7 +570,8 @@ class ExternalSandboxRunnerBackend:
             if (
                 not stat.S_ISDIR(parent_metadata.st_mode)
                 or parent_metadata.st_uid != self.expected_runner_uid
-                or parent_metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                or parent_metadata.st_mode
+                & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
             ):
                 raise MLEBenchLiteExecutorError(
                     "sandbox runner parent identity is unsafe"
