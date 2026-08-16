@@ -234,6 +234,18 @@ class SwesmithEnvClient(BaseEnvClient):
         self._reset_policy_transition_state()
 
     def _reset_policy_transition_state(self) -> None:
+        if not hasattr(self, "_max_policy_turns"):
+            metadata = getattr(self, "metadata", {})
+            configured = (
+                metadata.get("configured_max_policy_turns", 30)
+                if isinstance(metadata, Mapping)
+                else 30
+            )
+            self._max_policy_turns = int(configured)
+            if self._max_policy_turns <= 0:
+                raise RuntimeError(
+                    "SWE-smith configured_max_policy_turns must be positive"
+                )
         self._policy_step_count = 0
         self._native_call_count = 0
         self._context_epoch = 0
