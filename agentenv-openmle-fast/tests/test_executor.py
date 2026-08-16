@@ -210,6 +210,7 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
         backend.runner_path = self.workspace / "runner"
         backend.limits = self.limits
         backend.expected_runtime_digest = "sha256:" + "1" * 64
+        timeout_ms = EXTERNAL_RUNNER_COMPLETION_GRACE_MS + 1_000
         with patch(
             "agentenv_openmle_fast.executor.subprocess.run",
             side_effect=subprocess.TimeoutExpired("runner", 1.0),
@@ -217,16 +218,34 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
             result = backend.run(
                 self.workspace,
                 command="true",
-                timeout_ms=1_000,
+                timeout_ms=timeout_ms,
                 managed_runtime_budget_ms=15_000,
             )
         self.assertEqual(
             run.call_args.kwargs["timeout"],
-            (1_000 + EXTERNAL_RUNNER_COMPLETION_GRACE_MS) / 1_000.0,
+            (timeout_ms + EXTERNAL_RUNNER_COMPLETION_GRACE_MS) / 1_000.0,
         )
         self.assertFalse(result.timed_out)
         self.assertTrue(result.infrastructure_fault)
         self.assertEqual(result.failure_class, "runner_protocol_fault")
+
+    def test_external_runner_treats_too_short_timeout_as_policy_timeout(self) -> None:
+        backend = object.__new__(ExternalSandboxRunnerBackend)
+        backend.runner_path = self.workspace / "runner"
+        backend.limits = self.limits
+        backend.expected_runtime_digest = "sha256:" + "1" * 64
+        with patch("agentenv_openmle_fast.executor.subprocess.run") as run:
+            result = backend.run(
+                self.workspace,
+                command="cat TASK.md",
+                timeout_ms=20,
+                managed_runtime_budget_ms=15_000,
+            )
+        run.assert_not_called()
+        self.assertTrue(result.timed_out)
+        self.assertEqual(result.failure_class, "wall_timeout")
+        self.assertFalse(result.infrastructure_fault)
+        self.assertEqual(result.execution_attempt_delta, 0)
 
     def test_external_runner_process_uses_utf8_locale_for_policy_commands(self) -> None:
         backend = object.__new__(ExternalSandboxRunnerBackend)
@@ -234,6 +253,7 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
         backend.limits = self.limits
         backend.expected_runtime_digest = "sha256:" + "1" * 64
         command = "printf 'unicode: 中文 ° µ\\n'"
+        timeout_ms = EXTERNAL_RUNNER_COMPLETION_GRACE_MS + 1_000
         with patch(
             "agentenv_openmle_fast.executor.subprocess.run",
             side_effect=subprocess.TimeoutExpired("runner", 1.0),
@@ -241,7 +261,7 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
             backend.run(
                 self.workspace,
                 command=command,
-                timeout_ms=1_000,
+                timeout_ms=timeout_ms,
                 managed_runtime_budget_ms=15_000,
             )
         self.assertEqual(

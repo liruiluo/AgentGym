@@ -572,6 +572,30 @@ class ExternalSandboxRunnerBackend:
         timeout_ms: int,
         managed_runtime_budget_ms: int,
     ) -> BackendExecution:
+        # The exact runner reserves this interval for admission and cleanup.
+        # A shorter policy deadline is a policy timeout, not an infrastructure
+        # fault that should drop the trajectory.
+        if timeout_ms <= EXTERNAL_RUNNER_COMPLETION_GRACE_MS:
+            return BackendExecution(
+                stdout=b"",
+                stderr=b"",
+                exit_code=124,
+                timed_out=True,
+                wall_seconds=0.0,
+                managed_runtime_wall_seconds=0.0,
+                cpu_seconds=0.0,
+                peak_rss_bytes=0,
+                bytes_read=0,
+                bytes_written=0,
+                process_peak=0,
+                execution_attempt_delta=0,
+                execution_completed_delta=0,
+                nested_subprocess_delta=0,
+                fit_delta=0,
+                fit_counter_coverage="partial",
+                failure_class="wall_timeout",
+                infrastructure_fault=False,
+            )
         request = {
             "schema": "openmle_fast_runner_request_v1",
             "workspace": str(workspace),
