@@ -357,8 +357,6 @@ class LinuxNamespaceEpisodeSandbox:
                 command=(
                     "test \"$(command -v rg)\" = /run/tools/rg && "
                     "rg --version >/dev/null && "
-                    "test \"$(python --version 2>&1 | cut -d. -f1-2)\" = "
-                    "'Python 3.10' && "
                     "printf SWESMITH_OCI_ROOTFS_SANDBOX_OK > proof && "
                     "cat proof"
                 ),

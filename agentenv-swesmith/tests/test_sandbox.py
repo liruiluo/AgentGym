@@ -93,8 +93,14 @@ class _FakeEpisodeSandbox(LinuxNamespaceEpisodeSandbox):
     ) -> ShellExecutionResult:
         if self.mutation is not None:
             self.mutation(workspace_root)
+        if "SWESMITH_OCI_ROOTFS_SANDBOX_OK" in command:
+            proof = b"SWESMITH_OCI_ROOTFS_SANDBOX_OK"
+            (workspace_root / "proof").write_bytes(proof)
+            stdout = proof
+        else:
+            stdout = b"ok"
         return ShellExecutionResult(
-            stdout=b"ok",
+            stdout=stdout,
             stderr=b"",
             exit_code=0,
             elapsed_ms=1,
@@ -105,6 +111,20 @@ class _FakeEpisodeSandbox(LinuxNamespaceEpisodeSandbox):
             sandbox_contract="test",
             model_uid=self.model_uid,
         )
+
+
+class SandboxPreflightTests(unittest.TestCase):
+    def test_does_not_require_a_language_specific_runtime(self) -> None:
+        sandbox = _FakeEpisodeSandbox()
+        with mock.patch.object(
+            sandbox,
+            "_run_namespace",
+            wraps=sandbox._run_namespace,
+        ) as run:
+            sandbox.preflight()
+        command = run.call_args.kwargs["command"]
+        self.assertNotIn("python", command.lower())
+        sandbox.close()
 
 
 class SandboxScratchCleanupTests(unittest.TestCase):
