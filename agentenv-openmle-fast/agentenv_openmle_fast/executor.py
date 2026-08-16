@@ -961,7 +961,13 @@ class OpenMLEFastExecutor:
                 status = "policy_violation"
                 failure_class = "output_limit"
             if backend.infrastructure_fault:
-                status = "infrastructure_fault"
+                # A policy-authored workspace invariant violation is detected
+                # after the runner returns.  The runner may also report an
+                # infrastructure fault while handling that invalid tree, but
+                # it must not turn the policy-caused terminal into a dropped
+                # trajectory.
+                if status != "policy_violation":
+                    status = "infrastructure_fault"
             elif (
                 effective_managed_runtime_budget_ms is not None
                 and backend.managed_runtime_wall_seconds * 1000.0

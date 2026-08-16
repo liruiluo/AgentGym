@@ -71,6 +71,29 @@ class _RecordingBackend:
         )
 
 
+class _InvariantAndInfrastructureFaultBackend(_RecordingBackend):
+    def run(
+        self,
+        workspace,
+        *,
+        command: str,
+        timeout_ms: int,
+        managed_runtime_budget_ms: int,
+    ) -> BackendExecution:
+        result = super().run(
+            workspace,
+            command=command,
+            timeout_ms=timeout_ms,
+            managed_runtime_budget_ms=managed_runtime_budget_ms,
+        )
+        (Path(workspace) / "policy-created-link").symlink_to("missing-target")
+        return replace(
+            result,
+            failure_class="runner_protocol_fault",
+            infrastructure_fault=True,
+        )
+
+
 class OpenMLEFastExecutorTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="openmle-executor-test-")
@@ -131,6 +154,20 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
         self.assertEqual(receipt.execution_action_delta, 0)
         self.assertEqual(receipt.execution_attempt_delta, 0)
         self.assertTrue((self.workspace / "TASK.md").is_file())
+
+    def test_workspace_invariant_takes_precedence_over_backend_fault(self) -> None:
+        backend = _InvariantAndInfrastructureFaultBackend(self.limits)
+        executor = OpenMLEFastExecutor(limits=self.limits, backend=backend)
+        action = parse_policy_action(
+            'shell_command {"command":"ln -s missing-target policy-created-link"}'
+        )
+
+        receipt = executor.execute(self.workspace, action)
+
+        self.assertEqual(receipt.status, "policy_violation")
+        self.assertEqual(receipt.failure_class, "workspace_invariant_violation")
+        self.assertTrue(receipt.policy_terminal)
+        self.assertFalse(receipt.infrastructure_fault)
 
     def test_timeout_is_a_policy_resource_violation(self) -> None:
         action = parse_policy_action(

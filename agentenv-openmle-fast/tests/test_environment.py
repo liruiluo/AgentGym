@@ -223,6 +223,21 @@ class OpenMLEFastEnvironmentTest(unittest.TestCase):
         )
         self.assertEqual(terminal.info["counters"]["execution_attempt_count"], 0)
 
+    def test_policy_created_workspace_invariant_is_terminal_not_truncated(self) -> None:
+        manager, slot, _ = self.reset()
+        terminal = manager.step(
+            slot,
+            'shell_command {"command":"ln -s missing-target policy-created-link"}',
+        )
+
+        self.assertTrue(terminal.done)
+        self.assertFalse(terminal.info["truncated"])
+        self.assertEqual(terminal.reward, -1.0)
+        self.assertEqual(
+            terminal.info["terminal_reason"], "workspace_invariant_violation"
+        )
+        self.assertEqual(terminal.info["action_status"], "policy_violation")
+
     def test_submit_is_terminal_and_grades_exactly_once(self) -> None:
         manager, slot, _ = self.reset()
         patch = manager.step(
