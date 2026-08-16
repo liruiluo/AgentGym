@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from agentenv_openmle_fast.actions import parse_policy_action
 from agentenv_openmle_fast.executor import (
+    EXTERNAL_RUNNER_COMPLETION_GRACE_MS,
     EXTERNAL_RUNNER_CONTRACT,
     FIT_HOOK_CONTRACT,
     BackendExecution,
@@ -181,7 +182,10 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
                 timeout_ms=1_000,
                 managed_runtime_budget_ms=15_000,
             )
-        self.assertEqual(run.call_args.kwargs["timeout"], 3.0)
+        self.assertEqual(
+            run.call_args.kwargs["timeout"],
+            (1_000 + EXTERNAL_RUNNER_COMPLETION_GRACE_MS) / 1_000.0,
+        )
         self.assertFalse(result.timed_out)
         self.assertTrue(result.infrastructure_fault)
         self.assertEqual(result.failure_class, "runner_protocol_fault")
@@ -204,7 +208,7 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
             receipt = backend._lifecycle(
                 "freeze",
                 self.workspace,
-                timeout_ms=3_000,
+                timeout_ms=EXTERNAL_RUNNER_COMPLETION_GRACE_MS + 1_000,
             )
         self.assertFalse(receipt.success)
         self.assertEqual(receipt.failure_class, "runner_lifecycle_fault")
@@ -250,7 +254,10 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
         self.assertEqual(request["timeout_ms"], self.limits.shell_wall_ms)
         self.assertEqual(
             popen.return_value.communicate.call_args.kwargs["timeout"],
-            (self.limits.shell_wall_ms + 2_000) / 1_000.0,
+            (
+                self.limits.shell_wall_ms + EXTERNAL_RUNNER_COMPLETION_GRACE_MS
+            )
+            / 1_000.0,
         )
 
     def test_remaining_managed_runtime_is_passed_separately_to_backend(self) -> None:

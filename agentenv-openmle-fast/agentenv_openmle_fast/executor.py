@@ -30,7 +30,7 @@ from .runtime_attestation import exact_runtime_identity_is_attested
 EXECUTOR_CONTRACT = "openmle_fast_executor_v1"
 EXTERNAL_RUNNER_CONTRACT = "openmle_fast_linux_cgroup_namespace_runner_v1"
 FIT_HOOK_CONTRACT = "openmle_fast_fit_hook_v1"
-EXTERNAL_RUNNER_COMPLETION_GRACE_MS = 2_000
+EXTERNAL_RUNNER_COMPLETION_GRACE_MS = 3_000
 
 
 class OpenMLEFastExecutorError(RuntimeError):
