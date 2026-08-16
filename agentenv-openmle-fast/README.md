@@ -9,7 +9,9 @@ compute its own validation metric from public labelled training data, and keep
 an ordinary filesystem experiment log across context compaction. The first
 `submit` alone queries protected private data and is terminal; there is no
 repeatable private-score action or automatic submission. A non-submit action 30
-executes and then terminates with reward `-1`.
+executes and then terminates with reward `-1`. Reset and every charged action
+observation expose the completed action number and remaining shared budget,
+including the observation retained by a context compaction.
 
 Private answers and native scoring code belong exclusively to the separately
 launched `openmle-fast-private-grader`. The public service carries only an

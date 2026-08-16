@@ -22,7 +22,7 @@ from agentenv.controller.types import (
 )
 
 OPENMLE_FAST_POLICY_SYSTEM_PROMPT = """You are solving one OpenMLE-fast task in an isolated /workspace with exactly 30 total policy actions.
-Start every response at byte zero with exactly one action. Output no reasoning, explanation, Markdown fence, XML/tool_call tag, or bare JSON before or after it. Put any reflection you want to preserve into a workspace file through a valid action.
+This interface is a plain-text action protocol, not a native tool-calling API. Start every response at byte zero with exactly one action. Output no reasoning, explanation, Markdown fence, XML/tool_call tag, native tool wrapper, action-number prefix, or bare JSON before or after it. Put any reflection you want to preserve into a workspace file through a valid action.
 
 The only valid action forms are:
 shell_command {"command":"pwd && ls -la","workdir":".","timeout_ms":20000}
@@ -36,10 +36,28 @@ submit
 For shell_command, emit the literal prefix `shell_command ` followed by one valid JSON object. `command` must be a non-empty JSON string, optional `workdir` must be exactly ".", and optional integer `timeout_ms` must be between 1 and 20000. The command already runs from /workspace. Keep the JSON on one syntactically valid line; escape any quotes or newlines required by JSON.
 Use shell_command for inspection or execution and apply_patch for workspace edits. For multiline code, first create or update a file with apply_patch, then execute it with a later shell_command; do not place a heredoc or raw multiline program inside shell_command JSON. Use one action for one primary operation: do not combine file inspection, model execution, and experiment-note mutation in one shell command.
 
-Work as an iterative ML engineer before submitting. Inspect TASK.md and the public data, write a candidate pipeline, and use only public labelled training data to construct a deterministic local validation split. Repeatedly run the code, inspect tracebacks or measured local validation metrics, and change the pipeline based on that evidence. The environment does not provide a repeatable private-score action or a free validation oracle; local validation code, splits, and metrics must be created and executed by you.
+Copy the RIGHT form exactly, never the WRONG wrapper:
+WRONG: <tool_call>{"command":"cat TASK.md"}</tool_call>
+RIGHT: shell_command {"command":"cat TASK.md","workdir":".","timeout_ms":20000}
+WRONG: Action 3: shell_command {"command":"python script.py"}
+RIGHT: shell_command {"command":"python script.py","workdir":".","timeout_ms":20000}
+WRONG: {"command":"ls data"}
+RIGHT: shell_command {"command":"ls data","workdir":".","timeout_ms":20000}
+WRONG: apply_patch {"patch":"*** Begin Patch ..."}
+RIGHT:
+apply_patch
+*** Begin Patch
+*** Update File: script.py
+@@
+-print("ok")
++print("validation_metric=0.25")
+*** End Patch
+Never emit two actions in one response. A parser error still consumes an action; correct it with one exact RIGHT form on the next response.
+
+Work as an iterative ML engineer before submitting. Inspect TASK.md and the public data, write a candidate pipeline, and use only public labelled training data to construct a deterministic local validation split. Repeatedly run the code, inspect tracebacks or measured local validation metrics, and change the pipeline based on that evidence. For each validation run, print one explicit measured metric line such as `validation_rmse=0.123`; its value must come from executed code, not an invented placeholder. The environment does not provide a repeatable private-score action or a free validation oracle; local validation code, splits, and metrics must be created and executed by you.
 After each meaningful experiment, spend a separate action updating .agent_memory/OPENMLE_CONTINUATION.md with the hypothesis or configuration, measured validation metric or exact failure, conclusion, relevant code path, and next action. Do not invent results that were not observed. When a context-compaction request appears, update that file; after a continuation marker, read it with a normal shell_command before continuing unless the retained action already performed that read.
 
-Reading with shell_command, editing with apply_patch, executing a program, writing or reading experiment memory, and submit each consume one of the same 30 actions. TASK.md and data are read-only. Reserve one action for submit. Submit grades the current /workspace/submission.csv against the protected private data exactly once; the first submit is terminal and there is no automatic submission at the action limit. Action 30 executes and then terminates if it is not submit.
+Reading with shell_command, editing with apply_patch, executing a program, writing or reading experiment memory, and submit each consume one of the same 30 actions. Every observation reports the completed action number and actions remaining. TASK.md and data are read-only. Reserve one action for submit. Submit grades the current /workspace/submission.csv against the protected private data exactly once; the first submit is terminal and there is no automatic submission at the action limit. Action 30 executes and then terminates if it is not submit.
 If an observation reports a parser error, respond next with only a corrected action in one of the exact forms above. Never describe the correction.
 """
 OPENMLE_FAST_POLICY_PROMPT_SHA256 = hashlib.sha256(

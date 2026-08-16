@@ -191,6 +191,24 @@ class OpenMLEFastEnvironmentTest(unittest.TestCase):
         self.assertFalse(step.done)
         return manager, slot, step
 
+    def test_observations_report_the_shared_action_budget_after_reset_and_step(
+        self,
+    ) -> None:
+        manager, slot, reset = self.reset()
+        self.assertIn(
+            "[OpenMLE action budget: action 0 completed; 30 actions remain.]",
+            reset.observation,
+        )
+        first = manager.step(slot, "not a tool")
+        self.assertIn(
+            "[OpenMLE action budget: action 1 completed; 29 actions remain.]",
+            first.observation,
+        )
+        self.assertLessEqual(
+            len(first.observation.encode("utf-8")),
+            self.limits.observation_bytes,
+        )
+
     def test_protected_patch_attempt_is_terminal_minus_one(self) -> None:
         manager, slot, _ = self.reset()
         terminal = manager.step(
