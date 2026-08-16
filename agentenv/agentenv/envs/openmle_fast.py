@@ -13,7 +13,6 @@ import requests
 from agentenv.controller import BaseEnvClient, BaseTask
 from agentenv.controller.types import (
     CONTEXT_OPERATION_REPLACE,
-    POLICY_CONTINUATION_MARKER,
     ConversationMessage,
     PolicyContextPressure,
     StepOutput,
@@ -35,6 +34,7 @@ submit
 
 For shell_command, emit the literal prefix `shell_command ` followed by one valid JSON object. `command` must be a non-empty JSON string, optional `workdir` must be exactly ".", and optional integer `timeout_ms` must be between 1 and 20000. The command already runs from /workspace. Keep the JSON on one syntactically valid line; escape any quotes or newlines required by JSON.
 Use shell_command for inspection or execution and apply_patch for workspace edits. For multiline code, first create or update a file with apply_patch, then execute it with a later shell_command; do not place a heredoc or raw multiline program inside shell_command JSON. Use one action for one primary operation: do not combine file inspection, model execution, and experiment-note mutation in one shell command.
+All apply_patch file paths must be workspace-relative, such as `train.py` or `.agent_memory/OPENMLE_CONTINUATION.md`. Never use `/workspace/` in an apply_patch file path. Use only the exact headers `*** Add File:` and `*** Update File:`, never `Create File`.
 
 Copy the RIGHT form exactly, never the WRONG wrapper:
 WRONG: <tool_call>{"command":"cat TASK.md"}</tool_call>
@@ -54,8 +54,9 @@ apply_patch
 *** End Patch
 Never emit two actions in one response. A parser error still consumes an action; correct it with one exact RIGHT form on the next response.
 
-Work as an iterative ML engineer before submitting. Inspect TASK.md and the public data, write a candidate pipeline, and use only public labelled training data to construct a deterministic local validation split. Repeatedly run the code, inspect tracebacks or measured local validation metrics, and change the pipeline based on that evidence. For each validation run, print one explicit measured metric line such as `validation_rmse=0.123`; its value must come from executed code, not an invented placeholder. The environment does not provide a repeatable private-score action or a free validation oracle; local validation code, splits, and metrics must be created and executed by you.
-After each meaningful experiment, spend a separate action updating .agent_memory/OPENMLE_CONTINUATION.md with the hypothesis or configuration, measured validation metric or exact failure, conclusion, relevant code path, and next action. Do not invent results that were not observed. When a context-compaction request appears, update that file; after a continuation marker, read it with a normal shell_command before continuing unless the retained action already performed that read.
+Work as an iterative ML engineer before submitting. Spend at most the first three actions on bounded inspection. No later than completed action 8, create a workspace-relative Python pipeline, and use only public labelled training data to construct and run one real deterministic local validation split, either a holdout or small cross-validation. Repeatedly run the pipeline, inspect tracebacks or measured local validation metrics, and change the pipeline based on that evidence. Training-set metrics do not count as local validation. For each validation run, print one explicit measured metric line such as `validation_rmse=0.123`; its value must come from executed code, not an invented placeholder. The environment does not provide a repeatable private-score action or a free validation oracle; local validation code, splits, and metrics must be created and executed by you.
+No network access is available. Use deterministic seeds, `n_jobs=1` where supported, and a bounded split or small cross-validation that stays within the managed 15000 ms runtime for one action. Do not use broad hyperparameter sweeps, nested parallelism, or large grid searches.
+After each meaningful experiment, spend a separate action updating .agent_memory/OPENMLE_CONTINUATION.md with the hypothesis or configuration, measured validation metric or exact failure, conclusion, relevant workspace-relative code path, and next action. Do not invent results that were not observed. A reliable workspace-relative write form is: shell_command {"command":"mkdir -p .agent_memory && printf '%s\\n' 'objective: ...' 'measured_validation_or_failure: ...' 'conclusion: ...' 'code_path: train.py' 'next_action: ...' > .agent_memory/OPENMLE_CONTINUATION.md","workdir":".","timeout_ms":20000}. When a context-compaction request appears, use that action to update this file; after a continuation marker, read it with a normal shell_command before continuing unless the retained action already printed its complete contents.
 
 Reading with shell_command, editing with apply_patch, executing a program, writing or reading experiment memory, and submit each consume one of the same 30 actions. Every observation reports the completed action number and actions remaining. TASK.md and data are read-only. Reserve one action for submit. Submit grades the current /workspace/submission.csv against the protected private data exactly once; the first submit is terminal and there is no automatic submission at the action limit. Action 30 executes and then terminates if it is not submit.
 If an observation reports a parser error, respond next with only a corrected action in one of the exact forms above. Never describe the correction.
@@ -65,14 +66,26 @@ OPENMLE_FAST_POLICY_PROMPT_SHA256 = hashlib.sha256(
 ).hexdigest()
 OPENMLE_CONTEXT_COMPACTION_REQUEST = (
     "The conversation is nearing its context limit. Take exactly one normal "
-    "OpenMLE action now. Prefer a short valid action that records the immediate "
-    "objective, decisive findings, relevant paths or commands, and the next "
-    "action in .agent_memory/OPENMLE_CONTINUATION.md, but you may instead take "
-    "the immediate next task action. Do not submit only to perform context "
-    "control. This is one of the same 30 policy actions and executes normally. "
-    "Your exact action and its bounded native observation will remain visible "
-    "after the earlier conversation is removed, so never add reasoning or prose "
-    "outside one of the three valid action forms."
+    "OpenMLE action now and use this action to create or update the workspace-"
+    "relative .agent_memory/OPENMLE_CONTINUATION.md. Record the immediate "
+    "objective, the last measured validation metric or exact failure, decisive "
+    "findings, the workspace-relative code path, and the next exact action. If "
+    "no validation has completed, write `validation: not measured yet` plus the "
+    "current failure or blocker. Do not inspect data, run a model, or submit in "
+    "place of this continuation write. This is one of the same 30 policy actions "
+    "and executes normally. Your exact action and its bounded native observation "
+    "will remain visible after the earlier conversation is removed, so emit only "
+    "one of the three valid action forms."
+)
+OPENMLE_POLICY_CONTINUATION_MARKER = (
+    "Earlier conversation was removed; the workspace is unchanged. First read "
+    ".agent_memory/OPENMLE_CONTINUATION.md with one normal shell_command unless "
+    "the retained action's native observation already contains the complete file "
+    "contents. Then change the pipeline, run another bounded deterministic local "
+    "validation, and print `validation_<metric>=<measured_value>`. Update the "
+    "continuation file with that evidence, and only then use the one terminal "
+    "submit when submission.csv is ready. All of these operations consume the "
+    "remaining shared action budget."
 )
 _OPENMLE_CONTINUATION_PATH = ".agent_memory/OPENMLE_CONTINUATION.md"
 _EXPECTED_BOUNDARIES = {
@@ -445,7 +458,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                     {"role": "assistant", "content": action},
                     {
                         "role": "user",
-                        "content": f"{state}\n\n{POLICY_CONTINUATION_MARKER}",
+                        "content": f"{state}\n\n{OPENMLE_POLICY_CONTINUATION_MARKER}",
                     },
                 ]
             )

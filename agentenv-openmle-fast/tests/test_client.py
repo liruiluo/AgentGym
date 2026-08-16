@@ -110,6 +110,12 @@ def _load_client_module():
 _CLIENT_MODULE = _load_client_module()
 OPENMLE_FAST_POLICY_SYSTEM_PROMPT = _CLIENT_MODULE.OPENMLE_FAST_POLICY_SYSTEM_PROMPT
 OpenMLEFastEnvClient = _CLIENT_MODULE.OpenMLEFastEnvClient
+OPENMLE_CONTEXT_COMPACTION_REQUEST = (
+    _CLIENT_MODULE.OPENMLE_CONTEXT_COMPACTION_REQUEST
+)
+OPENMLE_POLICY_CONTINUATION_MARKER = (
+    _CLIENT_MODULE.OPENMLE_POLICY_CONTINUATION_MARKER
+)
 
 
 class _Response:
@@ -143,12 +149,38 @@ class OpenMLEFastClientTest(unittest.TestCase):
         self.assertIn("deterministic local validation split", prompt)
         self.assertIn(".agent_memory/OPENMLE_CONTINUATION.md", prompt)
         self.assertIn("after a continuation marker, read it", prompt)
+        self.assertIn("No later than completed action 8", prompt)
+        self.assertIn("Training-set metrics do not count as local validation", prompt)
+        self.assertIn("No network access is available", prompt)
+        self.assertIn("n_jobs=1", prompt)
+        self.assertIn("managed 15000 ms runtime", prompt)
+        self.assertIn("Never use `/workspace/` in an apply_patch file path", prompt)
+        self.assertIn("mkdir -p .agent_memory && printf", prompt)
         self.assertIn("protected private data exactly once", prompt)
         self.assertIn("first submit is terminal", prompt)
         self.assertIn("there is no automatic submission", prompt)
         self.assertNotIn("evaluate_candidate", prompt)
         self.assertNotIn("best-so-far", prompt)
         self.assertNotIn("cement-sales-demand", prompt)
+
+    def test_context_compaction_requires_a_relative_continuation_then_recovery(
+        self,
+    ) -> None:
+        request = _CLIENT_MODULE.OPENMLE_CONTEXT_COMPACTION_REQUEST
+        marker = getattr(
+            _CLIENT_MODULE,
+            "OPENMLE_POLICY_CONTINUATION_MARKER",
+            None,
+        )
+        self.assertNotIn("but you may instead", request)
+        self.assertIn("use this action to create or update", request)
+        self.assertIn("not measured yet", request)
+        self.assertIsInstance(marker, str)
+        self.assertIn("Earlier conversation was removed", marker)
+        self.assertIn("First read .agent_memory/OPENMLE_CONTINUATION.md", marker)
+        self.assertIn("change the pipeline", marker)
+        self.assertIn("run another bounded deterministic local validation", marker)
+        self.assertIn("only then use the one terminal submit", marker)
 
     def metadata(self):
         prompt_sha = hashlib.sha256(
@@ -503,7 +535,7 @@ class OpenMLEFastClientTest(unittest.TestCase):
         self.assertEqual(
             transition["messages"][-1]["content"],
             "action_status=completed\n\n"
-            "Continue the same task in the unchanged workspace.",
+            + OPENMLE_POLICY_CONTINUATION_MARKER,
         )
         self.assertEqual(
             output.info["wrapper_evidence"],
@@ -582,7 +614,7 @@ class OpenMLEFastClientTest(unittest.TestCase):
         self.assertEqual(
             transition["messages"][-1]["content"],
             "parser_error: expected one exact action\n\n"
-            "Continue the same task in the unchanged workspace.",
+            + OPENMLE_POLICY_CONTINUATION_MARKER,
         )
         self.assertEqual(
             (
