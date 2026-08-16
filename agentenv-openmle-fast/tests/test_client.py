@@ -199,6 +199,8 @@ class OpenMLEFastClientTest(unittest.TestCase):
         self.assertIn("read .agent_memory/OPENMLE_CONTINUATION.md exactly once", marker)
         self.assertIn("immediately execute its `next_action`", marker)
         self.assertIn("modify `train.py` once before running it again", marker)
+        self.assertIn("the next action is `submit`", marker)
+        self.assertIn("do not start a third iteration", marker)
         self.assertIn("Do not inspect the task or schema again", marker)
         self.assertIn("only one action remains", marker)
         self.assertIn("submit", marker)

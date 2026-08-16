@@ -73,9 +73,12 @@ OPENMLE_POLICY_CONTINUATION_MARKER = (
     "one normal shell_command, then immediately execute its `next_action`: modify "
     "`train.py` once before running it again. Do not inspect the task or schema again, "
     "and do not reread or rewrite the note before "
-    "the next edit/run produces a new measured validation or exact failure. After "
-    "that new evidence, update the note once, then continue or submit while "
-    "preserving one final action. All operations consume the shared 30-action budget."
+    "the next edit/run produces a new measured validation or exact failure. If "
+    "the post-compaction rerun prints a finite validation metric and submission.csv "
+    "exists, the next action is `submit`; do not rewrite the note or edit again, and "
+    "do not start a third iteration. If that rerun fails, update the note once and "
+    "continue while preserving one final action. All operations consume the shared "
+    "30-action budget."
 )
 
 _OPENMLE_CONTINUATION_PATH = ".agent_memory/OPENMLE_CONTINUATION.md"
