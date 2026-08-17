@@ -48,11 +48,14 @@ assets, while Mini-SWE-Agent supplies submission and horizon semantics.
   && cat patch.txt`. AMG intentionally emits only the sentinel because its
   persistent no-`.git` workspace is graded directly; this is a workspace-grade
   adapter, not byte-equivalent patch transport.
-- The policy prompt preserves the upstream repair order: inspect, reproduce,
+- The policy prompt preserves the upstream response shape and repair order: one
+  concise reasoning paragraph followed by exactly one canonical action;
+  inspect, reproduce,
   make a localized non-test source edit, rerun the reproduction, run relevant
   existing tests and edge checks, then submit immediately. The action syntax is
-  adapted to one Codex-style action per policy turn, and the no-`.git` workspace
-  removes the upstream `patch.txt` transport step.
+  adapted to one Codex-style action per policy turn. Multiple actions, fenced or
+  truncated actions, and trailing prose remain parser errors. The no-`.git`
+  workspace removes the upstream `patch.txt` transport step.
 - Upstream `LimitsExceeded` returns an empty submission and does not grade the
   current workspace. AMG horizon exhaustion therefore ends with reward `0`,
   `grade=None`, and no hidden-grader call.

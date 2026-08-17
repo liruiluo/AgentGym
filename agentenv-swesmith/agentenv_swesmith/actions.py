@@ -38,6 +38,9 @@ _EMBEDDED_PATCH_ATTEMPT_RE = re.compile(
     r"(?:<tool_call>\s*)?apply_patch\s*\r?\n\s*\*\*\* Begin Patch",
     re.IGNORECASE,
 )
+_REASONED_ACTION_START_RE = re.compile(
+    r"(?m)^(?:shell_command\s+\{|apply_patch\r?$|<tool_call>\r?$)"
+)
 
 
 @dataclass(frozen=True)
@@ -106,6 +109,18 @@ def parse_policy_action(raw_output: str) -> ParsedPolicyAction:
             thought,
             "policy output is empty after removing optional thinking text",
         )
+
+    reasoning, action_text, reasoning_error = _split_reasoning_prefix(action_text)
+    if reasoning_error is not None:
+        return _parser_error(
+            raw_output,
+            action_text,
+            thought,
+            reasoning_error,
+            tool_hint=_infer_toolish_attempt(action_text),
+        )
+    if reasoning:
+        thought = "\n\n".join(part for part in (thought, reasoning) if part)
 
     if action_text.startswith(_SHELL_PREFIX):
         return _parse_shell_command(raw_output, action_text, thought)
@@ -409,6 +424,31 @@ def _split_thinking(raw_output: str) -> tuple[str, str, str | None]:
     if _THINK_START_RE.search(action_text) or _THINK_END_RE.search(action_text):
         return thought, action_text, "policy output contains multiple thinking blocks"
     return thought, action_text, None
+
+
+def _split_reasoning_prefix(text: str) -> tuple[str, str, str | None]:
+    """Accept the upstream THOUGHT-plus-one-action response shape.
+
+    AgentMemoryGym keeps its canonical tool serialization, but Mini-SWE-Agent's
+    pinned prompt allows reasoning before the single executable action.  Only a
+    unique canonical action that starts on its own line is eligible.  The
+    existing action parsers still have to consume the entire suffix, so fenced,
+    truncated, multi-action, and trailing-prose responses remain fail-closed.
+    """
+
+    matches = list(_REASONED_ACTION_START_RE.finditer(text))
+    if not matches or matches[0].start() == 0:
+        return "", text, None
+    if len(matches) != 1:
+        return "", text, "policy output contains multiple action candidates"
+    match = matches[0]
+    reasoning = text[: match.start()].strip()
+    action_text = text[match.start() :].strip()
+    if not reasoning:
+        return "", action_text, None
+    if _infer_toolish_attempt(reasoning) is not None:
+        return "", text, "reasoning prefix contains another tool-like action"
+    return reasoning, action_text, None
 
 
 def _strip_single_eos(text: str) -> str:

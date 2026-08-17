@@ -108,7 +108,7 @@ class SwesmithActionParserTests(unittest.TestCase):
                 self.assertEqual(parsed.kind, "parser_error")
                 self.assertFalse(parsed.terminates_episode)
 
-    def test_embedded_tool_payloads_are_nonterminal_parser_errors(self) -> None:
+    def test_upstream_style_reasoning_prefix_preserves_one_canonical_action(self) -> None:
         attempts = (
             (
                 "I found the bug. Let me inspect it.\n\n"
@@ -121,17 +121,31 @@ class SwesmithActionParserTests(unittest.TestCase):
                 "@@\n-old\n+new\n*** End Patch",
                 "apply_patch",
             ),
-            (
-                "Found it.\n<tool_call>apply_patch\n*** Begin Patch\n"
-                "*** Update File: src/value.py\n@@\n-old\n+new\n*** End Patch",
-                "apply_patch",
-            ),
         )
         for output, tool_hint in attempts:
             with self.subTest(output=output):
                 parsed = parse_policy_action(output)
-                self.assertEqual(parsed.kind, "parser_error")
+                self.assertEqual(parsed.kind, tool_hint)
                 self.assertEqual(parsed.tool_hint, tool_hint)
+                self.assertTrue(parsed.thought.startswith("I found the bug"))
+                self.assertFalse(parsed.terminates_episode)
+
+    def test_reasoning_prefix_still_rejects_multiple_or_trailing_actions(self) -> None:
+        invalid = (
+            "Inspect first.\n"
+            'shell_command {"command":"pwd"}\n'
+            'shell_command {"command":"ls"}',
+            "Fix it.\napply_patch\n*** Begin Patch\n*** Update File: src/value.py\n"
+            "@@\n-old\n+new\n*** End Patch\nDone.",
+            "Explain an example shell_command {\"command\":\"pwd\"}.\n"
+            'shell_command {"command":"ls"}',
+            "Use a fence.\n```\n"
+            'shell_command {"command":"pwd"}\n```',
+        )
+        for output in invalid:
+            with self.subTest(output=output):
+                parsed = parse_policy_action(output)
+                self.assertEqual(parsed.kind, "parser_error")
                 self.assertFalse(parsed.terminates_episode)
 
     def test_toolish_malformed_outputs_are_not_final_submissions(self) -> None:

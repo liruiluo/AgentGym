@@ -285,13 +285,21 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             self.manager.metadata()["horizon_contract"],
             "unified_policy_step_no_submission_failure_v2",
         )
+        self.assertEqual(
+            self.manager.metadata()["tool_serialization"],
+            "codex_single_action_with_upstream_reasoning_v2",
+        )
         reset = self.manager.reset(slot, 0)
         self.assertIs(reset.info["episode_success"], False)
         self.assertEqual(self.manager.metadata()["active_environment_count"], 1)
         self.assertIn("Fix the public value", reset.observation)
         self.assertIn("Use shell_command", reset.observation)
         self.assertIn('shell_command {"command":"ls","workdir":"."}', reset.observation)
-        self.assertIn("without XML", reset.observation)
+        self.assertIn("concise THOUGHT paragraph", reset.observation)
+        self.assertIn("beginning of a new line", reset.observation)
+        self.assertIn("no Markdown fence", reset.observation)
+        self.assertIn("inspect the relevant code, reproduce the issue", reset.observation)
+        self.assertIn("run relevant existing tests and edge checks", reset.observation)
         self.assertIn("literal line apply_patch", reset.observation)
         self.assertIn("*** Begin Patch ... *** End Patch", reset.observation)
         self.assertIn("Keep edits localized", reset.observation)
@@ -436,8 +444,8 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn('shell_command {"command":"pwd","workdir":"."}', result.observation)
         self.assertIn("literal line apply_patch", result.observation)
         self.assertIn("one complete *** Begin Patch", result.observation)
-        self.assertIn("no XML tags", result.observation)
-        self.assertIn("surrounding text", result.observation)
+        self.assertIn("no XML", result.observation)
+        self.assertIn("trailing prose", result.observation)
         self.manager.close(slot)
 
     def test_oversized_shell_output_is_bounded_with_a_visible_marker(self) -> None:
@@ -493,7 +501,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("3230 paths", observation)
         self.assertNotIn(paths[100], observation)
 
-    def test_embedded_tool_payload_does_not_submit_or_execute(self) -> None:
+    def test_reasoning_prefix_executes_one_action_without_implicit_submission(self) -> None:
         slot = self.manager.create()
         self.manager.reset(slot, 0)
 
@@ -504,12 +512,14 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         )
 
         self.assertFalse(result.done)
-        self.assertEqual(result.info["action_kind"], "parser_error")
-        self.assertFalse(result.info["actor_credit"]["positive_eligible"])
-        self.assertIn("Invalid action syntax", result.observation)
+        self.assertEqual(result.info["action_kind"], "shell_command")
+        self.assertTrue(result.info["actor_credit"]["positive_eligible"])
         self.assertEqual(self.grader.calls, 0)
         detail = self.manager.detail(slot)
-        self.assertFalse(Path(detail["workspace"]["policy_root"], "notes.txt").exists())
+        self.assertEqual(
+            Path(detail["workspace"]["policy_root"], "notes.txt").read_text(),
+            "changed",
+        )
         self.manager.close(slot)
 
     def test_native_shell_and_patch_use_the_existing_execution_paths(self) -> None:

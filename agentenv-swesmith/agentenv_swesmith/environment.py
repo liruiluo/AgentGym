@@ -40,6 +40,7 @@ UPSTREAM_AGENT_REVISION = "a83fcae82d2a08f0ee0c688f9d137b3566c097f8"
 REWARD_CONTRACT = "explicit_submission_full_resolution_binary_v2"
 SUBMISSION_CONTRACT = "upstream_shell_output_sentinel_v1"
 HORIZON_CONTRACT = "unified_policy_step_no_submission_failure_v2"
+TOOL_SERIALIZATION_CONTRACT = "codex_single_action_with_upstream_reasoning_v2"
 DEFAULT_MAX_OBSERVATION_BYTES = 6144
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
 ACTION_PROGRESS_SCHEMA = "swesmith_action_progress_v1"
@@ -404,7 +405,7 @@ class SwesmithEpisodeManager:
             "upstream_agent_repository": UPSTREAM_AGENT_REPOSITORY,
             "upstream_agent_revision": UPSTREAM_AGENT_REVISION,
             "tool_contract": "codex_shell_command_apply_patch_v1",
-            "tool_serialization": "qwen35_native_single_function_v1",
+            "tool_serialization": TOOL_SERIALIZATION_CONTRACT,
             "observation_contract": "bounded_combined_shell_output_v1",
             "max_observation_bytes": self.max_observation_bytes,
             "reward_contract": REWARD_CONTRACT,
@@ -720,16 +721,20 @@ def _initial_observation(
 ) -> str:
     return (
         "Repair the persistent repository in /testbed for this issue. Use exactly one "
-        "action per turn. Use shell_command for inspection, editing, and tests. Its exact "
-        "form is one line such as shell_command "
-        '{"command":"ls","workdir":"."}. Start at byte zero and output only the '
-        "action, without XML, prose, Markdown, or a <think> tag. apply_patch is optional "
+        "action per turn. As in the pinned Mini-SWE-Agent workflow, you may first write "
+        "one concise THOUGHT paragraph explaining the next step. Then start exactly one "
+        "canonical action at the beginning of a new line, with no Markdown fence, second "
+        "action, or trailing prose. Use shell_command for inspection, editing, and tests. "
+        "Its exact form is one line such as shell_command "
+        '{"command":"ls","workdir":"."}. apply_patch is optional '
         "and starts with the literal line apply_patch followed by one complete "
         "*** Begin Patch ... *** End Patch payload. Keep edits localized: never paste or "
         "rewrite an entire existing file in one action. Use a small patch around the "
         "changed lines or a bounded shell command, and stay below the response limit. "
-        "The workspace persists for the whole episode and has no .git directory. After a "
-        "source path changed and relevant tests ran, submit with exactly "
+        "The workspace persists for the whole episode and has no .git directory. Follow "
+        "the pinned upstream repair order: inspect the relevant code, reproduce the issue, "
+        "make a localized non-test source edit, rerun the reproduction, run relevant "
+        "existing tests and edge checks, then submit with exactly "
         'shell_command {"command":"echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",'
         '"workdir":"."}. The successful command must print the upstream submission '
         "sentinel as its first stdout line; then the current persistent workspace receives "
@@ -746,11 +751,12 @@ def _initial_observation(
 
 def _parser_error_observation(action: ParsedPolicyAction) -> str:
     return (
-        f"Invalid action syntax: {action.error}. Start at byte zero and retry exactly "
-        'like shell_command {"command":"pwd","workdir":"."} on one line. '
+        f"Invalid action syntax: {action.error}. You may write one concise THOUGHT "
+        "paragraph, then start exactly one action at the beginning of a new line, such as "
+        'shell_command {"command":"pwd","workdir":"."}. '
         "For a patch, start with the literal line apply_patch, then one complete "
-        "*** Begin Patch ... *** End Patch payload. Output only one action, with no XML "
-        "tags, reasoning, Markdown, second action, or surrounding text. Keep the edit "
+        "*** Begin Patch ... *** End Patch payload. Use no XML, Markdown fence, second "
+        "action, or trailing prose. Keep the edit "
         "localized instead of pasting or rewriting an entire existing file. After editing "
         "and testing, submit with exactly shell_command "
         '{"command":"echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}.'
