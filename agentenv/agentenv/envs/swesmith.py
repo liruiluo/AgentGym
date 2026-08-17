@@ -188,7 +188,7 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "pinned Mini-SWE-Agent submission sentinel while the native endpoint grades the "
     "persistent workspace directly. Do not write a prose summary: plain text is a parser "
     "error and nothing runs. Reaching the turn limit ends the episode with reward 0 and "
-    "does not grade the workspace. Prose before or after a tool action is also a parser error. "
+    "does not grade the workspace. Prose before or after a tool action is a parser error. "
     "This workspace intentionally has no .git directory."
 )
 
