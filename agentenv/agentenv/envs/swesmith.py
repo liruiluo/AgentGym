@@ -31,6 +31,11 @@ SWE_CONTEXT_COMPACTION_REQUEST = (
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
 ACTION_PROGRESS_SCHEMA = "swesmith_action_progress_v1"
 SWE_MEMORY_CONTRACT = "policy_compaction_plus_optional_durable_filesystem_v1"
+SWE_REWARD_CONTRACT = "explicit_submission_full_resolution_binary_v2"
+SWE_SUBMISSION_CONTRACT = "upstream_shell_output_sentinel_v1"
+SWE_HORIZON_CONTRACT = "unified_policy_step_no_submission_failure_v2"
+SWE_UPSTREAM_AGENT_REPOSITORY = "SWE-agent/mini-swe-agent"
+SWE_UPSTREAM_AGENT_REVISION = "a83fcae82d2a08f0ee0c688f9d137b3566c097f8"
 _POSITIVE_ACTOR_CREDIT_BASES = {
     "shell_executed",
     "workspace_changed",
@@ -177,9 +182,13 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "no XML tags, explanation, label, Markdown fence, or <think> tag. After an "
     "observation, emit the next action directly; do not describe what you plan to do. "
     "A shell command can edit the persistent workspace. Do not repeat a successful "
-    "inspection or edit. Do not submit plain text until at least one source path has "
-    "changed and the relevant tests have run; then a plain final response may summarize "
-    "the result. Prose before or after a tool action is a parser error and nothing runs. "
+    "inspection or edit. After at least one source path changed and the relevant tests "
+    "have run, submit with exactly `shell_command {\"command\":\"echo "
+    "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\",\"workdir\":\".\"}`. This preserves the "
+    "pinned Mini-SWE-Agent submission sentinel while the native endpoint grades the "
+    "persistent workspace directly. Do not write a prose summary: plain text is a parser "
+    "error and nothing runs. Reaching the turn limit ends the episode with reward 0 and "
+    "does not grade the workspace. Prose before or after a tool action is a parser error. "
     "This workspace intentionally has no .git directory."
 )
 
@@ -216,6 +225,25 @@ class SwesmithEnvClient(BaseEnvClient):
                 "SWE-smith endpoint memory contract mismatch: "
                 f"expected {SWE_MEMORY_CONTRACT!r}, got {memory_contract!r}"
             )
+        expected_contracts = {
+            "upstream_agent_repository": SWE_UPSTREAM_AGENT_REPOSITORY,
+            "upstream_agent_revision": SWE_UPSTREAM_AGENT_REVISION,
+            "reward_contract": SWE_REWARD_CONTRACT,
+            "submission_contract": SWE_SUBMISSION_CONTRACT,
+            "horizon_contract": SWE_HORIZON_CONTRACT,
+        }
+        for field, expected in expected_contracts.items():
+            actual = metadata.get(field)
+            if actual != expected:
+                raise RuntimeError(
+                    f"SWE-smith endpoint {field} mismatch: "
+                    f"expected {expected!r}, got {actual!r}"
+                )
+        self._max_policy_turns = int(metadata["configured_max_policy_turns"])
+        if self._max_policy_turns <= 0:
+            raise RuntimeError(
+                "SWE-smith configured_max_policy_turns must be positive"
+            )
         task_count = int(metadata["task_count"])
         if data_len is not None and int(data_len) > task_count:
             raise ValueError(
@@ -229,6 +257,18 @@ class SwesmithEnvClient(BaseEnvClient):
         self._reset_policy_transition_state()
 
     def _reset_policy_transition_state(self) -> None:
+        if not hasattr(self, "_max_policy_turns"):
+            metadata = getattr(self, "metadata", {})
+            configured = (
+                metadata.get("configured_max_policy_turns", 30)
+                if isinstance(metadata, Mapping)
+                else 30
+            )
+            self._max_policy_turns = int(configured)
+            if self._max_policy_turns <= 0:
+                raise RuntimeError(
+                    "SWE-smith configured_max_policy_turns must be positive"
+                )
         self._policy_step_count = 0
         self._native_call_count = 0
         self._context_epoch = 0
@@ -238,6 +278,7 @@ class SwesmithEnvClient(BaseEnvClient):
         self._policy_context_bound = False
         self._selected_policy_control: str | None = None
         self._zero_progress_shell_receipts: set[tuple[str, str]] = set()
+        self._cached_horizon_output: StepOutput | None = None
 
     def _classify_shell_actor_credit(
         self,
@@ -351,8 +392,40 @@ class SwesmithEnvClient(BaseEnvClient):
 
     def step(self, action: str) -> StepOutput:
         if self._selected_policy_control == "context_compaction":
-            return self._complete_context_compaction(action)
-        return self._step_native_policy_action(action)
+            output = self._complete_context_compaction(action)
+        else:
+            output = self._step_native_policy_action(action)
+        return self._finalize_policy_boundary(output)
+
+    def _finalize_policy_boundary(self, output: StepOutput) -> StepOutput:
+        if output.done or self._policy_step_count < self._max_policy_turns:
+            return output
+        if self._policy_step_count != self._max_policy_turns:
+            raise RuntimeError("SWE-smith policy step count exceeded its horizon")
+
+        horizon = self.finalize_horizon()
+        if not horizon.done:
+            raise RuntimeError("SWE-smith horizon exhaustion did not terminate the episode")
+        merged_info = deepcopy(dict(output.info))
+        horizon_info = deepcopy(dict(horizon.info))
+        terminal_env_info = horizon_info.get("env_info")
+        if not isinstance(terminal_env_info, Mapping):
+            raise RuntimeError("SWE-smith horizon receipt lost terminal env_info")
+        merged_info["env_info"] = deepcopy(dict(terminal_env_info))
+        wrapper_evidence = deepcopy(dict(merged_info.get("wrapper_evidence", {})))
+        wrapper_evidence["horizon_finalization"] = {
+            "state": str(horizon.state),
+            "reward": float(horizon.reward),
+            "done": bool(horizon.done),
+            "info": horizon_info,
+        }
+        merged_info["wrapper_evidence"] = wrapper_evidence
+        return StepOutput(
+            state=str(horizon.state),
+            reward=float(horizon.reward),
+            done=True,
+            info=merged_info,
+        )
 
     def _step_native_policy_action(self, action: str) -> StepOutput:
         native_before = self._native_call_count
@@ -374,14 +447,15 @@ class SwesmithEnvClient(BaseEnvClient):
             else None
         )
         action_progress = None
-        if actor_credit["basis"] == "shell_executed":
+        if actor_credit["basis"] in {"shell_executed", "terminal_submission"}:
             action_progress = _validate_action_progress_receipt(
                 response_env_info.get("action_progress")
             )
-            actor_credit = self._classify_shell_actor_credit(
-                actor_credit,
-                action_progress,
-            )
+            if actor_credit["basis"] == "shell_executed":
+                actor_credit = self._classify_shell_actor_credit(
+                    actor_credit,
+                    action_progress,
+                )
         elif response_env_info.get("action_progress") is not None:
             raise RuntimeError(
                 "SWE-smith action progress appeared on a non-executed shell action"
@@ -494,10 +568,12 @@ class SwesmithEnvClient(BaseEnvClient):
         )
 
     def finalize_horizon(self) -> StepOutput:
+        if self._cached_horizon_output is not None:
+            return deepcopy(self._cached_horizon_output)
         response = self._request("POST", "horizon", json={"id": self.env_id})
         self.info = response
         response_env_info = response.get("info", {})
-        return StepOutput(
+        output = StepOutput(
             state=str(response["observation"]),
             reward=float(response["reward"]),
             done=bool(response["done"]),
@@ -520,9 +596,11 @@ class SwesmithEnvClient(BaseEnvClient):
                 },
             ),
         )
+        self._cached_horizon_output = deepcopy(output)
+        return output
 
     def finalize_policy_horizon(self) -> StepOutput:
-        """Expose horizon grading through the task-neutral wrapper contract."""
+        """Expose no-submission horizon failure through the wrapper contract."""
 
         return self.finalize_horizon()
 

@@ -20,6 +20,7 @@ from agentenv_agentmemory.workspace_sandbox import (
 from agentenv_swesmith.sandbox import (
     LinuxNamespaceEpisodeSandbox,
     SwesmithSandboxError,
+    _DIRECT_BIND_NAMESPACE_SETUP,
     _attest_oci_rootfs_identity,
     _normalize_workdir,
     _remove_temporary_sandbox_directory,
@@ -90,11 +91,19 @@ class _FakeEpisodeSandbox(LinuxNamespaceEpisodeSandbox):
         command: str,
         workdir: str,
         timeout_ms: int,
+        stdout_limit_bytes: int | None = None,
+        stderr_limit_bytes: int | None = None,
     ) -> ShellExecutionResult:
         if self.mutation is not None:
             self.mutation(workspace_root)
+        if "SWESMITH_OCI_ROOTFS_SANDBOX_OK" in command:
+            proof = b"SWESMITH_OCI_ROOTFS_SANDBOX_OK"
+            (workspace_root / "proof").write_bytes(proof)
+            stdout = proof
+        else:
+            stdout = b"ok"
         return ShellExecutionResult(
-            stdout=b"ok",
+            stdout=stdout,
             stderr=b"",
             exit_code=0,
             elapsed_ms=1,
@@ -105,6 +114,25 @@ class _FakeEpisodeSandbox(LinuxNamespaceEpisodeSandbox):
             sandbox_contract="test",
             model_uid=self.model_uid,
         )
+
+
+class SandboxPreflightTests(unittest.TestCase):
+    def test_does_not_require_a_language_specific_runtime(self) -> None:
+        sandbox = _FakeEpisodeSandbox()
+        with mock.patch.object(
+            sandbox,
+            "_run_namespace",
+            wraps=sandbox._run_namespace,
+        ) as run:
+            sandbox.preflight()
+        command = run.call_args.kwargs["command"]
+        self.assertNotIn("python", command.lower())
+        sandbox.close()
+
+    def test_network_namespace_enables_only_loopback(self) -> None:
+        self.assertIn('"$ip_binary" link set dev lo up', _DIRECT_BIND_NAMESPACE_SETUP)
+        self.assertNotIn("route add", _DIRECT_BIND_NAMESPACE_SETUP)
+        self.assertNotIn("default via", _DIRECT_BIND_NAMESPACE_SETUP)
 
 
 class SandboxScratchCleanupTests(unittest.TestCase):

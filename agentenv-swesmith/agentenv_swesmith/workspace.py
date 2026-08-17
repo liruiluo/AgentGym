@@ -260,13 +260,7 @@ def _extract_archive_member(
         os.chmod(target, stat.S_IMODE(member.mode) or 0o644)
         return
     if member.issym():
-        link_target = PurePosixPath(member.linkname)
-        if link_target.is_absolute():
-            raise SwesmithWorkspaceError(
-                f"git archive contains an absolute symlink: {member.name}"
-            )
-        combined = PurePosixPath(relative).parent.joinpath(link_target)
-        _normalize_relative_path(str(combined), "git archive symlink target")
+        _validate_archive_symlink_target(relative, member.linkname)
         target.symlink_to(member.linkname)
         return
     raise SwesmithWorkspaceError(
@@ -367,6 +361,30 @@ def _normalize_relative_path(raw: str, label: str) -> str:
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise SwesmithWorkspaceError(f"{label} must be a normalized relative path: {raw!r}")
     return str(path)
+
+
+def _validate_archive_symlink_target(relative: str, raw_target: str) -> None:
+    if not raw_target or "\x00" in raw_target:
+        raise SwesmithWorkspaceError(
+            f"git archive symlink target is invalid: {relative}"
+        )
+    target = PurePosixPath(raw_target)
+    if target.is_absolute():
+        raise SwesmithWorkspaceError(
+            f"git archive contains an absolute symlink: {relative}"
+        )
+    resolved_parts = list(PurePosixPath(relative).parent.parts)
+    for part in target.parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not resolved_parts:
+                raise SwesmithWorkspaceError(
+                    f"git archive symlink target escapes workspace: {relative}"
+                )
+            resolved_parts.pop()
+        else:
+            resolved_parts.append(part)
 
 
 def _git_text(root: Path, arguments: Sequence[str], *, label: str) -> str:

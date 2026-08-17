@@ -87,22 +87,26 @@ class SwesmithActionParserTests(unittest.TestCase):
         self.assertEqual(parsed.kind, "apply_patch")
         self.assertEqual(parsed.patch, patch)
 
-    def test_plain_response_is_terminal_submission(self) -> None:
+    def test_upstream_submission_sentinel_remains_a_shell_action(self) -> None:
         parsed = parse_policy_action(
-            "Implemented the fix and added regression coverage."
+            'shell_command {"command":"echo '
+            'COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}'
         )
-        self.assertEqual(parsed.kind, "final")
-        self.assertTrue(parsed.terminates_episode)
-        self.assertEqual(
-            parsed.final_response,
-            "Implemented the fix and added regression coverage.",
-        )
+        self.assertEqual(parsed.kind, "shell_command")
+        self.assertFalse(parsed.terminates_episode)
 
-    def test_final_response_may_mention_tools_without_starting_as_one(self) -> None:
-        parsed = parse_policy_action(
-            "The change is complete; shell_command output now passes."
-        )
-        self.assertEqual(parsed.kind, "final")
+    def test_plain_text_never_implicitly_submits(self) -> None:
+        for output in (
+            "final",
+            "Final",
+            "final done",
+            "final\nsummary",
+            "The change is complete; shell_command output now passes.",
+        ):
+            with self.subTest(output=output):
+                parsed = parse_policy_action(output)
+                self.assertEqual(parsed.kind, "parser_error")
+                self.assertFalse(parsed.terminates_episode)
 
     def test_embedded_tool_payloads_are_nonterminal_parser_errors(self) -> None:
         attempts = (
