@@ -83,6 +83,17 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
         self.assertIn("followed in a later action", self.prompt)
         self.assertIn("only a syntax illustration", self.prompt)
 
+    def test_prompt_preserves_the_upstream_repair_workflow(self) -> None:
+        for fragment in (
+            "# Required repair workflow",
+            "Reproduce the reported behavior",
+            "Modify only the necessary non-test source files",
+            "Rerun the reproduction",
+            "Run relevant existing tests and check edge cases",
+            "submit immediately instead of continuing to inspect",
+        ):
+            self.assertIn(fragment, self.prompt)
+
     def test_compaction_is_short_state_and_locator_not_file_execution(self) -> None:
         for fragment in (
             "Keep this response short",
