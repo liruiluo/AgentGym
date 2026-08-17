@@ -214,7 +214,10 @@ class SwesmithEpisodeManager:
                     model_gid=sandbox.model_gid,
                 )
                 initial_snapshot = sandbox.attach_workspace(workspace.policy_root)
-                observation = _initial_observation(record.problem_statement)
+                observation = _initial_observation(
+                    record.problem_statement,
+                    max_policy_turns=self.max_steps,
+                )
                 episode = _Episode(
                     slot_id=slot_id,
                     audit_id=uuid.uuid4().hex,
@@ -710,7 +713,11 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _initial_observation(problem_statement: str) -> str:
+def _initial_observation(
+    problem_statement: str,
+    *,
+    max_policy_turns: int,
+) -> str:
     return (
         "Repair the persistent repository in /testbed for this issue. Use exactly one "
         "action per turn. Use shell_command for inspection, editing, and tests. Its exact "
@@ -727,7 +734,10 @@ def _initial_observation(problem_statement: str) -> str:
         '"workdir":"."}. The successful command must print the upstream submission '
         "sentinel as its first stdout line; then the current persistent workspace receives "
         "one official grade. Any plain text is invalid. Reaching the turn limit without "
-        "that sentinel ends the episode with reward 0 and does not grade the workspace.\n\n"
+        "that sentinel ends the episode with reward 0 and does not grade the workspace. "
+        f"You have at most {max_policy_turns} total policy turns; task-neutral context "
+        "compactions consume this same budget. Verify and submit as soon as the repair is "
+        "ready; do not wait for the horizon.\n\n"
         "Issue:\n"
         + problem_statement.strip()
         + "\n\nBegin with a real shell action in the exact one-line form above."

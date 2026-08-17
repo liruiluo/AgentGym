@@ -299,6 +299,9 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("stay below the response limit", reset.observation)
         self.assertIn("has no .git directory", reset.observation)
         self.assertIn("COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT", reset.observation)
+        self.assertIn("at most 8 total policy turns", reset.observation)
+        self.assertIn("context compactions consume this same budget", reset.observation)
+        self.assertIn("do not wait for the horizon", reset.observation)
         self.assertNotIn("SECRET_GOLD_PATCH", reset.observation)
         self.assertNotIn(self.instance_id, reset.observation)
 
