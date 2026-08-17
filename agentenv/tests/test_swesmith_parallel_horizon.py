@@ -61,23 +61,14 @@ class _FrozenClient(SwesmithEnvClient):
     def _request(self, method: str, path: str, **kwargs):
         self.assert_request(method, path, kwargs)
         self.tracker.run(self.item_id)
-        reward = float(self.item_id % 3 == 0)
-        error = "fixture_timeout" if self.item_id == 5 else None
+        reward = 0.0
         return {
-            "observation": f"item-{self.item_id}-graded",
+            "observation": f"item-{self.item_id}-horizon-exhausted",
             "reward": reward,
             "done": True,
             "info": {
                 "action_kind": "policy_turn_horizon",
-                "episode_success": reward == 1.0,
-                "grader_error": error,
-                "grader_timed_out": error is not None,
-                "input_digest": hashlib.sha256(
-                    f"grader-input-{self.item_id}".encode()
-                ).hexdigest(),
-                "output_digest": hashlib.sha256(
-                    f"grader-output-{self.item_id}-{reward}-{error}".encode()
-                ).hexdigest(),
+                "episode_success": False,
                 "step": 29,
                 "terminal": True,
             },
@@ -98,10 +89,9 @@ def _receipt_projection(output) -> dict:
         "action_submission": info["action_submission"],
         "context_transition": info["context_transition"],
         "done": output.done,
-        "grader_error": terminal["grader_error"],
-        "grader_timed_out": terminal["grader_timed_out"],
-        "input_digest": terminal["input_digest"],
-        "output_digest": terminal["output_digest"],
+        "action_kind": terminal["action_kind"],
+        "episode_success": terminal["episode_success"],
+        "terminal": terminal["terminal"],
         "reward": output.reward,
         "state": output.state,
         "wrapper_event": info["wrapper_evidence"]["event"],
@@ -156,7 +146,7 @@ class SwesmithParallelHorizonTest(unittest.TestCase):
         self.assertEqual(len(parallel_tracker.calls), 8)
         self.assertEqual(
             [record["state"] for record in parallel],
-            [f"item-{item_id}-graded" for item_id in range(8)],
+            [f"item-{item_id}-horizon-exhausted" for item_id in range(8)],
         )
         serial_digests = [
             hashlib.sha256(
@@ -175,7 +165,6 @@ class SwesmithParallelHorizonTest(unittest.TestCase):
         evidence_path = os.environ.get("SWESMITH_PARALLEL_HORIZON_EVIDENCE")
         if evidence_path:
             report = {
-                "error_values": [record["grader_error"] for record in parallel],
                 "item_count": len(parallel),
                 "parallel": {
                     "active_after": parallel_tracker.active,
@@ -186,15 +175,15 @@ class SwesmithParallelHorizonTest(unittest.TestCase):
                 },
                 "per_item_receipt_sha256": parallel_digests,
                 "reward_values": [record["reward"] for record in parallel],
-                "schema": "swesmith_parallel_horizon_equality_gate_v1",
+                "schema": "swesmith_parallel_horizon_exhaustion_equality_gate_v2",
                 "serial": {
                     "call_count": len(serial_tracker.calls),
                     "peak_concurrency": serial_tracker.peak,
                     "seconds": serial_seconds,
                 },
                 "status": "pass",
-                "timeout_values": [
-                    record["grader_timed_out"] for record in parallel
+                "episode_success_values": [
+                    record["episode_success"] for record in parallel
                 ],
             }
             destination = Path(evidence_path)

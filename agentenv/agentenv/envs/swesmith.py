@@ -31,6 +31,11 @@ SWE_CONTEXT_COMPACTION_REQUEST = (
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
 ACTION_PROGRESS_SCHEMA = "swesmith_action_progress_v1"
 SWE_MEMORY_CONTRACT = "policy_compaction_plus_optional_durable_filesystem_v1"
+SWE_REWARD_CONTRACT = "explicit_submission_full_resolution_binary_v2"
+SWE_SUBMISSION_CONTRACT = "upstream_shell_output_sentinel_v1"
+SWE_HORIZON_CONTRACT = "unified_policy_step_no_submission_failure_v2"
+SWE_UPSTREAM_AGENT_REPOSITORY = "SWE-agent/mini-swe-agent"
+SWE_UPSTREAM_AGENT_REVISION = "a83fcae82d2a08f0ee0c688f9d137b3566c097f8"
 _POSITIVE_ACTOR_CREDIT_BASES = {
     "shell_executed",
     "workspace_changed",
@@ -177,9 +182,13 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "no XML tags, explanation, label, Markdown fence, or <think> tag. After an "
     "observation, emit the next action directly; do not describe what you plan to do. "
     "A shell command can edit the persistent workspace. Do not repeat a successful "
-    "inspection or edit. Do not submit plain text until at least one source path has "
-    "changed and the relevant tests have run; then a plain final response may summarize "
-    "the result. Prose before or after a tool action is a parser error and nothing runs. "
+    "inspection or edit. After at least one source path changed and the relevant tests "
+    "have run, submit with exactly `shell_command {\"command\":\"echo "
+    "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\",\"workdir\":\".\"}`. This preserves the "
+    "pinned Mini-SWE-Agent submission sentinel while the native endpoint grades the "
+    "persistent workspace directly. Do not write a prose summary: plain text is a parser "
+    "error and nothing runs. Reaching the turn limit ends the episode with reward 0 and "
+    "does not grade the workspace. Prose before or after a tool action is also a parser error. "
     "This workspace intentionally has no .git directory."
 )
 
@@ -216,6 +225,20 @@ class SwesmithEnvClient(BaseEnvClient):
                 "SWE-smith endpoint memory contract mismatch: "
                 f"expected {SWE_MEMORY_CONTRACT!r}, got {memory_contract!r}"
             )
+        expected_contracts = {
+            "upstream_agent_repository": SWE_UPSTREAM_AGENT_REPOSITORY,
+            "upstream_agent_revision": SWE_UPSTREAM_AGENT_REVISION,
+            "reward_contract": SWE_REWARD_CONTRACT,
+            "submission_contract": SWE_SUBMISSION_CONTRACT,
+            "horizon_contract": SWE_HORIZON_CONTRACT,
+        }
+        for field, expected in expected_contracts.items():
+            actual = metadata.get(field)
+            if actual != expected:
+                raise RuntimeError(
+                    f"SWE-smith endpoint {field} mismatch: "
+                    f"expected {expected!r}, got {actual!r}"
+                )
         self._max_policy_turns = int(metadata["configured_max_policy_turns"])
         if self._max_policy_turns <= 0:
             raise RuntimeError(
@@ -382,7 +405,7 @@ class SwesmithEnvClient(BaseEnvClient):
 
         horizon = self.finalize_horizon()
         if not horizon.done:
-            raise RuntimeError("SWE-smith horizon grading did not terminate the episode")
+            raise RuntimeError("SWE-smith horizon exhaustion did not terminate the episode")
         merged_info = deepcopy(dict(output.info))
         horizon_info = deepcopy(dict(horizon.info))
         terminal_env_info = horizon_info.get("env_info")
@@ -424,14 +447,15 @@ class SwesmithEnvClient(BaseEnvClient):
             else None
         )
         action_progress = None
-        if actor_credit["basis"] == "shell_executed":
+        if actor_credit["basis"] in {"shell_executed", "terminal_submission"}:
             action_progress = _validate_action_progress_receipt(
                 response_env_info.get("action_progress")
             )
-            actor_credit = self._classify_shell_actor_credit(
-                actor_credit,
-                action_progress,
-            )
+            if actor_credit["basis"] == "shell_executed":
+                actor_credit = self._classify_shell_actor_credit(
+                    actor_credit,
+                    action_progress,
+                )
         elif response_env_info.get("action_progress") is not None:
             raise RuntimeError(
                 "SWE-smith action progress appeared on a non-executed shell action"
@@ -576,7 +600,7 @@ class SwesmithEnvClient(BaseEnvClient):
         return output
 
     def finalize_policy_horizon(self) -> StepOutput:
-        """Expose horizon grading through the task-neutral wrapper contract."""
+        """Expose no-submission horizon failure through the wrapper contract."""
 
         return self.finalize_horizon()
 
