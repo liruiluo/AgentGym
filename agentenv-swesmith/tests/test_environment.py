@@ -82,6 +82,8 @@ class LocalSandbox(LinuxNamespaceEpisodeSandbox):
         command: str,
         workdir: str,
         timeout_ms: int,
+        stdout_limit_bytes: int | None = None,
+        stderr_limit_bytes: int | None = None,
     ) -> ShellExecutionResult:
         completed = subprocess.run(
             ["bash", "-c", command],

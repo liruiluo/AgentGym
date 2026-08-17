@@ -20,6 +20,7 @@ from agentenv_agentmemory.workspace_sandbox import (
 from agentenv_swesmith.sandbox import (
     LinuxNamespaceEpisodeSandbox,
     SwesmithSandboxError,
+    _DIRECT_BIND_NAMESPACE_SETUP,
     _attest_oci_rootfs_identity,
     _normalize_workdir,
     _remove_temporary_sandbox_directory,
@@ -90,6 +91,8 @@ class _FakeEpisodeSandbox(LinuxNamespaceEpisodeSandbox):
         command: str,
         workdir: str,
         timeout_ms: int,
+        stdout_limit_bytes: int | None = None,
+        stderr_limit_bytes: int | None = None,
     ) -> ShellExecutionResult:
         if self.mutation is not None:
             self.mutation(workspace_root)
@@ -125,6 +128,11 @@ class SandboxPreflightTests(unittest.TestCase):
         command = run.call_args.kwargs["command"]
         self.assertNotIn("python", command.lower())
         sandbox.close()
+
+    def test_network_namespace_enables_only_loopback(self) -> None:
+        self.assertIn('"$ip_binary" link set dev lo up', _DIRECT_BIND_NAMESPACE_SETUP)
+        self.assertNotIn("route add", _DIRECT_BIND_NAMESPACE_SETUP)
+        self.assertNotIn("default via", _DIRECT_BIND_NAMESPACE_SETUP)
 
 
 class SandboxScratchCleanupTests(unittest.TestCase):
