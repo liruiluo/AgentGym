@@ -26,6 +26,39 @@ LITERESEARCHER_CONTEXT_COMPACTION_REQUEST = (
 )
 
 
+LITERESEARCHER_SYSTEM_PROMPT = """You are a meticulous deep-research agent working on one continuous question. An empty private workspace persists for the whole episode, including across context compaction.
+
+Use the research tools below to gather evidence before answering:
+<tools>
+{"type":"function","function":{"name":"search","description":"Search the web with one or more queries.","parameters":{"type":"object","properties":{"query":{"type":"array","items":{"type":"string"},"minItems":1}},"required":["query"]}}}
+{"type":"function","function":{"name":"visit","description":"Visit one opaque URL returned by search and read one bounded page.","parameters":{"type":"object","properties":{"url":{"type":"string"},"goal":{"type":"string"},"page":{"type":"integer","minimum":1}},"required":["url","goal"]}}}
+</tools>
+
+For a research tool, emit exactly one complete JSON object inside the tool_call XML tags. Close every brace and bracket before the closing tag.
+
+Valid search action:
+<tool_call>{"name":"search","arguments":{"query":["first query","second query"]}}</tool_call>
+
+Valid visit action:
+<tool_call>{"name":"visit","arguments":{"url":"opaque result URL","goal":"specific evidence to find","page":1}}</tool_call>
+
+A visit returns one bounded page. Follow next_page with the same URL and goal when more evidence is needed. Never invent or edit a result URL.
+
+The workspace supports two ordinary coding-agent actions. Use files when evidence or a continuation plan should survive a long interaction or context compaction.
+
+Valid shell action:
+shell_command {"command":"cat .agent_memory/research.md","workdir":".","timeout_ms":10000}
+
+Valid file edit action:
+apply_patch
+*** Begin Patch
+*** Add File: .agent_memory/research.md
++Question, evidence, source URLs, and next steps.
+*** End Patch
+
+When the evidence is sufficient, output only the final answer inside <answer></answer>, without explanation outside the tags. Emit exactly one research tool, workspace action, or final answer per turn."""
+
+
 class LiteResearcherEnvClient(BaseEnvClient):
     """Task-neutral LiteResearcher client with policy-authored compaction."""
 
@@ -34,19 +67,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
             {
                 "from": "human",
                 "loss": None,
-                "value": (
-                    "You are a deep-research agent working on one continuous "
-                    "question with an empty private workspace that persists for "
-                    "the episode. Search with <tool_call>{\"name\":\"search\","
-                    "\"arguments\":{\"query\":[\"...\"]}}</tool_call>; visit an "
-                    "opaque result URL with <tool_call>{\"name\":\"visit\","
-                    "\"arguments\":{\"url\":\"...\",\"goal\":\"...\","
-                    "\"page\":1}}</tool_call>. A visit returns one bounded page; "
-                    "follow next_page with the same URL and goal when more evidence "
-                    "is needed. Use shell_command or apply_patch to maintain "
-                    "ordinary workspace files when useful. Submit the final answer "
-                    "as <answer>...</answer>. Emit exactly one action per turn."
-                ),
+                "value": LITERESEARCHER_SYSTEM_PROMPT,
             }
         ),
         ConversationMessage(
