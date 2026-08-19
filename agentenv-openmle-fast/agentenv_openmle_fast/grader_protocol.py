@@ -21,6 +21,10 @@ ENVELOPE_SCHEMA = "openmle_fast_authenticated_envelope_v1"
 GRADER_BOUNDARY_CONTRACT = "openmle_fast_authenticated_private_ipc_v1"
 MAX_PROTOCOL_BYTES = 96 * 1024 * 1024
 _IDENTITY_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,255}\Z")
+_TASK_ID_RE = re.compile(
+    r"\A(?:[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,255}"
+    r"|-[A-Za-z0-9][A-Za-z0-9._:@/+~-]{0,254})\Z"
+)
 
 
 class GraderProtocolError(RuntimeError):
@@ -64,7 +68,7 @@ class GradeRequest:
         return cls(
             request_id=_identity(request_id, "request_id"),
             episode_id=_identity(episode_id, "episode_id"),
-            task_id=_identity(task_id, "task_id"),
+            task_id=_task_identity(task_id),
             grader_binding_sha256=_sha256(
                 grader_binding_sha256, "grader_binding_sha256"
             ),
@@ -155,7 +159,7 @@ class GradeRequest:
         return cls(
             request_id=_identity(value["request_id"], "request_id"),
             episode_id=_identity(value["episode_id"], "episode_id"),
-            task_id=_identity(value["task_id"], "task_id"),
+            task_id=_task_identity(value["task_id"]),
             grader_binding_sha256=_sha256(
                 value["grader_binding_sha256"], "grader_binding_sha256"
             ),
@@ -327,7 +331,7 @@ class GradeResult:
         return cls(
             request_id=_identity(value["request_id"], "request_id"),
             episode_id=_identity(value["episode_id"], "episode_id"),
-            task_id=_identity(value["task_id"], "task_id"),
+            task_id=_task_identity(value["task_id"]),
             grader_binding_sha256=_sha256(
                 value["grader_binding_sha256"], "grader_binding_sha256"
             ),
@@ -515,6 +519,12 @@ def _hmac_sha256(
 def _identity(value: Any, label: str) -> str:
     if not isinstance(value, str) or _IDENTITY_RE.fullmatch(value) is None:
         raise GraderProtocolError(f"{label} is not a valid opaque identity")
+    return value
+
+
+def _task_identity(value: Any) -> str:
+    if not isinstance(value, str) or _TASK_ID_RE.fullmatch(value) is None:
+        raise GraderProtocolError("task_id is not a valid opaque identity")
     return value
 
 
