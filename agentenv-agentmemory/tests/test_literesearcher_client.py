@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from unittest.mock import Mock, patch
 
@@ -9,6 +10,7 @@ from agentenv.envs.literesearcher import (
     LITERESEARCHER_SYSTEM_PROMPT,
     LiteResearcherEnvClient,
 )
+from agentenv_agentmemory.literesearcher.wrapper import _parse_tool_call
 
 
 class LiteResearcherClientTests(unittest.TestCase):
@@ -25,12 +27,38 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn("# Tools", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn('"name": "search"', LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn('"name": "visit"', LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("<function=search>", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("<function=visit>", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("MUST be a JSON array", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn(
-            "<function=example_function_name>",
+            "<answer>your evidence-backed answer</answer>",
             LITERESEARCHER_SYSTEM_PROMPT,
         )
-        self.assertIn("Required parameters MUST be specified", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("Never write\n<function=answer>", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("On the first turn, call search", LITERESEARCHER_SYSTEM_PROMPT)
+
+    def test_prompt_tool_examples_pass_the_production_parser(self) -> None:
+        examples = re.findall(
+            r"<tool_call>.*?</tool_call>",
+            LITERESEARCHER_SYSTEM_PROMPT,
+            flags=re.DOTALL,
+        )
+        self.assertEqual(len(examples), 2)
+        self.assertEqual(
+            _parse_tool_call(examples[0]),
+            ("search", {"query": ["first search query", "second search query"]}),
+        )
+        self.assertEqual(
+            _parse_tool_call(examples[1]),
+            (
+                "visit",
+                {
+                    "url": "URL_COPIED_VERBATIM_FROM_A_SEARCH_RESULT",
+                    "goal": "specific evidence to find on that page",
+                    "page": 1,
+                },
+            ),
+        )
 
     def test_policy_framing_restores_the_system_role(self) -> None:
         client = self._client()

@@ -35,28 +35,38 @@ You have access to the following functions:
 {"type": "function", "function": {"name": "visit", "description": "Visit one opaque URL returned by search.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "goal": {"type": "string"}, "page": {"type": "integer", "minimum": 1}}, "required": ["url", "goal"]}}}
 </tools>
 
-If you choose to call a function ONLY reply in the following format with NO suffix:
+For a search, use this complete form. The query value MUST be a JSON array of
+one or more non-empty strings, never a single string:
 
 <tool_call>
-<function=example_function_name>
-<parameter=example_parameter_1>
-value_1
-</parameter>
-<parameter=example_parameter_2>
-This is the value for the second parameter
-that can span
-multiple lines
+<function=search>
+<parameter=query>
+["first search query", "second search query"]
 </parameter>
 </function>
 </tool_call>
 
-<IMPORTANT>
-Reminder:
-- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags
-- Required parameters MUST be specified
-- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after
-- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls
-</IMPORTANT>
+For a visit, use this complete form. Replace the URL with one copied verbatim
+from a search result; never invent, reconstruct, shorten, or edit a URL:
+
+<tool_call>
+<function=visit>
+<parameter=url>
+URL_COPIED_VERBATIM_FROM_A_SEARCH_RESULT
+</parameter>
+<parameter=goal>
+specific evidence to find on that page
+</parameter>
+<parameter=page>
+1
+</parameter>
+</function>
+</tool_call>
+
+Function names are limited to search and visit. Never write
+<function=answer>, <function=apply_patch>, or <function=shell_command>.
+Do not wrap workspace actions or the final answer in <tool_call> tags.
+Required parameters must be present. Emit no text after a function call.
 
 You are a meticulous deep-research agent working on one continuous question. Research before answering. On the first turn, call search even if the answer seems obvious. Copy each visit URL exactly from a search result. A visit returns one bounded page; follow next_page with the same URL and goal when needed.
 
@@ -72,7 +82,11 @@ apply_patch
 +Question, evidence, source URLs, and next steps.
 *** End Patch
 
-When evidence is sufficient, output only <answer>answer text</answer>. Emit exactly one function call, workspace action, or final answer per turn."""
+When evidence is sufficient, use this complete final form and replace the text
+with the evidence-backed answer:
+<answer>your evidence-backed answer</answer>
+
+Emit exactly one function call, workspace action, or final answer per turn."""
 
 
 class LiteResearcherEnvClient(BaseEnvClient):
