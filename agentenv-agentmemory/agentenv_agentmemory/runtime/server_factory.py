@@ -223,6 +223,9 @@ def _build_literesearcher_wrapper(surface: str) -> LiteResearcherWrapper:
             timeout_seconds=_env_float(
                 "AGENTMEMORY_LITERESEARCHER_BACKEND_TIMEOUT_SECONDS", 120.0
             ),
+            filter_visitable=_env_bool(
+                "AGENTMEMORY_LITERESEARCHER_FILTER_VISITABLE", False
+            ),
         )
         judge_model = _required_env("AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL")
         if judge_model not in LITERESEARCHER_FORMAL_JUDGE_MODELS:
@@ -546,3 +549,15 @@ def _env_int(key: str, default: int) -> int:
     if parsed < 1:
         raise RuntimeError(f"{key} must be positive")
     return parsed
+
+
+def _env_bool(key: str, default: bool) -> bool:
+    value = os.environ.get(key)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{key} must be a boolean")

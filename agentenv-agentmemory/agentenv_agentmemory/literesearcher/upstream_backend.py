@@ -26,6 +26,7 @@ UPSTREAM_SPARSE_WEIGHT = 0.7
 UPSTREAM_DENSE_WEIGHT = 1.0
 UPSTREAM_DOCUMENT_COUNT = 32_127_370
 _MAX_RESPONSE_BYTES = 32 * 1024 * 1024
+VISITABLE_SEARCH_PATH = "/search_visitable"
 
 
 class UpstreamHybridLiteResearchBackend:
@@ -40,6 +41,7 @@ class UpstreamHybridLiteResearchBackend:
         *,
         top_k: int = 5,
         timeout_seconds: float = 120.0,
+        filter_visitable: bool = False,
     ) -> None:
         parsed = parse.urlparse(service_url)
         if (
@@ -61,11 +63,15 @@ class UpstreamHybridLiteResearchBackend:
         self.service_url = service_url.rstrip("/")
         self.top_k = top_k
         self.timeout_seconds = float(timeout_seconds)
+        if not isinstance(filter_visitable, bool):
+            raise ValueError("filter_visitable must be a boolean")
+        self.filter_visitable = filter_visitable
+        self.search_path = VISITABLE_SEARCH_PATH if filter_visitable else "/search"
 
         health = self._request_json("/health")
         self.document_count = self._validate_health(health)
         probe = self._request_json(
-            "/search",
+            self.search_path,
             {
                 "query": "LiteResearcher service identity check",
                 "limit": 1,
@@ -74,7 +80,11 @@ class UpstreamHybridLiteResearchBackend:
                 "dense_weight": UPSTREAM_DENSE_WEIGHT,
             },
         )
-        self._parse_search_response(probe, expected_count=1)
+        self._parse_search_response(
+            probe,
+            expected_count=1,
+            allow_partial=filter_visitable,
+        )
 
     def _request_json(
         self,
@@ -184,6 +194,7 @@ class UpstreamHybridLiteResearchBackend:
         payload: Mapping[str, Any],
         *,
         expected_count: int,
+        allow_partial: bool = False,
     ) -> list[dict[str, Any]]:
         if payload.get("server_id") != UPSTREAM_SERVER_ID:
             raise LiteResearchBackendError("LiteResearcher upstream server identity mismatch")
@@ -215,12 +226,17 @@ class UpstreamHybridLiteResearchBackend:
         total = payload.get("total")
         if not isinstance(results, list):
             raise LiteResearchBackendError("LiteResearcher results must be a list")
-        if (
-            isinstance(total, bool)
-            or not isinstance(total, int)
-            or total != len(results)
-            or total != expected_count
-        ):
+        count_valid = (
+            isinstance(total, int)
+            and not isinstance(total, bool)
+            and total == len(results)
+            and (
+                total == expected_count
+                if not allow_partial
+                else 0 <= total <= expected_count
+            )
+        )
+        if not count_valid:
             raise LiteResearchBackendError("LiteResearcher result count mismatch")
 
         parsed: list[dict[str, Any]] = []
@@ -270,6 +286,13 @@ class UpstreamHybridLiteResearchBackend:
                 self.service_url.encode("utf-8")
             ).hexdigest(),
             "search_result_url_namespace": "released_public_url_v1",
+            "search_path": self.search_path,
+            "filter_visitable": self.filter_visitable,
+            "visitable_search_contract": (
+                "milvus_ranked_candidates_postgresql_exact_url_v1"
+                if self.filter_visitable
+                else None
+            ),
             "search_exposes_mask_url": False,
             "search_exposes_targets": False,
             "visit_exposes_mask_url": False,
@@ -301,9 +324,15 @@ class UpstreamHybridLiteResearchBackend:
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
             raise LiteResearchRequestError("search top_k must be an integer in [1, 50]")
         masked = str(mask_url).strip()
-        request_limit = min(50, limit + int(bool(masked)))
+        if self.filter_visitable:
+            # Over-sample before the exact URL join; the service may return
+            # fewer than ``limit`` rows after filtering, but never an
+            # unvisitable URL.
+            request_limit = min(50, max(limit * 4 + int(bool(masked)), limit))
+        else:
+            request_limit = min(50, limit + int(bool(masked)))
         payload = self._request_json(
-            "/search",
+            self.search_path,
             {
                 "query": query_text,
                 "limit": request_limit,
@@ -312,10 +341,15 @@ class UpstreamHybridLiteResearchBackend:
                 "dense_weight": UPSTREAM_DENSE_WEIGHT,
             },
         )
-        hits = self._parse_search_response(payload, expected_count=request_limit)
+        hits = self._parse_search_response(
+            payload,
+            expected_count=request_limit,
+            allow_partial=self.filter_visitable,
+        )
         if masked:
             hits = [hit for hit in hits if hit["url"] != masked]
-        return hits[:limit]
+        hits = hits[:limit]
+        return hits
 
     def visit(self, url: str, *, goal: str = "", page: int = 1) -> dict[str, Any]:
         if not isinstance(url, str) or not url.strip():

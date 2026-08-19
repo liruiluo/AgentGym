@@ -223,6 +223,11 @@ def launch() -> None:
     )
     parser.add_argument("--literesearcher-max-policy-steps", type=int, default=40)
     parser.add_argument("--literesearcher-top-k", type=int, default=5)
+    parser.add_argument(
+        "--literesearcher-filter-visitable",
+        action="store_true",
+        help="ask the upstream service to return only PostgreSQL-visitable URLs",
+    )
     parser.add_argument("--latent-preference-product-pool")
     parser.add_argument("--latent-preference-product-pool-sha256")
     parser.add_argument("--latent-preference-task-count", type=int)
@@ -539,6 +544,9 @@ def launch() -> None:
                 ),
                 "AGENTMEMORY_LITERESEARCHER_TOP_K": str(
                     args.literesearcher_top_k
+                ),
+                "AGENTMEMORY_LITERESEARCHER_FILTER_VISITABLE": (
+                    "1" if args.literesearcher_filter_visitable else "0"
                 ),
                 "AGENTMEMORY_WORKSPACE_RG_BINARY": args.workspace_rg_binary,
                 "AGENTMEMORY_WORKSPACE_RG_SHA256": args.workspace_rg_sha256,

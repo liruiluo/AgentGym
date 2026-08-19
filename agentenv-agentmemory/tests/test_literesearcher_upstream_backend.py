@@ -29,7 +29,15 @@ class _State:
             "https://docs.test/known": {
                 "title": "Known page",
                 "text": "alpha evidence " * 900,
-            }
+            },
+            "https://docs.test/LiteResearcher service identity check": {
+                "title": "Identity page",
+                "text": "identity evidence " * 20,
+            },
+            "https://docs.test/visitable": {
+                "title": "Visitable page",
+                "text": "visitable evidence " * 20,
+            },
         }
 
     def record(self, path: str, payload: dict | None) -> None:
@@ -107,7 +115,7 @@ def _handler(state: _State):
             if state.mode == "malformed":
                 self._respond(200, None, raw=b"not-json")
                 return
-            if self.path == "/search":
+            if self.path in {"/search", "/search_visitable"}:
                 state.enter()
                 try:
                     query = payload["query"]
@@ -135,6 +143,12 @@ def _handler(state: _State):
                             "score": 0.25,
                         },
                     ][: payload["limit"]]
+                    if self.path == "/search_visitable":
+                        results = [
+                            item
+                            for item in results
+                            if item["link"] in state.documents
+                        ]
                     response = {
                         "results": results,
                         "total": len(results),
@@ -239,6 +253,20 @@ class UpstreamHybridLiteResearchBackendTests(unittest.TestCase):
                 "dense_weight": 1.0,
             },
         )
+
+    def test_visitable_search_filters_candidates_and_preserves_rank(self) -> None:
+        backend = self.backend(top_k=1, filter_visitable=True)
+        hits = backend.search("visitable", top_k=1)
+        self.assertEqual([hit["url"] for hit in hits], ["https://docs.test/visitable"])
+        self.assertEqual(self.state.requests[-1][0], "/search_visitable")
+        self.assertGreaterEqual(self.state.requests[-1][1]["limit"], 4)
+        metadata = backend.metadata()
+        self.assertTrue(metadata["filter_visitable"])
+        self.assertEqual(metadata["search_path"], "/search_visitable")
+
+    def test_visitable_search_with_no_exact_hits_returns_empty_list(self) -> None:
+        backend = self.backend(top_k=1, filter_visitable=True)
+        self.assertEqual(backend.search("no exact corpus hit", top_k=1), [])
 
     def test_visit_reads_only_released_web_parser_and_paginates(self) -> None:
         backend = self.backend()

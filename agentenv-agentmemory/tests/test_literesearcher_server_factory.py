@@ -54,6 +54,7 @@ class LiteResearcherServerFactoryTests(unittest.TestCase):
                 "AGENTMEMORY_LITERESEARCHER_SOURCE_ROOT": str(source),
                 "AGENTMEMORY_LITERESEARCHER_UPSTREAM_ENDPOINT": "http://rag:8018",
                 "AGENTMEMORY_LITERESEARCHER_BACKEND_TIMEOUT_SECONDS": "33.5",
+                "AGENTMEMORY_LITERESEARCHER_FILTER_VISITABLE": "1",
                 "AGENTMEMORY_LITERESEARCHER_JUDGE_API_BASE": "http://judge/v1",
                 "AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL": "qwen3-8b-judge",
                 "AGENTMEMORY_LITERESEARCHER_JUDGE_API_KEY": "private-key",
@@ -95,6 +96,7 @@ class LiteResearcherServerFactoryTests(unittest.TestCase):
             "http://rag:8018",
             top_k=5,
             timeout_seconds=33.5,
+            filter_visitable=True,
         )
         judge_type.assert_called_once_with(
             api_base="http://judge/v1",
