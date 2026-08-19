@@ -359,6 +359,51 @@ class LiteResearcherIntakeTests(unittest.TestCase):
         self.assertLessEqual(len(observation["page"]["content"]), 8192)
         wrapper.close(env_id)
 
+    def test_wrapper_accepts_qwen35_native_search_and_visit(self) -> None:
+        backend = FrozenLiteResearchBackend(self.coverage)
+        wrapper = LiteResearcherWrapper(self.coverage, backend)
+        task = self.coverage.train[0]
+        env_id = wrapper.create(data_idx=0)["id"]
+        query = json.dumps([task.question], ensure_ascii=False)
+        searched = wrapper.step(
+            env_id,
+            "<tool_call>\n<function=search>\n<parameter=query>\n"
+            + query
+            + "\n</parameter>\n</function>\n</tool_call>",
+        )
+        self.assertFalse(searched["done"])
+        self.assertEqual(searched["info"]["status"], "active")
+        self.assertEqual(searched["info"]["native_environment_call_count"], 1)
+
+        visited = wrapper.step(
+            env_id,
+            "<tool_call>\n<function=visit>\n<parameter=url>\n"
+            + task.public_url
+            + "\n</parameter>\n<parameter=goal>\n"
+            + task.question
+            + "\n</parameter>\n<parameter=page>\n1\n</parameter>\n"
+            + "</function>\n</tool_call>",
+        )
+        self.assertFalse(visited["done"])
+        self.assertEqual(visited["info"]["status"], "active")
+        self.assertEqual(visited["info"]["native_environment_call_count"], 2)
+        self.assertEqual(json.loads(visited["observation"])["tool"], "visit")
+        wrapper.close(env_id)
+
+    def test_native_search_keeps_query_array_strict(self) -> None:
+        backend = FrozenLiteResearchBackend(self.coverage)
+        wrapper = LiteResearcherWrapper(self.coverage, backend)
+        env_id = wrapper.create(data_idx=0)["id"]
+        result = wrapper.step(
+            env_id,
+            "<tool_call>\n<function=search>\n<parameter=query>\n"
+            "not-a-json-array\n</parameter>\n</function>\n</tool_call>",
+        )
+        self.assertFalse(result["done"])
+        self.assertEqual(result["info"]["status"], "invalid_action")
+        self.assertEqual(result["info"]["native_environment_call_count"], 0)
+        wrapper.close(env_id)
+
     def test_malformed_tool_and_unknown_visit_do_not_fallback_to_live_web(self) -> None:
         backend = FrozenLiteResearchBackend(self.coverage)
         wrapper = LiteResearcherWrapper(self.coverage, backend)

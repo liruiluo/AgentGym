@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import re
 import unittest
 from unittest.mock import Mock, patch
 
@@ -20,25 +18,40 @@ class LiteResearcherClientTests(unittest.TestCase):
         client.env_server_base = "http://literesearcher.example"
         client.timeout = 30
         client.env_id = 7
+        client.info = {"observation": "Which source answers this question?"}
         return client
 
-    def test_prompt_uses_complete_upstream_style_tool_json(self) -> None:
-        tool_calls = re.findall(
-            r"<tool_call>(.*?)</tool_call>",
+    def test_prompt_uses_qwen35_native_tool_format(self) -> None:
+        self.assertIn("# Tools", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn('"name": "search"', LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn('"name": "visit"', LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn(
+            "<function=example_function_name>",
             LITERESEARCHER_SYSTEM_PROMPT,
-            flags=re.DOTALL,
         )
-        self.assertEqual(len(tool_calls), 2)
-        parsed = [json.loads(call) for call in tool_calls]
-        self.assertEqual(parsed[0]["name"], "search")
-        self.assertEqual(parsed[0]["arguments"]["query"], [
-            "first query",
-            "second query",
-        ])
-        self.assertEqual(parsed[1]["name"], "visit")
-        self.assertEqual(parsed[1]["arguments"]["page"], 1)
-        self.assertIn("Close every brace and bracket", LITERESEARCHER_SYSTEM_PROMPT)
-        self.assertIn("Emit exactly one research tool", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("Required parameters MUST be specified", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("On the first turn, call search", LITERESEARCHER_SYSTEM_PROMPT)
+
+    def test_policy_framing_restores_the_system_role(self) -> None:
+        client = self._client()
+        self.assertEqual(
+            client.policy_framing(),
+            [{"role": "system", "content": LITERESEARCHER_SYSTEM_PROMPT}],
+        )
+        normalized = client.normalize_initial_policy_context(
+            [
+                {"role": "user", "content": "legacy prompt"},
+                {"role": "assistant", "content": "Understood."},
+                {"role": "user", "content": client.observe()},
+            ]
+        )
+        self.assertEqual(
+            normalized,
+            [
+                {"role": "system", "content": LITERESEARCHER_SYSTEM_PROMPT},
+                {"role": "user", "content": client.observe()},
+            ],
+        )
 
     def test_prompt_exposes_exact_workspace_action_grammar(self) -> None:
         self.assertIn(
@@ -52,7 +65,7 @@ class LiteResearcherClientTests(unittest.TestCase):
             LITERESEARCHER_SYSTEM_PROMPT,
         )
         self.assertIn(
-            "including across context compaction",
+            "persists across context compaction",
             LITERESEARCHER_SYSTEM_PROMPT,
         )
 

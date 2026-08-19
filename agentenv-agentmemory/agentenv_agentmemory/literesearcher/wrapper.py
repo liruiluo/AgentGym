@@ -19,6 +19,14 @@ LITERESEARCHER_FULLPOOL_SURFACE = (
 )
 _APPEND_SCHEMA = "agentmemory_task_neutral_context_transition_v1"
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.IGNORECASE | re.DOTALL)
+_NATIVE_TOOL_CALL_RE = re.compile(
+    r"<tool_call>\s*<function=([^>\s]+)>\s*(.*?)\s*</function>\s*</tool_call>",
+    re.IGNORECASE | re.DOTALL,
+)
+_NATIVE_PARAMETER_RE = re.compile(
+    r"<parameter=([^>\s]+)>\s*(.*?)\s*</parameter>",
+    re.IGNORECASE | re.DOTALL,
+)
 _ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.IGNORECASE | re.DOTALL)
 
 
@@ -34,6 +42,48 @@ class WorkspaceAdapter(Protocol):
 
 
 def _parse_tool_call(raw: str) -> tuple[str, dict[str, Any]] | None:
+    native_match = _NATIVE_TOOL_CALL_RE.search(raw)
+    if native_match is not None:
+        name = native_match.group(1).strip().lower()
+        parameters: dict[str, str] = {}
+        for key, value in _NATIVE_PARAMETER_RE.findall(native_match.group(2)):
+            normalized_key = key.strip().lower()
+            if normalized_key in parameters:
+                raise ValueError(f"tool_call repeats parameter {normalized_key!r}")
+            parameters[normalized_key] = value.strip()
+        if name == "search":
+            if set(parameters) != {"query"}:
+                raise ValueError("search requires exactly one query parameter")
+            try:
+                query = json.loads(parameters["query"])
+            except json.JSONDecodeError as exc:
+                raise ValueError("search query parameter must be a JSON array") from exc
+            if (
+                not isinstance(query, list)
+                or not query
+                or any(not isinstance(item, str) or not item.strip() for item in query)
+            ):
+                raise ValueError("search query parameter must be a non-empty string array")
+            return name, {"query": query}
+        if name == "visit":
+            required = {"url", "goal"}
+            if not required <= parameters.keys() or not set(parameters) <= required | {"page"}:
+                raise ValueError("visit requires url and goal, with optional page")
+            arguments: dict[str, Any] = {
+                "url": _parse_native_string(parameters["url"], name="url"),
+                "goal": _parse_native_string(parameters["goal"], name="goal"),
+            }
+            if "page" in parameters:
+                try:
+                    page = int(parameters["page"])
+                except ValueError as exc:
+                    raise ValueError("visit page must be a positive integer") from exc
+                if page < 1:
+                    raise ValueError("visit page must be a positive integer")
+                arguments["page"] = page
+            return name, arguments
+        raise ValueError("only search and visit are available in LiteResearcher")
+
     match = _TOOL_CALL_RE.search(raw)
     if match is None:
         return None
@@ -48,6 +98,17 @@ def _parse_tool_call(raw: str) -> tuple[str, dict[str, Any]] | None:
     if not isinstance(name, str) or not name.strip() or not isinstance(arguments, Mapping):
         raise ValueError("tool_call requires a name and object arguments")
     return name.strip().lower(), dict(arguments)
+
+
+def _parse_native_string(raw: str, *, name: str) -> str:
+    value: Any = raw.strip()
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError:
+        decoded = value
+    if not isinstance(decoded, str) or not decoded.strip():
+        raise ValueError(f"visit {name} must be a non-empty string")
+    return decoded.strip()
 
 
 class LiteResearcherWrapper:

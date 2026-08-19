@@ -26,25 +26,41 @@ LITERESEARCHER_CONTEXT_COMPACTION_REQUEST = (
 )
 
 
-LITERESEARCHER_SYSTEM_PROMPT = """You are a meticulous deep-research agent working on one continuous question. An empty private workspace persists for the whole episode, including across context compaction.
+LITERESEARCHER_SYSTEM_PROMPT = """# Tools
 
-Use the research tools below to gather evidence before answering:
+You have access to the following functions:
+
 <tools>
-{"type":"function","function":{"name":"search","description":"Search the web with one or more queries.","parameters":{"type":"object","properties":{"query":{"type":"array","items":{"type":"string"},"minItems":1}},"required":["query"]}}}
-{"type":"function","function":{"name":"visit","description":"Visit one opaque URL returned by search and read one bounded page.","parameters":{"type":"object","properties":{"url":{"type":"string"},"goal":{"type":"string"},"page":{"type":"integer","minimum":1}},"required":["url","goal"]}}}
+{"type": "function", "function": {"name": "search", "description": "Search the released web corpus with one or more queries.", "parameters": {"type": "object", "properties": {"query": {"type": "array", "items": {"type": "string"}, "minItems": 1}}, "required": ["query"]}}}
+{"type": "function", "function": {"name": "visit", "description": "Visit one opaque URL returned by search.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "goal": {"type": "string"}, "page": {"type": "integer", "minimum": 1}}, "required": ["url", "goal"]}}}
 </tools>
 
-For a research tool, emit exactly one complete JSON object inside the tool_call XML tags. Close every brace and bracket before the closing tag.
+If you choose to call a function ONLY reply in the following format with NO suffix:
 
-Valid search action:
-<tool_call>{"name":"search","arguments":{"query":["first query","second query"]}}</tool_call>
+<tool_call>
+<function=example_function_name>
+<parameter=example_parameter_1>
+value_1
+</parameter>
+<parameter=example_parameter_2>
+This is the value for the second parameter
+that can span
+multiple lines
+</parameter>
+</function>
+</tool_call>
 
-Valid visit action:
-<tool_call>{"name":"visit","arguments":{"url":"opaque result URL","goal":"specific evidence to find","page":1}}</tool_call>
+<IMPORTANT>
+Reminder:
+- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags
+- Required parameters MUST be specified
+- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after
+- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls
+</IMPORTANT>
 
-A visit returns one bounded page. Follow next_page with the same URL and goal when more evidence is needed. Never invent or edit a result URL.
+You are a meticulous deep-research agent working on one continuous question. Research before answering. On the first turn, call search even if the answer seems obvious. Copy each visit URL exactly from a search result. A visit returns one bounded page; follow next_page with the same URL and goal when needed.
 
-The workspace supports two ordinary coding-agent actions. Use files when evidence or a continuation plan should survive a long interaction or context compaction.
+An empty episode-private workspace persists across context compaction. Use files when evidence or a continuation plan should survive a long interaction.
 
 Valid shell action:
 shell_command {"command":"cat .agent_memory/research.md","workdir":".","timeout_ms":10000}
@@ -56,7 +72,7 @@ apply_patch
 +Question, evidence, source URLs, and next steps.
 *** End Patch
 
-When the evidence is sufficient, output only the final answer inside <answer></answer>, without explanation outside the tags. Emit exactly one research tool, workspace action, or final answer per turn."""
+When evidence is sufficient, output only <answer>answer text</answer>. Emit exactly one function call, workspace action, or final answer per turn."""
 
 
 class LiteResearcherEnvClient(BaseEnvClient):
@@ -120,6 +136,27 @@ class LiteResearcherEnvClient(BaseEnvClient):
 
     def observe(self) -> str:
         return str(self.info["observation"])
+
+    def policy_framing(self) -> list[dict[str, str]]:
+        return [{"role": "system", "content": LITERESEARCHER_SYSTEM_PROMPT}]
+
+    def normalize_initial_policy_context(
+        self,
+        messages: Sequence[Mapping[str, str]],
+    ) -> list[dict[str, str]]:
+        normalized = _copy_policy_messages(messages)
+        if not normalized or normalized[-1]["role"] != "user":
+            raise ValueError(
+                "LiteResearcher initial policy context must end with the question"
+            )
+        observation = str(self.observe())
+        if normalized[-1]["content"] != observation:
+            raise ValueError(
+                "LiteResearcher initial policy context does not end with the current question"
+            )
+        return self.policy_framing() + [
+            {"role": "user", "content": observation}
+        ]
 
     @property
     def sample_excluded(self) -> bool:
