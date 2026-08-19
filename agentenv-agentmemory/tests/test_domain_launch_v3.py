@@ -140,7 +140,7 @@ class DomainLaunchTest(unittest.TestCase):
             "--literesearcher-judge-api-base",
             "http://127.0.0.1:18090/v1",
             "--literesearcher-judge-model",
-            "kimi-k2.6",
+            "qwen3-8b-judge",
             "--literesearcher-judge-api-key-file",
             judge_key_file,
             "--literesearcher-judge-timeout-seconds",
@@ -183,7 +183,7 @@ class DomainLaunchTest(unittest.TestCase):
             "33.5",
         )
         self.assertEqual(
-            configured["AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL"], "kimi-k2.6"
+            configured["AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL"], "qwen3-8b-judge"
         )
         self.assertEqual(
             configured["AGENTMEMORY_LITERESEARCHER_JUDGE_API_KEY"], "private-key"
@@ -222,6 +222,22 @@ class DomainLaunchTest(unittest.TestCase):
             arguments[model_index] = "qwen-local"
             with self.assertRaises(SystemExit):
                 self._launch(arguments)
+
+    def test_literesearcher_fullpool_launch_accepts_original_company_judge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            key_file = Path(directory) / "judge.key"
+            key_file.write_text("private-key", encoding="utf-8")
+            key_file.chmod(0o600)
+            arguments = self._literesearcher_fullpool_arguments(
+                judge_key_file=str(key_file)
+            )
+            model_index = arguments.index("--literesearcher-judge-model") + 1
+            arguments[model_index] = "kimi-k2.6"
+            configured, uvicorn = self._launch(arguments)
+        self.assertEqual(
+            configured["AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL"], "kimi-k2.6"
+        )
+        uvicorn.assert_called_once()
 
     @staticmethod
     def _procedural_arguments(*, split="train"):

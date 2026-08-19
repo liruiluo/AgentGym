@@ -31,6 +31,7 @@ from .lexical_backend import SQLiteFTSLiteResearchBackend
 from .upstream_backend import UpstreamHybridLiteResearchBackend
 from .judge import (
     LITERESEARCHER_FORMAL_JUDGE_MODEL,
+    LITERESEARCHER_FORMAL_JUDGE_MODELS,
     LiteResearchJudgeResult,
     NormalizedExactLiteResearchJudge,
     UpstreamCompatibleLLMJudge,
@@ -42,6 +43,7 @@ __all__ = [
     "LITERESEARCHER_DATA_REVISION",
     "LITERESEARCHER_FULLPOOL_SURFACE",
     "LITERESEARCHER_FORMAL_JUDGE_MODEL",
+    "LITERESEARCHER_FORMAL_JUDGE_MODELS",
     "LITERESEARCHER_UPSTREAM_COMMIT",
     "LITERESEARCHER_SURFACE",
     "LiteResearchBackendError",

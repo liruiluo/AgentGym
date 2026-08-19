@@ -68,7 +68,7 @@ from .latent_preference_webshop_env import (
     LATENT_PREFERENCE_SURFACE,
 )
 from .literesearcher import (
-    LITERESEARCHER_FORMAL_JUDGE_MODEL,
+    LITERESEARCHER_FORMAL_JUDGE_MODELS,
     LITERESEARCHER_FULLPOOL_SURFACE,
     LITERESEARCHER_SURFACE,
 )
@@ -384,10 +384,13 @@ def launch() -> None:
             )
             if args.split != "train":
                 parser.error("LiteResearcher full-pool formal currently requires --split train")
-            if args.literesearcher_judge_model != LITERESEARCHER_FORMAL_JUDGE_MODEL:
+            if (
+                args.literesearcher_judge_model
+                not in LITERESEARCHER_FORMAL_JUDGE_MODELS
+            ):
                 parser.error(
-                    "LiteResearcher full-pool formal requires "
-                    f"--literesearcher-judge-model {LITERESEARCHER_FORMAL_JUDGE_MODEL}"
+                    "LiteResearcher full-pool formal requires a frozen judge model: "
+                    f"{', '.join(sorted(LITERESEARCHER_FORMAL_JUDGE_MODELS))}"
                 )
         if args.split not in {"train", "test"}:
             parser.error("LiteResearcher requires --split train or --split test")

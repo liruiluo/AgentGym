@@ -55,7 +55,7 @@ class LiteResearcherServerFactoryTests(unittest.TestCase):
                 "AGENTMEMORY_LITERESEARCHER_UPSTREAM_ENDPOINT": "http://rag:8018",
                 "AGENTMEMORY_LITERESEARCHER_BACKEND_TIMEOUT_SECONDS": "33.5",
                 "AGENTMEMORY_LITERESEARCHER_JUDGE_API_BASE": "http://judge/v1",
-                "AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL": "kimi-k2.6",
+                "AGENTMEMORY_LITERESEARCHER_JUDGE_MODEL": "qwen3-8b-judge",
                 "AGENTMEMORY_LITERESEARCHER_JUDGE_API_KEY": "private-key",
                 "AGENTMEMORY_LITERESEARCHER_JUDGE_TIMEOUT_SECONDS": "45.5",
                 "AGENTMEMORY_LITERESEARCHER_JUDGE_MAX_RETRIES": "4",
@@ -98,7 +98,7 @@ class LiteResearcherServerFactoryTests(unittest.TestCase):
         )
         judge_type.assert_called_once_with(
             api_base="http://judge/v1",
-            model="kimi-k2.6",
+            model="qwen3-8b-judge",
             api_key="private-key",
             timeout_seconds=45.5,
             max_retries=4,
