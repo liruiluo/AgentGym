@@ -404,6 +404,37 @@ class LiteResearcherIntakeTests(unittest.TestCase):
         self.assertEqual(result["info"]["native_environment_call_count"], 0)
         wrapper.close(env_id)
 
+    def test_upstream_unmarked_thinking_is_nonterminal_and_preserves_context(self) -> None:
+        backend = FrozenLiteResearchBackend(self.coverage)
+        wrapper = LiteResearcherWrapper(self.coverage, backend)
+        env_id = wrapper.create(data_idx=0)["id"]
+        result = wrapper.step(
+            env_id,
+            "I have compared the available sources and need one more visit.",
+        )
+        self.assertFalse(result["done"])
+        self.assertEqual(result["reward"], 0.0)
+        self.assertEqual(result["info"]["status"], "active")
+        self.assertEqual(result["info"]["native_environment_call_count"], 0)
+        self.assertEqual(
+            result["info"]["action_submission"]["kind"], "reasoning"
+        )
+        self.assertEqual(
+            result["info"]["context_transition"]["operation"], "preserve"
+        )
+        self.assertFalse(result["info"]["wrapper_evidence"].get("invalid_action", False))
+        wrapper.close(env_id)
+
+    def test_malformed_protocol_text_remains_invalid(self) -> None:
+        backend = FrozenLiteResearchBackend(self.coverage)
+        wrapper = LiteResearcherWrapper(self.coverage, backend)
+        env_id = wrapper.create(data_idx=0)["id"]
+        result = wrapper.step(env_id, "<answer>missing closing tag")
+        self.assertFalse(result["done"])
+        self.assertEqual(result["info"]["status"], "invalid_action")
+        self.assertEqual(result["info"]["native_environment_call_count"], 0)
+        wrapper.close(env_id)
+
     def test_malformed_tool_and_unknown_visit_do_not_fallback_to_live_web(self) -> None:
         backend = FrozenLiteResearchBackend(self.coverage)
         wrapper = LiteResearcherWrapper(self.coverage, backend)

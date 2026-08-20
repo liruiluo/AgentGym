@@ -28,6 +28,10 @@ _NATIVE_PARAMETER_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.IGNORECASE | re.DOTALL)
+_PROTOCOL_MARKER_RE = re.compile(
+    r"</?(?:tool_call|answer|function|parameter|context_compaction)(?:\s|=|>)",
+    re.IGNORECASE,
+)
 
 
 class WorkspaceAdapter(Protocol):
@@ -188,6 +192,9 @@ class LiteResearcherWrapper:
                 "compaction_contract": "task_neutral_client_replace_messages_v1",
                 "compaction_counts_as_env_step": True,
                 "compaction_calls_backend": False,
+                "plain_text_policy_contract": (
+                    "upstream_unmarked_thinking_nonterminal_v1"
+                ),
                 "reward_contract": self.reward_contract,
                 "judge": judge_metadata,
                 "judge_fallback": judge_metadata["fallback"],
@@ -259,6 +266,8 @@ class LiteResearcherWrapper:
                 return self._apply_answer(env_id, episode, str(action), answer_match.group(1))
             if str(action).startswith("shell_command") or str(action).startswith("apply_patch\n"):
                 return self._apply_workspace(env_id, episode, str(action))
+            if self._is_upstream_thinking_output(str(action)):
+                return self._apply_thinking(env_id, episode, str(action))
             raise ValueError(
                 "expected one search/visit tool_call, one answer, or one workspace action"
             )
@@ -336,6 +345,16 @@ class LiteResearcherWrapper:
             "context_epoch_before": 0,
             "context_epoch_after": 0,
             "messages": [{"role": "tool", "content": observation}],
+        }
+
+    @staticmethod
+    def _preserve_transition() -> dict[str, Any]:
+        return {
+            "schema": _APPEND_SCHEMA,
+            "operation": "preserve",
+            "context_epoch_before": 0,
+            "context_epoch_after": 0,
+            "messages": [],
         }
 
     def _apply_domain_tool(
@@ -438,6 +457,45 @@ class LiteResearcherWrapper:
                 "judge_primary_model": judgment.primary_model,
                 "judge_fallback_used": judgment.fallback_reason is not None,
                 "judge_fallback_reason": judgment.fallback_reason,
+            },
+        )
+
+    @staticmethod
+    def _is_upstream_thinking_output(raw_action: str) -> bool:
+        """Match the pinned upstream loop's non-tool, non-answer turn.
+
+        The upstream agent keeps an unmarked assistant response as a thinking
+        turn and continues the episode. Protocol-looking malformed outputs
+        remain invalid so parser bugs stay visible to training and audit.
+        """
+
+        cleaned = raw_action.strip()
+        if not cleaned or cleaned.startswith(("shell_command", "apply_patch")):
+            return False
+        return _PROTOCOL_MARKER_RE.search(cleaned) is None
+
+    def _apply_thinking(
+        self,
+        env_id: int,
+        episode: dict[str, Any],
+        raw_action: str,
+    ) -> dict[str, Any]:
+        return self._ordinary_result(
+            env_id,
+            episode,
+            observation="",
+            status="active",
+            action_submission={
+                "raw_policy_output": raw_action,
+                "kind": "reasoning",
+                "parser_status": "upstream_nonterminal_thinking",
+            },
+            transition=self._preserve_transition(),
+            wrapper_evidence={
+                "step": episode["step_count"],
+                "policy_output_kind": "thinking",
+                "upstream_parity": "unmarked_assistant_text_is_nonterminal",
+                "native_environment_call_count": 0,
             },
         )
 

@@ -96,6 +96,10 @@ class LiteResearcherClientTests(unittest.TestCase):
             "persists across context compaction",
             LITERESEARCHER_SYSTEM_PROMPT,
         )
+        self.assertIn(
+            "unmarked assistant response is retained as a nonterminal thinking turn",
+            LITERESEARCHER_SYSTEM_PROMPT,
+        )
 
     def test_close_accepts_server_boolean_true(self) -> None:
         response = Mock(status_code=200)
