@@ -324,19 +324,15 @@ class SwesmithEnvClient(BaseEnvClient):
                 "SWE-smith context reached the prompt cap before a trainable "
                 "compaction could be sampled"
             )
-        request_tokens = (
-            pressure.candidate_prompt_tokens - pressure.action_prompt_tokens
-        )
-        if request_tokens <= 0:
-            raise RuntimeError(
-                "SWE-smith compaction request must extend the action prompt"
-            )
+        # Compare the exact candidate prompt itself.  A full chat-template
+        # rerender may normalize generation-only history and therefore be shorter
+        # than the preserved Continuous Token runtime; token lengths are not
+        # required to be monotonic across those two representations.
         projected_next_request = (
-            pressure.action_prompt_tokens
+            pressure.candidate_prompt_tokens
             + pressure.max_response_tokens
             + pressure.max_observation_tokens
             + pressure.action_observation_envelope_tokens
-            + request_tokens
         )
         if projected_next_request < capacity:
             return None

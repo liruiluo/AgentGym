@@ -27,8 +27,10 @@ class PolicyContextPressure:
     """Task-neutral token accounting supplied to an environment wrapper.
 
     ``candidate_prompt_tokens`` is the exact prompt length after appending the
-    wrapper's candidate control request.  The wrapper owns the decision to use
-    that request; the policy runner only measures token counts.
+    wrapper's candidate control request.  It may be shorter than
+    ``action_prompt_tokens`` when a chat template normalizes generation-only
+    history during a full rerender.  The wrapper owns the decision to use that
+    request; the policy runner only measures token counts.
     """
 
     action_prompt_tokens: int
@@ -55,10 +57,6 @@ class PolicyContextPressure:
         if isinstance(envelope, bool) or not isinstance(envelope, int) or envelope < 0:
             raise ValueError(
                 "action_observation_envelope_tokens must be a non-negative integer"
-            )
-        if self.candidate_prompt_tokens < self.action_prompt_tokens:
-            raise ValueError(
-                "candidate_prompt_tokens must include the current action prompt"
             )
 
     @property

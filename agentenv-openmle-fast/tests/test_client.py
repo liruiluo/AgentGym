@@ -525,6 +525,18 @@ class OpenMLEFastClientTest(unittest.TestCase):
                 )
             )
             self.assertEqual(selected, candidate)
+            selected_after_history_normalization = client.prepare_policy_turn(
+                _CLIENT_MODULE.PolicyContextPressure(
+                    action_prompt_tokens=140,
+                    candidate_prompt_tokens=130,
+                    max_prompt_tokens=300,
+                    max_model_tokens=332,
+                    max_response_tokens=32,
+                    max_observation_tokens=150,
+                    action_observation_envelope_tokens=4,
+                )
+            )
+            self.assertEqual(selected_after_history_normalization, candidate)
 
             action = """apply_patch
 *** Begin Patch
