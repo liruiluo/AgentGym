@@ -388,17 +388,11 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                 "OpenMLE-fast context reached the prompt cap before a trainable "
                 "persistence action could be sampled"
             )
-        # Compare the exact candidate prompt itself.  A full chat-template
-        # rerender may normalize generation-only history and therefore be shorter
-        # than the preserved Continuous Token runtime; token lengths are not
-        # required to be monotonic across those two representations.
-        projected_next_request = (
-            pressure.candidate_prompt_tokens
-            + pressure.max_response_tokens
-            + pressure.max_observation_tokens
-            + pressure.action_observation_envelope_tokens
-        )
-        if projected_next_request < capacity:
+        # Decide from the no-control append path, whose base is the preserved
+        # Continuous Token runtime.  The freshly rendered control candidate may
+        # legitimately be shorter after generation-only history normalization,
+        # so using it here can miss an imminent overflow on the ordinary path.
+        if pressure.projected_next_prompt_tokens_without_control < capacity:
             return None
         self._selected_policy_control = "context_compaction"
         return OPENMLE_CONTEXT_COMPACTION_REQUEST

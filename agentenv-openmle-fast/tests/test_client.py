@@ -63,6 +63,15 @@ def _load_client_module():
         action_observation_envelope_tokens: int = 0
 
         @property
+        def projected_next_prompt_tokens_without_control(self):
+            return (
+                self.action_prompt_tokens
+                + self.max_response_tokens
+                + self.max_observation_tokens
+                + self.action_observation_envelope_tokens
+            )
+
+        @property
         def effective_prompt_capacity(self):
             return min(
                 self.max_prompt_tokens,
@@ -515,7 +524,7 @@ class OpenMLEFastClientTest(unittest.TestCase):
             )
             selected = client.prepare_policy_turn(
                 _CLIENT_MODULE.PolicyContextPressure(
-                    action_prompt_tokens=100,
+                    action_prompt_tokens=120,
                     candidate_prompt_tokens=130,
                     max_prompt_tokens=300,
                     max_model_tokens=332,
@@ -537,6 +546,22 @@ class OpenMLEFastClientTest(unittest.TestCase):
                 )
             )
             self.assertEqual(selected_after_history_normalization, candidate)
+            selected_when_preserved_runtime_would_overflow = (
+                client.prepare_policy_turn(
+                    _CLIENT_MODULE.PolicyContextPressure(
+                        action_prompt_tokens=180,
+                        candidate_prompt_tokens=100,
+                        max_prompt_tokens=300,
+                        max_model_tokens=332,
+                        max_response_tokens=32,
+                        max_observation_tokens=100,
+                        action_observation_envelope_tokens=4,
+                    )
+                )
+            )
+            self.assertEqual(
+                selected_when_preserved_runtime_would_overflow, candidate
+            )
 
             action = """apply_patch
 *** Begin Patch
@@ -623,7 +648,7 @@ class OpenMLEFastClientTest(unittest.TestCase):
             client.bind_policy_context(initial, initial=True)
             selected = client.prepare_policy_turn(
                 _CLIENT_MODULE.PolicyContextPressure(
-                    action_prompt_tokens=100,
+                    action_prompt_tokens=120,
                     candidate_prompt_tokens=130,
                     max_prompt_tokens=300,
                     max_model_tokens=332,

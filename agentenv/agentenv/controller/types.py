@@ -60,6 +60,17 @@ class PolicyContextPressure:
             )
 
     @property
+    def projected_next_prompt_tokens_without_control(self) -> int:
+        """Conservative next-turn prompt size if the wrapper does not compact."""
+
+        return (
+            self.action_prompt_tokens
+            + self.max_response_tokens
+            + self.max_observation_tokens
+            + self.action_observation_envelope_tokens
+        )
+
+    @property
     def effective_prompt_capacity(self) -> int:
         capacity = min(
             self.max_prompt_tokens,

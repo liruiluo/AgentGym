@@ -19,6 +19,7 @@ class PolicyContextPressureTests(unittest.TestCase):
 
         self.assertEqual(pressure.action_prompt_tokens, 140)
         self.assertEqual(pressure.candidate_prompt_tokens, 130)
+        self.assertEqual(pressure.projected_next_prompt_tokens_without_control, 276)
         self.assertEqual(pressure.effective_prompt_capacity, 300)
 
 
