@@ -45,7 +45,12 @@ class LiteResearcherEnvClient(BaseEnvClient):
                     "follow next_page with the same URL and goal when more evidence "
                     "is needed. Use shell_command or apply_patch to maintain "
                     "ordinary workspace files when useful. Submit the final answer "
-                    "as <answer>...</answer>. Emit exactly one action per turn."
+                    "as <answer>...</answer>. Emit exactly one action per turn. "
+                    "The following complete examples are literal formats; keep "
+                    "both closing braces before </tool_call>: "
+                    "<tool_call>{\"name\":\"search\",\"arguments\":{\"query\":[\"climate policy\"]}}</tool_call> "
+                    "and <tool_call>{\"name\":\"visit\",\"arguments\":{\"url\":\"https://literesearcher.local/page/00001\",\"goal\":\"extract evidence\",\"page\":1}}</tool_call>. "
+                    "Never omit the outer arguments brace."
                 ),
             }
         ),
