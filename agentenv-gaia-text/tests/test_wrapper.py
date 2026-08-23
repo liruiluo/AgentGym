@@ -474,7 +474,7 @@ def test_one_policy_output_cannot_mix_tool_and_answer(tmp_path: Path) -> None:
     assert backend.call_trace == ()
 
 
-def test_backend_failure_is_a_null_incorrect_result_not_an_excluded_sample(
+def test_backend_failure_propagates_for_infrastructure_exclusion(
     tmp_path: Path,
 ) -> None:
     runtime, backend, _, _, manager = _components(tmp_path, EvaluationArm.NATIVE)
@@ -485,13 +485,30 @@ def test_backend_failure_is_a_null_incorrect_result_not_an_excluded_sample(
     backend.search = fail_search  # type: ignore[method-assign]
     env_id = manager.create()["id"]
     manager.reset(env_id, 0)
-    result = manager.step(
-        env_id,
-        '<tool_call>{"name":"search","arguments":{"query":"alpha"}}</tool_call>',
+    with pytest.raises(BackendError, match="synthetic backend failure"):
+        manager.step(
+            env_id,
+            '<tool_call>{"name":"search","arguments":{"query":"alpha"}}</tool_call>',
+        )
+    assert not Path(str(runtime.predictions) + ".partial").exists()
+    assert not runtime.predictions.exists()
+
+
+def test_parser_implementation_error_is_not_reclassified_as_model_malformed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, _, _, _, manager = _components(tmp_path, EvaluationArm.NATIVE)
+    env_id = manager.create()["id"]
+    manager.reset(env_id, 0)
+
+    def broken_parser(_raw: str):
+        raise ValueError("synthetic parser implementation failure")
+
+    monkeypatch.setattr(
+        "agentenv_gaia_text.wrapper._parse_tool_call",
+        broken_parser,
     )
-    assert result["done"] is True
-    assert result["reward"] == 0.0
-    assert result["info"]["status"] == "environment_error"
-    assert result["info"]["sample_excluded"] is False
-    partial = Path(str(runtime.predictions) + ".partial")
-    assert json.loads(partial.read_text())["model_answer"] is None
+    with pytest.raises(ValueError, match="synthetic parser implementation failure"):
+        manager.step(env_id, "any policy output")
+    assert not Path(str(runtime.predictions) + ".partial").exists()
+    assert not runtime.predictions.exists()

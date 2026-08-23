@@ -10,7 +10,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from .backend import BackendError, RequestError, SearchVisitBackend
+from .backend import RequestError, SearchVisitBackend
 from .contracts import EvaluationArm
 from .dataset import GaiaTextDataset, GaiaTextTask
 from .submission import SubmissionStore
@@ -291,17 +291,6 @@ class GaiaTextEpisodeManager:
                     action_submission={"raw_policy_output": action},
                     wrapper_evidence={"invalid_action": True},
                 )
-            except (TypeError, ValueError, KeyError) as exc:
-                return self._ordinary(
-                    episode,
-                    observation=f"Invalid policy action: {exc}",
-                    status="invalid_action",
-                    domain_action="invalid",
-                    action_submission={"raw_policy_output": action},
-                    wrapper_evidence={"invalid_action": True},
-                )
-            except BackendError as exc:
-                return self._terminal_failure(episode, action, type(exc).__name__)
 
     def finalize_horizon(self, env_id: int) -> dict[str, Any]:
         episode = self._require(env_id)
@@ -456,24 +445,6 @@ class GaiaTextEpisodeManager:
             domain_action=domain_action,
             action_submission=action_submission,
             wrapper_evidence=wrapper_evidence,
-        )
-        return deepcopy(episode.payload)
-
-    def _terminal_failure(
-        self, episode: _Episode, raw_action: str, error_type: str
-    ) -> dict[str, Any]:
-        task = _task(episode)
-        receipt = self.submissions.record(task.task_id, None)
-        episode.done = True
-        episode.status = "environment_error"
-        episode.payload = self._payload(
-            episode,
-            include_id=False,
-            observation="Verified search/browse backend failed closed.",
-            domain_action="environment_error",
-            action_submission={"raw_policy_output": raw_action},
-            submission_receipt=receipt,
-            wrapper_evidence={"backend_error": error_type},
         )
         return deepcopy(episode.payload)
 
