@@ -46,6 +46,14 @@ The service always binds `127.0.0.1`; `GAIA_TEXT_HOST` is intentionally ignored.
 
 Do not provide a gold or scorer environment variable. The launcher rejects GAIA-related variable names containing `GOLD` or `SCORER`. The server has no score/detail endpoint, never loads final answers or scorer code, and does not expose host paths. Run the pinned official scorer later in a distinct process with the server stopped.
 
+The lifecycle has distinct terminal and rollback exits. `POST /close` accepts only
+a terminal episode. `POST /abort` discards an unfinished, unscored attempt without
+creating a null submission. Both exits remove the episode, close any owned
+workspace, and release the task claim, so a coordinator can replay an entire
+three-arm task after a retryable service or model failure. Submission rollback is
+still owned by the external transactional submission controller; aborting an
+environment never publishes scorer input.
+
 Before a real memory run, exercise the Linux namespace sandbox preflight on the target Linux host. The macOS unit fixture verifies adapter semantics but cannot validate Linux namespace isolation itself. No memory root or sandbox variables should be supplied to native or compaction-only runs.
 
 While incomplete, predictions are stored at `<GAIA_TEXT_PREDICTIONS>.partial`. Once every manifest ID has exactly one string-or-null answer, the package atomically publishes `<GAIA_TEXT_PREDICTIONS>` as newline-terminated objects with exactly this key order:

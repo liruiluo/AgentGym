@@ -29,6 +29,7 @@ GAIA_TEXT_CONTEXT_COMPACTION_REQUEST = (
 GAIA_TEXT_POLICY_CONTINUATION_MARKER = (
     "Continue the same task from this retained state."
 )
+GaiaTextInfrastructureFailure = _shared.GaiaTextInfrastructureFailure
 
 _COMPACTION_ONLY = EvaluationArm.AMG_COMPACTION_ONLY.value
 _MEMORY = EvaluationArm.AMG_MEMORY.value
@@ -188,6 +189,7 @@ class GaiaTextEnvClient(_shared.GaiaTextEnvClient):
         )
         self._policy_step_count += 1
         self._context_epoch += 1
+        self._last_compaction_native_call_count = self._native_call_count
         self._selected_policy_control = None
         return StepOutput(
             state=self.observe(),
@@ -217,6 +219,16 @@ class GaiaTextEnvClient(_shared.GaiaTextEnvClient):
                 wrapper_evidence={
                     "event": "context_compaction",
                     "native_environment_call_count": 0,
+                    "action_accounting_delta": {
+                        "parsed_actions": 0,
+                        "domain_tool_attempts": 0,
+                        "successful_backend_calls": 0,
+                        "workspace_actions": 0,
+                        "compactions": 1,
+                        "answers": 0,
+                        "invalid_actions": 0,
+                        "parser_corrections": 0,
+                    },
                 },
             ),
         )
@@ -244,4 +256,5 @@ __all__ = [
     "GAIA_TEXT_MEMORY_AFFORDANCE",
     "GAIA_TEXT_POLICY_CONTINUATION_MARKER",
     "GaiaTextEnvClient",
+    "GaiaTextInfrastructureFailure",
 ]

@@ -19,6 +19,7 @@ from agentenv_gaia_text.client import (
     GAIA_TEXT_MEMORY_AFFORDANCE,
     GAIA_TEXT_POLICY_CONTINUATION_MARKER,
     GaiaTextEnvClient,
+    GaiaTextInfrastructureFailure,
 )
 from agentenv_gaia_text.contracts import EvaluationArm, ProtocolContract
 from agentenv_gaia_text.dataset import GaiaTextDataset
@@ -319,7 +320,7 @@ def test_compaction_only_prompt_and_receipts_expose_no_memory_capability(
         )
         serialized = json.dumps(attempted.info, sort_keys=True)
         assert attempted.done is False
-        assert attempted.info["env_info"]["status"] == "invalid_action"
+        assert attempted.info["env_info"]["status"] == "parser_correction_required"
         assert attempted.info["env_info"]["workspace_action_count"] == 0
         assert attempted.info["env_info"]["domain_action"] == "invalid"
         assert "workspace_op" not in serialized
@@ -433,10 +434,15 @@ def test_memory_write_survives_client_owned_replace_messages_compaction(
                     "content": GAIA_TEXT_POLICY_CONTINUATION_MARKER,
                 },
             ]
-            assert compacted.info["wrapper_evidence"] == {
-                "event": "context_compaction",
-                "native_environment_call_count": 0,
-            }
+            assert compacted.info["wrapper_evidence"]["event"] == (
+                "context_compaction"
+            )
+            assert compacted.info["wrapper_evidence"][
+                "native_environment_call_count"
+            ] == 0
+            assert compacted.info["wrapper_evidence"][
+                "action_accounting_delta"
+            ]["compactions"] == 1
 
             read = client.step(
                 'shell_command {"command":"cat notes.txt","workdir":"."}'
@@ -472,6 +478,160 @@ def test_http_server_client_round_trip_and_external_horizon(tmp_path: Path) -> N
         assert terminal.reward == 0.0
         assert terminal.info["env_info"]["status"] == "policy_horizon"
         assert client.close() is True
+
+
+def test_client_raises_typed_backend_failure_with_raw_response_evidence(
+    tmp_path: Path,
+) -> None:
+    app, contract, manager, _ = _app_and_contract(tmp_path, EvaluationArm.NATIVE)
+
+    def fail_search(*_args, **_kwargs):
+        from agentenv_gaia_text.backend import BackendConnectionError
+
+        raise BackendConnectionError("synthetic connection failure")
+
+    manager.backend.search = fail_search  # type: ignore[method-assign]
+    with (
+        TestClient(app) as http,
+        patch(
+            "agentenv.envs.gaia_text.requests.request",
+            side_effect=_requests_adapter(http),
+        ),
+    ):
+        client = GaiaTextEnvClient(
+            "http://gaia.test",
+            arm="native",
+            expected_protocol=contract,
+        )
+        client.reset(0)
+        raw = '<tool_call>{"name":"search","arguments":{"query":"alpha"}}</tool_call>'
+        with pytest.raises(GaiaTextInfrastructureFailure) as captured:
+            client.step(raw)
+        receipt = captured.value.receipt
+        assert receipt["status"] == "infrastructure_failure"
+        assert receipt["sample_excluded"] is True
+        assert receipt["action_submission"]["raw_policy_output"] == raw
+        assert captured.value.action_accounting_delta == {
+            "parsed_actions": 1,
+            "domain_tool_attempts": 1,
+            "successful_backend_calls": 0,
+            "workspace_actions": 0,
+            "compactions": 0,
+            "answers": 0,
+            "invalid_actions": 0,
+            "parser_corrections": 0,
+        }
+        assert client.close() is True
+
+        replay = GaiaTextEnvClient(
+            "http://gaia.test",
+            arm="native",
+            expected_protocol=contract,
+        )
+        replay.reset(0)
+        assert replay.close() is True
+
+
+def test_client_aborts_model_failure_before_first_environment_step(
+    tmp_path: Path,
+) -> None:
+    app, contract, manager, workspaces = _app_and_contract(
+        tmp_path, EvaluationArm.AMG_MEMORY
+    )
+    with (
+        TestClient(app) as http,
+        patch(
+            "agentenv.envs.gaia_text.requests.request",
+            side_effect=_requests_adapter(http),
+        ),
+    ):
+        failed = GaiaTextEnvClient(
+            "http://gaia.test",
+            arm="amg_memory",
+            expected_protocol=contract,
+        )
+        failed.reset(0)
+        failed_workspace = workspaces[-1]
+        assert failed.close() is True
+        assert not failed_workspace.root.exists()
+        assert manager.metadata()["active_environment_count"] == 0
+        assert manager.metadata()["active_workspace_count"] == 0
+
+        replay = GaiaTextEnvClient(
+            "http://gaia.test",
+            arm="amg_memory",
+            expected_protocol=contract,
+        )
+        replay.reset(0)
+        assert replay.close() is True
+
+
+def test_compaction_trigger_is_reachable_before_policy_horizon(
+    tmp_path: Path,
+) -> None:
+    app, contract, manager, _ = _app_and_contract(
+        tmp_path, EvaluationArm.AMG_COMPACTION_ONLY
+    )
+    with (
+        TestClient(app) as http,
+        patch(
+            "agentenv.envs.gaia_text.requests.request",
+            side_effect=_requests_adapter(http),
+        ),
+    ):
+        client = GaiaTextEnvClient(
+            "http://gaia.test",
+            arm="amg_compaction_only",
+            expected_protocol=contract,
+        )
+        client.reset(0)
+        messages = bind_initial_policy_context(
+            client,
+            [
+                {"role": "system", "content": client.policy_framing()[0]["content"]},
+                {"role": "user", "content": client.observe()},
+            ],
+        )
+        for index in range(
+            manager.metadata()["compaction_force_after_native_actions"]
+        ):
+            step, messages = complete_policy_turn(
+                client,
+                prepare_policy_turn(
+                    client,
+                    messages,
+                    count_prompt_tokens=lambda candidate: (
+                        110
+                        if candidate[-1]["content"] == client.compaction_request
+                        else 100
+                    ),
+                    max_prompt_tokens=30_720,
+                    max_model_tokens=32_768,
+                    max_response_tokens=128,
+                    max_observation_tokens=1024,
+                    action_observation_envelope_tokens=128,
+                ),
+                f'<tool_call>{{"name":"search","arguments":{{"query":"alpha-{index}"}}}}</tool_call>',
+            )
+            if step.done:
+                break
+        if step.done:
+            pytest.fail("bounded parser correction terminated before compaction")
+        prepared = prepare_policy_turn(
+            client,
+            messages,
+            count_prompt_tokens=lambda candidate: (
+                110
+                if candidate[-1]["content"] == client.compaction_request
+                else 100
+            ),
+            max_prompt_tokens=30_720,
+            max_model_tokens=32_768,
+            max_response_tokens=128,
+            max_observation_tokens=1024,
+            action_observation_envelope_tokens=128,
+        )
+        assert prepared.control_request == client.compaction_request
 
 
 def test_client_validates_and_optionally_pins_paired_runtime_digest(

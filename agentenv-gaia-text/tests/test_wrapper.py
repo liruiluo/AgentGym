@@ -77,7 +77,7 @@ def test_create_is_unbound_and_native_never_constructs_a_workspace(
         'shell_command {"command":"printf forbidden > note.txt","workdir":"."}',
     )
     assert invalid["done"] is False
-    assert invalid["info"]["status"] == "invalid_action"
+    assert invalid["info"]["status"] == "parser_correction_required"
     assert invalid["info"]["step"] == 1
     assert invalid["info"]["workspace_action_count"] == 0
     assert workspaces == []
@@ -110,7 +110,7 @@ def test_compaction_only_has_compaction_but_no_workspace_lifecycle(
         env_id,
         'shell_command {"command":"printf forbidden > note.txt","workdir":"."}',
     )
-    assert attempted["info"]["status"] == "invalid_action"
+    assert attempted["info"]["status"] == "parser_correction_required"
     assert attempted["info"]["domain_action"] == "invalid"
     assert attempted["info"]["workspace_action_count"] == 0
     assert "workspace" not in attempted["observation"].casefold()
@@ -216,9 +216,7 @@ def test_three_arms_share_domain_path_and_answer_extraction(tmp_path: Path) -> N
         assert len({result["info"]["domain_action"] for result in results}) == 1
 
     answers = [
-        manager.step(
-            env_ids[arm], "prefix <answer> forty two </answer> suffix"
-        )
+        manager.step(env_ids[arm], "<answer> forty two </answer>")
         for arm, manager in managers.items()
     ]
     assert all(answer["done"] is True for answer in answers)
@@ -469,12 +467,12 @@ def test_one_policy_output_cannot_mix_tool_and_answer(tmp_path: Path) -> None:
         "<answer>forty two</answer>",
     )
     assert result["done"] is False
-    assert result["info"]["status"] == "invalid_action"
+    assert result["info"]["status"] == "parser_correction_required"
     assert result["info"]["step"] == 1
     assert backend.call_trace == ()
 
 
-def test_backend_failure_is_a_null_incorrect_result_not_an_excluded_sample(
+def test_backend_failure_is_excluded_without_creating_a_prediction(
     tmp_path: Path,
 ) -> None:
     runtime, backend, _, _, manager = _components(tmp_path, EvaluationArm.NATIVE)
@@ -491,7 +489,139 @@ def test_backend_failure_is_a_null_incorrect_result_not_an_excluded_sample(
     )
     assert result["done"] is True
     assert result["reward"] == 0.0
-    assert result["info"]["status"] == "environment_error"
-    assert result["info"]["sample_excluded"] is False
+    assert result["info"]["status"] == "infrastructure_failure"
+    assert result["info"]["sample_excluded"] is True
+    assert result["info"]["submission_receipt"] is None
+    assert result["info"]["failure"] == {
+        "class": "environment_failure",
+        "kind": "backend",
+        "error_type": "BackendError",
+        "retryable": True,
+    }
+    assert result["info"]["action_counters"] == {
+        "parsed_actions": 1,
+        "domain_tool_attempts": 1,
+        "successful_backend_calls": 0,
+        "workspace_actions": 0,
+        "compactions": 0,
+        "answers": 0,
+        "invalid_actions": 0,
+        "parser_corrections": 0,
+    }
     partial = Path(str(runtime.predictions) + ".partial")
-    assert json.loads(partial.read_text())["model_answer"] is None
+    assert not partial.exists()
+
+
+def test_terminal_close_releases_task_claim_for_retry(tmp_path: Path) -> None:
+    _, _, _, _, manager = _components(tmp_path, EvaluationArm.NATIVE)
+    first = manager.create()["id"]
+    manager.reset(first, 0)
+    terminal = manager.step(first, "<answer>forty two</answer>")
+    assert terminal["done"] is True
+    assert manager.close(first) is True
+
+    replay = manager.create()["id"]
+    assert manager.reset(replay, 0)["done"] is False
+    assert manager.abort(replay) is True
+
+
+def test_abort_discards_unfinished_attempt_without_submission(tmp_path: Path) -> None:
+    runtime, _, store, workspaces, manager = _components(
+        tmp_path, EvaluationArm.AMG_MEMORY
+    )
+    first = manager.create()["id"]
+    manager.reset(first, 0)
+    workspace = workspaces[-1]
+    assert manager.abort(first) is True
+    assert store.submitted_count == 0
+    assert not runtime.predictions.exists()
+    assert not Path(str(runtime.predictions) + ".partial").exists()
+    assert not workspace.root.exists()
+    assert manager.metadata()["active_environment_count"] == 0
+    assert manager.metadata()["active_workspace_count"] == 0
+
+    replay = manager.create()["id"]
+    assert manager.reset(replay, 0)["done"] is False
+    assert manager.abort(replay) is True
+
+
+def test_parser_is_strict_and_allows_only_one_explicit_correction(
+    tmp_path: Path,
+) -> None:
+    runtime, backend, _, _, manager = _components(tmp_path, EvaluationArm.NATIVE)
+    env_id = manager.create()["id"]
+    manager.reset(env_id, 0)
+
+    first = manager.step(
+        env_id,
+        'prose before <tool_call>{"name":"search","arguments":{"query":"alpha"}}</tool_call>',
+    )
+    assert first["done"] is False
+    assert first["info"]["status"] == "parser_correction_required"
+    assert first["info"]["action_counters"]["invalid_actions"] == 1
+    assert first["info"]["action_counters"]["parser_corrections"] == 1
+    assert first["info"]["action_submission"]["raw_policy_output"].startswith(
+        "prose before"
+    )
+    assert "Correction 1/1" in first["observation"]
+    assert backend.call_trace == ()
+
+    second = manager.step(env_id, "still malformed")
+    assert second["done"] is True
+    assert second["info"]["status"] == "policy_horizon"
+    assert second["info"]["wrapper_evidence"]["outcome"] == (
+        "parser_correction_exhausted"
+    )
+    assert second["info"]["action_counters"]["invalid_actions"] == 2
+    assert second["info"]["action_counters"]["parser_corrections"] == 1
+    pending = Path(str(runtime.predictions) + ".partial")
+    assert json.loads(pending.read_text())["model_answer"] is None
+
+
+def test_parser_implementation_error_is_not_reclassified_as_model_malformed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime, _, _, _, manager = _components(tmp_path, EvaluationArm.NATIVE)
+    env_id = manager.create()["id"]
+    manager.reset(env_id, 0)
+
+    def broken_parser(_raw: str):
+        raise ValueError("synthetic parser implementation failure")
+
+    monkeypatch.setattr(
+        "agentenv_gaia_text.wrapper._parse_tool_call",
+        broken_parser,
+    )
+    with pytest.raises(ValueError, match="synthetic parser implementation failure"):
+        manager.step(env_id, "any policy output")
+    assert not Path(str(runtime.predictions) + ".partial").exists()
+    assert not runtime.predictions.exists()
+
+
+def test_action_counters_separate_attempt_success_workspace_and_answer(
+    tmp_path: Path,
+) -> None:
+    _, _, _, _, manager = _components(tmp_path, EvaluationArm.AMG_MEMORY)
+    env_id = manager.create()["id"]
+    manager.reset(env_id, 0)
+    search = manager.step(
+        env_id,
+        '<tool_call>{"name":"search","arguments":{"query":"alpha"}}</tool_call>',
+    )
+    assert search["info"]["action_counters"]["domain_tool_attempts"] == 1
+    assert search["info"]["action_counters"]["successful_backend_calls"] == 1
+    manager.step(
+        env_id,
+        'shell_command {"command":"printf note > evidence.txt","workdir":"."}',
+    )
+    answer = manager.step(env_id, "<answer>forty two</answer>")
+    assert answer["info"]["action_counters"] == {
+        "parsed_actions": 3,
+        "domain_tool_attempts": 1,
+        "successful_backend_calls": 1,
+        "workspace_actions": 1,
+        "compactions": 0,
+        "answers": 1,
+        "invalid_actions": 0,
+        "parser_corrections": 0,
+    }

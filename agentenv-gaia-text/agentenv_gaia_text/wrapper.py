@@ -11,7 +11,12 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .backend import BackendError, RequestError, SearchVisitBackend
-from .contracts import EvaluationArm
+from .contracts import (
+    GAIA_TEXT_COMPACTION_FORCE_AFTER_NATIVE_ACTIONS,
+    GAIA_TEXT_COMPACTION_MIN_NATIVE_ACTIONS,
+    GAIA_TEXT_COMPACTION_SOFT_PROMPT_TOKENS,
+    EvaluationArm,
+)
 from .dataset import GaiaTextDataset, GaiaTextTask
 from .submission import SubmissionStore
 
@@ -25,6 +30,16 @@ _DOMAIN_ACTION_CONTRACT = "shared_search_visit_answer_v1"
 _ANSWER_EXTRACTION_CONTRACT = "single_trimmed_answer_tag_v1"
 _REWARD_CONTRACT = "external_official_scoring_zero_online_reward_v1"
 _SUBMISSION_CONTRACT = "gaia_task_id_model_answer_jsonl_v1"
+_ACTION_COUNTER_NAMES = (
+    "parsed_actions",
+    "domain_tool_attempts",
+    "successful_backend_calls",
+    "workspace_actions",
+    "compactions",
+    "answers",
+    "invalid_actions",
+    "parser_corrections",
+)
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -47,6 +62,11 @@ class _Episode:
     step_count: int = 0
     backend_call_count: int = 0
     workspace_action_count: int = 0
+    parsed_action_count: int = 0
+    domain_tool_attempt_count: int = 0
+    answer_count: int = 0
+    invalid_action_count: int = 0
+    parser_correction_count: int = 0
     done: bool = False
     status: str = "unbound"
     workspace: Workspace | None = None
@@ -145,6 +165,16 @@ class GaiaTextEpisodeManager:
             ),
             "compaction_calls_server": False,
             "compaction_calls_backend": False,
+            "compaction_soft_prompt_tokens": (
+                GAIA_TEXT_COMPACTION_SOFT_PROMPT_TOKENS
+            ),
+            "compaction_min_native_actions": (
+                GAIA_TEXT_COMPACTION_MIN_NATIVE_ACTIONS
+            ),
+            "compaction_force_after_native_actions": (
+                GAIA_TEXT_COMPACTION_FORCE_AFTER_NATIVE_ACTIONS
+            ),
+            "parser_correction_limit": 1,
             "max_policy_steps": self.max_policy_steps,
             "max_policy_steps_enforced_by": "shared_policy_runner",
             "server_native_action_safety_cap": self.max_policy_steps,
@@ -173,6 +203,16 @@ class GaiaTextEpisodeManager:
             "answer_extraction_contract": _ANSWER_EXTRACTION_CONTRACT,
             "reward_contract": _REWARD_CONTRACT,
             "submission_contract": _SUBMISSION_CONTRACT,
+            "public_scope": dataset["public_scope"],
+            "compaction_soft_prompt_tokens": (
+                GAIA_TEXT_COMPACTION_SOFT_PROMPT_TOKENS
+            ),
+            "compaction_min_native_actions": (
+                GAIA_TEXT_COMPACTION_MIN_NATIVE_ACTIONS
+            ),
+            "compaction_force_after_native_actions": (
+                GAIA_TEXT_COMPACTION_FORCE_AFTER_NATIVE_ACTIONS
+            ),
         }
 
     def create(self) -> dict[str, Any]:
@@ -230,6 +270,11 @@ class GaiaTextEpisodeManager:
             episode.step_count = 0
             episode.backend_call_count = 0
             episode.workspace_action_count = 0
+            episode.parsed_action_count = 0
+            episode.domain_tool_attempt_count = 0
+            episode.answer_count = 0
+            episode.invalid_action_count = 0
+            episode.parser_correction_count = 0
             episode.done = False
             episode.status = "active"
             episode.workspace = workspace
@@ -260,19 +305,11 @@ class GaiaTextEpisodeManager:
             episode.step_count += 1
             try:
                 parsed_tool = _parse_tool_call(action)
-                answer_matches = list(_ANSWER_RE.finditer(action))
-                if parsed_tool is not None and answer_matches:
-                    raise RequestError(
-                        "one policy action cannot contain both tool_call and answer"
-                    )
-                if len(answer_matches) > 1:
-                    raise RequestError(
-                        "one policy action cannot contain multiple answers"
-                    )
+                answer_match = _ANSWER_RE.fullmatch(action)
                 if parsed_tool is not None:
                     return self._domain_tool(episode, action, parsed_tool)
-                if answer_matches:
-                    answer = answer_matches[0].group(1).strip()
+                if answer_match is not None:
+                    answer = answer_match.group(1).strip()
                     return self._answer(episode, action, answer)
                 if self.arm is EvaluationArm.AMG_MEMORY and action.strip().startswith(
                     _WORKSPACE_PREFIXES
@@ -283,23 +320,7 @@ class GaiaTextEpisodeManager:
                     expected += ", or one workspace action"
                 raise RequestError(expected)
             except RequestError as exc:
-                return self._ordinary(
-                    episode,
-                    observation=f"Invalid policy action: {exc}",
-                    status="invalid_action",
-                    domain_action="invalid",
-                    action_submission={"raw_policy_output": action},
-                    wrapper_evidence={"invalid_action": True},
-                )
-            except (TypeError, ValueError, KeyError) as exc:
-                return self._ordinary(
-                    episode,
-                    observation=f"Invalid policy action: {exc}",
-                    status="invalid_action",
-                    domain_action="invalid",
-                    action_submission={"raw_policy_output": action},
-                    wrapper_evidence={"invalid_action": True},
-                )
+                return self._invalid_action(episode, action, str(exc))
             except BackendError as exc:
                 return self._terminal_failure(episode, action, type(exc).__name__)
 
@@ -322,25 +343,36 @@ class GaiaTextEpisodeManager:
                 action_submission={"control_action": "horizon"},
                 submission_receipt=receipt,
                 wrapper_evidence={"outcome": "max_policy_steps"},
+                action_counters_delta=_zero_action_counters(),
             )
             return deepcopy(episode.payload)
 
     def close(self, env_id: int) -> bool:
+        return self._dispose(env_id, allow_unfinished=False)
+
+    def abort(self, env_id: int) -> bool:
+        """Discard an unscored attempt without synthesizing a submission."""
+        return self._dispose(env_id, allow_unfinished=True)
+
+    def _dispose(self, env_id: int, *, allow_unfinished: bool) -> bool:
         episode = self._require(env_id)
         with episode.lock:
             self._ensure_open(episode)
-            if episode.task is not None and not episode.done:
+            if episode.task is not None and not episode.done and not allow_unfinished:
                 raise RuntimeError(
                     "cannot close an unfinished GAIA-Text task; finalize its horizon first"
                 )
             if episode.workspace is not None:
                 episode.workspace.close()
                 episode.workspace = None
+            task_id = None if episode.task is None else episode.task.task_id
             with self._lock:
                 if self._episodes.get(env_id) is not episode:
                     raise RuntimeError(
                         "GAIA-Text environment registry changed unexpectedly"
                     )
+                if task_id is not None:
+                    self._claimed_task_ids.discard(task_id)
                 episode.closed = True
                 del self._episodes[env_id]
             return True
@@ -355,9 +387,16 @@ class GaiaTextEpisodeManager:
         if name == "search":
             if set(arguments) - {"query", "top_k"} or "query" not in arguments:
                 raise RequestError("search arguments require query and optional top_k")
-            result = self.backend.search(
-                arguments["query"], top_k=arguments.get("top_k", 5)
-            )
+            episode.parsed_action_count += 1
+            episode.domain_tool_attempt_count += 1
+            try:
+                result = self.backend.search(
+                    arguments["query"], top_k=arguments.get("top_k", 5)
+                )
+            except RequestError:
+                episode.parsed_action_count -= 1
+                episode.domain_tool_attempt_count -= 1
+                raise
             episode.backend_call_count += 1
             observation = json.dumps(
                 {"tool": "search", "results": result},
@@ -367,11 +406,18 @@ class GaiaTextEpisodeManager:
         elif name == "visit":
             if set(arguments) - {"url", "goal", "page"} or "url" not in arguments:
                 raise RequestError("visit arguments require url and optional goal/page")
-            result = self.backend.visit(
-                arguments["url"],
-                goal=arguments.get("goal", ""),
-                page=arguments.get("page", 1),
-            )
+            episode.parsed_action_count += 1
+            episode.domain_tool_attempt_count += 1
+            try:
+                result = self.backend.visit(
+                    arguments["url"],
+                    goal=arguments.get("goal", ""),
+                    page=arguments.get("page", 1),
+                )
+            except RequestError:
+                episode.parsed_action_count -= 1
+                episode.domain_tool_attempt_count -= 1
+                raise
             episode.backend_call_count += 1
             observation = json.dumps(
                 {"tool": "visit", "page": result},
@@ -391,12 +437,19 @@ class GaiaTextEpisodeManager:
                 "arguments": arguments,
             },
             wrapper_evidence={"native_environment_call_count": 1},
+            action_counters_delta=_action_counters(
+                parsed_actions=1,
+                domain_tool_attempts=1,
+                successful_backend_calls=1,
+            ),
         )
 
     def _answer(
         self, episode: _Episode, raw_action: str, answer: str
     ) -> dict[str, Any]:
         task = _task(episode)
+        episode.parsed_action_count += 1
+        episode.answer_count += 1
         receipt = self.submissions.record(task.task_id, answer)
         episode.done = True
         episode.status = "answer_submitted"
@@ -408,6 +461,10 @@ class GaiaTextEpisodeManager:
             action_submission={"raw_policy_output": raw_action, "kind": "answer"},
             submission_receipt=receipt,
             wrapper_evidence={"terminal_answer_only": True},
+            action_counters_delta=_action_counters(
+                parsed_actions=1,
+                answers=1,
+            ),
         )
         return deepcopy(episode.payload)
 
@@ -422,6 +479,7 @@ class GaiaTextEpisodeManager:
         if result is None:
             raise RequestError("workspace action did not match a supported tool form")
         episode.workspace_action_count += 1
+        episode.parsed_action_count += 1
         return self._ordinary(
             episode,
             observation=str(getattr(result, "message", result)),
@@ -436,7 +494,73 @@ class GaiaTextEpisodeManager:
                 "workspace_op": str(getattr(result, "op", "WORKSPACE")),
                 "native_environment_call_count": 0,
             },
+            action_counters_delta=_action_counters(
+                parsed_actions=1,
+                workspace_actions=1,
+            ),
         )
+
+    def _invalid_action(
+        self,
+        episode: _Episode,
+        raw_action: str,
+        detail: str,
+    ) -> dict[str, Any]:
+        episode.invalid_action_count += 1
+        correction_available = episode.parser_correction_count == 0
+        if correction_available:
+            episode.parser_correction_count += 1
+            alternatives = "one <answer>...</answer>"
+            if self.arm is EvaluationArm.AMG_MEMORY:
+                alternatives += ", or one allowed workspace action"
+            return self._ordinary(
+                episode,
+                observation=(
+                    "Invalid policy action. Correction 1/1: emit exactly one complete "
+                    "<tool_call>{\"name\":\"search|visit\",\"arguments\":{...}}"
+                    f"</tool_call>, {alternatives}. Parser detail: {detail}"
+                ),
+                status="parser_correction_required",
+                domain_action="invalid",
+                action_submission={
+                    "raw_policy_output": raw_action,
+                    "parser_status": "rejected_correction_available",
+                },
+                wrapper_evidence={
+                    "invalid_action": True,
+                    "parser_correction": "requested",
+                    "parser_correction_attempt": 1,
+                    "parser_correction_limit": 1,
+                },
+                action_counters_delta=_action_counters(
+                    invalid_actions=1,
+                    parser_corrections=1,
+                ),
+            )
+
+        task = _task(episode)
+        receipt = self.submissions.record(task.task_id, None)
+        episode.done = True
+        episode.status = "policy_horizon"
+        episode.payload = self._payload(
+            episode,
+            include_id=False,
+            observation="Parser correction budget exhausted; null answer submitted.",
+            domain_action="horizon",
+            action_submission={
+                "raw_policy_output": raw_action,
+                "parser_status": "rejected_correction_exhausted",
+            },
+            submission_receipt=receipt,
+            wrapper_evidence={
+                "outcome": "parser_correction_exhausted",
+                "invalid_action": True,
+                "parser_correction_attempt": 1,
+                "parser_correction_limit": 1,
+            },
+            action_counters_delta=_action_counters(invalid_actions=1),
+        )
+        return deepcopy(episode.payload)
 
     def _ordinary(
         self,
@@ -447,6 +571,7 @@ class GaiaTextEpisodeManager:
         domain_action: str,
         action_submission: Mapping[str, Any],
         wrapper_evidence: Mapping[str, Any],
+        action_counters_delta: Mapping[str, int] | None = None,
     ) -> dict[str, Any]:
         episode.status = status
         episode.payload = self._payload(
@@ -456,24 +581,36 @@ class GaiaTextEpisodeManager:
             domain_action=domain_action,
             action_submission=action_submission,
             wrapper_evidence=wrapper_evidence,
+            action_counters_delta=action_counters_delta,
         )
         return deepcopy(episode.payload)
 
     def _terminal_failure(
         self, episode: _Episode, raw_action: str, error_type: str
     ) -> dict[str, Any]:
-        task = _task(episode)
-        receipt = self.submissions.record(task.task_id, None)
         episode.done = True
-        episode.status = "environment_error"
+        episode.status = "infrastructure_failure"
         episode.payload = self._payload(
             episode,
             include_id=False,
             observation="Verified search/browse backend failed closed.",
             domain_action="environment_error",
             action_submission={"raw_policy_output": raw_action},
-            submission_receipt=receipt,
-            wrapper_evidence={"backend_error": error_type},
+            wrapper_evidence={
+                "backend_error": error_type,
+                "retryable": True,
+            },
+            sample_excluded=True,
+            failure={
+                "class": "environment_failure",
+                "kind": "backend",
+                "error_type": error_type,
+                "retryable": True,
+            },
+            action_counters_delta=_action_counters(
+                parsed_actions=1,
+                domain_tool_attempts=1,
+            ),
         )
         return deepcopy(episode.payload)
 
@@ -488,6 +625,8 @@ class GaiaTextEpisodeManager:
         submission_receipt: Mapping[str, Any] | None = None,
         wrapper_evidence: Mapping[str, Any] | None = None,
         sample_excluded: bool = False,
+        failure: Mapping[str, Any] | None = None,
+        action_counters_delta: Mapping[str, int] | None = None,
     ) -> dict[str, Any]:
         task = episode.task
         info = {
@@ -498,8 +637,22 @@ class GaiaTextEpisodeManager:
             "step": episode.step_count,
             "backend_call_count": episode.backend_call_count,
             "workspace_action_count": episode.workspace_action_count,
+            "action_counters": {
+                "parsed_actions": episode.parsed_action_count,
+                "domain_tool_attempts": episode.domain_tool_attempt_count,
+                "successful_backend_calls": episode.backend_call_count,
+                "workspace_actions": episode.workspace_action_count,
+                "compactions": 0,
+                "answers": episode.answer_count,
+                "invalid_actions": episode.invalid_action_count,
+                "parser_corrections": episode.parser_correction_count,
+            },
+            "action_counters_delta": dict(
+                action_counters_delta or _zero_action_counters()
+            ),
             "domain_action": domain_action,
             "sample_excluded": sample_excluded,
+            "failure": None if failure is None else dict(failure),
             "action_submission": (
                 None if action_submission is None else dict(action_submission)
             ),
@@ -539,13 +692,11 @@ class GaiaTextEpisodeManager:
 
 
 def _parse_tool_call(raw: str) -> tuple[str, dict[str, Any]] | None:
-    matches = list(_TOOL_CALL_RE.finditer(raw))
-    if not matches:
+    match = _TOOL_CALL_RE.fullmatch(raw)
+    if match is None:
         return None
-    if len(matches) > 1:
-        raise RequestError("one policy action cannot contain multiple tool calls")
     try:
-        payload = json.loads(matches[0].group(1))
+        payload = json.loads(match.group(1))
     except json.JSONDecodeError as exc:
         raise RequestError("tool_call must contain a JSON object") from exc
     if not isinstance(payload, Mapping) or set(payload) != {"name", "arguments"}:
@@ -559,6 +710,19 @@ def _parse_tool_call(raw: str) -> tuple[str, dict[str, Any]] | None:
     ):
         raise RequestError("tool_call requires a non-empty name and object arguments")
     return name.strip().casefold(), dict(arguments)
+
+
+def _zero_action_counters() -> dict[str, int]:
+    return {name: 0 for name in _ACTION_COUNTER_NAMES}
+
+
+def _action_counters(**changes: int) -> dict[str, int]:
+    counters = _zero_action_counters()
+    unknown = set(changes) - set(counters)
+    if unknown:
+        raise ValueError(f"unknown action counters: {sorted(unknown)}")
+    counters.update(changes)
+    return counters
 
 
 def _task(episode: _Episode) -> GaiaTextTask:

@@ -62,6 +62,10 @@ def create_app(manager: GaiaTextEpisodeManager) -> FastAPI:
     def close(body: EnvironmentRequest) -> bool:
         return _call(manager.close, body.id)
 
+    @app.post("/abort")
+    def abort(body: EnvironmentRequest) -> bool:
+        return _call(manager.abort, body.id)
+
     return app
 
 

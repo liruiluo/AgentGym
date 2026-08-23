@@ -37,6 +37,7 @@ def test_http_service_exposes_only_public_lifecycle_routes(tmp_path: Path) -> No
         "/step",
         "/horizon",
         "/close",
+        "/abort",
     }
     assert not any(
         token in route.casefold()
@@ -70,6 +71,21 @@ def test_http_service_exposes_only_public_lifecycle_routes(tmp_path: Path) -> No
         assert terminal.json()["done"] is True
         assert client.post("/close", json={"id": created["id"]}).json() is True
         assert client.get("/detail", params={"id": created["id"]}).status_code == 404
+
+        unfinished = client.post("/create", json={}).json()
+        assert (
+            client.post(
+                "/reset", json={"id": unfinished["id"], "data_idx": 0}
+            ).status_code
+            == 200
+        )
+        assert client.post("/abort", json={"id": unfinished["id"]}).json() is True
+        replay = client.post("/create", json={}).json()
+        assert (
+            client.post("/reset", json={"id": replay["id"], "data_idx": 0}).status_code
+            == 200
+        )
+        assert client.post("/abort", json={"id": replay["id"]}).json() is True
 
         coerced = client.post("/reset", json={"id": True, "data_idx": "0"})
         assert coerced.status_code == 422

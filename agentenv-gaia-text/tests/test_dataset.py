@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from agentenv_gaia_text.contracts import (
+    GAIA_TEXT_PUBLIC_SCOPE,
     GAIA_TEXT_SCORER_REVISION,
     GAIA_TEXT_SCORER_SHA256,
     PRODUCTION_PROTOCOL,
@@ -65,6 +66,7 @@ def test_valid_synthetic_contract_projects_only_public_task_fields(
         "question": "Synthetic research question for synthetic-task-000?",
     }
     assert set(dataset.public_metadata()) == {
+        "public_scope",
         "protocol_id",
         "dataset_revision",
         "split",
@@ -74,6 +76,8 @@ def test_valid_synthetic_contract_projects_only_public_task_fields(
         "task_ids_sha256",
         "questions_sha256",
     }
+    assert dataset.public_metadata()["public_scope"] == GAIA_TEXT_PUBLIC_SCOPE
+    assert GAIA_TEXT_PUBLIC_SCOPE == "GAIA-Text-127-attachment-free"
     assert (
         dataset.questions_sha256 == hashlib.sha256(questions.read_bytes()).hexdigest()
     )

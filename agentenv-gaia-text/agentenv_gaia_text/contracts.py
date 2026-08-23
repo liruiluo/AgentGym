@@ -19,6 +19,10 @@ GAIA_TEXT_SCORER_REVISION = "9f133d71362e77b3539f1514f31b9c101a545fec"
 GAIA_TEXT_SCORER_SHA256 = (
     "0d44c07f3046eec521697c22e3eaca8719cc81e422a8eaf32695c5f22bdac6e2"
 )
+GAIA_TEXT_PUBLIC_SCOPE = "GAIA-Text-127-attachment-free"
+GAIA_TEXT_COMPACTION_SOFT_PROMPT_TOKENS = 2_048
+GAIA_TEXT_COMPACTION_MIN_NATIVE_ACTIONS = 2
+GAIA_TEXT_COMPACTION_FORCE_AFTER_NATIVE_ACTIONS = 4
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
@@ -75,6 +79,7 @@ class ProtocolContract:
 
     def public_metadata(self) -> dict[str, Any]:
         return {
+            "public_scope": GAIA_TEXT_PUBLIC_SCOPE,
             "protocol_id": self.protocol_id,
             "dataset_revision": self.dataset_revision,
             "split": self.split,

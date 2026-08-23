@@ -31,6 +31,10 @@ GAIA_TEXT_MANIFEST_SHA256 = (
 GAIA_TEXT_TASK_IDS_SHA256 = (
     "57e76233b8b12d8d9ea18639d1d52616449cf521559cd9d103c76ff399a842ad"
 )
+GAIA_TEXT_PUBLIC_SCOPE = "GAIA-Text-127-attachment-free"
+GAIA_TEXT_COMPACTION_SOFT_PROMPT_TOKENS = 2_048
+GAIA_TEXT_COMPACTION_MIN_NATIVE_ACTIONS = 2
+GAIA_TEXT_COMPACTION_FORCE_AFTER_NATIVE_ACTIONS = 4
 GAIA_TEXT_ARMS = frozenset({"native", "amg_memory"})
 GAIA_TEXT_PAIRED_RUNTIME_SCHEMA = "gaia_text_paired_runtime_contract_v1"
 
@@ -88,6 +92,10 @@ _PAIRED_RUNTIME_KEYS = frozenset(
         "answer_extraction_contract",
         "reward_contract",
         "submission_contract",
+        "public_scope",
+        "compaction_soft_prompt_tokens",
+        "compaction_min_native_actions",
+        "compaction_force_after_native_actions",
     }
 )
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -96,7 +104,30 @@ _PAIRED_STATIC_CONTRACTS = {
     "answer_extraction_contract": "single_trimmed_answer_tag_v1",
     "reward_contract": "external_official_scoring_zero_online_reward_v1",
     "submission_contract": "gaia_task_id_model_answer_jsonl_v1",
+    "public_scope": GAIA_TEXT_PUBLIC_SCOPE,
+    "compaction_soft_prompt_tokens": GAIA_TEXT_COMPACTION_SOFT_PROMPT_TOKENS,
+    "compaction_min_native_actions": GAIA_TEXT_COMPACTION_MIN_NATIVE_ACTIONS,
+    "compaction_force_after_native_actions": (
+        GAIA_TEXT_COMPACTION_FORCE_AFTER_NATIVE_ACTIONS
+    ),
 }
+
+
+class GaiaTextInfrastructureFailure(RuntimeError):
+    """Typed terminal raised when a required GAIA backend failed closed."""
+
+    def __init__(self, receipt: Mapping[str, Any]) -> None:
+        self.receipt = deepcopy(dict(receipt))
+        delta = receipt.get("action_counters_delta")
+        self.action_accounting_delta = (
+            deepcopy(dict(delta)) if isinstance(delta, Mapping) else {}
+        )
+        failure = receipt.get("failure")
+        error_type = failure.get("error_type") if isinstance(failure, Mapping) else None
+        super().__init__(
+            "GAIA-Text required backend failed closed"
+            + (f": {error_type}" if isinstance(error_type, str) else "")
+        )
 
 
 def _validate_step_response(
@@ -273,6 +304,7 @@ class GaiaTextEnvClient(BaseEnvClient):
         self._current_policy_context: list[dict[str, str]] | None = None
         self._policy_context_bound = False
         self._selected_policy_control: str | None = None
+        self._last_compaction_native_call_count = 0
 
     @property
     def context_epoch(self) -> int:
@@ -288,7 +320,7 @@ class GaiaTextEnvClient(BaseEnvClient):
     def observe(self) -> str:
         observation = self.info.get("observation")
         if not isinstance(observation, str):
-            raise RuntimeError("GAIA-Text observation must be text")
+            raise TypeError("GAIA-Text observation must be text")
         return observation
 
     def policy_framing(self) -> list[dict[str, str]]:
@@ -363,7 +395,20 @@ class GaiaTextEnvClient(BaseEnvClient):
             + pressure.action_observation_envelope_tokens
             + request_tokens
         )
-        if projected_next_request < capacity:
+        native_actions_since_compaction = (
+            self._native_call_count - self._last_compaction_native_call_count
+        )
+        soft_limit = min(capacity, GAIA_TEXT_COMPACTION_SOFT_PROMPT_TOKENS)
+        hard_pressure_triggered = projected_next_request >= capacity
+        soft_pressure_triggered = (
+            native_actions_since_compaction >= GAIA_TEXT_COMPACTION_MIN_NATIVE_ACTIONS
+            and projected_next_request >= soft_limit
+        )
+        forced = (
+            native_actions_since_compaction
+            >= GAIA_TEXT_COMPACTION_FORCE_AFTER_NATIVE_ACTIONS
+        )
+        if not hard_pressure_triggered and not soft_pressure_triggered and not forced:
             return None
         self._selected_policy_control = "context_compaction"
         return self.compaction_request
@@ -395,6 +440,18 @@ class GaiaTextEnvClient(BaseEnvClient):
         action_submission = response_info.get("action_submission")
         if not isinstance(action_submission, Mapping):
             action_submission = {"raw_policy_output": action}
+        action_delta = response_info.get("action_counters_delta", {})
+        if response_info.get("sample_excluded") is True:
+            if (
+                response_info.get("status") != "infrastructure_failure"
+                or not isinstance(response_info.get("failure"), Mapping)
+                or response_info["failure"].get("class")
+                != "environment_failure"
+            ):
+                raise RuntimeError(
+                    "GAIA-Text excluded terminal lacks typed infrastructure failure"
+                )
+            raise GaiaTextInfrastructureFailure(response_info)
         return StepOutput(
             state=state,
             reward=reward,
@@ -414,6 +471,7 @@ class GaiaTextEnvClient(BaseEnvClient):
                 policy_step_after=self._policy_step_count,
                 wrapper_evidence={
                     "event": "native_action",
+                    "action_accounting_delta": dict(action_delta),
                     "server_wrapper_evidence": dict(
                         response_info.get("wrapper_evidence", {})
                     ),
@@ -439,6 +497,7 @@ class GaiaTextEnvClient(BaseEnvClient):
         )
         self._policy_step_count += 1
         self._context_epoch += 1
+        self._last_compaction_native_call_count = self._native_call_count
         self._selected_policy_control = None
         return StepOutput(
             state=self.observe(),
@@ -468,6 +527,16 @@ class GaiaTextEnvClient(BaseEnvClient):
                 wrapper_evidence={
                     "event": "context_compaction",
                     "native_environment_call_count": 0,
+                    "action_accounting_delta": {
+                        "parsed_actions": 0,
+                        "domain_tool_attempts": 0,
+                        "successful_backend_calls": 0,
+                        "workspace_actions": 0,
+                        "compactions": 1,
+                        "answers": 0,
+                        "invalid_actions": 0,
+                        "parser_corrections": 0,
+                    },
                 },
             ),
         )
@@ -510,9 +579,12 @@ class GaiaTextEnvClient(BaseEnvClient):
         )
 
     def close(self) -> bool:
-        value = self._request_json("POST", "close", json={"id": self.env_id})
+        operation = "close" if self.info.get("done") is True else "abort"
+        value = self._request_json("POST", operation, json={"id": self.env_id})
         if value is not True:
-            raise requests.RequestException("GAIA-Text POST /close did not return true")
+            raise requests.RequestException(
+                f"GAIA-Text POST /{operation} did not return true"
+            )
         return True
 
     def _request(self, method: str, path: str, **kwargs) -> dict[str, Any]:

@@ -173,6 +173,8 @@ class SearchVisitBackend(Protocol):
 
     def metadata(self) -> dict[str, Any]: ...
 
+    def probe(self) -> None: ...
+
     def search(
         self,
         query: str | list[str],
@@ -616,6 +618,12 @@ class FixtureBackend:
             "failure_mode": "fail_closed",
             "page_chars": self.page_chars,
         }
+
+    def probe(self) -> None:
+        """Validate that the already hash-bound local fixture remains usable."""
+
+        if not self._documents or len(self._by_url) != len(self._documents):
+            raise BackendProtocolError("fixture backend is not ready")
 
     def search(
         self,
