@@ -17,6 +17,16 @@ class LiteResearcherClientTests(unittest.TestCase):
         client.env_id = 7
         return client
 
+    def test_policy_framing_exposes_normalized_conversation_start(self) -> None:
+        framing = self._client().policy_framing()
+        self.assertEqual(
+            [message["role"] for message in framing], ["user", "assistant"]
+        )
+        self.assertIn("deep-research agent", framing[0]["content"])
+        self.assertEqual(
+            framing[1], {"role": "assistant", "content": "Understood."}
+        )
+
     def test_close_accepts_server_boolean_true(self) -> None:
         response = Mock(status_code=200)
         response.json.return_value = True

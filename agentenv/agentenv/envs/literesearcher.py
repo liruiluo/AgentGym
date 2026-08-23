@@ -109,6 +109,17 @@ class LiteResearcherEnvClient(BaseEnvClient):
     def sample_excluded(self) -> bool:
         return bool(self.info.get("info", {}).get("sample_excluded", False))
 
+    def policy_framing(self) -> list[dict[str, str]]:
+        """Expose the exact immutable prompt used by this wrapper."""
+
+        return [
+            {
+                "role": "user" if message["from"] == "human" else "assistant",
+                "content": str(message["value"]),
+            }
+            for message in self.conversation_start
+        ]
+
     def bind_policy_context(
         self,
         messages: Sequence[Mapping[str, str]],
