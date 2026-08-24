@@ -12,6 +12,7 @@ from pathlib import Path
 from agentenv_agentmemory.workspace_sandbox import (
     ExecutableFingerprint,
     ShellExecutionResult,
+    ShellSandboxError,
     ShellSandboxLimits,
 )
 from agentenv_swesmith.dataset import SwesmithDataset
@@ -102,6 +103,22 @@ class LocalSandbox(LinuxNamespaceEpisodeSandbox):
             termination_reason=None,
             sandbox_contract="test",
             model_uid=self.model_uid,
+        )
+
+
+class OutputPipeLeakSandbox(LocalSandbox):
+    def _run_namespace(
+        self,
+        workspace_root: Path,
+        *,
+        command: str,
+        workdir: str,
+        timeout_ms: int,
+        stdout_limit_bytes: int | None = None,
+        stderr_limit_bytes: int | None = None,
+    ) -> ShellExecutionResult:
+        raise ShellSandboxError(
+            "shell sandbox left an output pipe open after process cleanup"
         )
 
 
@@ -439,6 +456,40 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("no XML tags", result.observation)
         self.assertIn("surrounding text", result.observation)
         self.manager.close(slot)
+
+    def test_output_pipe_cleanup_failure_is_an_executor_rejection(self) -> None:
+        manager = SwesmithEpisodeManager(
+            dataset=self.manager.dataset,
+            materializer=self.manager.materializer,
+            profile_resolver=Resolver(),
+            sandbox_factory=lambda _record, _profile: OutputPipeLeakSandbox(),
+            grader=self.grader,
+            max_steps=8,
+        )
+        slot = manager.create()
+        manager.reset(slot, 0)
+
+        result = manager.step(
+            slot,
+            'shell_command {"command":"sleep 30 &","workdir":"."}',
+        )
+
+        self.assertFalse(result.done)
+        self.assertEqual(result.reward, 0.0)
+        self.assertEqual(result.info["action_kind"], "shell_command")
+        self.assertEqual(
+            result.info["actor_credit"],
+            {
+                "schema": "task_neutral_actor_credit_v1",
+                "positive_eligible": False,
+                "basis": "executor_rejected",
+            },
+        )
+        self.assertIn(
+            "shell_command failed: shell sandbox left an output pipe open",
+            result.observation,
+        )
+        manager.close(slot)
 
     def test_oversized_shell_output_is_bounded_with_a_visible_marker(self) -> None:
         observation = _shell_observation(

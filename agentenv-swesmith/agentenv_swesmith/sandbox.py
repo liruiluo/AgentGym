@@ -446,14 +446,21 @@ class LinuxNamespaceEpisodeSandbox:
             if before.tree_sha256 != expected_before.tree_sha256:
                 self._poison("workspace changed outside the attested episode action path")
                 raise SwesmithSandboxError(self._poisoned_reason or "workspace changed")
-            result = self._run_namespace(
-                root,
-                command=command,
-                workdir=normalized_workdir,
-                timeout_ms=timeout_ms,
-                stdout_limit_bytes=stdout_limit,
-                stderr_limit_bytes=stderr_limit,
-            )
+            try:
+                result = self._run_namespace(
+                    root,
+                    command=command,
+                    workdir=normalized_workdir,
+                    timeout_ms=timeout_ms,
+                    stdout_limit_bytes=stdout_limit,
+                    stderr_limit_bytes=stderr_limit,
+                )
+            except ShellSandboxError as exc:
+                if str(exc) != (
+                    "shell sandbox left an output pipe open after process cleanup"
+                ):
+                    raise
+                raise SwesmithSandboxError(str(exc)) from exc
             try:
                 after = snapshot_workspace_tree(root, self.limits, previous=before)
             except BaseException as exc:
