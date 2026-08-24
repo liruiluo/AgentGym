@@ -107,6 +107,12 @@ class VerifiedRequestHandler(BaseHTTPRequestHandler):
                 result = self.server.manager.finalize_horizon(slot_id)
                 self.send_json(HTTPStatus.OK, result.as_dict())
                 return
+            if parsed.path == "/no-submission":
+                body = self.read_body({"id"})
+                slot_id = self.authorize_body(body)
+                result = self.server.manager.record_no_submission(slot_id)
+                self.send_json(HTTPStatus.OK, result)
+                return
             if parsed.path == "/predictions/assemble":
                 body = self.read_body(
                     {"id", "arm", "run_id"}

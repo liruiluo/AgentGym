@@ -22,6 +22,10 @@ from .workspace import VerifiedWorkspaceMaterializer
 
 
 ENV_PREFIX = "SWEBENCH_VERIFIED_"
+FROZEN_MAX_OBSERVATION_BYTES = 6144
+FROZEN_MAX_OBSERVATION_TOKENS = 8192
+FROZEN_STREAM_BYTES = 3072
+FROZEN_SHELL_TIMEOUT_MS = 120_000
 
 
 def build_manager_from_environment() -> VerifiedEpisodeManager:
@@ -47,7 +51,16 @@ def build_manager_from_environment() -> VerifiedEpisodeManager:
     max_observation_bytes = integer(
         "MAX_OBSERVATION_BYTES", DEFAULT_MAX_OBSERVATION_BYTES
     )
-    max_observation_tokens = integer("MAX_OBSERVATION_TOKENS", 8192)
+    max_observation_tokens = integer(
+        "MAX_OBSERVATION_TOKENS", FROZEN_MAX_OBSERVATION_TOKENS
+    )
+    if (
+        max_observation_bytes != FROZEN_MAX_OBSERVATION_BYTES
+        or max_observation_tokens != FROZEN_MAX_OBSERVATION_TOKENS
+    ):
+        raise ValueError(
+            "SWE-bench Verified observation limits drifted from the frozen contract"
+        )
     if max_observation_bytes >= max_observation_tokens:
         raise ValueError(
             "MAX_OBSERVATION_BYTES must stay below MAX_OBSERVATION_TOKENS"
@@ -100,6 +113,12 @@ def build_manager_from_environment() -> VerifiedEpisodeManager:
             "sandbox_contract": SANDBOX_CONTRACT,
             "image_manifest": images.public_metadata(),
             "max_observation_tokens": max_observation_tokens,
+            "stdout_bytes": limits.stdout_bytes,
+            "stderr_bytes": limits.stderr_bytes,
+            "default_timeout_ms": limits.default_timeout_ms,
+            "max_timeout_ms": limits.max_timeout_ms,
+            "thinking_enabled": False,
+            "reasoning_enabled": False,
         },
     )
 
@@ -119,12 +138,22 @@ def limits_from_environment(max_observation_bytes: int) -> ShellSandboxLimits:
         raise ValueError("max_observation_bytes must be a positive integer")
     gib = 1024**3
     mib = 1024**2
-    stdout_bytes = integer("STDOUT_BYTES", max_observation_bytes // 2)
-    stderr_bytes = integer(
-        "STDERR_BYTES", max_observation_bytes - stdout_bytes
+    stdout_bytes = integer("STDOUT_BYTES", FROZEN_STREAM_BYTES)
+    stderr_bytes = integer("STDERR_BYTES", FROZEN_STREAM_BYTES)
+    default_timeout_ms = integer(
+        "DEFAULT_TIMEOUT_MS", FROZEN_SHELL_TIMEOUT_MS
     )
-    if stdout_bytes + stderr_bytes > max_observation_bytes:
-        raise ValueError("stdout/stderr caps exceed the observation budget")
+    max_timeout_ms = integer("MAX_TIMEOUT_MS", FROZEN_SHELL_TIMEOUT_MS)
+    if (
+        max_observation_bytes != FROZEN_MAX_OBSERVATION_BYTES
+        or stdout_bytes != FROZEN_STREAM_BYTES
+        or stderr_bytes != FROZEN_STREAM_BYTES
+        or default_timeout_ms != FROZEN_SHELL_TIMEOUT_MS
+        or max_timeout_ms != FROZEN_SHELL_TIMEOUT_MS
+    ):
+        raise ValueError(
+            "SWE-bench Verified shell limits drifted from the frozen contract"
+        )
     return ShellSandboxLimits(
         workspace_bytes=integer("WORKSPACE_BYTES", 2 * gib),
         workspace_inodes=integer("WORKSPACE_INODES", 250_000),
@@ -132,8 +161,8 @@ def limits_from_environment(max_observation_bytes: int) -> ShellSandboxLimits:
         max_directories=integer("MAX_DIRECTORIES", 50_000),
         max_file_bytes=integer("MAX_FILE_BYTES", 256 * mib),
         max_path_chars=integer("MAX_PATH_CHARS", 1024),
-        default_timeout_ms=integer("DEFAULT_TIMEOUT_MS", 120_000),
-        max_timeout_ms=integer("MAX_TIMEOUT_MS", 900_000),
+        default_timeout_ms=default_timeout_ms,
+        max_timeout_ms=max_timeout_ms,
         cpu_seconds=integer("CPU_SECONDS", 900),
         address_space_bytes=integer("ADDRESS_SPACE_BYTES", 32 * gib),
         max_processes=integer("MAX_PROCESSES", 512),

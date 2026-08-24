@@ -17,12 +17,16 @@ from agentenv_agentmemory.workspace_sandbox import (
     ShellExecutionResult,
     ShellSandboxLimits,
 )
+from agentenv_swesmith.actions import UPSTREAM_SUBMISSION_SENTINEL
 from agentenv_swesmith.sandbox import EXTERNAL_MEMORY_MOUNT_PATH
 from agentenv_swebench_verified.dataset import (
     DATASET_MANIFEST_SCHEMA,
     VerifiedDataset,
 )
-from agentenv_swebench_verified.environment import VerifiedEpisodeManager
+from agentenv_swebench_verified.environment import (
+    VerifiedEpisodeManager,
+    submission_from_shell_result,
+)
 from agentenv_swebench_verified.exporter import PredictionStore, SolutionPatchExporter
 from agentenv_swebench_verified.protocol import (
     ARMS,
@@ -277,11 +281,21 @@ class VerifiedEnvironmentTests(unittest.TestCase):
             "*** End Patch",
         )
         self.assertIn("apply_patch succeeded", patched.observation)
-        terminal = self.manager.step(slot, "Implemented and tested the fix.")
+        prose = self.manager.step(slot, "Implemented and tested the fix.")
+        self.assertFalse(prose.done)
+        self.assertEqual(prose.info["action_kind"], "parser_error")
+        terminal = self.manager.step(
+            slot,
+            'shell_command {"command":"echo '
+            'COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}',
+        )
 
         self.assertTrue(terminal.done)
         self.assertEqual(terminal.reward, 0.0)
         self.assertTrue(terminal.info["external_grading_required"])
+        self.assertTrue(terminal.info["submitted"])
+        self.assertEqual(terminal.info["action_kind"], "final")
+        self.assertEqual(terminal.info["terminal_reason"], "submission_sentinel")
         self.assertNotIn("episode_success", terminal.info)
         prediction = self.manager.prediction(slot)
         self.assertEqual(prediction["instance_id"], "owner__repo-1")
@@ -394,7 +408,11 @@ class VerifiedEnvironmentTests(unittest.TestCase):
         )
         self.assertIn("clue", read.observation)
         self.assertEqual(read.info["external_memory_operation"], "read")
-        self.manager.step(slot, "Submit memory-only workspace.")
+        self.manager.step(
+            slot,
+            'shell_command {"command":"echo '
+            'COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}',
+        )
         self.assertEqual(self.manager.prediction(slot)["model_patch"], "")
         self.manager.close(slot)
 
@@ -463,12 +481,13 @@ class VerifiedEnvironmentTests(unittest.TestCase):
                     slot,
                     'memory_write {"path":"notes.md","content":"forbidden"}',
                 )
-                self.assertEqual(denied.info["action_kind"], "final")
+                self.assertEqual(denied.info["action_kind"], "parser_error")
+                self.assertFalse(denied.done)
                 self.assertNotIn("external_memory_operation", denied.info)
                 self.assertIsNone(self.manager._slot(slot).episode.memory_root)
                 self.manager.close(slot)
 
-    def test_shell_observation_is_bounded_and_horizon_exports(self) -> None:
+    def test_shell_observation_is_bounded_and_horizon_does_not_export(self) -> None:
         slot = self.manager.create(
             arm="native",
             run_id="horizon-run",
@@ -485,8 +504,121 @@ class VerifiedEnvironmentTests(unittest.TestCase):
         horizon = self.manager.finalize_horizon(slot)
         self.assertTrue(horizon.done)
         self.assertEqual(horizon.reward, 0.0)
-        self.assertEqual(self.manager.prediction(slot)["model_patch"], "")
+        self.assertFalse(horizon.info["submitted"])
+        self.assertFalse(horizon.info["external_grading_required"])
+        self.assertEqual(horizon.info["terminal_reason"], "unified_policy_horizon")
+        with self.assertRaisesRegex(RuntimeError, "explicit submission"):
+            self.manager.prediction(slot)
+        self.assertFalse(
+            self.store.rows_root("native", "horizon-run").exists()
+        )
+        no_submission = self.manager.record_no_submission(slot)
+        self.assertEqual(no_submission["model_patch"], "")
+        self.assertEqual(self.manager.prediction(slot), no_submission)
         self.manager.close(slot)
+
+    def test_only_successful_first_stdout_line_sentinel_submits(self) -> None:
+        self.assertIsNone(
+            submission_from_shell_result(
+                stdout=UPSTREAM_SUBMISSION_SENTINEL + "\n",
+                exit_code=0,
+                timed_out=True,
+            )
+        )
+        cases = (
+            (
+                "prefix-before-sentinel",
+                "printf 'prefix\\nCOMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\\n'",
+            ),
+            (
+                "nonzero-sentinel",
+                "printf 'COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\\n'; exit 7",
+            ),
+        )
+        for run_id, command in cases:
+            with self.subTest(run_id=run_id):
+                slot = self.manager.create(
+                    arm="native",
+                    run_id=run_id,
+                    run_capability=RUN_CAPABILITY,
+                )
+                self.manager.reset(slot, 0)
+                result = self.manager.step(
+                    slot,
+                    "shell_command "
+                    + json.dumps({"command": command, "workdir": "."}),
+                )
+                self.assertFalse(result.done)
+                self.assertEqual(result.info["action_kind"], "shell_command")
+                with self.assertRaisesRegex(RuntimeError, "explicit submission"):
+                    self.manager.prediction(slot)
+                self.manager.close(slot)
+
+        slot = self.manager.create(
+            arm="native",
+            run_id="successful-sentinel",
+            run_capability=RUN_CAPABILITY,
+        )
+        self.manager.reset(slot, 0)
+        result = self.manager.step(
+            slot,
+            "shell_command "
+            + json.dumps(
+                {
+                    "command": f"printf '{UPSTREAM_SUBMISSION_SENTINEL}\\n'",
+                    "workdir": ".",
+                }
+            ),
+        )
+        self.assertTrue(result.done)
+        self.assertEqual(result.info["action_kind"], "final")
+        self.assertTrue(result.info["submitted"])
+        self.manager.close(slot)
+
+    def test_native_step_cap_terminates_without_export(self) -> None:
+        slot = self.manager.create(
+            arm="native",
+            run_id="native-cap-no-submit",
+            run_capability=RUN_CAPABILITY,
+        )
+        self.manager.reset(slot, 0)
+        result = None
+        for _index in range(EVALUATION_MAX_POLICY_TURNS):
+            result = self.manager.step(
+                slot,
+                'shell_command {"command":"true","workdir":"."}',
+            )
+        assert result is not None
+        self.assertTrue(result.done)
+        self.assertFalse(result.info["submitted"])
+        self.assertFalse(result.info["external_grading_required"])
+        self.assertEqual(result.info["terminal_reason"], "policy_turn_limit")
+        with self.assertRaisesRegex(RuntimeError, "explicit submission"):
+            self.manager.prediction(slot)
+        self.assertFalse(
+            self.store.rows_root("native", "native-cap-no-submit").exists()
+        )
+        self.manager.close(slot)
+
+    def test_reset_and_close_never_export_unsubmitted_workspace(self) -> None:
+        slot = self.manager.create(
+            arm="native",
+            run_id="lifecycle-no-submit",
+            run_capability=RUN_CAPABILITY,
+        )
+        self.manager.reset(slot, 0)
+        self.manager.step(
+            slot,
+            'shell_command {"command":"printf changed > scratch.txt"}',
+        )
+        self.manager.reset(slot, 0)
+        self.assertFalse(
+            self.store.rows_root("native", "lifecycle-no-submit").exists()
+        )
+        self.manager.close(slot)
+        self.assertFalse(
+            self.store.rows_root("native", "lifecycle-no-submit").exists()
+        )
 
     def test_apply_patch_observation_obeys_the_same_whole_message_cap(self) -> None:
         slot = self.manager.create(
@@ -517,7 +649,20 @@ class VerifiedEnvironmentTests(unittest.TestCase):
             ARMS,
             ("native", "amg_compaction_only", "amg_memory"),
         )
-        self.assertEqual(metadata["evaluation_max_policy_turns"], 250)
+        self.assertEqual(metadata["evaluation_max_policy_turns"], 30)
+        self.assertEqual(metadata["max_native_actions"], 30)
+        self.assertEqual(
+            metadata["submission_contract"],
+            "upstream_shell_output_sentinel_v1",
+        )
+        self.assertEqual(
+            metadata["horizon_contract"],
+            "unified_policy_step_no_submission_failure_v2",
+        )
+        self.assertEqual(
+            metadata["no_submission_prediction_contract"],
+            "explicit_empty_patch_outside_policy_path_v1",
+        )
         self.assertEqual(metadata["task_count"], 1)
         self.assertEqual(metadata["full_benchmark_task_count"], 500)
         self.assertEqual(metadata["reward_contract"], "external_official_grading_only")

@@ -37,7 +37,7 @@ MODEL_LABELS = {
     "amg_compaction_only": "qwen35-4b-amg-compaction-only",
     "amg_memory": "qwen35-4b-amg-memory",
 }
-EVALUATION_MAX_POLICY_TURNS = 250
+EVALUATION_MAX_POLICY_TURNS = 30
 
 _GIT_COMMIT_RE = re.compile(r"\A[0-9a-f]{40}\Z")
 _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")

@@ -60,6 +60,14 @@ class FakeManager:
             "model_patch": "",
         }
 
+    def record_no_submission(self, slot_id):
+        self.calls.append(("no-submission", slot_id))
+        return {
+            "instance_id": "task-0",
+            "model_name_or_path": "qwen35-4b-native",
+            "model_patch": "",
+        }
+
     def assemble_predictions(self, *, arm, run_id):
         self.calls.append(("assemble", arm, run_id))
         return {
@@ -141,6 +149,13 @@ class VerifiedHTTPServerTests(unittest.TestCase):
             timeout=5,
         ).json()
         self.assertTrue(horizon["done"])
+        no_submission = requests.post(
+            f"{self.base}/no-submission",
+            json={"id": 7},
+            headers={"Authorization": f"Bearer {capability}"},
+            timeout=5,
+        ).json()
+        self.assertEqual(no_submission["model_patch"], "")
         prediction = requests.get(
             f"{self.base}/prediction",
             params={"id": 7},
@@ -210,6 +225,7 @@ class VerifiedHTTPServerTests(unittest.TestCase):
             ("POST", "reset", {"json": {"id": 7, "data_idx": 0}}),
             ("POST", "step", {"json": {"id": 7, "action": "final"}}),
             ("POST", "horizon", {"json": {"id": 7}}),
+            ("POST", "no-submission", {"json": {"id": 7}}),
             (
                 "POST",
                 "predictions/assemble",

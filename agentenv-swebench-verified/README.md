@@ -114,9 +114,12 @@ existing `(arm, run_id)`. The server returns a separate per-slot bearer for all
 later reset/step/export/close requests. Do not log either bearer. No
 environment-registry or shared-rollout edit is included.
 
-All three arms use the same task order, 250 unified policy-turn cap, action HTTP
+All three arms use the same task order, 30 unified policy-turn cap, action HTTP
 path, `/testbed` shell/apply-patch surface, workspace materializer, observation
-budget, runtime identity, and patch exporter. Native has no AMG memory or
+budget, runtime identity, and patch exporter. Policy-visible output is capped at
+6,144 bytes with 3,072 bytes per stdout/stderr stream; shell commands have a
+120,000 ms default and hard maximum; model-visible thinking is disabled. Native
+has no AMG memory or
 compaction candidate. `amg_compaction_only` and `amg_memory` use the exact same
 compaction request, token-pressure trigger, task-neutral `replace_messages`
 transition, and action accounting. Only `amg_memory` receives the durable-memory
@@ -127,7 +130,8 @@ filesystem events, not command text. Compaction-only has
 no dedicated memory namespace, root, mount, endpoint, environment variable,
 prompt declaration, tool schema, parser/dispatch path, memory action receipt,
 private evidence store, or cleanup handle. A compaction consumes one policy turn
-and no native HTTP call; horizon export consumes no sampled turn.
+and no native HTTP call; horizon finalization consumes no sampled turn and never
+exports an unsubmitted workspace.
 
 The observation byte limit applies to the complete policy-visible message,
 including the initial issue, shell framing, changed-path summary, patch result,
@@ -136,10 +140,15 @@ explicit truncation marker.
 
 ## Predictions and grading
 
-Terminal text, the unified horizon, or lifecycle close stores exactly one row
-per `(arm, run_id, data_idx)` with keys `instance_id`, `model_name_or_path`, and
-`model_patch`. Empty patches are explicit rows. Assembly rejects incomplete
-ledgers and writes a separate JSONL for each arm in canonical dataset order.
+Only a successful, non-timeout shell command whose first stdout line is
+`COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` exports the current workspace. Arbitrary
+prose, including literal `final`, is a charged parser error. Policy horizon,
+native-action cap, reset, and close never export. When the official harness
+needs a row for a terminal episode without submission, the controller must call
+the separate authenticated `POST /no-submission` endpoint; it writes an explicit
+empty-patch row without inspecting or exporting the workspace. Assembly rejects
+incomplete ledgers and writes a separate JSONL for each arm in canonical dataset
+order.
 
 The diff is produced against the exact base commit with a private Git index and
 private object database. It includes modified, deleted, binary, executable-mode,

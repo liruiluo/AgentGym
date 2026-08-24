@@ -16,7 +16,11 @@ from agentenv_agentmemory.workspace_patch import (
     apply_workspace_patch_touched_transaction,
     parse_workspace_patch,
 )
-from agentenv_swesmith.actions import ParsedPolicyAction, parse_policy_action
+from agentenv_swesmith.actions import (
+    UPSTREAM_SUBMISSION_SENTINEL,
+    ParsedPolicyAction,
+    parse_policy_action,
+)
 from agentenv_swesmith.sandbox import (
     EXTERNAL_MEMORY_ACCESS_SCHEMA,
     SwesmithSandboxError,
@@ -51,6 +55,9 @@ OBSERVATION_CONTRACT = "bounded_policy_observation_v1"
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
 ACTION_PROGRESS_SCHEMA = "swebench_verified_action_progress_v1"
 RUN_CAPABILITY_CONTRACT = "caller_supplied_run_bearer_first_claim_v1"
+SUBMISSION_CONTRACT = "upstream_shell_output_sentinel_v1"
+HORIZON_CONTRACT = "unified_policy_step_no_submission_failure_v2"
+NO_SUBMISSION_PREDICTION_CONTRACT = "explicit_empty_patch_outside_policy_path_v1"
 _RUN_CAPABILITY_RE = re.compile(r"\A[A-Za-z0-9_-]{43,128}\Z")
 
 
@@ -94,6 +101,8 @@ class _Episode:
     step_count: int = 0
     done: bool = False
     prediction: dict[str, str] | None = None
+    submitted: bool = False
+    termination_reason: str | None = None
     evidence: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -127,7 +136,7 @@ class VerifiedEpisodeManager:
             raise ValueError("max_native_actions must be a positive integer")
         if max_native_actions != EVALUATION_MAX_POLICY_TURNS:
             raise ValueError(
-                "Verified external evaluation requires the frozen 250-turn cap"
+                "Verified external evaluation requires the frozen 30-turn cap"
             )
         if type(max_observation_bytes) is not int or max_observation_bytes <= 0:
             raise ValueError("max_observation_bytes must be a positive integer")
@@ -206,7 +215,7 @@ class VerifiedEpisodeManager:
         slot = self._slot(slot_id)
         with slot.lock:
             self._require_slot_open(slot)
-            self._close_episode(slot, export_if_needed=True)
+            self._close_episode(slot)
             record = self.dataset[data_idx]
             binding = self.testspec_resolver.resolve(record.private_instance())
             sandbox: VerifiedLinuxNamespaceEpisodeSandbox | None = None
@@ -232,7 +241,10 @@ class VerifiedEpisodeManager:
                 initial = sandbox.attach_workspace(workspace.policy_root)
                 if memory_root is not None:
                     sandbox.attach_external_memory(memory_root)
-                observation = initial_observation(record.problem_statement)
+                observation = initial_observation(
+                    record.problem_statement,
+                    max_policy_turns=self.max_native_actions,
+                )
                 episode = _Episode(
                     record=record,
                     binding=binding,
@@ -273,27 +285,41 @@ class VerifiedEpisodeManager:
                 "step": episode.step_count,
                 "action_kind": action.kind,
             }
+            public_action_kind = action.kind
             if action.kind == "parser_error":
                 episode.observation = parser_error_observation(action)
                 actor_credit = build_actor_credit(False, "parser_rejected")
             elif action.kind == "shell_command":
-                actor_credit = self._run_shell(episode, action, evidence)
+                actor_credit = self._run_shell(slot, episode, action, evidence)
+                if actor_credit["basis"] == "terminal_submission":
+                    public_action_kind = "final"
             elif action.kind == "apply_patch":
                 actor_credit = self._run_patch(episode, action, evidence)
             elif action.kind == "final":
-                self._export_terminal(slot, episode, reason="final")
-                actor_credit = build_actor_credit(True, "terminal_submission")
+                raise RuntimeError(
+                    "plain final actions are forbidden by the submission contract"
+                )
             else:  # pragma: no cover
                 raise RuntimeError(f"unsupported action kind: {action.kind}")
             evidence["actor_credit"] = dict(actor_credit)
             episode.evidence.append(evidence)
             if not episode.done and episode.step_count >= self.max_native_actions:
-                self._export_terminal(slot, episode, reason="native_action_cap")
+                horizon = {
+                    "event": "horizon_exhaustion",
+                    "step": episode.step_count,
+                    "action_kind": "policy_turn_limit",
+                }
+                self._terminate_without_submission(
+                    episode,
+                    horizon,
+                    reason="policy_turn_limit",
+                )
+                episode.evidence.append(horizon)
             memory_operation = evidence.get("external_memory_operation")
             return self._public_step(
                 slot,
                 episode,
-                action_kind=action.kind,
+                action_kind=public_action_kind,
                 actor_credit=actor_credit,
                 action_progress=evidence.get("action_progress"),
                 external_memory_operation=memory_operation,
@@ -312,7 +338,17 @@ class VerifiedEpisodeManager:
             episode = self._episode(slot)
             if episode.done:
                 raise RuntimeError("Verified episode is already terminal")
-            self._export_terminal(slot, episode, reason="unified_policy_horizon")
+            evidence = {
+                "event": "horizon_exhaustion",
+                "step": episode.step_count,
+                "action_kind": "unified_policy_horizon",
+            }
+            self._terminate_without_submission(
+                episode,
+                evidence,
+                reason="unified_policy_horizon",
+            )
+            episode.evidence.append(evidence)
             return self._public_step(
                 slot, episode, action_kind="unified_policy_horizon"
             )
@@ -323,8 +359,48 @@ class VerifiedEpisodeManager:
             self._require_slot_open(slot)
             episode = self._episode(slot)
             if episode.prediction is None:
-                raise RuntimeError("prediction is unavailable before terminal export")
+                raise RuntimeError(
+                    "prediction is unavailable without an explicit submission"
+                )
             return dict(episode.prediction)
+
+    def record_no_submission(self, slot_id: int) -> dict[str, str]:
+        """Write the harness-required empty row outside the policy action path."""
+
+        slot = self._slot(slot_id)
+        with slot.lock:
+            self._require_slot_open(slot)
+            episode = self._episode(slot)
+            if not episode.done or episode.termination_reason is None:
+                raise RuntimeError(
+                    "no-submission prediction requires a terminal episode"
+                )
+            if episode.submitted:
+                raise RuntimeError(
+                    "no-submission prediction is unavailable after submission"
+                )
+            if episode.prediction is not None:
+                return dict(episode.prediction)
+            row = {
+                "instance_id": episode.record.instance_id,
+                "model_name_or_path": MODEL_LABELS[slot.arm],
+                "model_patch": "",
+            }
+            self.prediction_store.write(
+                arm=slot.arm,
+                run_id=slot.run_id,
+                data_idx=episode.record.data_idx,
+                row=row,
+            )
+            episode.prediction = row
+            episode.evidence.append(
+                {
+                    "event": "no_submission_prediction",
+                    "contract": NO_SUBMISSION_PREDICTION_CONTRACT,
+                    "termination_reason": episode.termination_reason,
+                }
+            )
+            return dict(row)
 
     def assemble_predictions(self, *, arm: str, run_id: str) -> dict[str, Any]:
         path = self.prediction_store.assemble(arm=arm, run_id=run_id)
@@ -349,7 +425,7 @@ class VerifiedEpisodeManager:
             with slot.lock:
                 self._require_slot_open(slot)
                 slot.closed = True
-                self._close_episode(slot, export_if_needed=True)
+                self._close_episode(slot)
         finally:
             with self._slots_lock:
                 self._slots.pop(slot_id, None)
@@ -375,6 +451,11 @@ class VerifiedEpisodeManager:
             "max_native_actions": self.max_native_actions,
             "compaction_consumes_policy_turn": True,
             "compaction_consumes_native_call": False,
+            "submission_contract": SUBMISSION_CONTRACT,
+            "horizon_contract": HORIZON_CONTRACT,
+            "no_submission_prediction_contract": (
+                NO_SUBMISSION_PREDICTION_CONTRACT
+            ),
             "run_capability_contract": RUN_CAPABILITY_CONTRACT,
             "reward_contract": "external_official_grading_only",
             "patch_export_contract": PATCH_EXPORT_CONTRACT,
@@ -390,6 +471,7 @@ class VerifiedEpisodeManager:
 
     def _run_shell(
         self,
+        slot: _Slot,
         episode: _Episode,
         action: ParsedPolicyAction,
         evidence: dict[str, Any],
@@ -436,6 +518,7 @@ class VerifiedEpisodeManager:
         evidence["action_progress"] = shell_action_progress(
             action, result=result_evidence
         )
+        evidence["result"] = result_evidence
         episode.observation = shell_observation(
             exit_code=result.exit_code,
             elapsed_ms=result.elapsed_ms,
@@ -447,6 +530,26 @@ class VerifiedEpisodeManager:
             changed_paths=execution.workspace_diff.changed_paths,
             max_observation_bytes=self.max_observation_bytes,
         )
+        submission = submission_from_shell_result(
+            stdout=stdout,
+            exit_code=result.exit_code,
+            timed_out=result.timed_out,
+        )
+        if submission is not None:
+            evidence["submission"] = {
+                "sentinel": UPSTREAM_SUBMISSION_SENTINEL,
+                "output_bytes": len(submission.encode("utf-8")),
+                "output_sha256": hashlib.sha256(
+                    submission.encode("utf-8")
+                ).hexdigest(),
+            }
+            self._export_terminal(
+                slot,
+                episode,
+                evidence,
+                reason="submission_sentinel",
+            )
+            return build_actor_credit(True, "terminal_submission")
         return build_actor_credit(True, "shell_executed")
 
     def _run_patch(
@@ -481,8 +584,15 @@ class VerifiedEpisodeManager:
         return build_actor_credit(True, "workspace_changed")
 
     def _export_terminal(
-        self, slot: _Slot, episode: _Episode, *, reason: str
+        self,
+        slot: _Slot,
+        episode: _Episode,
+        evidence: dict[str, Any],
+        *,
+        reason: str,
     ) -> None:
+        if reason != "submission_sentinel":
+            raise RuntimeError("workspace export requires the submission sentinel")
         row = self.exporter.prediction_row(episode.workspace, arm=slot.arm)
         self.prediction_store.write(
             arm=slot.arm,
@@ -492,10 +602,32 @@ class VerifiedEpisodeManager:
         )
         episode.prediction = row
         episode.done = True
+        episode.submitted = True
+        episode.termination_reason = reason
         episode.observation = (
             "Submission exported. Official SWE-bench grading remains external."
         )
-        episode.evidence.append({"event": "export", "reason": reason})
+        evidence["export"] = {
+            "event": "export",
+            "reason": reason,
+            "model_patch_bytes": len(row["model_patch"].encode("utf-8")),
+        }
+
+    @staticmethod
+    def _terminate_without_submission(
+        episode: _Episode,
+        evidence: dict[str, Any],
+        *,
+        reason: str,
+    ) -> None:
+        episode.done = True
+        episode.termination_reason = reason
+        episode.observation = (
+            "Episode ended without the explicit submission sentinel. "
+            "The workspace was not exported."
+        )
+        evidence["termination_reason"] = reason
+        evidence["submitted"] = False
 
     def _public_step(
         self,
@@ -516,9 +648,12 @@ class VerifiedEpisodeManager:
             "step": episode.step_count,
             "action_kind": action_kind,
             "terminal": episode.done,
-            "external_grading_required": episode.done,
+            "submitted": episode.submitted,
+            "external_grading_required": episode.submitted,
             "arm": slot.arm,
         }
+        if episode.termination_reason is not None:
+            info["terminal_reason"] = episode.termination_reason
         if actor_credit is not None:
             info["actor_credit"] = dict(actor_credit)
         if action_progress is not None:
@@ -554,14 +689,19 @@ class VerifiedEpisodeManager:
         if slot.closed:
             raise RuntimeError("Verified slot is closed")
 
-    def _close_episode(self, slot: _Slot, *, export_if_needed: bool) -> None:
+    def _close_episode(self, slot: _Slot) -> None:
         episode = slot.episode
         slot.episode = None
         if episode is None:
             return
         try:
-            if export_if_needed and not episode.done:
-                self._export_terminal(slot, episode, reason="lifecycle_close")
+            if not episode.done:
+                episode.evidence.append(
+                    {
+                        "event": "lifecycle_close",
+                        "submitted": False,
+                    }
+                )
         finally:
             try:
                 episode.sandbox.close()
@@ -569,16 +709,33 @@ class VerifiedEpisodeManager:
                 self.materializer.close(episode.workspace)
 
 
-def initial_observation(problem_statement: str) -> str:
+def initial_observation(problem_statement: str, *, max_policy_turns: int) -> str:
     return (
         "Repair the persistent repository in /testbed for this issue. Use exactly one "
         "action per turn. Inspect, edit, and test with shell_command, or use one "
         "bounded apply_patch payload. The exact shell form is "
         'shell_command {"command":"ls","workdir":"."}. The workspace has no '
-        ".git directory. Submit a plain final response only when ready to export the "
-        "repository diff. Official grading is external.\n\nIssue:\n"
+        ".git directory. After a source path changed and relevant tests ran, submit "
+        "with exactly shell_command "
+        '{"command":"echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}. '
+        "The successful command must print that sentinel as its first stdout line. "
+        "Any plain text is invalid. Reaching the turn limit without the sentinel "
+        "ends the episode without exporting the workspace. You have at most "
+        f"{max_policy_turns} total policy turns; task-neutral context compactions "
+        "consume this same budget. Official grading is external.\n\nIssue:\n"
         + problem_statement.strip()
     )
+
+
+def submission_from_shell_result(
+    *, stdout: str, exit_code: int, timed_out: bool
+) -> str | None:
+    if timed_out or exit_code != 0:
+        return None
+    lines = stdout.lstrip().splitlines(keepends=True)
+    if not lines or lines[0].strip() != UPSTREAM_SUBMISSION_SENTINEL:
+        return None
+    return "".join(lines[1:])
 
 
 def build_actor_credit(positive_eligible: bool, basis: str) -> dict[str, Any]:
@@ -657,7 +814,9 @@ def parser_error_observation(action: ParsedPolicyAction) -> str:
         f"Invalid action syntax: {action.error}. Retry exactly like "
         'shell_command {"command":"pwd","workdir":"."} on one line, or use '
         "one complete apply_patch payload. Output only one action with no XML, "
-        "reasoning, Markdown, second action, or surrounding text."
+        "reasoning, Markdown, second action, or surrounding text. After editing "
+        "and testing, submit with exactly shell_command "
+        '{"command":"echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}.'
     )
 
 

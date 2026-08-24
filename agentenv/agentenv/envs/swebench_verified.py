@@ -18,8 +18,11 @@ from agentenv.controller.types import (
 )
 from agentenv_swebench_verified.environment import (
     EPISODE_SCHEMA,
+    HORIZON_CONTRACT,
+    NO_SUBMISSION_PREDICTION_CONTRACT,
     OBSERVATION_CONTRACT,
     RUN_CAPABILITY_CONTRACT,
+    SUBMISSION_CONTRACT,
     require_run_capability,
 )
 from agentenv_swebench_verified.exporter import (
@@ -47,18 +50,20 @@ from agentenv_swebench_verified.testspec import TESTSPEC_BINDING_CONTRACT
 
 
 SBV_CONTEXT_COMPACTION_REQUEST = (
-    "The conversation is nearing its context limit. Write the short continuation "
-    "state you want to retain after earlier messages are removed. Your response is "
-    "preserved verbatim and is not sent to the environment. Retain the immediate "
-    "objective, decisive current state, next action, and the path/search key of any "
-    "durable notes you already wrote. Do not claim this response executed a command "
+    "The conversation is nearing its context limit. Write the continuation "
+    "state you want to retain after the earlier interaction is removed. Your "
+    "response will be preserved verbatim and will not be sent to the "
+    "environment. Include only information you choose to carry forward. Keep "
+    "this response short: retain the immediate objective, decisive current "
+    "state, next action, and the path/search key of any durable notes you "
+    "already wrote. Do not claim that this response executed a shell command "
     "or changed a file."
 )
 
 SBV_BASE_POLICY_SYSTEM_PROMPT = (
     "You are a coding agent in one persistent /testbed repository. Repair the issue "
     "by inspecting, editing, and testing the repository. Every policy turn is exactly "
-    "one action.\n\n"
+    "one action. Do not emit visible reasoning.\n\n"
     "For a shell action, start at byte zero and output exactly one line such as:\n"
     'shell_command {"command":"find . -maxdepth 2 -type f | head -80",'
     '"workdir":".","timeout_ms":120000}\n'
@@ -66,9 +71,14 @@ SBV_BASE_POLICY_SYSTEM_PROMPT = (
     "start with the literal line apply_patch followed by one complete "
     "*** Begin Patch ... *** End Patch payload. Paths are relative to /testbed. "
     "Output only the action, with no XML, explanation, label, or Markdown fence. "
-    "The workspace has no .git directory and persists for the whole task. Use a plain "
-    "final response only when the repository diff is ready to export. Official "
-    "SWE-bench grading is external; no hidden scorer is available in this environment."
+    "The workspace has no .git directory and persists for the whole task. After a "
+    "source path changed and relevant tests ran, submit with exactly:\n"
+    'shell_command {"command":"echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",'
+    '"workdir":"."}\n'
+    "The successful command must print that sentinel as its first stdout line. Plain "
+    "text is invalid. Reaching the 30-turn limit without the sentinel ends the episode "
+    "without exporting the workspace. Official SWE-bench grading is external; no "
+    "hidden scorer is available in this environment."
 )
 
 SBV_MEMORY_ADDENDUM = (
@@ -149,9 +159,12 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
         self.timeout = timeout
         self.metadata = self._request("GET", "metadata")
         self._validate_metadata(self.metadata)
-        if data_len is not None and int(data_len) != 500:
-            raise ValueError("SWE-bench Verified requires the full 500-task panel")
-        self.data_len = 500
+        task_count = int(self.metadata["task_count"])
+        if data_len is not None and not 0 < int(data_len) <= task_count:
+            raise ValueError(
+                "SWE-bench Verified data_len must fit the available task panel"
+            )
+        self.data_len = task_count if data_len is None else int(data_len)
         self.system_prompt = SBV_BASE_POLICY_SYSTEM_PROMPT + (
             SBV_MEMORY_ADDENDUM if self.arm == "amg_memory" else ""
         )
@@ -187,6 +200,11 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
             "max_native_actions": EVALUATION_MAX_POLICY_TURNS,
             "compaction_consumes_policy_turn": True,
             "compaction_consumes_native_call": False,
+            "submission_contract": SUBMISSION_CONTRACT,
+            "horizon_contract": HORIZON_CONTRACT,
+            "no_submission_prediction_contract": (
+                NO_SUBMISSION_PREDICTION_CONTRACT
+            ),
             "run_capability_contract": RUN_CAPABILITY_CONTRACT,
             "reward_contract": "external_official_grading_only",
             "tool_contract": "codex_shell_command_apply_patch_v1",
@@ -199,6 +217,21 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
             "official_grading_inside_adapter": False,
         }
         for key, expected in exact.items():
+            if metadata.get(key) != expected:
+                raise RuntimeError(
+                    f"Verified endpoint metadata mismatch for {key}: "
+                    f"expected {expected!r}, got {metadata.get(key)!r}"
+                )
+        resource_contract = {
+            "max_observation_bytes": 6144,
+            "stdout_bytes": 3072,
+            "stderr_bytes": 3072,
+            "default_timeout_ms": 120_000,
+            "max_timeout_ms": 120_000,
+            "thinking_enabled": False,
+            "reasoning_enabled": False,
+        }
+        for key, expected in resource_contract.items():
             if metadata.get(key) != expected:
                 raise RuntimeError(
                     f"Verified endpoint metadata mismatch for {key}: "
@@ -375,7 +408,7 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
     def step(self, action: str) -> StepOutput:
         if self._policy_step_count >= EVALUATION_MAX_POLICY_TURNS:
             raise RuntimeError(
-                "the unified 250-turn policy budget is exhausted; finalize horizon"
+                "the unified 30-turn policy budget is exhausted; finalize horizon"
             )
         if self._selected_policy_control == "context_compaction":
             return self._complete_context_compaction(action)
@@ -522,12 +555,21 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
                 policy_step_before=self._policy_step_count,
                 policy_step_after=self._policy_step_count,
                 wrapper_evidence={
-                    "event": "horizon_export",
+                    "event": "horizon_no_submission",
                     "workspace_continuity_id": self.env_id,
                     "arm": self.arm,
                 },
             ),
         )
+
+    def record_no_submission(self) -> dict[str, str]:
+        row = self._request(
+            "POST",
+            "no-submission",
+            json=self._slot_transport(),
+            headers=self._bearer_headers(self._slot_capability),
+        )
+        return self._validate_prediction_row(row)
 
     def prediction(self) -> dict[str, str]:
         row = self._request(
@@ -536,6 +578,9 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
             params=self._slot_transport(),
             headers=self._bearer_headers(self._slot_capability),
         )
+        return self._validate_prediction_row(row)
+
+    def _validate_prediction_row(self, row: Mapping[str, Any]) -> dict[str, str]:
         expected = {"instance_id", "model_name_or_path", "model_patch"}
         if (
             set(row) != expected
@@ -544,7 +589,7 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
             raise RuntimeError("Verified prediction row contract drifted")
         if not all(isinstance(row.get(key), str) for key in expected):
             raise RuntimeError("Verified prediction row values must be text")
-        return row
+        return dict(row)
 
     def assemble_predictions(self) -> dict[str, Any]:
         return self._request(

@@ -105,10 +105,21 @@ def metadata():
         "observation_contract": "bounded_policy_observation_v1",
         "max_observation_bytes": 6144,
         "max_observation_tokens": 8192,
-        "evaluation_max_policy_turns": 250,
-        "max_native_actions": 250,
+        "stdout_bytes": 3072,
+        "stderr_bytes": 3072,
+        "default_timeout_ms": 120_000,
+        "max_timeout_ms": 120_000,
+        "thinking_enabled": False,
+        "reasoning_enabled": False,
+        "evaluation_max_policy_turns": 30,
+        "max_native_actions": 30,
         "compaction_consumes_policy_turn": True,
         "compaction_consumes_native_call": False,
+        "submission_contract": "upstream_shell_output_sentinel_v1",
+        "horizon_contract": "unified_policy_step_no_submission_failure_v2",
+        "no_submission_prediction_contract": (
+            "explicit_empty_patch_outside_policy_path_v1"
+        ),
         "run_capability_contract": "caller_supplied_run_bearer_first_claim_v1",
         "reward_contract": "external_official_grading_only",
         "patch_export_contract": "swebench_verified_exact_base_solution_diff_v1",
@@ -223,11 +234,22 @@ class Backend:
             }
         if method == "POST" and path == "horizon":
             return {
-                "observation": "exported",
-                "state": "exported",
+                "observation": "ended without submission",
+                "state": "ended without submission",
                 "reward": 0.0,
                 "done": True,
-                "info": {"schema": metadata()["schema"]},
+                "info": {
+                    "schema": metadata()["schema"],
+                    "submitted": False,
+                    "terminal": True,
+                    "terminal_reason": "unified_policy_horizon",
+                },
+            }
+        if method == "POST" and path == "no-submission":
+            return {
+                "instance_id": "task-0",
+                "model_name_or_path": metadata()["model_labels"][self.arm],
+                "model_patch": "",
             }
         if method == "GET" and path == "prediction":
             return {
@@ -295,6 +317,10 @@ class ClientTests(unittest.TestCase):
         self.assertNotIn(".agent_memory", prompt)
         self.assertNotIn("/run/amg_memory", prompt)
         self.assertNotIn("context compaction", prompt.lower())
+        self.assertIn("COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT", prompt)
+        self.assertIn("plain text is invalid", prompt.lower())
+        self.assertNotIn("plain final response", prompt)
+        self.assertNotIn("<think>", prompt)
         self.bind_initial_context(client)
         self.assertIsNone(client.policy_turn_candidate())
         self.assertIsNone(client.prepare_policy_turn(None))
@@ -348,7 +374,7 @@ class ClientTests(unittest.TestCase):
         stepped = client.step('shell_command {"command":"true"}')
         self.assertEqual(stepped.state, "dispatched")
         horizon = client.finalize_policy_horizon()
-        self.assertEqual(horizon.state, "exported")
+        self.assertEqual(horizon.state, "ended without submission")
 
         drifted_backend = Backend()
         request = drifted_backend.request
@@ -583,6 +609,18 @@ class ClientTests(unittest.TestCase):
             len([call for call in backend.calls if call[:2] == ("POST", "horizon")]),
             1,
         )
+        empty = client.record_no_submission()
+        self.assertEqual(empty["model_patch"], "")
+        self.assertEqual(
+            len(
+                [
+                    call
+                    for call in backend.calls
+                    if call[:2] == ("POST", "no-submission")
+                ]
+            ),
+            1,
+        )
 
     def test_slot_capability_is_kept_private_and_sent_to_every_slot_endpoint(
         self,
@@ -606,6 +644,7 @@ class ClientTests(unittest.TestCase):
         client.reset(0)
         client.step('shell_command {"command":"pwd"}')
         client.finalize_policy_horizon()
+        client.record_no_submission()
         client.prediction()
         client.assemble_predictions()
         client.close()
@@ -614,6 +653,7 @@ class ClientTests(unittest.TestCase):
             "reset",
             "step",
             "horizon",
+            "no-submission",
             "prediction",
             "predictions/assemble",
             "close",
@@ -629,15 +669,16 @@ class ClientTests(unittest.TestCase):
             self.assertNotIn("capability", transport)
             self.assertEqual(transport["id"], 1)
 
-    def test_rejects_a_smaller_panel(self) -> None:
-        with self.assertRaisesRegex(ValueError, "full 500"):
-            self.TransportClient(
-                backend=Backend(),
-                arm="native",
-                run_id="bad-panel",
-                data_len=499,
-                image_manifest_sha256=IMAGE_MANIFEST_SHA256,
-            )
+    def test_accepts_a_one_task_gate_without_relabeling_full_benchmark(self) -> None:
+        client = self.TransportClient(
+            backend=Backend(),
+            arm="native",
+            run_id="one-task-gate",
+            data_len=1,
+            image_manifest_sha256=IMAGE_MANIFEST_SHA256,
+        )
+        self.assertEqual(len(client), 1)
+        self.assertEqual(client.metadata["full_benchmark_task_count"], 500)
 
     def test_rejects_unpinned_runtime_before_creating_a_slot(self) -> None:
         broken_endpoints = []

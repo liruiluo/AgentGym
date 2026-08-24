@@ -20,7 +20,11 @@ from agentenv_swebench_verified.images import (
     VerifiedImageManifest,
     VerifiedImageManifestError,
 )
-from agentenv_swebench_verified.launch import ENV_PREFIX, required_path
+from agentenv_swebench_verified.launch import (
+    ENV_PREFIX,
+    limits_from_environment,
+    required_path,
+)
 from agentenv_swebench_verified.protocol import HARNESS_REVISION, HARNESS_TAG
 from agentenv_swebench_verified.sandbox import (
     VerifiedSandboxError,
@@ -109,6 +113,36 @@ class RuntimeBindingTests(unittest.TestCase):
             PRODUCTION_IMAGE_PINS.tag_ledger_sha256,
             "b69e618cfcfd2a59c3897e3f4856dbd88c4eeb921a5b24467a90bff6fa48581a",
         )
+
+    def test_policy_shell_limits_are_frozen_to_current_training_contract(self) -> None:
+        names = {
+            f"{ENV_PREFIX}STDOUT_BYTES",
+            f"{ENV_PREFIX}STDERR_BYTES",
+            f"{ENV_PREFIX}DEFAULT_TIMEOUT_MS",
+            f"{ENV_PREFIX}MAX_TIMEOUT_MS",
+        }
+        clean_environment = {key: value for key, value in os.environ.items() if key not in names}
+        with patch.dict(os.environ, clean_environment, clear=True):
+            limits = limits_from_environment(6144)
+        self.assertEqual(limits.stdout_bytes, 3072)
+        self.assertEqual(limits.stderr_bytes, 3072)
+        self.assertEqual(limits.default_timeout_ms, 120_000)
+        self.assertEqual(limits.max_timeout_ms, 120_000)
+
+        for name, value in (
+            ("STDOUT_BYTES", "3073"),
+            ("STDERR_BYTES", "3071"),
+            ("DEFAULT_TIMEOUT_MS", "119999"),
+            ("MAX_TIMEOUT_MS", "120001"),
+        ):
+            with self.subTest(name=name):
+                with patch.dict(
+                    os.environ,
+                    clean_environment | {f"{ENV_PREFIX}{name}": value},
+                    clear=True,
+                ):
+                    with self.assertRaisesRegex(ValueError, "frozen"):
+                        limits_from_environment(6144)
 
     def test_resolver_uses_only_the_expected_checkout(self) -> None:
         resolver = OfficialTestSpecResolver(
