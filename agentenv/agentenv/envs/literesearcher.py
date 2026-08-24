@@ -156,19 +156,11 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 "LiteResearcher context reached the prompt cap before a trainable "
                 "compaction could be sampled"
             )
-        request_tokens = (
-            pressure.candidate_prompt_tokens - pressure.action_prompt_tokens
-        )
-        if request_tokens <= 0:
-            raise RuntimeError("LiteResearcher compaction request must extend the prompt")
-        projected_next_request = (
-            pressure.action_prompt_tokens
-            + pressure.max_response_tokens
-            + pressure.max_observation_tokens
-            + pressure.action_observation_envelope_tokens
-            + request_tokens
-        )
-        if projected_next_request < capacity:
+        # Decide from the no-control append path.  Continuous Token chat
+        # normalization may make the rendered control candidate shorter than the
+        # ordinary action prompt, so candidate-minus-action is not a valid size
+        # or safety invariant.
+        if pressure.projected_next_prompt_tokens_without_control < capacity:
             return None
         self._selected_policy_control = "context_compaction"
         return LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
