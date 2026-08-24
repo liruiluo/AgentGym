@@ -82,6 +82,8 @@ class LocalSandbox(LinuxNamespaceEpisodeSandbox):
         command: str,
         workdir: str,
         timeout_ms: int,
+        stdout_limit_bytes: int | None = None,
+        stderr_limit_bytes: int | None = None,
     ) -> ShellExecutionResult:
         completed = subprocess.run(
             ["bash", "-c", command],
@@ -263,6 +265,26 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             self.manager.metadata()["upstream_reference_max_policy_turns"],
             250,
         )
+        self.assertEqual(
+            self.manager.metadata()["upstream_agent_repository"],
+            "SWE-agent/mini-swe-agent",
+        )
+        self.assertEqual(
+            self.manager.metadata()["upstream_agent_revision"],
+            "a83fcae82d2a08f0ee0c688f9d137b3566c097f8",
+        )
+        self.assertEqual(
+            self.manager.metadata()["reward_contract"],
+            "explicit_submission_full_resolution_binary_v2",
+        )
+        self.assertEqual(
+            self.manager.metadata()["submission_contract"],
+            "upstream_shell_output_sentinel_v1",
+        )
+        self.assertEqual(
+            self.manager.metadata()["horizon_contract"],
+            "unified_policy_step_no_submission_failure_v2",
+        )
         reset = self.manager.reset(slot, 0)
         self.assertIs(reset.info["episode_success"], False)
         self.assertEqual(self.manager.metadata()["active_environment_count"], 1)
@@ -276,7 +298,9 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("never paste or rewrite an entire existing file", reset.observation)
         self.assertIn("stay below the response limit", reset.observation)
         self.assertIn("has no .git directory", reset.observation)
-        self.assertIn("Do not submit plain text until", reset.observation)
+        self.assertIn("COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT", reset.observation)
+        self.assertIn("at most 8 total policy turns", reset.observation)
+        self.assertIn("compactions consume this same budget", reset.observation)
         self.assertNotIn("SECRET_GOLD_PATCH", reset.observation)
         self.assertNotIn(self.instance_id, reset.observation)
 
@@ -303,10 +327,18 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             "*** End Patch",
         )
         self.assertIn("apply_patch succeeded", patched.observation)
-        final = self.manager.step(slot, "Implemented the fix.")
+        final = self.manager.step(
+            slot,
+            'shell_command {"command":"echo '
+            'COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}',
+        )
         self.assertTrue(final.done)
         self.assertEqual(final.reward, 1.0)
         self.assertIs(final.info["episode_success"], True)
+        self.assertEqual(final.info["action_kind"], "final")
+        self.assertEqual(
+            final.info["actor_credit"]["basis"], "terminal_submission"
+        )
         self.assertEqual(self.grader.calls, 1)
 
         detail = self.manager.detail(slot)
@@ -350,6 +382,40 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertEqual(audits[0].stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.audits.stat().st_mode & 0o777, 0o700)
         self.assertEqual(list(self.audits.glob(".*.tmp")), [])
+
+    def test_submission_sentinel_must_be_the_first_stdout_line(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+
+        result = self.manager.step(
+            slot,
+            'shell_command {"command":"printf \'prefix\\n'
+            'COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\\n\'","workdir":"."}',
+        )
+
+        self.assertFalse(result.done)
+        self.assertEqual(result.reward, 0.0)
+        self.assertEqual(result.info["action_kind"], "shell_command")
+        self.assertEqual(self.grader.calls, 0)
+        self.assertNotIn("Submission accepted", result.observation)
+        self.manager.close(slot)
+
+    def test_submission_sentinel_requires_a_zero_exit_status(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+
+        result = self.manager.step(
+            slot,
+            'shell_command {"command":"printf \'COMPLETE_TASK_AND_SUBMIT_'
+            'FINAL_OUTPUT\\n\'; exit 7","workdir":"."}',
+        )
+
+        self.assertFalse(result.done)
+        self.assertEqual(result.reward, 0.0)
+        self.assertEqual(result.info["action_kind"], "shell_command")
+        self.assertEqual(self.grader.calls, 0)
+        self.assertIn("exit_code=7", result.observation)
+        self.manager.close(slot)
 
     def test_parser_error_repeats_exact_action_shapes(self) -> None:
         slot = self.manager.create()
@@ -619,7 +685,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIsNone(audit["grade"])
         self.assertEqual(audit["evidence"][1]["result"]["stdout"], "unfinished")
 
-    def test_policy_turn_horizon_grades_without_consuming_native_action(self) -> None:
+    def test_policy_turn_horizon_fails_without_grading_workspace(self) -> None:
         slot = self.manager.create()
         self.manager.reset(slot, 0)
         self.manager.step(
@@ -635,14 +701,17 @@ class SwesmithEnvironmentTests(unittest.TestCase):
 
         horizon = self.manager.finalize_horizon(slot)
         self.assertTrue(horizon.done)
-        self.assertEqual(horizon.reward, 1.0)
-        self.assertIs(horizon.info["episode_success"], True)
+        self.assertEqual(horizon.reward, 0.0)
+        self.assertIs(horizon.info["episode_success"], False)
+        self.assertEqual(self.grader.calls, 0)
         detail = self.manager.detail(slot)
         self.assertEqual(detail["step_count"], 1)
+        self.assertIsNone(detail["grade"])
         self.assertEqual(
             detail["evidence"][-1]["action"]["kind"],
             "policy_turn_horizon",
         )
+        self.assertEqual(detail["evidence"][-1]["event"], "horizon_exhaustion")
         self.assertEqual(
             detail["evidence"][-1]["termination_reason"],
             "policy_turn_horizon",
@@ -650,6 +719,33 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "already terminal"):
             self.manager.finalize_horizon(slot)
         self.manager.close(slot)
+
+    def test_native_step_limit_fails_without_implicit_submission(self) -> None:
+        manager = SwesmithEpisodeManager(
+            dataset=self.manager.dataset,
+            materializer=self.manager.materializer,
+            profile_resolver=Resolver(),
+            sandbox_factory=lambda _record, _profile: LocalSandbox(),
+            grader=self.grader,
+            max_steps=1,
+        )
+        slot = manager.create()
+        manager.reset(slot, 0)
+
+        result = manager.step(
+            slot,
+            'shell_command {"command":"printf fixed > src/value.py","workdir":"."}',
+        )
+
+        self.assertTrue(result.done)
+        self.assertEqual(result.reward, 0.0)
+        self.assertIs(result.info["episode_success"], False)
+        self.assertEqual(self.grader.calls, 0)
+        detail = manager.detail(slot)
+        self.assertIsNone(detail["grade"])
+        self.assertEqual(detail["evidence"][-1]["event"], "horizon_exhaustion")
+        self.assertEqual(detail["evidence"][-1]["termination_reason"], "max_steps")
+        manager.close(slot)
 
     def test_concurrent_episode_closes_write_unique_atomic_audits(self) -> None:
         slots = [self.manager.create(), self.manager.create()]

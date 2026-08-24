@@ -15,7 +15,11 @@ from agentenv_agentmemory.workspace_patch import (
     parse_workspace_patch,
 )
 
-from .actions import ParsedPolicyAction, parse_policy_action
+from .actions import (
+    UPSTREAM_SUBMISSION_SENTINEL,
+    ParsedPolicyAction,
+    parse_policy_action,
+)
 from .audit import SwesmithEpisodeAuditSink
 from .dataset import SwesmithDataset, SwesmithRecord
 from .grader import SwesmithGradeResult, SwesmithHiddenGrader
@@ -31,6 +35,11 @@ from .workspace import SwesmithWorkspace, SwesmithWorkspaceMaterializer
 EPISODE_SCHEMA = "agentmemory_swesmith_native_episode_v1"
 DEFAULT_TRAINING_MAX_POLICY_TURNS = 75
 UPSTREAM_REFERENCE_MAX_POLICY_TURNS = 250
+UPSTREAM_AGENT_REPOSITORY = "SWE-agent/mini-swe-agent"
+UPSTREAM_AGENT_REVISION = "a83fcae82d2a08f0ee0c688f9d137b3566c097f8"
+REWARD_CONTRACT = "explicit_submission_full_resolution_binary_v2"
+SUBMISSION_CONTRACT = "upstream_shell_output_sentinel_v1"
+HORIZON_CONTRACT = "unified_policy_step_no_submission_failure_v2"
 DEFAULT_MAX_OBSERVATION_BYTES = 6144
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
 ACTION_PROGRESS_SCHEMA = "swesmith_action_progress_v1"
@@ -205,7 +214,10 @@ class SwesmithEpisodeManager:
                     model_gid=sandbox.model_gid,
                 )
                 initial_snapshot = sandbox.attach_workspace(workspace.policy_root)
-                observation = _initial_observation(record.problem_statement)
+                observation = _initial_observation(
+                    record.problem_statement,
+                    max_policy_turns=self.max_steps,
+                )
                 episode = _Episode(
                     slot_id=slot_id,
                     audit_id=uuid.uuid4().hex,
@@ -257,12 +269,15 @@ class SwesmithEpisodeManager:
                 "observation_before": observation_before,
                 "action": action.as_evidence(),
             }
+            public_action_kind = action.kind
             if action.kind == "parser_error":
                 episode.observation = _parser_error_observation(action)
                 evidence["result"] = {"parser_error": action.error}
                 actor_credit = _actor_credit(False, "parser_rejected")
             elif action.kind == "shell_command":
                 actor_credit = self._run_shell(episode, action, evidence)
+                if actor_credit["basis"] == "terminal_submission":
+                    public_action_kind = "final"
             elif action.kind == "apply_patch":
                 actor_credit = self._run_patch(episode, action, evidence)
             elif action.kind == "final":
@@ -276,12 +291,12 @@ class SwesmithEpisodeManager:
 
             if not episode.done and episode.step_count >= self.max_steps:
                 horizon: dict[str, Any] = {
-                    "event": "terminal_submission",
+                    "event": "horizon_exhaustion",
                     "step": episode.step_count,
                     "observation_before": episode.observation,
                     "action": {"kind": "horizon"},
                 }
-                self._grade_terminal(
+                self._terminate_without_submission(
                     episode,
                     horizon,
                     termination_reason="max_steps",
@@ -290,7 +305,7 @@ class SwesmithEpisodeManager:
                 episode.evidence.append(horizon)
             return self._public_step(
                 episode,
-                action_kind=action.kind,
+                action_kind=public_action_kind,
                 actor_credit=actor_credit,
                 action_progress=evidence.get("action_progress"),
             )
@@ -301,11 +316,14 @@ class SwesmithEpisodeManager:
             return self._episode(slot).observation
 
     def finalize_horizon(self, slot_id: int) -> EpisodeStep:
-        """Grade the current workspace when the unified policy budget expires.
+        """Fail the episode when the unified policy budget expires.
 
         The rollout owns the unified policy-step counter because model-authored
         compactions consume steps without calling this native environment. This
-        control call therefore does not increment the native action counter.
+        control call therefore does not increment the native action counter or
+        invoke the hidden grader.  This matches the upstream agent's
+        ``LimitsExceeded`` path: an episode without an explicit submission is
+        a terminal failure, even when the current workspace would pass.
         """
 
         slot = self._slot(slot_id)
@@ -314,12 +332,12 @@ class SwesmithEpisodeManager:
             if episode.done:
                 raise RuntimeError("SWE-smith episode is already terminal")
             horizon: dict[str, Any] = {
-                "event": "terminal_submission",
+                "event": "horizon_exhaustion",
                 "step": episode.step_count,
                 "observation_before": episode.observation,
                 "action": {"kind": "policy_turn_horizon"},
             }
-            self._grade_terminal(
+            self._terminate_without_submission(
                 episode,
                 horizon,
                 termination_reason="policy_turn_horizon",
@@ -383,16 +401,19 @@ class SwesmithEpisodeManager:
             "upstream_reference_max_policy_turns": (
                 UPSTREAM_REFERENCE_MAX_POLICY_TURNS
             ),
+            "upstream_agent_repository": UPSTREAM_AGENT_REPOSITORY,
+            "upstream_agent_revision": UPSTREAM_AGENT_REVISION,
             "tool_contract": "codex_shell_command_apply_patch_v1",
             "tool_serialization": "qwen35_native_single_function_v1",
             "observation_contract": "bounded_combined_shell_output_v1",
             "max_observation_bytes": self.max_observation_bytes,
-            "reward_contract": "terminal_full_resolution_binary_v1",
+            "reward_contract": REWARD_CONTRACT,
             "context_contract": "one_native_issue_continuous_episode_v1",
             "memory_contract": (
                 "policy_compaction_plus_optional_durable_filesystem_v1"
             ),
-            "horizon_contract": "unified_policy_step_private_grade_v1",
+            "submission_contract": SUBMISSION_CONTRACT,
+            "horizon_contract": HORIZON_CONTRACT,
             "active_slot_count": slot_count,
             "active_environment_count": active_count,
             "active_workspace_count": active_count,
@@ -474,6 +495,25 @@ class SwesmithEpisodeManager:
             changed_paths=execution.workspace_diff.changed_paths,
             max_observation_bytes=self.max_observation_bytes,
         )
+        submission = _submission_from_shell_result(
+            stdout=stdout,
+            exit_code=result.exit_code,
+            timed_out=result.timed_out,
+        )
+        if submission is not None:
+            evidence["submission"] = {
+                "sentinel": UPSTREAM_SUBMISSION_SENTINEL,
+                "output_bytes": len(submission.encode("utf-8")),
+                "output_sha256": hashlib.sha256(
+                    submission.encode("utf-8")
+                ).hexdigest(),
+            }
+            self._grade_terminal(
+                episode,
+                evidence,
+                termination_reason="submission_sentinel",
+            )
+            return _actor_credit(True, "terminal_submission")
         return _actor_credit(True, "shell_executed")
 
     def _run_patch(
@@ -537,10 +577,31 @@ class SwesmithEpisodeManager:
             + ("The issue is resolved." if grade.resolved else "The issue is not resolved.")
         )
         evidence["termination_reason"] = termination_reason
-        evidence["result"] = {
+        evidence["terminal_grade"] = {
             "reward": grade.reward,
             "resolved": grade.resolved,
             "grader_error": grade.error,
+        }
+
+    def _terminate_without_submission(
+        self,
+        episode: _Episode,
+        evidence: dict[str, Any],
+        *,
+        termination_reason: str,
+    ) -> None:
+        episode.done = True
+        episode.reward = 0.0
+        episode.observation = (
+            "Episode ended without the explicit submission sentinel. "
+            "The workspace was not graded."
+        )
+        evidence["termination_reason"] = termination_reason
+        evidence["terminal_grade"] = {
+            "reward": 0.0,
+            "resolved": False,
+            "grader_error": None,
+            "graded": False,
         }
 
     def _public_step(
@@ -637,11 +698,26 @@ def _normalize_patch_path(raw: str) -> str:
     return str(path)
 
 
+def _submission_from_shell_result(
+    *, stdout: str, exit_code: int, timed_out: bool
+) -> str | None:
+    if timed_out or exit_code != 0:
+        return None
+    lines = stdout.lstrip().splitlines(keepends=True)
+    if not lines or lines[0].strip() != UPSTREAM_SUBMISSION_SENTINEL:
+        return None
+    return "".join(lines[1:])
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _initial_observation(problem_statement: str) -> str:
+def _initial_observation(
+    problem_statement: str,
+    *,
+    max_policy_turns: int,
+) -> str:
     return (
         "Repair the persistent repository in /testbed for this issue. Use exactly one "
         "action per turn. Use shell_command for inspection, editing, and tests. Its exact "
@@ -652,8 +728,16 @@ def _initial_observation(problem_statement: str) -> str:
         "*** Begin Patch ... *** End Patch payload. Keep edits localized: never paste or "
         "rewrite an entire existing file in one action. Use a small patch around the "
         "changed lines or a bounded shell command, and stay below the response limit. "
-        "The workspace persists for the whole episode and has no .git directory. Do not "
-        "submit plain text until a source path changed and the relevant tests ran.\n\n"
+        "The workspace persists for the whole episode and has no .git directory. After a "
+        "source path changed and relevant tests ran, submit with exactly "
+        'shell_command {"command":"echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",'
+        '"workdir":"."}. The successful command must print the upstream submission '
+        "sentinel as its first stdout line; then the current persistent workspace receives "
+        "one official grade. Any plain text is invalid. Reaching the turn limit without "
+        "that sentinel ends the episode with reward 0 and does not grade the workspace. "
+        f"You have at most {max_policy_turns} total policy turns; task-neutral context "
+        "compactions consume this same budget. Verify and submit as soon as the repair is "
+        "ready; do not wait for the horizon.\n\n"
         "Issue:\n"
         + problem_statement.strip()
         + "\n\nBegin with a real shell action in the exact one-line form above."
@@ -667,8 +751,9 @@ def _parser_error_observation(action: ParsedPolicyAction) -> str:
         "For a patch, start with the literal line apply_patch, then one complete "
         "*** Begin Patch ... *** End Patch payload. Output only one action, with no XML "
         "tags, reasoning, Markdown, second action, or surrounding text. Keep the edit "
-        "localized instead of pasting or rewriting an entire existing file. Submit "
-        "plain text only after editing and testing."
+        "localized instead of pasting or rewriting an entire existing file. After editing "
+        "and testing, submit with exactly shell_command "
+        '{"command":"echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}.'
     )
 
 

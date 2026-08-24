@@ -10,6 +10,7 @@ ActionKind = Literal["shell_command", "apply_patch", "final", "parser_error"]
 
 _SHELL_PREFIX = "shell_command "
 _PATCH_PREFIX = "apply_patch\n"
+UPSTREAM_SUBMISSION_SENTINEL = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
 _PATCH_BEGIN = "*** Begin Patch"
 _PATCH_END = "*** End Patch"
 _NATIVE_TOOL_START = "<tool_call>"
@@ -80,9 +81,9 @@ class _DuplicateJsonKey(ValueError):
 def parse_policy_action(raw_output: str) -> ParsedPolicyAction:
     """Classify one sampled SWE-smith turn without executing policy text.
 
-    A plain, non-empty response is a terminal submission. Anything that looks
-    like an attempted workspace tool call is kept on the non-terminal parser
-    error path unless it exactly matches the canonical tool grammar.
+    The upstream submission sentinel is emitted by a shell command and is
+    detected only after that command succeeds.  Parser classification itself
+    never treats prose (including the literal ``final``) as a submission.
     """
 
     if not isinstance(raw_output, str):
@@ -112,7 +113,6 @@ def parse_policy_action(raw_output: str) -> ParsedPolicyAction:
         return _parse_apply_patch(raw_output, action_text, thought)
     if action_text.startswith(_NATIVE_TOOL_START):
         return _parse_native_tool_call(raw_output, action_text, thought)
-
     tool_hint = _infer_toolish_attempt(action_text)
     if tool_hint is not None:
         return _parser_error(
@@ -122,12 +122,12 @@ def parse_policy_action(raw_output: str) -> ParsedPolicyAction:
             "attempted tool call does not use the canonical SWE-smith grammar",
             tool_hint=tool_hint,
         )
-    return ParsedPolicyAction(
-        kind="final",
-        raw_output=raw_output,
-        action_text=action_text,
-        thought=thought,
-        final_response=action_text,
+    return _parser_error(
+        raw_output,
+        action_text,
+        thought,
+        "plain text is not a submission; run the upstream submission sentinel "
+        "after editing and testing",
     )
 
 
