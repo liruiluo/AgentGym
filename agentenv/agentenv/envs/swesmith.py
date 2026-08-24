@@ -364,17 +364,18 @@ class SwesmithEnvClient(BaseEnvClient):
             else None
         )
         action_progress = None
-        if actor_credit["basis"] == "shell_executed":
+        if actor_credit["basis"] in {"shell_executed", "terminal_submission"}:
             action_progress = _validate_action_progress_receipt(
                 response_env_info.get("action_progress")
             )
-            actor_credit = self._classify_shell_actor_credit(
-                actor_credit,
-                action_progress,
-            )
+            if actor_credit["basis"] == "shell_executed":
+                actor_credit = self._classify_shell_actor_credit(
+                    actor_credit,
+                    action_progress,
+                )
         elif response_env_info.get("action_progress") is not None:
             raise RuntimeError(
-                "SWE-smith action progress appeared on a non-executed shell action"
+                "SWE-smith action progress appeared without shell execution"
             )
         if actor_credit["basis"] == "workspace_changed":
             self._zero_progress_shell_receipts.clear()
