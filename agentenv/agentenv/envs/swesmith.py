@@ -394,7 +394,10 @@ class SwesmithEnvClient(BaseEnvClient):
         native_reward = float(response["reward"])
         reward = native_reward
         reward_overlay = None
-        if not actor_credit["positive_eligible"] and self.invalid_action_reward != 0.0:
+        if (
+            actor_credit["basis"] in {"parser_rejected", "executor_rejected"}
+            and self.invalid_action_reward != 0.0
+        ):
             reward = native_reward + self.invalid_action_reward
             reward_overlay = {
                 "schema": "swesmith_invalid_action_reward_v1",
