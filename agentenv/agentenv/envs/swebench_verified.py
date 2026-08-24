@@ -141,6 +141,17 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
         run_id: str,
         run_capability: str,
         image_manifest_sha256: str,
+        expected_task_count: int = PRODUCTION_DATASET_PINS.row_count,
+        expected_dataset_sha256: str = (
+            PRODUCTION_DATASET_PINS.canonical_jsonl_sha256
+        ),
+        expected_dataset_id_ledger_sha256: str = (
+            PRODUCTION_DATASET_PINS.id_ledger_sha256
+        ),
+        expected_image_tag_count: int = PRODUCTION_IMAGE_PINS.tag_count,
+        expected_image_tag_ledger_sha256: str = (
+            PRODUCTION_IMAGE_PINS.tag_ledger_sha256
+        ),
         data_len: int | None = None,
         timeout: int = 900,
         **kwargs: Any,
@@ -151,6 +162,29 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
         self.image_manifest_sha256 = require_sha256(
             image_manifest_sha256,
             "image_manifest_sha256",
+        )
+        if type(expected_task_count) is not int or expected_task_count <= 0:
+            raise ValueError("expected_task_count must be a positive integer")
+        if (
+            type(expected_image_tag_count) is not int
+            or expected_image_tag_count <= 0
+        ):
+            raise ValueError(
+                "expected_image_tag_count must be a positive integer"
+            )
+        self.expected_task_count = expected_task_count
+        self.expected_dataset_sha256 = require_sha256(
+            expected_dataset_sha256,
+            "expected_dataset_sha256",
+        )
+        self.expected_dataset_id_ledger_sha256 = require_sha256(
+            expected_dataset_id_ledger_sha256,
+            "expected_dataset_id_ledger_sha256",
+        )
+        self.expected_image_tag_count = expected_image_tag_count
+        self.expected_image_tag_ledger_sha256 = require_sha256(
+            expected_image_tag_ledger_sha256,
+            "expected_image_tag_ledger_sha256",
         )
         if not isinstance(run_id, str) or not run_id:
             raise ValueError("run_id must be non-empty text")
@@ -194,7 +228,7 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
     def _validate_metadata(self, metadata: Mapping[str, Any]) -> None:
         exact = {
             "schema": EPISODE_SCHEMA,
-            "task_count": 500,
+            "task_count": self.expected_task_count,
             "full_benchmark_task_count": 500,
             "evaluation_max_policy_turns": EVALUATION_MAX_POLICY_TURNS,
             "max_native_actions": EVALUATION_MAX_POLICY_TURNS,
@@ -260,11 +294,9 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
             "repository": DATASET_REPOSITORY,
             "revision": PRODUCTION_DATASET_PINS.revision,
             "split": PRODUCTION_DATASET_PINS.split,
-            "row_count": PRODUCTION_DATASET_PINS.row_count,
-            "canonical_jsonl_sha256": (
-                PRODUCTION_DATASET_PINS.canonical_jsonl_sha256
-            ),
-            "id_ledger_sha256": PRODUCTION_DATASET_PINS.id_ledger_sha256,
+            "row_count": self.expected_task_count,
+            "canonical_jsonl_sha256": self.expected_dataset_sha256,
+            "id_ledger_sha256": self.expected_dataset_id_ledger_sha256,
         }
         for key, expected in dataset_expected.items():
             if dataset.get(key) != expected:
@@ -275,8 +307,8 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
             raise RuntimeError("Verified endpoint has no image manifest identity")
         image_expected = {
             "contract": IMAGE_MANIFEST_CONTRACT,
-            "tag_count": PRODUCTION_IMAGE_PINS.tag_count,
-            "tag_ledger_sha256": PRODUCTION_IMAGE_PINS.tag_ledger_sha256,
+            "tag_count": self.expected_image_tag_count,
+            "tag_ledger_sha256": self.expected_image_tag_ledger_sha256,
             "manifest_sha256": self.image_manifest_sha256,
         }
         for key, expected in image_expected.items():
@@ -285,7 +317,7 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
         unique_digest_count = image_manifest.get("unique_digest_count")
         if (
             type(unique_digest_count) is not int
-            or not 1 <= unique_digest_count <= PRODUCTION_IMAGE_PINS.tag_count
+            or not 1 <= unique_digest_count <= self.expected_image_tag_count
         ):
             raise RuntimeError(
                 "Verified endpoint image manifest digest count drifted"
@@ -296,9 +328,9 @@ class SwebenchVerifiedEnvClient(BaseEnvClient):
             raise RuntimeError("Verified endpoint has no prediction contract")
         prediction_expected = {
             "schema_fields": list(PREDICTION_SCHEMA_FIELDS),
-            "task_count": PRODUCTION_DATASET_PINS.row_count,
+            "task_count": self.expected_task_count,
             "instance_id_ledger_sha256": (
-                PRODUCTION_DATASET_PINS.id_ledger_sha256
+                self.expected_dataset_id_ledger_sha256
             ),
             "model_labels": MODEL_LABELS,
         }

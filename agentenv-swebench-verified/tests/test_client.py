@@ -304,6 +304,120 @@ class ClientTests(unittest.TestCase):
             max_observation_tokens=100,
         )
 
+    def test_client_accepts_explicit_task0_metadata_identity(self) -> None:
+        endpoint_metadata = metadata()
+        endpoint_metadata["task_count"] = 1
+        endpoint_metadata["dataset"] = {
+            **endpoint_metadata["dataset"],
+            "row_count": 1,
+            "canonical_jsonl_sha256": "c" * 64,
+            "id_ledger_sha256": "d" * 64,
+        }
+        endpoint_metadata["image_manifest"] = {
+            **endpoint_metadata["image_manifest"],
+            "tag_count": 1,
+            "unique_digest_count": 1,
+            "tag_ledger_sha256": "e" * 64,
+        }
+        endpoint_metadata["prediction_contract"] = {
+            **endpoint_metadata["prediction_contract"],
+            "task_count": 1,
+            "instance_id_ledger_sha256": "d" * 64,
+        }
+
+        client = self.TransportClient(
+            backend=Backend(endpoint_metadata=endpoint_metadata),
+            arm="native",
+            run_id="task0-metadata",
+            image_manifest_sha256=IMAGE_MANIFEST_SHA256,
+            data_len=1,
+            expected_task_count=1,
+            expected_dataset_sha256="c" * 64,
+            expected_dataset_id_ledger_sha256="d" * 64,
+            expected_image_tag_count=1,
+            expected_image_tag_ledger_sha256="e" * 64,
+        )
+
+        self.assertEqual(len(client), 1)
+
+    def test_client_rejects_explicit_task0_metadata_identity_drift(self) -> None:
+        expected = {
+            "expected_task_count": 1,
+            "expected_dataset_sha256": "c" * 64,
+            "expected_dataset_id_ledger_sha256": "d" * 64,
+            "expected_image_tag_count": 1,
+            "expected_image_tag_ledger_sha256": "e" * 64,
+        }
+        cases = {
+            "task_count": lambda value: value.__setitem__("task_count", 2),
+            "dataset sha": lambda value: value["dataset"].__setitem__(
+                "canonical_jsonl_sha256", "f" * 64
+            ),
+            "dataset id ledger": lambda value: value["dataset"].__setitem__(
+                "id_ledger_sha256", "f" * 64
+            ),
+            "image tag count": lambda value: value["image_manifest"].__setitem__(
+                "tag_count", 2
+            ),
+            "image tag ledger": lambda value: value[
+                "image_manifest"
+            ].__setitem__("tag_ledger_sha256", "f" * 64),
+            "prediction count": lambda value: value[
+                "prediction_contract"
+            ].__setitem__("task_count", 2),
+            "prediction id ledger": lambda value: value[
+                "prediction_contract"
+            ].__setitem__("instance_id_ledger_sha256", "f" * 64),
+        }
+
+        for label, mutate in cases.items():
+            with self.subTest(label=label):
+                endpoint_metadata = metadata()
+                endpoint_metadata["task_count"] = 1
+                endpoint_metadata["dataset"] = {
+                    **endpoint_metadata["dataset"],
+                    "row_count": 1,
+                    "canonical_jsonl_sha256": "c" * 64,
+                    "id_ledger_sha256": "d" * 64,
+                }
+                endpoint_metadata["image_manifest"] = {
+                    **endpoint_metadata["image_manifest"],
+                    "tag_count": 1,
+                    "unique_digest_count": 1,
+                    "tag_ledger_sha256": "e" * 64,
+                }
+                endpoint_metadata["prediction_contract"] = {
+                    **endpoint_metadata["prediction_contract"],
+                    "task_count": 1,
+                    "instance_id_ledger_sha256": "d" * 64,
+                }
+                mutate(endpoint_metadata)
+                backend = Backend(endpoint_metadata=endpoint_metadata)
+                with self.assertRaises(RuntimeError):
+                    self.TransportClient(
+                        backend=backend,
+                        arm="native",
+                        run_id="task0-metadata-drift",
+                        image_manifest_sha256=IMAGE_MANIFEST_SHA256,
+                        data_len=1,
+                        **expected,
+                    )
+                self.assertFalse(
+                    any(call[:2] == ("POST", "create") for call in backend.calls)
+                )
+
+    def test_client_production_metadata_identity_remains_the_default(self) -> None:
+        client = self.TransportClient(
+            backend=Backend(),
+            arm="native",
+            run_id="production-metadata-default",
+            image_manifest_sha256=IMAGE_MANIFEST_SHA256,
+        )
+
+        self.assertEqual(client.expected_task_count, 500)
+        self.assertEqual(client.expected_image_tag_count, 500)
+        self.assertEqual(len(client), 500)
+
     def test_native_has_zero_memory_or_compaction_affordance(self) -> None:
         backend = Backend()
         client = self.TransportClient(
