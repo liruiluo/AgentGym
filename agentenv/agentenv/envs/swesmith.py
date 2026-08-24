@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from typing import Any, Mapping, Sequence
 
 import requests
@@ -204,11 +205,22 @@ class SwesmithEnvClient(BaseEnvClient):
         data_len: int | None = None,
         *args,
         timeout: int = 900,
+        invalid_action_reward: float = 0.0,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
+        if (
+            isinstance(invalid_action_reward, bool)
+            or not isinstance(invalid_action_reward, (int, float))
+            or not math.isfinite(float(invalid_action_reward))
+            or float(invalid_action_reward) > 0.0
+        ):
+            raise ValueError(
+                "SWE-smith invalid_action_reward must be finite and non-positive"
+            )
         self.env_server_base = env_server_base.rstrip("/")
         self.timeout = timeout
+        self.invalid_action_reward = float(invalid_action_reward)
         metadata = self._request("GET", "metadata")
         memory_contract = metadata.get("memory_contract")
         if memory_contract != SWE_MEMORY_CONTRACT:
@@ -379,14 +391,34 @@ class SwesmithEnvClient(BaseEnvClient):
             )
         if actor_credit["basis"] == "workspace_changed":
             self._zero_progress_shell_receipts.clear()
+        native_reward = float(response["reward"])
+        reward = native_reward
+        reward_overlay = None
+        if not actor_credit["positive_eligible"] and self.invalid_action_reward != 0.0:
+            reward = native_reward + self.invalid_action_reward
+            reward_overlay = {
+                "schema": "swesmith_invalid_action_reward_v1",
+                "basis": actor_credit["basis"],
+                "native_reward": native_reward,
+                "penalty": self.invalid_action_reward,
+                "final_reward": reward,
+            }
         after_step = response_env_info.get("step")
         if after_step is not None and int(after_step) != self._native_call_count:
             raise RuntimeError(
                 "SWE-smith native step counter drifted from wrapper dispatches"
             )
+        wrapper_evidence = {
+            "event": "native_action",
+            "workspace_continuity_id": self.env_id,
+            "actor_credit": actor_credit,
+            "action_progress": action_progress,
+        }
+        if reward_overlay is not None:
+            wrapper_evidence["reward_overlay"] = reward_overlay
         return StepOutput(
             state=str(response["observation"]),
-            reward=float(response["reward"]),
+            reward=reward,
             done=bool(response["done"]),
             info=build_task_neutral_transition_info(
                 env_info=response_env_info,
@@ -401,12 +433,7 @@ class SwesmithEnvClient(BaseEnvClient):
                 session_epoch_after=self._session_epoch,
                 policy_step_before=policy_before,
                 policy_step_after=self._policy_step_count,
-                wrapper_evidence={
-                    "event": "native_action",
-                    "workspace_continuity_id": self.env_id,
-                    "actor_credit": actor_credit,
-                    "action_progress": action_progress,
-                },
+                wrapper_evidence=wrapper_evidence,
             ),
         )
 
