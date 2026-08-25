@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -12,6 +13,7 @@ from unittest import mock
 from agentenv_swesmith.workspace import (
     SwesmithWorkspaceError,
     SwesmithWorkspaceMaterializer,
+    _remove_episode_tree,
     restore_hidden_tests,
 )
 
@@ -204,6 +206,47 @@ os.execv(real_git, [real_git, *sys.argv[1:]])
             all(arguments[:4] == expected_prefix for arguments in invocations),
             invocations,
         )
+
+
+    def test_close_retries_transient_nonempty_directory_race(self) -> None:
+        workspace = self.materializer.materialize(
+            self.instance,
+            test_paths=["tests/test_fix.py", "tests/test_keep.py"],
+        )
+        actual_rmtree = shutil.rmtree
+        attempts = 0
+
+        def transient_rmtree(path: Path, *args: object, **kwargs: object) -> None:
+            nonlocal attempts
+            if Path(path).resolve() == workspace.episode_root.resolve():
+                attempts += 1
+                if attempts == 1:
+                    raise OSError(errno.ENOTEMPTY, "Directory not empty", path)
+            actual_rmtree(path, *args, **kwargs)
+
+        with mock.patch(
+            "agentenv_swesmith.workspace.shutil.rmtree",
+            side_effect=transient_rmtree,
+        ):
+            self.materializer.close(workspace)
+
+        self.assertEqual(attempts, 2)
+        self.assertFalse(workspace.episode_root.exists())
+
+    def test_persistent_episode_cleanup_failure_stays_fail_closed(self) -> None:
+        path = Path(tempfile.mkdtemp(prefix="swesmith-episode-cleanup-test-"))
+        (path / ".nfs-placeholder").write_text("held", encoding="ascii")
+        try:
+            with mock.patch(
+                "agentenv_swesmith.workspace.shutil.rmtree",
+                side_effect=OSError(errno.ENOTEMPTY, "Directory not empty", path),
+            ), self.assertRaisesRegex(
+                SwesmithWorkspaceError,
+                r"stayed busy.*\.nfs-placeholder",
+            ):
+                _remove_episode_tree(path, timeout_seconds=0.0)
+        finally:
+            shutil.rmtree(path)
 
 
 if __name__ == "__main__":

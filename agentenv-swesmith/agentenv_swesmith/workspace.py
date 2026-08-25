@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import re
@@ -8,6 +9,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
@@ -15,6 +17,9 @@ from typing import Any, Iterable, Mapping, Sequence
 
 WORKSPACE_CONTRACT = "swesmith_git_archive_hidden_tests_v1"
 _INSTANCE_ID_RE = re.compile(r"\A[A-Za-z0-9_.-]+\Z")
+_EPISODE_CLEANUP_TIMEOUT_SECONDS = 2.0
+_EPISODE_CLEANUP_RETRY_SECONDS = 0.05
+_TRANSIENT_EPISODE_CLEANUP_ERRNOS = {errno.EBUSY, errno.ENOENT, errno.ENOTEMPTY}
 
 
 class SwesmithWorkspaceError(RuntimeError):
@@ -128,7 +133,46 @@ class SwesmithWorkspaceMaterializer:
             )
         if not episode_root.name.startswith("swesmith-episode-"):
             raise SwesmithWorkspaceError("refusing to remove an unrecognized episode path")
-        shutil.rmtree(episode_root)
+        _remove_episode_tree(episode_root)
+
+
+def _remove_episode_tree(
+    path: Path,
+    *,
+    timeout_seconds: float = _EPISODE_CLEANUP_TIMEOUT_SECONDS,
+) -> None:
+    """Remove one episode tree while tolerating transient NFS delete races."""
+
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    last_error: OSError | None = None
+    while True:
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            if not path.exists():
+                return
+            if exc.errno not in _TRANSIENT_EPISODE_CLEANUP_ERRNOS:
+                raise SwesmithWorkspaceError(
+                    f"SWE-smith episode cleanup failed for {path}: {exc}"
+                ) from exc
+            last_error = exc
+        else:
+            return
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            try:
+                residue = sorted(
+                    str(entry.relative_to(path)) for entry in path.rglob("*")
+                )[:16]
+            except OSError as exc:
+                residue = [f"<unreadable errno={exc.errno}>"]
+            raise SwesmithWorkspaceError(
+                "SWE-smith episode cleanup stayed busy after "
+                f"{timeout_seconds:.3f}s: path={path} residue={residue} "
+                f"last_error={last_error}"
+            ) from last_error
+        time.sleep(min(_EPISODE_CLEANUP_RETRY_SECONDS, remaining))
 
 
 def restore_hidden_tests(workspace: SwesmithWorkspace) -> tuple[str, ...]:
