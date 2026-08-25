@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 from agentenv_agentmemory.filesystem_webshop_env import (
-    FILESYSTEM_REWARD_CONTRACT,
     ProceduralFilesystemWebShopEnv,
 )
 from agentenv_agentmemory.native_webshop_backend import MemoryArenaNativeWebShopBackend
@@ -50,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-index", type=int, default=0)
     parser.add_argument("--price-seed", type=int, default=233)
     parser.add_argument("--workspace-root-parent", type=Path)
+    parser.add_argument("--positive-task-reward-scale", type=float, default=1.0)
     parser.add_argument("--workspace-rg-binary", required=True, type=Path)
     parser.add_argument("--workspace-rg-sha256", required=True)
     parser.add_argument("--output-json", required=True, type=Path)
@@ -95,6 +95,7 @@ def main() -> None:
         shell_sandbox=shell_sandbox,
         workspace_root_parent=args.workspace_root_parent,
         workspace_limits=workspace_limits,
+        positive_task_reward_scale=args.positive_task_reward_scale,
     )
 
     final_root: Path | None = None
@@ -145,7 +146,7 @@ def main() -> None:
             "scenario_id": provider.get(args.data_index).scenario_id,
             "product_pool_file_sha256": args.product_pool_sha256,
             "product_pool_semantic_sha256": pool.semantic_sha256,
-            "reward_contract": FILESYSTEM_REWARD_CONTRACT,
+            "reward_contract": env.reward_contract(),
             "arms": results,
             "reset_cleanup_verified": True,
             "close_cleanup_verified": False,

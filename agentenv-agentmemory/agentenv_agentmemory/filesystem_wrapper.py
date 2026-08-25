@@ -8,9 +8,10 @@ from typing import Any
 
 from .env_wrapper import NATURAL_FILESYSTEM_PROMPT_MODE
 from .filesystem_webshop_env import (
-    FILESYSTEM_REWARD_CONTRACT,
     PROCEDURAL_FILESYSTEM_SURFACE,
     ProceduralFilesystemWebShopEnv,
+    build_filesystem_reward_contract,
+    validate_positive_task_reward_scale,
 )
 from .persistent_workspace import (
     WORKSPACE_CAUSAL_ARMS,
@@ -115,7 +116,22 @@ class FilesystemAgentMemoryWrapperMixin:
             raise RuntimeError(
                 "The filesystem-v2 surface refuses dedicated write/read reward shaping."
             )
-        self.reward_contract = dict(FILESYSTEM_REWARD_CONTRACT)
+        raw_positive_reward_scale = os.environ.get(
+            "AGENTMEMORY_WEBSHOP_POSITIVE_TASK_REWARD_SCALE", "1"
+        )
+        try:
+            positive_reward_scale = validate_positive_task_reward_scale(
+                float(raw_positive_reward_scale)
+            )
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "AGENTMEMORY_WEBSHOP_POSITIVE_TASK_REWARD_SCALE must be a "
+                "finite number > 0"
+            ) from exc
+        self.positive_task_reward_scale = positive_reward_scale
+        self.reward_contract = build_filesystem_reward_contract(
+            positive_reward_scale
+        )
         provider_metadata = self.provider.metadata()
         if (
             provider_metadata.get("tasks_per_orbit")
@@ -185,6 +201,7 @@ class FilesystemAgentMemoryWrapperMixin:
             "workspace_root_parent": self.workspace_root_parent,
             "workspace_limits": self.workspace_limits,
             "shell_sandbox": self.shell_sandbox,
+            "positive_task_reward_scale": self.positive_task_reward_scale,
         }
 
     def workspace_intervention(
@@ -325,7 +342,7 @@ class FilesystemAgentMemoryWrapperMixin:
         metadata.update(
             {
                 "surface": self.surface,
-                "reward_contract": dict(FILESYSTEM_REWARD_CONTRACT),
+                "reward_contract": dict(self.reward_contract),
                 "memory_management": "policy_managed_persistent_workspace",
                 "workspace_surface": "codex_workspace_v2",
                 "workspace_tool_contract": WORKSPACE_TOOL_CONTRACT,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -26,17 +27,47 @@ from .reward_hierarchy import WRONG_BUY_TERMINAL_FAILURE
 PROCEDURAL_FILESYSTEM_SURFACE = (
     "agentmemory_webshop_procedural_natural_chain_filesystem_v2"
 )
-FILESYSTEM_REWARD_CONTRACT = {
-    "schema": "agentmemory_webshop_reward_contract_v2",
-    "contract_id": "native_buy_reward_zero_codex_workspace_tool_reward_v1",
-    "workspace_action_reward": 0.0,
-    "shell_command_reward": 0.0,
-    "apply_patch_reward": 0.0,
-    "memory_specific_shaping": "none",
-    "wrong_buy_terminal_reward": WRONG_BUY_TERMINAL_FAILURE,
-    "correct_intermediate_buy_reward": 1.0,
-    "correct_final_buy_reward": 2.0,
-}
+RAW_INTERMEDIATE_BUY_REWARD = 1.0
+RAW_FINAL_BUY_REWARD = 2.0
+RAW_MAXIMUM_POSITIVE_TRAJECTORY_REWARD = 7.0
+
+
+def validate_positive_task_reward_scale(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("positive task reward scale must be a finite number > 0")
+    scale = float(value)
+    if not math.isfinite(scale) or scale <= 0.0:
+        raise ValueError("positive task reward scale must be a finite number > 0")
+    return scale
+
+
+def build_filesystem_reward_contract(
+    positive_task_reward_scale: float = 1.0,
+) -> dict[str, Any]:
+    scale = validate_positive_task_reward_scale(positive_task_reward_scale)
+    return {
+        "schema": "agentmemory_webshop_reward_contract_v3",
+        "contract_id": "native_buy_positive_scale_zero_codex_workspace_tool_reward_v1",
+        "workspace_action_reward": 0.0,
+        "shell_command_reward": 0.0,
+        "apply_patch_reward": 0.0,
+        "memory_specific_shaping": "none",
+        "wrong_buy_terminal_reward": WRONG_BUY_TERMINAL_FAILURE,
+        "positive_task_reward_scale": scale,
+        "raw_correct_intermediate_buy_reward": RAW_INTERMEDIATE_BUY_REWARD,
+        "raw_correct_final_buy_reward": RAW_FINAL_BUY_REWARD,
+        "raw_maximum_positive_trajectory_reward": (
+            RAW_MAXIMUM_POSITIVE_TRAJECTORY_REWARD
+        ),
+        "correct_intermediate_buy_reward": RAW_INTERMEDIATE_BUY_REWARD * scale,
+        "correct_final_buy_reward": RAW_FINAL_BUY_REWARD * scale,
+        "maximum_positive_trajectory_reward": (
+            RAW_MAXIMUM_POSITIVE_TRAJECTORY_REWARD * scale
+        ),
+    }
+
+
+FILESYSTEM_REWARD_CONTRACT = build_filesystem_reward_contract()
 
 
 class PersistentWorkspaceWebShopEnv(MemoryArenaWebShopEnv):
@@ -53,7 +84,12 @@ class PersistentWorkspaceWebShopEnv(MemoryArenaWebShopEnv):
         shell_sandbox,
         workspace_root_parent: Path | None = None,
         workspace_limits: WorkspaceLimits | None = None,
+        positive_task_reward_scale: float = 1.0,
     ) -> None:
+        self.positive_task_reward_scale = validate_positive_task_reward_scale(
+            positive_task_reward_scale
+        )
+        self._last_raw_task_reward: float | None = None
         super().__init__(
             bundles=bundles,
             backend=backend,
@@ -170,6 +206,27 @@ class PersistentWorkspaceWebShopEnv(MemoryArenaWebShopEnv):
         self._append_trace(parsed.raw_action, result.message)
         return self.render_observation(result.message), 0.0, False
 
+    def step(self, action: str):
+        self._last_raw_task_reward = None
+        observation, reward, terminated, truncated, info = super().step(action)
+        raw_task_reward = (
+            float(reward)
+            if self._last_raw_task_reward is None
+            else self._last_raw_task_reward
+        )
+        step_scale = (
+            self.positive_task_reward_scale if raw_task_reward > 0.0 else 1.0
+        )
+        info = dict(info)
+        info.update(
+            {
+                "raw_task_reward": raw_task_reward,
+                "reward_scale": step_scale,
+                "training_reward": float(reward),
+            }
+        )
+        return observation, float(reward), terminated, truncated, info
+
     def _apply_session_action_shaping(
         self,
         *,
@@ -179,7 +236,26 @@ class PersistentWorkspaceWebShopEnv(MemoryArenaWebShopEnv):
         done: bool,
     ) -> float:
         del parsed, raw_action, done
-        return float(reward)
+        raw_reward = float(reward)
+        self._last_raw_task_reward = raw_reward
+        if raw_reward <= 0.0:
+            return raw_reward
+
+        scale = self.positive_task_reward_scale
+        for component in self.last_reward_components:
+            raw_value = float(component["value"])
+            if raw_value <= 0.0:
+                continue
+            training_value = raw_value * scale
+            component.update(
+                {
+                    "raw_task_reward": raw_value,
+                    "reward_scale": scale,
+                    "training_reward": training_value,
+                    "value": training_value,
+                }
+            )
+        return raw_reward * scale
 
     def render_observation(self, prefix: str | None = None) -> str:
         self._require_bundle()
@@ -245,7 +321,7 @@ class PersistentWorkspaceWebShopEnv(MemoryArenaWebShopEnv):
         return info
 
     def reward_contract(self) -> dict[str, Any]:
-        return dict(FILESYSTEM_REWARD_CONTRACT)
+        return build_filesystem_reward_contract(self.positive_task_reward_scale)
 
 
 class ProceduralFilesystemWebShopEnv(PersistentWorkspaceWebShopEnv):

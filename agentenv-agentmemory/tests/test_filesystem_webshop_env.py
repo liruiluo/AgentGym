@@ -11,6 +11,7 @@ from unittest.mock import patch
 from agentenv_agentmemory.filesystem_webshop_env import (
     FILESYSTEM_REWARD_CONTRACT,
     PersistentWorkspaceWebShopEnv,
+    build_filesystem_reward_contract,
 )
 from agentenv_agentmemory.filesystem_wrapper import (
     ProceduralFilesystemAgentMemoryWrapper,
@@ -142,6 +143,86 @@ class PersistentWorkspaceWebShopEnvTests(unittest.TestCase):
         )
         self.assertTrue(info["tool_ops"][0]["terminal"])
         self.assertFalse(info["tool_ops"][0]["purchase_correct"])
+
+    def test_positive_task_reward_scale_normalizes_complete_bundle_only(self) -> None:
+        scale = 1.0 / 7.0
+        environment = PersistentWorkspaceWebShopEnv(
+            bundles=[make_bundle()],
+            backend=FakeNativeBackend(),
+            env_uid="filesystem-scaled-test",
+            shell_sandbox=InProcessTestShellSandbox(),
+            workspace_root_parent=Path(self.temporary.name) / "scaled",
+            positive_task_reward_scale=scale,
+        )
+        try:
+            _, reset_info = environment.reset()
+            self.assertEqual(
+                reset_info["reward_contract"],
+                build_filesystem_reward_contract(scale),
+            )
+
+            trajectory_reward = 0.0
+            for session_index, target in enumerate(TARGETS):
+                _, reward, done, _, info = purchase(environment, target)
+                raw_reward = 2.0 if session_index == len(TARGETS) - 1 else 1.0
+                expected_reward = raw_reward * scale
+                trajectory_reward += reward
+                self.assertAlmostEqual(reward, expected_reward)
+                self.assertEqual(info["raw_task_reward"], raw_reward)
+                self.assertEqual(info["reward_scale"], scale)
+                self.assertAlmostEqual(info["training_reward"], expected_reward)
+                self.assertAlmostEqual(
+                    sum(component["value"] for component in info["reward_components"]),
+                    expected_reward,
+                )
+                self.assertAlmostEqual(
+                    sum(
+                        component["raw_task_reward"]
+                        for component in info["reward_components"]
+                    ),
+                    raw_reward,
+                )
+                self.assertEqual(done, session_index == len(TARGETS) - 1)
+            self.assertAlmostEqual(trajectory_reward, 1.0)
+
+            environment.reset()
+            _, reward, done, _, info = purchase(environment, TARGETS[1])
+            self.assertEqual(reward, WRONG_BUY_TERMINAL_FAILURE)
+            self.assertTrue(done)
+            self.assertEqual(info["raw_task_reward"], WRONG_BUY_TERMINAL_FAILURE)
+            self.assertEqual(info["reward_scale"], 1.0)
+            self.assertEqual(info["training_reward"], WRONG_BUY_TERMINAL_FAILURE)
+
+            environment.reset()
+            _, reward, done, _, info = environment.step("not-an-action")
+            self.assertEqual(reward, INVALID_ACTION_PENALTY)
+            self.assertFalse(done)
+            self.assertEqual(info["raw_task_reward"], INVALID_ACTION_PENALTY)
+            self.assertEqual(info["reward_scale"], 1.0)
+            self.assertEqual(info["training_reward"], INVALID_ACTION_PENALTY)
+
+            _, reward, done, _, info = environment.step(shell_action("pwd"))
+            self.assertEqual(reward, 0.0)
+            self.assertFalse(done)
+            self.assertEqual(info["raw_task_reward"], 0.0)
+            self.assertEqual(info["reward_scale"], 1.0)
+            self.assertEqual(info["training_reward"], 0.0)
+        finally:
+            environment.close()
+
+    def test_positive_task_reward_scale_rejects_invalid_values(self) -> None:
+        for value in (True, "1", 0.0, -1.0, float("nan"), float("inf")):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError, "finite number > 0"
+            ):
+                PersistentWorkspaceWebShopEnv(
+                    bundles=[make_bundle()],
+                    backend=FakeNativeBackend(),
+                    env_uid="filesystem-invalid-scale-test",
+                    shell_sandbox=InProcessTestShellSandbox(),
+                    workspace_root_parent=Path(self.temporary.name) / "invalid",
+                    positive_task_reward_scale=value,
+                )
 
     def test_legacy_and_claude_style_actions_are_invalid_on_v2(self) -> None:
         for action in (
@@ -327,12 +408,21 @@ class ProceduralFilesystemWrapperTests(unittest.TestCase):
             metadata=lambda: {"tasks_per_orbit": 2}
         )
 
-    def _construct(self, *, intervention: bool = False):
+    def _construct(
+        self,
+        *,
+        intervention: bool = False,
+        positive_task_reward_scale: str | None = None,
+    ):
         sandbox = InProcessTestShellSandbox()
         environment = {
             "AGENTMEMORY_WORKSPACE_RG_BINARY": "/tmp/test-rg",
             "AGENTMEMORY_WORKSPACE_RG_SHA256": "c" * 64,
         }
+        if positive_task_reward_scale is not None:
+            environment["AGENTMEMORY_WEBSHOP_POSITIVE_TASK_REWARD_SCALE"] = (
+                positive_task_reward_scale
+            )
         if intervention:
             environment.update(
                 {
@@ -388,6 +478,28 @@ class ProceduralFilesystemWrapperTests(unittest.TestCase):
                 self.assertRaises(RuntimeError),
             ):
                 ProceduralFilesystemAgentMemoryWrapper()
+
+    def test_wrapper_injects_configured_positive_task_reward_scale(self) -> None:
+        scale = 1.0 / 7.0
+        wrapper, _ = self._construct(
+            positive_task_reward_scale=str(scale)
+        )
+        self.assertEqual(
+            wrapper.reward_contract,
+            build_filesystem_reward_contract(scale),
+        )
+        self.assertEqual(
+            wrapper._environment_configuration()["positive_task_reward_scale"],
+            scale,
+        )
+
+    def test_wrapper_rejects_invalid_positive_task_reward_scale(self) -> None:
+        for value in ("0", "-1", "nan", "inf", "not-a-number"):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                RuntimeError,
+                "AGENTMEMORY_WEBSHOP_POSITIVE_TASK_REWARD_SCALE",
+            ):
+                self._construct(positive_task_reward_scale=value)
 
     def test_wrapper_metadata_attests_codex_workspace(self) -> None:
         wrapper, _ = self._construct()
