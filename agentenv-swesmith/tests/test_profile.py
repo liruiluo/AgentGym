@@ -7,6 +7,7 @@ from pathlib import Path
 from agentenv_swesmith.profile import (
     OfficialSwesmithProfileResolver,
     SwesmithProfileError,
+    _effective_full_command,
     _normalize_paths,
 )
 
@@ -26,6 +27,57 @@ class SwesmithProfileTests(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(SwesmithProfileError):
                     _normalize_paths([value], "tests")
+
+    def test_effective_full_command_deduplicates_in_first_seen_order(self) -> None:
+        command, corrections = _effective_full_command(
+            "pytest -vv tests/a.py tests/b.py tests/a.py tests/c.py",
+            source_paths=(
+                "tests/a.py",
+                "tests/b.py",
+                "tests/a.py",
+                "tests/c.py",
+            ),
+            expected_paths=(
+                "tests/a.py",
+                "tests/b.py",
+                "tests/a.py",
+                "tests/c.py",
+            ),
+            image="example/python-image",
+        )
+        self.assertEqual(command, "pytest -vv tests/a.py tests/b.py tests/c.py")
+        self.assertEqual(
+            corrections,
+            ("deduplicate_test_paths_preserve_first_occurrence_v1",),
+        )
+
+    def test_effective_full_command_uses_only_sybil_for_scrapy_rst(self) -> None:
+        command, corrections = _effective_full_command(
+            "pytest -vv tests/a.py docs/guide.rst tests/a.py",
+            source_paths=("tests/a.py", "docs/guide.rst", "tests/a.py"),
+            expected_paths=("tests/a.py", "docs/guide.rst", "tests/a.py"),
+            image="swebench/swesmith.x86_64.scrapy_1776_scrapy.35212ec5",
+        )
+        self.assertEqual(
+            command,
+            "pytest -vv -p no:doctest tests/a.py docs/guide.rst",
+        )
+        self.assertEqual(
+            corrections,
+            (
+                "deduplicate_test_paths_preserve_first_occurrence_v1",
+                "scrapy_sybil_disable_builtin_doctest_v1",
+            ),
+        )
+
+    def test_effective_full_command_rejects_path_suffix_mismatch(self) -> None:
+        with self.assertRaisesRegex(SwesmithProfileError, "does not end"):
+            _effective_full_command(
+                "pytest -vv tests/other.py",
+                source_paths=("tests/a.py",),
+                expected_paths=("tests/a.py",),
+                image="example/python-image",
+            )
 
     def test_source_revision_mismatch_fails_before_import(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
