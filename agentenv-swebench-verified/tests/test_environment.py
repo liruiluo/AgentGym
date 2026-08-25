@@ -649,8 +649,8 @@ class VerifiedEnvironmentTests(unittest.TestCase):
             ARMS,
             ("native", "amg_compaction_only", "amg_memory"),
         )
-        self.assertEqual(metadata["evaluation_max_policy_turns"], 30)
-        self.assertEqual(metadata["max_native_actions"], 30)
+        self.assertEqual(metadata["evaluation_max_policy_turns"], 128)
+        self.assertEqual(metadata["max_native_actions"], 128)
         self.assertEqual(
             metadata["submission_contract"],
             "upstream_shell_output_sentinel_v1",

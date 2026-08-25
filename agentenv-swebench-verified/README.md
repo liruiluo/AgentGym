@@ -114,7 +114,7 @@ existing `(arm, run_id)`. The server returns a separate per-slot bearer for all
 later reset/step/export/close requests. Do not log either bearer. No
 environment-registry or shared-rollout edit is included.
 
-All three arms use the same task order, 30 unified policy-turn cap, action HTTP
+All three arms use the same task order, 128 unified policy-turn cap, action HTTP
 path, `/testbed` shell/apply-patch surface, workspace materializer, observation
 budget, runtime identity, and patch exporter. Policy-visible output is capped at
 6,144 bytes with 3,072 bytes per stdout/stderr stream; shell commands have a
