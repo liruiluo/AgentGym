@@ -7,7 +7,7 @@ from .schema import AttributeTransition
 from .scenarios import scenario_by_id
 
 
-QUESTION_FORMAT_VERSION = "natural_customer_approved_shortlist_chain_question_v9"
+QUESTION_FORMAT_VERSION = "natural_customer_approved_shortlist_chain_question_v10"
 
 
 def render_question(
@@ -35,6 +35,9 @@ def render_question(
             raise ValueError("session one requires one root value and no transition")
         root_display = slot.value(root_attribute_value).display_name
         step_rule = (
+            "This is the first shopping session, so no preceding-session note exists. "
+            "As the first action, search the selected approved product's complete title; "
+            "do not run a workspace read or write before opening that exact listing. "
             f"The customer's starting request is {slot.attribute_name} = "
             f"{root_display}. Buy the {slot.display_name} whose confirmed "
             f"{slot.attribute_name} is exactly {root_display}."

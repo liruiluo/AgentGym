@@ -461,6 +461,21 @@ class ProceduralNaturalChainTests(unittest.TestCase):
             combined,
         )
         self.assertIn("every Add File content line must begin with +", combined)
+        self.assertIn(
+            "This is the first shopping session, so no preceding-session note exists",
+            combined,
+        )
+        self.assertIn(
+            "do not run a workspace read or write before opening that exact listing",
+            combined,
+        )
+        self.assertIn(
+            "This is the first shopping session, so no preceding-session note exists",
+            left.phases[0].question,
+        )
+        self.assertNotIn("As the first action, issue exactly shell_command", left.phases[0].question)
+        for phase in left.phases[1:]:
+            self.assertIn("As the first action, issue exactly shell_command", phase.question)
         self.assertIn("do not replace it with a generic certified", combined)
         self.assertIn("leave that note unchanged and commit the purchase", combined)
         self.assertIn(
@@ -614,7 +629,7 @@ class ProceduralNaturalChainTests(unittest.TestCase):
         self.assertEqual(metadata["memory_dependency"], "previous_purchased_natural_attribute")
         self.assertEqual(
             metadata["question_format_version"],
-            "natural_customer_approved_shortlist_chain_question_v9",
+            "natural_customer_approved_shortlist_chain_question_v10",
         )
 
     def test_reseeded_stream_exhausts_full_period_before_next_seed_epoch(
