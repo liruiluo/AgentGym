@@ -85,6 +85,28 @@ class FakeSandbox:
         )
         return SimpleNamespace(result=result)
 
+    def run_trusted(self, **kwargs):
+        return self.run(**kwargs)
+
+
+class PolicyCappedFakeSandbox(FakeSandbox):
+    """Expose a distinct trusted path while rejecting an oversized policy call."""
+
+    def __init__(self, policy_root: Path, outputs: list[dict]) -> None:
+        super().__init__(policy_root, outputs)
+        self.policy_timeouts: list[int] = []
+        self.trusted_timeouts: list[int] = []
+
+    def run(self, *, timeout_ms: int, **kwargs):
+        self.policy_timeouts.append(timeout_ms)
+        if timeout_ms > 120_000:
+            raise AssertionError("trusted grading used the policy command path")
+        return super().run(timeout_ms=timeout_ms, **kwargs)
+
+    def run_trusted(self, *, timeout_ms: int, **kwargs):
+        self.trusted_timeouts.append(timeout_ms)
+        return super().run(timeout_ms=timeout_ms, **kwargs)
+
 
 class HiddenGraderTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -286,6 +308,31 @@ class HiddenGraderTests(unittest.TestCase):
                     sandbox=sandbox,
                 )
                 self.assertEqual(result.reward, 0.0)
+
+    def test_grader_uses_separate_trusted_timeout_above_policy_cap(self) -> None:
+        grader = SwesmithHiddenGrader(timeout_ms=600_000)
+        sandbox = PolicyCappedFakeSandbox(
+            self.policy,
+            [
+                {"stdout": "tests/test_fix.py::test_fix PASSED\n"},
+                {
+                    "stdout": (
+                        "tests/test_fix.py::test_fix PASSED\n"
+                        "tests/test_keep.py::test_keep PASSED\n"
+                    )
+                },
+            ],
+        )
+        result = grader.grade(
+            instance=self.instance,
+            profile=self.profile,
+            workspace=self.workspace,
+            sandbox=sandbox,
+        )
+        self.assertEqual(result.reward, 1.0)
+        self.assertIsNone(result.error)
+        self.assertEqual(sandbox.policy_timeouts, [])
+        self.assertEqual(sandbox.trusted_timeouts, [600_000, 600_000])
 
 
 if __name__ == "__main__":

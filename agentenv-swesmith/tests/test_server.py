@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from agentenv_swesmith.launch import (
+    _integer,
     _limits_from_environment,
     _runtime_source_from_environment,
 )
@@ -77,6 +78,24 @@ class SwesmithRuntimeSourceTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "combined observation budget"):
                 _limits_from_environment(6144)
+
+    def test_policy_and_trusted_grader_timeouts_are_independent(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "SWESMITH_DEFAULT_TIMEOUT_MS": "120000",
+                "SWESMITH_MAX_TIMEOUT_MS": "120000",
+                "SWESMITH_GRADER_TIMEOUT_MS": "600000",
+            },
+            clear=True,
+        ):
+            limits = _limits_from_environment()
+            grader_timeout = _integer(
+                "SWESMITH_GRADER_TIMEOUT_MS", limits.max_timeout_ms
+            )
+        self.assertEqual(limits.default_timeout_ms, 120_000)
+        self.assertEqual(limits.max_timeout_ms, 120_000)
+        self.assertEqual(grader_timeout, 600_000)
 
 
 if __name__ == "__main__":

@@ -460,6 +460,26 @@ class EpisodeStateTests(unittest.TestCase):
         with self.assertRaisesRegex(SwesmithSandboxError, "closed"):
             sandbox.run(command="test", workdir=".", timeout_ms=100)
 
+    def test_trusted_run_can_exceed_policy_timeout_without_widening_policy(self) -> None:
+        sandbox = _FakeEpisodeSandbox()
+        sandbox.attach_workspace(self.root)
+        with self.assertRaisesRegex(SwesmithSandboxError, "within 1..2000 ms"):
+            sandbox.run(command="test", workdir=".", timeout_ms=5000)
+        with mock.patch.object(
+            sandbox,
+            "_run_namespace",
+            wraps=sandbox._run_namespace,
+        ) as run_namespace:
+            execution = sandbox.run_trusted(
+                command="test",
+                workdir=".",
+                timeout_ms=5000,
+            )
+        self.assertEqual(execution.result.stdout, b"ok")
+        self.assertEqual(run_namespace.call_args.kwargs["timeout_ms"], 5000)
+        self.assertEqual(sandbox.limits.max_timeout_ms, 2000)
+        sandbox.close()
+
     def test_refresh_attests_trusted_host_patch_before_next_command(self) -> None:
         sandbox = _FakeEpisodeSandbox()
         sandbox.attach_workspace(self.root)

@@ -170,7 +170,7 @@ class SwesmithHiddenGrader:
         instance: Mapping[str, Any],
         sandbox: LinuxNamespaceEpisodeSandbox,
     ) -> TestRunEvidence:
-        execution: SwesmithShellExecution = sandbox.run(
+        execution: SwesmithShellExecution = sandbox.run_trusted(
             command=command,
             workdir=".",
             timeout_ms=self.timeout_ms,

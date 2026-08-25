@@ -418,6 +418,47 @@ class LinuxNamespaceEpisodeSandbox:
         stdout_limit_bytes: int | None = None,
         stderr_limit_bytes: int | None = None,
     ) -> SwesmithShellExecution:
+        """Run one policy-visible command within the configured timeout cap."""
+
+        return self._run_attested(
+            command=command,
+            workdir=workdir,
+            timeout_ms=timeout_ms,
+            max_timeout_ms=self.limits.max_timeout_ms,
+            stdout_limit_bytes=stdout_limit_bytes,
+            stderr_limit_bytes=stderr_limit_bytes,
+        )
+
+    def run_trusted(
+        self,
+        *,
+        command: str,
+        workdir: str,
+        timeout_ms: int,
+        stdout_limit_bytes: int | None = None,
+        stderr_limit_bytes: int | None = None,
+    ) -> SwesmithShellExecution:
+        """Run trusted wrapper work without widening the policy timeout cap."""
+
+        return self._run_attested(
+            command=command,
+            workdir=workdir,
+            timeout_ms=timeout_ms,
+            max_timeout_ms=None,
+            stdout_limit_bytes=stdout_limit_bytes,
+            stderr_limit_bytes=stderr_limit_bytes,
+        )
+
+    def _run_attested(
+        self,
+        *,
+        command: str,
+        workdir: str,
+        timeout_ms: int,
+        max_timeout_ms: int | None,
+        stdout_limit_bytes: int | None,
+        stderr_limit_bytes: int | None,
+    ) -> SwesmithShellExecution:
         root, expected_before = self._attached_state()
         if not isinstance(command, str) or not command or "\x00" in command:
             raise SwesmithSandboxError("shell_command must be non-empty text without NUL")
@@ -432,9 +473,11 @@ class LinuxNamespaceEpisodeSandbox:
             default=self.limits.stderr_bytes,
             label="stderr",
         )
-        if type(timeout_ms) is not int or not 0 < timeout_ms <= self.limits.max_timeout_ms:
+        if type(timeout_ms) is not int or timeout_ms <= 0:
+            raise SwesmithSandboxError("shell_command timeout must be a positive integer")
+        if max_timeout_ms is not None and timeout_ms > max_timeout_ms:
             raise SwesmithSandboxError(
-                f"shell_command timeout must be within 1..{self.limits.max_timeout_ms} ms"
+                f"shell_command timeout must be within 1..{max_timeout_ms} ms"
             )
         _require_resolved_workdir(root, normalized_workdir)
         if not self._run_lock.acquire(blocking=False):
