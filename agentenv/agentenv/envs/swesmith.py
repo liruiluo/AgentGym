@@ -351,6 +351,16 @@ class SwesmithEnvClient(BaseEnvClient):
     def observe(self) -> str:
         return str(self.info["observation"])
 
+    @property
+    def sample_excluded(self) -> bool:
+        info = self.info.get("info", {})
+        if not isinstance(info, Mapping):
+            return False
+        value = info.get("sample_excluded", False)
+        if type(value) is not bool:
+            raise RuntimeError("SWE-smith sample_excluded must be boolean")
+        return value
+
     def step(self, action: str) -> StepOutput:
         if self._selected_policy_control == "context_compaction":
             return self._complete_context_compaction(action)
@@ -392,6 +402,15 @@ class SwesmithEnvClient(BaseEnvClient):
         if actor_credit["basis"] == "workspace_changed":
             self._zero_progress_shell_receipts.clear()
         native_reward = float(response["reward"])
+        sample_excluded = response_env_info.get("sample_excluded", False)
+        if type(sample_excluded) is not bool:
+            raise RuntimeError("SWE-smith sample_excluded must be boolean")
+        if sample_excluded and (
+            not bool(response.get("done")) or native_reward != 0.0
+        ):
+            raise RuntimeError(
+                "SWE-smith excluded samples must be terminal with zero reward"
+            )
         reward = native_reward
         reward_overlay = None
         if (
