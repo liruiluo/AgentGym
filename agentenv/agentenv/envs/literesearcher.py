@@ -18,8 +18,10 @@ from agentenv.controller.types import (
 
 
 # The route-level forecast must cover the largest policy-visible observation
-# seen with the frozen LiteResearcher service and Qwen3.5 tokenizer (10,652
-# tokens in r43).  Keep a bounded margin so compaction is sampled before the
+# seen with the frozen LiteResearcher service and Qwen3.5 tokenizer: the
+# maximum r43 next-prompt growth was 10,652 tokens, comprising a 52-token
+# response plus a 10,600-token observation-and-template delta. Keep a bounded
+# margin so compaction is sampled before the
 # next native action can push the prompt past the 30,720-token PPO width.
 LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE = 12_288
 
