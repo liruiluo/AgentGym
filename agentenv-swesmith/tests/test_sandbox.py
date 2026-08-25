@@ -134,6 +134,34 @@ class SandboxPreflightTests(unittest.TestCase):
         self.assertNotIn("route add", _DIRECT_BIND_NAMESPACE_SETUP)
         self.assertNotIn("default via", _DIRECT_BIND_NAMESPACE_SETUP)
 
+    def test_network_namespace_injects_read_only_localhost_hosts_file(self) -> None:
+        sandbox = _FakeEpisodeSandbox()
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            mount_root = root / "root"
+            output = root / "output"
+            mount_root.mkdir()
+            output.mkdir()
+            sandbox._prepare_rootfs(mount_root, output)
+            self.assertEqual(
+                (output / "hosts").read_text(encoding="ascii"),
+                "127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\n",
+            )
+        self.assertIn(
+            '"$mount_binary" -t overlay overlay',
+            _DIRECT_BIND_NAMESPACE_SETUP,
+        )
+        self.assertIn(
+            '"$mount_binary" --bind "$etc_overlay/merged" "$mount_root/etc"',
+            _DIRECT_BIND_NAMESPACE_SETUP,
+        )
+        self.assertIn(
+            'remount,bind,ro,nosuid,nodev,noexec "$mount_root/etc"',
+            _DIRECT_BIND_NAMESPACE_SETUP,
+        )
+        self.assertNotIn("resolv.conf", _DIRECT_BIND_NAMESPACE_SETUP)
+        sandbox.close()
+
 
 class SandboxScratchCleanupTests(unittest.TestCase):
     def test_control_directory_uses_local_temp_root_and_is_removed(self) -> None:

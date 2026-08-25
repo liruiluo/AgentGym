@@ -45,6 +45,10 @@ _TRANSIENT_SANDBOX_CLEANUP_ERRNOS = {
     errno.ENOENT,
     errno.ENOTEMPTY,
 }
+_LOCALHOST_HOSTS = (
+    "127.0.0.1 localhost\n"
+    "::1 localhost ip6-localhost ip6-loopback\n"
+)
 
 
 class SwesmithSandboxError(ShellSandboxError):
@@ -675,6 +679,9 @@ class LinuxNamespaceEpisodeSandbox:
         # from the training container: that would silently change dependencies.
         os.chmod(output, 0o700)
         os.chmod(rootfs, 0o700)
+        hosts = output / "hosts"
+        hosts.write_text(_LOCALHOST_HOSTS, encoding="ascii")
+        os.chmod(hosts, 0o400)
 
 
 @contextmanager
@@ -1288,6 +1295,20 @@ ip_binary=${20}
 "$mount_binary" --make-rprivate /
 "$mount_binary" --bind "$oci_rootfs" "$mount_root"
 "$mount_binary" -o remount,bind,ro,nosuid,nodev "$mount_root"
+
+# OCI exports do not carry the runtime-generated /etc/hosts file.  Overlay
+# only /etc so localhost works while DNS and all external routes stay absent.
+etc_overlay="$output/etc-overlay"
+mkdir -p "$etc_overlay"
+"$mount_binary" -t tmpfs -o mode=0700,nosuid,nodev,size=1m,nr_inodes=64 tmpfs "$etc_overlay"
+mkdir -p "$etc_overlay/upper" "$etc_overlay/work" "$etc_overlay/merged"
+hosts_content=$(<"$output/hosts")
+printf '%s\n' "$hosts_content" > "$etc_overlay/upper/hosts"
+chmod 0644 "$etc_overlay/upper/hosts"
+"$mount_binary" -t overlay overlay -o "lowerdir=$oci_rootfs/etc,upperdir=$etc_overlay/upper,workdir=$etc_overlay/work" "$etc_overlay/merged"
+"$mount_binary" -o remount,ro,nosuid,nodev "$etc_overlay/merged"
+"$mount_binary" --bind "$etc_overlay/merged" "$mount_root/etc"
+"$mount_binary" -o remount,bind,ro,nosuid,nodev,noexec "$mount_root/etc"
 
 # The profile image is immutable.  Only the episode workspace and explicitly
 # bounded temporary mounts are writable inside this namespace.
