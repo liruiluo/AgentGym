@@ -8,6 +8,7 @@ import requests
 from agentenv.controller.types import PolicyContextPressure
 from agentenv.envs.literesearcher import (
     LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+    LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
     LiteResearcherEnvClient,
 )
 
@@ -38,10 +39,10 @@ class LiteResearcherClientTests(unittest.TestCase):
         pressure = PolicyContextPressure(
             action_prompt_tokens=140,
             candidate_prompt_tokens=130,
-            max_prompt_tokens=300,
-            max_model_tokens=332,
-            max_response_tokens=32,
-            max_observation_tokens=100,
+            max_prompt_tokens=30_720,
+            max_model_tokens=32_768,
+            max_response_tokens=2_048,
+            max_observation_tokens=LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
             action_observation_envelope_tokens=4,
         )
 
@@ -53,12 +54,12 @@ class LiteResearcherClientTests(unittest.TestCase):
         client._policy_context_bound = True
         client._selected_policy_control = None
         pressure = PolicyContextPressure(
-            action_prompt_tokens=180,
-            candidate_prompt_tokens=170,
-            max_prompt_tokens=300,
-            max_model_tokens=332,
-            max_response_tokens=32,
-            max_observation_tokens=100,
+            action_prompt_tokens=18_000,
+            candidate_prompt_tokens=17_900,
+            max_prompt_tokens=30_720,
+            max_model_tokens=32_768,
+            max_response_tokens=2_048,
+            max_observation_tokens=LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
             action_observation_envelope_tokens=4,
         )
 
@@ -67,6 +68,26 @@ class LiteResearcherClientTests(unittest.TestCase):
             LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
         )
         self.assertEqual(client._selected_policy_control, "context_compaction")
+
+
+    def test_underreported_observation_envelope_fails_before_sampling(self) -> None:
+        client = self._client()
+        client._policy_context_bound = True
+        client._selected_policy_control = None
+        pressure = PolicyContextPressure(
+            action_prompt_tokens=18_000,
+            candidate_prompt_tokens=17_900,
+            max_prompt_tokens=30_720,
+            max_model_tokens=32_768,
+            max_response_tokens=2_048,
+            max_observation_tokens=4_096,
+            action_observation_envelope_tokens=4,
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError, "observation-token envelope is too small"
+        ):
+            client.prepare_policy_turn(pressure)
 
     def test_close_accepts_server_boolean_true(self) -> None:
         response = Mock(status_code=200)

@@ -17,6 +17,13 @@ from agentenv.controller.types import (
 )
 
 
+# The route-level forecast must cover the largest policy-visible observation
+# seen with the frozen LiteResearcher service and Qwen3.5 tokenizer (10,652
+# tokens in r43).  Keep a bounded margin so compaction is sampled before the
+# next native action can push the prompt past the 30,720-token PPO width.
+LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE = 12_288
+
+
 LITERESEARCHER_CONTEXT_COMPACTION_REQUEST = (
     "The research conversation is nearing its context limit. Write the "
     "continuation state you want to retain after the earlier interaction is "
@@ -146,6 +153,15 @@ class LiteResearcherEnvClient(BaseEnvClient):
         if pressure is None:
             raise RuntimeError(
                 "LiteResearcher compaction requires task-neutral token pressure"
+            )
+        if (
+            pressure.max_observation_tokens
+            < LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE
+        ):
+            raise RuntimeError(
+                "LiteResearcher route observation-token envelope is too small: "
+                f"configured={pressure.max_observation_tokens} "
+                f"minimum={LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE}"
             )
         capacity = pressure.effective_prompt_capacity
         if (
