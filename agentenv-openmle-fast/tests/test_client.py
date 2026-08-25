@@ -151,7 +151,9 @@ class OpenMLEFastClientTest(unittest.TestCase):
         self.assertIn("no reasoning, explanation, Markdown fence, XML/tool_call tag", prompt)
         self.assertIn("plain-text action protocol, not a native tool-calling API", prompt)
         self.assertNotIn("WRONG:", prompt)
-        self.assertIn("Default first three actions", prompt)
+        self.assertIn("Use the first turns efficiently", prompt)
+        self.assertNotIn("Default first three actions", prompt)
+        self.assertNotRegex(prompt, r"(?m)^Action [0-9]+:")
         self.assertIn("cat TASK.md; head -3 data/train.csv", prompt)
         self.assertIn("Every added file line starts with `+`", prompt)
         self.assertIn(
@@ -159,7 +161,7 @@ class OpenMLEFastClientTest(unittest.TestCase):
             prompt,
         )
         self.assertIn(
-            "Action 2: create workspace-relative `train.py` with one shell_command and `printf`",
+            "On a later turn, create workspace-relative `train.py` with one shell_command and `printf`",
             prompt,
         )
         self.assertNotIn("Do not use shell redirection to create Python code", prompt)
@@ -171,7 +173,7 @@ class OpenMLEFastClientTest(unittest.TestCase):
         self.assertIn("deterministic local validation split", prompt)
         self.assertIn(".agent_memory/OPENMLE_CONTINUATION.md", prompt)
         self.assertIn("after a continuation marker, read it", prompt)
-        self.assertIn("Action 3: run `python train.py`", prompt)
+        self.assertIn("On the following turn, run `python train.py`", prompt)
         self.assertIn("Do not write the continuation note before the first measured validation", prompt)
         self.assertNotIn("After each meaningful experiment", prompt)
         self.assertIn("submit no later than action 27", prompt)
