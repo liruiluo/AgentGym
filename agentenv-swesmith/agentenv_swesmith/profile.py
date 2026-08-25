@@ -187,12 +187,12 @@ def _effective_full_command(
 
     source = tuple(source_paths)
     expected = tuple(expected_paths)
+    if not source:
+        return command, ()
     if source != expected:
         raise SwesmithProfileError(
             "official full command paths disagree with FAIL_TO_PASS/PASS_TO_PASS"
         )
-    if not source:
-        return command, ()
 
     suffix = " " + " ".join(source)
     if not command.endswith(suffix):
