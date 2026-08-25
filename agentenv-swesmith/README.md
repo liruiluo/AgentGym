@@ -54,8 +54,14 @@ assets, while Mini-SWE-Agent supplies submission and horizon semantics.
   adapted to one Codex-style action per policy turn, and the no-`.git` workspace
   removes the upstream `patch.txt` transport step.
 - Upstream `LimitsExceeded` returns an empty submission and does not grade the
-  current workspace. AMG horizon exhaustion therefore ends with reward `0`,
-  `grade=None`, and no hidden-grader call.
+  current workspace. The terminal-failure training contract maps this outcome
+  once to reward `-0.01`, keeps `grade=None`, and makes no hidden-grader call.
+- The same one-time terminal reward applies to parser/executor rejection, a
+  sentinel submission with no non-generated workspace change, and a valid but
+  unresolved official grade. A valid shell command that exits nonzero (including
+  a failing test) remains ordinary observable feedback and does not terminate.
+  Grader/backend failures are marked `sample_excluded` with reward `0` rather
+  than being attributed to the policy.
 
 ## Interaction budget
 

@@ -27,6 +27,8 @@ from .profile import SwesmithProfileBinding
 from .sandbox import (
     LinuxNamespaceEpisodeSandbox,
     SwesmithSandboxError,
+    WorkspaceTreeSnapshot,
+    diff_workspace_trees,
     snapshot_workspace_tree,
 )
 from .workspace import SwesmithWorkspace, SwesmithWorkspaceMaterializer
@@ -37,10 +39,15 @@ DEFAULT_TRAINING_MAX_POLICY_TURNS = 75
 UPSTREAM_REFERENCE_MAX_POLICY_TURNS = 250
 UPSTREAM_AGENT_REPOSITORY = "SWE-agent/mini-swe-agent"
 UPSTREAM_AGENT_REVISION = "a83fcae82d2a08f0ee0c688f9d137b3566c097f8"
-REWARD_CONTRACT = "explicit_submission_full_resolution_binary_v2"
-SUBMISSION_CONTRACT = "upstream_shell_output_sentinel_v1"
-HORIZON_CONTRACT = "unified_policy_step_no_submission_failure_v2"
+TERMINAL_FAILURE_REWARD = -0.01
+REWARD_CONTRACT = "explicit_submission_success1_terminal_failure_minus0p01_v1"
+SUBMISSION_CONTRACT = "upstream_shell_output_sentinel_source_change_required_v2"
+HORIZON_CONTRACT = "unified_policy_step_terminal_failure_minus0p01_v3"
 DEFAULT_MAX_OBSERVATION_BYTES = 6144
+GENERATED_PATH_PARTS = frozenset(
+    {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox"}
+)
+GENERATED_FILE_NAMES = frozenset({".coverage", "coverage.xml"})
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
 ACTION_PROGRESS_SCHEMA = "swesmith_action_progress_v1"
 MAX_VISIBLE_CHANGED_PATHS_BYTES = 1024
@@ -84,6 +91,7 @@ class _Episode:
     profile: SwesmithProfileBinding
     workspace: SwesmithWorkspace
     sandbox: LinuxNamespaceEpisodeSandbox
+    initial_snapshot: WorkspaceTreeSnapshot
     observation: str
     initial_observation: str
     step_count: int = 0
@@ -91,6 +99,8 @@ class _Episode:
     reward: float = 0.0
     evidence: list[dict[str, Any]] = field(default_factory=list)
     grade: SwesmithGradeResult | None = None
+    sample_excluded: bool = False
+    sample_exclusion_reason: str | None = None
 
 
 @dataclass
@@ -226,6 +236,7 @@ class SwesmithEpisodeManager:
                     profile=profile,
                     workspace=workspace,
                     sandbox=sandbox,
+                    initial_snapshot=initial_snapshot,
                     observation=observation,
                     initial_observation=observation,
                 )
@@ -273,6 +284,12 @@ class SwesmithEpisodeManager:
             if action.kind == "parser_error":
                 episode.observation = _parser_error_observation(action)
                 evidence["result"] = {"parser_error": action.error}
+                self._terminate_policy_failure(
+                    episode,
+                    evidence,
+                    termination_reason="parser_rejected",
+                    observation=episode.observation,
+                )
                 actor_credit = _actor_credit(False, "parser_rejected")
             elif action.kind == "shell_command":
                 actor_credit = self._run_shell(episode, action, evidence)
@@ -296,7 +313,7 @@ class SwesmithEpisodeManager:
                     "observation_before": episode.observation,
                     "action": {"kind": "horizon"},
                 }
-                self._terminate_without_submission(
+                self._terminate_policy_failure(
                     episode,
                     horizon,
                     termination_reason="max_steps",
@@ -337,7 +354,7 @@ class SwesmithEpisodeManager:
                 "observation_before": episode.observation,
                 "action": {"kind": "policy_turn_horizon"},
             }
-            self._terminate_without_submission(
+            self._terminate_policy_failure(
                 episode,
                 horizon,
                 termination_reason="policy_turn_horizon",
@@ -361,6 +378,8 @@ class SwesmithEpisodeManager:
                 "step_count": episode.step_count,
                 "done": episode.done,
                 "reward": episode.reward,
+                "sample_excluded": episode.sample_excluded,
+                "sample_exclusion_reason": episode.sample_exclusion_reason,
                 "workspace": {
                     "episode_root": str(episode.workspace.episode_root),
                     "policy_root": str(episode.workspace.policy_root),
@@ -414,6 +433,17 @@ class SwesmithEpisodeManager:
             ),
             "submission_contract": SUBMISSION_CONTRACT,
             "horizon_contract": HORIZON_CONTRACT,
+            "terminal_failure_reward": TERMINAL_FAILURE_REWARD,
+            "terminal_failure_conditions": [
+                "parser_rejected",
+                "executor_rejected",
+                "submission_without_source_change",
+                "grader_unresolved",
+                "max_steps",
+                "policy_turn_horizon",
+            ],
+            "valid_shell_nonzero_exit_is_terminal": False,
+            "grader_infrastructure_failure": "sample_excluded",
             "active_slot_count": slot_count,
             "active_environment_count": active_count,
             "active_workspace_count": active_count,
@@ -458,9 +488,12 @@ class SwesmithEpisodeManager:
                 "poisoned": poisoned,
             }
             episode.observation = f"shell_command failed: {exc}"
-            if poisoned is not None:
-                episode.done = True
-                episode.reward = 0.0
+            self._terminate_policy_failure(
+                episode,
+                evidence,
+                termination_reason="executor_rejected",
+                observation=episode.observation,
+            )
             return _actor_credit(False, "executor_rejected")
         result = execution.result
         stdout = result.stdout.decode("utf-8", errors="replace")
@@ -501,18 +534,36 @@ class SwesmithEpisodeManager:
             timed_out=result.timed_out,
         )
         if submission is not None:
+            final_diff = diff_workspace_trees(
+                episode.initial_snapshot,
+                execution.workspace_after,
+            )
+            source_changed_paths = _meaningful_changed_paths(final_diff.changed_paths)
             evidence["submission"] = {
                 "sentinel": UPSTREAM_SUBMISSION_SENTINEL,
                 "output_bytes": len(submission.encode("utf-8")),
                 "output_sha256": hashlib.sha256(
                     submission.encode("utf-8")
                 ).hexdigest(),
+                "workspace_diff_from_reset": final_diff.as_dict(),
+                "source_changed_paths": list(source_changed_paths),
             }
-            self._grade_terminal(
-                episode,
-                evidence,
-                termination_reason="submission_sentinel",
-            )
+            if not source_changed_paths:
+                self._terminate_policy_failure(
+                    episode,
+                    evidence,
+                    termination_reason="submission_without_source_change",
+                    observation=(
+                        "Submission ended the episode without a source change. "
+                        "The workspace was not graded."
+                    ),
+                )
+            else:
+                self._grade_terminal(
+                    episode,
+                    evidence,
+                    termination_reason="submission_sentinel",
+                )
             return _actor_credit(True, "terminal_submission")
         return _actor_credit(True, "shell_executed")
 
@@ -537,9 +588,12 @@ class SwesmithEpisodeManager:
         except (WorkspacePatchError, SwesmithSandboxError) as exc:
             evidence["result"] = {"error": f"{type(exc).__name__}: {exc}"}
             episode.observation = f"apply_patch failed: {exc}"
-            if episode.sandbox.poisoned_reason is not None:
-                episode.done = True
-                episode.reward = 0.0
+            self._terminate_policy_failure(
+                episode,
+                evidence,
+                termination_reason="executor_rejected",
+                observation=episode.observation,
+            )
             return _actor_credit(False, "executor_rejected")
         evidence["result"] = {
             "changed_paths": list(result.changed_paths),
@@ -570,38 +624,67 @@ class SwesmithEpisodeManager:
             sandbox=episode.sandbox,
         )
         episode.grade = grade
-        episode.done = True
-        episode.reward = grade.reward
-        episode.observation = (
-            "Submission accepted and graded. "
-            + ("The issue is resolved." if grade.resolved else "The issue is not resolved.")
-        )
         evidence["termination_reason"] = termination_reason
         evidence["terminal_grade"] = {
-            "reward": grade.reward,
+            "native_reward": grade.reward,
             "resolved": grade.resolved,
             "grader_error": grade.error,
         }
+        episode.done = True
+        if grade.error is not None:
+            episode.reward = 0.0
+            episode.sample_excluded = True
+            episode.sample_exclusion_reason = "grader_infrastructure_failure"
+            episode.observation = (
+                "Submission reached the grader, but infrastructure prevented a valid score."
+            )
+            evidence["terminal_grade"]["reward"] = 0.0
+            evidence["terminal_grade"]["sample_excluded"] = True
+        elif grade.resolved and grade.reward == 1.0:
+            episode.reward = 1.0
+            episode.observation = "Submission accepted and graded. The issue is resolved."
+            evidence["terminal_grade"]["reward"] = 1.0
+            evidence["terminal_grade"]["sample_excluded"] = False
+        elif not grade.resolved and grade.reward == 0.0:
+            episode.reward = TERMINAL_FAILURE_REWARD
+            episode.observation = (
+                "Submission accepted and graded. The issue is not resolved."
+            )
+            evidence["termination_reason"] = "grader_unresolved"
+            evidence["terminal_grade"]["reward"] = TERMINAL_FAILURE_REWARD
+            evidence["terminal_grade"]["sample_excluded"] = False
+        else:
+            episode.reward = 0.0
+            episode.sample_excluded = True
+            episode.sample_exclusion_reason = "unexpected_grader_contract"
+            episode.observation = "Submission returned an unsupported grader result."
+            evidence["termination_reason"] = "unexpected_grader_contract"
+            evidence["terminal_grade"]["reward"] = 0.0
+            evidence["terminal_grade"]["sample_excluded"] = True
 
-    def _terminate_without_submission(
+    def _terminate_policy_failure(
         self,
         episode: _Episode,
         evidence: dict[str, Any],
         *,
         termination_reason: str,
+        observation: str | None = None,
     ) -> None:
         episode.done = True
-        episode.reward = 0.0
-        episode.observation = (
-            "Episode ended without the explicit submission sentinel. "
-            "The workspace was not graded."
-        )
+        episode.reward = TERMINAL_FAILURE_REWARD
+        if observation is None:
+            episode.observation = (
+                "Episode ended without a successful official submission."
+            )
+        else:
+            episode.observation = observation
         evidence["termination_reason"] = termination_reason
         evidence["terminal_grade"] = {
-            "reward": 0.0,
+            "reward": TERMINAL_FAILURE_REWARD,
             "resolved": False,
             "grader_error": None,
             "graded": False,
+            "sample_excluded": False,
         }
 
     def _public_step(
@@ -617,6 +700,8 @@ class SwesmithEpisodeManager:
             "step": episode.step_count,
             "action_kind": action_kind,
             "terminal": episode.done,
+            "sample_excluded": episode.sample_excluded,
+            "sample_exclusion_reason": episode.sample_exclusion_reason,
             "episode_success": bool(
                 episode.done
                 and episode.grade is not None
@@ -673,6 +758,8 @@ class SwesmithEpisodeManager:
                         "step_count": episode.step_count,
                         "done": episode.done,
                         "reward": episode.reward,
+                        "sample_excluded": episode.sample_excluded,
+                        "sample_exclusion_reason": episode.sample_exclusion_reason,
                         "runtime_metadata": dict(self.runtime_metadata),
                         "evidence": list(episode.evidence),
                         "grade": (
@@ -696,6 +783,20 @@ def _normalize_patch_path(raw: str) -> str:
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise WorkspacePatchError(f"apply_patch path escapes the workspace: {raw!r}")
     return str(path)
+
+
+def _meaningful_changed_paths(changed_paths: tuple[str, ...]) -> tuple[str, ...]:
+    meaningful: list[str] = []
+    for raw_path in changed_paths:
+        path = PurePosixPath(raw_path)
+        if path.name in GENERATED_FILE_NAMES:
+            continue
+        if path.suffix in {".pyc", ".pyo"}:
+            continue
+        if any(part in GENERATED_PATH_PARTS for part in path.parts):
+            continue
+        meaningful.append(raw_path)
+    return tuple(sorted(set(meaningful)))
 
 
 def _submission_from_shell_result(
@@ -734,7 +835,7 @@ def _initial_observation(
         '"workdir":"."}. The successful command must print the upstream submission '
         "sentinel as its first stdout line; then the current persistent workspace receives "
         "one official grade. Any plain text is invalid. Reaching the turn limit without "
-        "that sentinel ends the episode with reward 0 and does not grade the workspace. "
+        "that sentinel ends the episode with reward -0.01 and does not grade the workspace. "
         f"You have at most {max_policy_turns} total policy turns; task-neutral context "
         "compactions consume this same budget. Verify and submit as soon as the repair is "
         "ready; do not wait for the horizon.\n\n"
@@ -746,14 +847,13 @@ def _initial_observation(
 
 def _parser_error_observation(action: ParsedPolicyAction) -> str:
     return (
-        f"Invalid action syntax: {action.error}. Start at byte zero and retry exactly "
-        'like shell_command {"command":"pwd","workdir":"."} on one line. '
-        "For a patch, start with the literal line apply_patch, then one complete "
-        "*** Begin Patch ... *** End Patch payload. Output only one action, with no XML "
-        "tags, reasoning, Markdown, second action, or surrounding text. Keep the edit "
-        "localized instead of pasting or rewriting an entire existing file. After editing "
-        "and testing, submit with exactly shell_command "
-        '{"command":"echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}.'
+        f"Invalid action syntax: {action.error}. The episode ended with reward -0.01. "
+        'In a new episode, start at byte zero with exactly shell_command '
+        '{"command":"pwd","workdir":"."} on one line. For a patch, start with the '
+        "literal line apply_patch, then one complete *** Begin Patch ... *** End Patch "
+        "payload. Output only one action, with no XML tags, reasoning, Markdown, second "
+        "action, or surrounding text. Keep the edit localized instead of pasting or "
+        "rewriting an entire existing file."
     )
 
 

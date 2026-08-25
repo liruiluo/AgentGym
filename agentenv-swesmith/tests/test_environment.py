@@ -155,6 +155,23 @@ class Grader:
         )
 
 
+class InfrastructureFailingGrader:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def grade(self, *, instance, profile, workspace, sandbox):
+        self.calls += 1
+        return SwesmithGradeResult(
+            reward=0.0,
+            resolution_status=None,
+            report={},
+            restored_test_paths=(),
+            f2p_run=None,
+            full_run=None,
+            error="RuntimeError: grader backend unavailable",
+        )
+
+
 class FailingAuditSink:
     def write(self, **_kwargs) -> None:
         raise OSError("audit storage unavailable")
@@ -292,15 +309,15 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         )
         self.assertEqual(
             self.manager.metadata()["reward_contract"],
-            "explicit_submission_full_resolution_binary_v2",
+            "explicit_submission_success1_terminal_failure_minus0p01_v1",
         )
         self.assertEqual(
             self.manager.metadata()["submission_contract"],
-            "upstream_shell_output_sentinel_v1",
+            "upstream_shell_output_sentinel_source_change_required_v2",
         )
         self.assertEqual(
             self.manager.metadata()["horizon_contract"],
-            "unified_policy_step_no_submission_failure_v2",
+            "unified_policy_step_terminal_failure_minus0p01_v3",
         )
         reset = self.manager.reset(slot, 0)
         self.assertIs(reset.info["episode_success"], False)
@@ -319,6 +336,15 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("at most 8 total policy turns", reset.observation)
         self.assertIn("context compactions consume this same budget", reset.observation)
         self.assertIn("do not wait for the horizon", reset.observation)
+        self.assertIn("reward -0.01", reset.observation)
+        self.assertEqual(self.manager.metadata()["terminal_failure_reward"], -0.01)
+        self.assertFalse(
+            self.manager.metadata()["valid_shell_nonzero_exit_is_terminal"]
+        )
+        self.assertEqual(
+            self.manager.metadata()["grader_infrastructure_failure"],
+            "sample_excluded",
+        )
         self.assertNotIn("SECRET_GOLD_PATCH", reset.observation)
         self.assertNotIn(self.instance_id, reset.observation)
 
@@ -401,6 +427,91 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.audits.stat().st_mode & 0o777, 0o700)
         self.assertEqual(list(self.audits.glob(".*.tmp")), [])
 
+    def test_no_source_change_submission_is_terminal_once_without_grading(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+        generated = self.manager.step(
+            slot,
+            'shell_command {"command":"mkdir -p src/__pycache__; '
+            'printf cache > src/__pycache__/noise.pyc","workdir":"."}',
+        )
+        self.assertFalse(generated.done)
+
+        result = self.manager.step(
+            slot,
+            'shell_command {"command":"echo '
+            'COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}',
+        )
+
+        self.assertTrue(result.done)
+        self.assertEqual(result.reward, -0.01)
+        self.assertFalse(result.info["sample_excluded"])
+        self.assertEqual(self.grader.calls, 0)
+        detail = self.manager.detail(slot)
+        event = detail["evidence"][-1]
+        self.assertEqual(event["termination_reason"], "submission_without_source_change")
+        self.assertEqual(event["submission"]["source_changed_paths"], [])
+        with self.assertRaisesRegex(RuntimeError, "already terminal"):
+            self.manager.step(slot, 'shell_command {"command":"pwd","workdir":"."}')
+        self.manager.close(slot)
+
+    def test_changed_but_unresolved_submission_gets_one_terminal_penalty(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+        self.manager.step(
+            slot,
+            'shell_command {"command":"printf still-wrong > src/value.py","workdir":"."}',
+        )
+
+        result = self.manager.step(
+            slot,
+            'shell_command {"command":"echo '
+            'COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}',
+        )
+
+        self.assertTrue(result.done)
+        self.assertEqual(result.reward, -0.01)
+        self.assertFalse(result.info["sample_excluded"])
+        self.assertEqual(self.grader.calls, 1)
+        detail = self.manager.detail(slot)
+        event = detail["evidence"][-1]
+        self.assertEqual(event["termination_reason"], "grader_unresolved")
+        self.assertEqual(event["terminal_grade"]["native_reward"], 0.0)
+        self.manager.close(slot)
+
+    def test_grader_infrastructure_failure_is_excluded_not_penalized(self) -> None:
+        grader = InfrastructureFailingGrader()
+        manager = SwesmithEpisodeManager(
+            dataset=self.manager.dataset,
+            materializer=self.manager.materializer,
+            profile_resolver=Resolver(),
+            sandbox_factory=lambda _record, _profile: LocalSandbox(),
+            grader=grader,
+            max_steps=8,
+        )
+        slot = manager.create()
+        manager.reset(slot, 0)
+        manager.step(
+            slot,
+            'shell_command {"command":"printf changed > src/value.py","workdir":"."}',
+        )
+
+        result = manager.step(
+            slot,
+            'shell_command {"command":"echo '
+            'COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}',
+        )
+
+        self.assertTrue(result.done)
+        self.assertEqual(result.reward, 0.0)
+        self.assertTrue(result.info["sample_excluded"])
+        self.assertEqual(
+            result.info["sample_exclusion_reason"],
+            "grader_infrastructure_failure",
+        )
+        self.assertEqual(grader.calls, 1)
+        manager.close(slot)
+
     def test_submission_sentinel_must_be_the_first_stdout_line(self) -> None:
         slot = self.manager.create()
         self.manager.reset(slot, 0)
@@ -441,7 +552,9 @@ class SwesmithEnvironmentTests(unittest.TestCase):
 
         result = self.manager.step(slot, "shell_command pwd")
 
-        self.assertFalse(result.done)
+        self.assertTrue(result.done)
+        self.assertEqual(result.reward, -0.01)
+        self.assertFalse(result.info["sample_excluded"])
         self.assertEqual(
             result.info["actor_credit"],
             {
@@ -474,8 +587,9 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             'shell_command {"command":"sleep 30 &","workdir":"."}',
         )
 
-        self.assertFalse(result.done)
-        self.assertEqual(result.reward, 0.0)
+        self.assertTrue(result.done)
+        self.assertEqual(result.reward, -0.01)
+        self.assertFalse(result.info["sample_excluded"])
         self.assertEqual(result.info["action_kind"], "shell_command")
         self.assertEqual(
             result.info["actor_credit"],
@@ -554,7 +668,9 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             'shell_command {"command":"printf changed > notes.txt"}',
         )
 
-        self.assertFalse(result.done)
+        self.assertTrue(result.done)
+        self.assertEqual(result.reward, -0.01)
+        self.assertFalse(result.info["sample_excluded"])
         self.assertEqual(result.info["action_kind"], "parser_error")
         self.assertFalse(result.info["actor_credit"]["positive_eligible"])
         self.assertIn("Invalid action syntax", result.observation)
@@ -667,7 +783,9 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             "*** End Patch",
         )
 
-        self.assertFalse(result.done)
+        self.assertTrue(result.done)
+        self.assertEqual(result.reward, -0.01)
+        self.assertFalse(result.info["sample_excluded"])
         self.assertIn("apply_patch failed", result.observation)
         self.assertEqual(
             result.info["actor_credit"],
@@ -753,7 +871,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
 
         horizon = self.manager.finalize_horizon(slot)
         self.assertTrue(horizon.done)
-        self.assertEqual(horizon.reward, 0.0)
+        self.assertEqual(horizon.reward, -0.01)
         self.assertIs(horizon.info["episode_success"], False)
         self.assertEqual(self.grader.calls, 0)
         detail = self.manager.detail(slot)
@@ -790,7 +908,8 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         )
 
         self.assertTrue(result.done)
-        self.assertEqual(result.reward, 0.0)
+        self.assertEqual(result.reward, -0.01)
+        self.assertFalse(result.info["sample_excluded"])
         self.assertIs(result.info["episode_success"], False)
         self.assertEqual(self.grader.calls, 0)
         detail = manager.detail(slot)
