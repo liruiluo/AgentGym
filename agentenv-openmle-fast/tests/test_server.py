@@ -116,7 +116,7 @@ class OpenMLEFastServerTest(unittest.TestCase):
         step = self.client.post(
             "/step", json={"id": slot, "action": "malformed"}
         ).json()
-        self.assertEqual(step["reward"], 0.0)
+        self.assertEqual(step["reward"], -0.01)
         self.assertFalse(step["done"])
         self.assertFalse(step["truncated"])
         self.assertEqual(step["info"]["source_family"], "TEST:tiny-regression")

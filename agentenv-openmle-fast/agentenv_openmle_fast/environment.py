@@ -37,6 +37,7 @@ ACTION_CONTRACT = "openmle_fast_three_tool_v1"
 HORIZON_CONTRACT = "openmle_fast_global_30_action_v1"
 CLEANUP_CONTRACT = "openmle_fast_owned_resource_cleanup_v1"
 OBSERVATION_CONTRACT = "openmle_fast_bounded_observation_v1"
+RECOVERABLE_INVALID_ACTION_REWARD = -0.01
 BOUNDARY_CONTRACTS = {
     "actions": ACTION_CONTRACT,
     "workspace": "openmle_fast_public_workspace_v1",
@@ -341,6 +342,10 @@ class OpenMLEFastEpisodeManager:
             episode = self._episode(slot)
             if episode.done:
                 raise RuntimeError("OpenMLE-fast episode is already terminal")
+            # Reward is transition-local.  Clear the previous nonterminal
+            # reward before classifying this action so a parser penalty cannot
+            # leak into the next valid tool call.
+            episode.reward = 0.0
             episode.counters.action_count += 1
             delta = _zero_delta()
             delta["action_count"] = 1
@@ -366,6 +371,7 @@ class OpenMLEFastEpisodeManager:
             action = parse_policy_action(raw_policy_output)
             action_status = "parser_error"
             if action.kind == "parser_error":
+                episode.reward = RECOVERABLE_INVALID_ACTION_REWARD
                 episode.observation = _bound_text(
                     "Action rejected by the exact three-tool parser. "
                     + str(action.error),
@@ -540,6 +546,7 @@ class OpenMLEFastEpisodeManager:
             "max_observation_tokens": self.runtime_metadata.get(
                 "max_observation_tokens"
             ),
+            "recoverable_invalid_action_reward": RECOVERABLE_INVALID_ACTION_REWARD,
             "implementation_digests": dict(
                 self.runtime_metadata.get("implementation_digests", {})
             ),

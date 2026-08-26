@@ -262,7 +262,7 @@ class OpenMLEFastEnvironmentTest(unittest.TestCase):
         for index in range(29):
             step = manager.step(slot, "not a tool")
             self.assertFalse(step.done, index)
-            self.assertEqual(step.reward, 0.0)
+            self.assertEqual(step.reward, -0.01)
         terminal = manager.step(
             slot,
             'shell_command {"command":"printf final > final.txt"}',
@@ -395,6 +395,15 @@ class OpenMLEFastEnvironmentTest(unittest.TestCase):
         second = manager.step(slot, "malformed")
         self.assertEqual(second.info["counters"]["action_count"], 2)
         self.assertEqual(second.info["counters"]["execution_attempt_count"], 2)
+        self.assertEqual(second.info["action_status"], "parser_error")
+        self.assertEqual(second.reward, -0.01)
+        self.assertFalse(second.done)
+        recovered = manager.step(
+            slot,
+            'shell_command {"command":"cat TASK.md","workdir":"."}',
+        )
+        self.assertEqual(recovered.reward, 0.0)
+        self.assertFalse(recovered.done)
 
     def test_missing_submission_is_policy_failure(self) -> None:
         manager, slot, _ = self.reset()
