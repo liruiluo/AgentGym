@@ -9,6 +9,7 @@ from agentenv.controller.types import PolicyContextPressure
 from agentenv.envs.literesearcher import (
     LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
     LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
+    LITERESEARCHER_SYSTEM_PROMPT,
     LiteResearcherEnvClient,
 )
 
@@ -20,16 +21,51 @@ class LiteResearcherClientTests(unittest.TestCase):
         client.env_server_base = "http://literesearcher.example"
         client.timeout = 30
         client.env_id = 7
+        client.info = {"observation": "Which source answers this question?"}
         return client
 
-    def test_policy_framing_exposes_normalized_conversation_start(self) -> None:
-        framing = self._client().policy_framing()
-        self.assertEqual(
-            [message["role"] for message in framing], ["user", "assistant"]
+    def test_prompt_uses_exact_native_tool_and_workspace_formats(self) -> None:
+        self.assertIn("# Tools", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn('"name": "search"', LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn('"name": "visit"', LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("<function=search>", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("<function=visit>", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("MUST be a JSON array", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn(
+            '<answer>your evidence-backed answer</answer>',
+            LITERESEARCHER_SYSTEM_PROMPT,
         )
-        self.assertIn("deep-research agent", framing[0]["content"])
+        self.assertIn(
+            'shell_command {"command":"cat .agent_memory/research.md",'
+            '"workdir":".","timeout_ms":10000}',
+            LITERESEARCHER_SYSTEM_PROMPT,
+        )
+        self.assertIn(
+            "apply_patch\n*** Begin Patch\n*** Add File: "
+            ".agent_memory/research.md",
+            LITERESEARCHER_SYSTEM_PROMPT,
+        )
+        self.assertIn("persists across context compaction", LITERESEARCHER_SYSTEM_PROMPT)
+
+    def test_policy_framing_restores_system_role_and_question(self) -> None:
+        client = self._client()
         self.assertEqual(
-            framing[1], {"role": "assistant", "content": "Understood."}
+            client.policy_framing(),
+            [{"role": "system", "content": LITERESEARCHER_SYSTEM_PROMPT}],
+        )
+        normalized = client.normalize_initial_policy_context(
+            [
+                {"role": "user", "content": "legacy prompt"},
+                {"role": "assistant", "content": "Understood."},
+                {"role": "user", "content": client.observe()},
+            ]
+        )
+        self.assertEqual(
+            normalized,
+            [
+                {"role": "system", "content": LITERESEARCHER_SYSTEM_PROMPT},
+                {"role": "user", "content": client.observe()},
+            ],
         )
 
     def test_shorter_rendered_candidate_does_not_fail_without_pressure(self) -> None:

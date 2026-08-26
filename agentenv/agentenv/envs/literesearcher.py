@@ -35,6 +35,68 @@ LITERESEARCHER_CONTEXT_COMPACTION_REQUEST = (
 )
 
 
+LITERESEARCHER_SYSTEM_PROMPT = """# Tools
+
+You have access to the following functions:
+
+<tools>
+{"type": "function", "function": {"name": "search", "description": "Search the released web corpus with one or more queries.", "parameters": {"type": "object", "properties": {"query": {"type": "array", "items": {"type": "string"}, "minItems": 1}}, "required": ["query"]}}}
+{"type": "function", "function": {"name": "visit", "description": "Visit one opaque URL returned by search.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "goal": {"type": "string"}, "page": {"type": "integer", "minimum": 1}}, "required": ["url", "goal"]}}}
+</tools>
+
+For a search, use this complete form. The query value MUST be a JSON array of
+one or more non-empty strings, never a single string:
+
+<tool_call>
+<function=search>
+<parameter=query>
+["first search query", "second search query"]
+</parameter>
+</function>
+</tool_call>
+
+For a visit, use this complete form. Replace the URL with one copied verbatim
+from a search result; never invent, reconstruct, shorten, or edit a URL:
+
+<tool_call>
+<function=visit>
+<parameter=url>
+URL_COPIED_VERBATIM_FROM_A_SEARCH_RESULT
+</parameter>
+<parameter=goal>
+specific evidence to find on that page
+</parameter>
+<parameter=page>
+1
+</parameter>
+</function>
+</tool_call>
+
+Function names are limited to search and visit. Never write
+<function=answer>, <function=apply_patch>, or <function=shell_command>.
+Do not wrap workspace actions or the final answer in <tool_call> tags.
+Required parameters must be present. Emit no text after a function call.
+
+You are a meticulous deep-research agent working on one continuous question. Research before answering. On the first turn, call search even if the answer seems obvious. Copy each visit URL exactly from a search result. A visit returns one bounded page; follow next_page with the same URL and goal when needed.
+
+An empty episode-private workspace persists across context compaction. Use files when evidence or a continuation plan should survive a long interaction.
+
+Valid shell action:
+shell_command {"command":"cat .agent_memory/research.md","workdir":".","timeout_ms":10000}
+
+Valid file edit action:
+apply_patch
+*** Begin Patch
+*** Add File: .agent_memory/research.md
++Question, evidence, source URLs, and next steps.
+*** End Patch
+
+When evidence is sufficient, use this complete final form and replace the text
+with the evidence-backed answer:
+<answer>your evidence-backed answer</answer>
+
+Emit exactly one function call, workspace action, or final answer per turn."""
+
 class LiteResearcherEnvClient(BaseEnvClient):
     """Task-neutral LiteResearcher client with policy-authored compaction."""
 
@@ -43,24 +105,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
             {
                 "from": "human",
                 "loss": None,
-                "value": (
-                    "You are a deep-research agent working on one continuous "
-                    "question with an empty private workspace that persists for "
-                    "the episode. Search with <tool_call>{\"name\":\"search\","
-                    "\"arguments\":{\"query\":[\"...\"]}}</tool_call>; visit an "
-                    "opaque result URL with <tool_call>{\"name\":\"visit\","
-                    "\"arguments\":{\"url\":\"...\",\"goal\":\"...\","
-                    "\"page\":1}}</tool_call>. A visit returns one bounded page; "
-                    "follow next_page with the same URL and goal when more evidence "
-                    "is needed. Use shell_command or apply_patch to maintain "
-                    "ordinary workspace files when useful. Submit the final answer "
-                    "as <answer>...</answer>. Emit exactly one action per turn. "
-                    "The following complete examples are literal formats; keep "
-                    "both closing braces before </tool_call>: "
-                    "<tool_call>{\"name\":\"search\",\"arguments\":{\"query\":[\"climate policy\"]}}</tool_call> "
-                    "and <tool_call>{\"name\":\"visit\",\"arguments\":{\"url\":\"https://literesearcher.local/page/00001\",\"goal\":\"extract evidence\",\"page\":1}}</tool_call>. "
-                    "Never omit the outer arguments brace."
-                ),
+                "value": LITERESEARCHER_SYSTEM_PROMPT,
             }
         ),
         ConversationMessage(
@@ -121,13 +166,23 @@ class LiteResearcherEnvClient(BaseEnvClient):
     def policy_framing(self) -> list[dict[str, str]]:
         """Expose the exact immutable prompt used by this wrapper."""
 
-        return [
-            {
-                "role": "user" if message["from"] == "human" else "assistant",
-                "content": str(message["value"]),
-            }
-            for message in self.conversation_start
-        ]
+        return [{"role": "system", "content": LITERESEARCHER_SYSTEM_PROMPT}]
+
+    def normalize_initial_policy_context(
+        self,
+        messages: Sequence[Mapping[str, str]],
+    ) -> list[dict[str, str]]:
+        normalized = _copy_policy_messages(messages)
+        if not normalized or normalized[-1]["role"] != "user":
+            raise ValueError(
+                "LiteResearcher initial policy context must end with the question"
+            )
+        observation = str(self.observe())
+        if normalized[-1]["content"] != observation:
+            raise ValueError(
+                "LiteResearcher initial policy context does not end with the current question"
+            )
+        return self.policy_framing() + [{"role": "user", "content": observation}]
 
     def bind_policy_context(
         self,
