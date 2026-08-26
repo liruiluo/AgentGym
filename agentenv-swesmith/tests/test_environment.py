@@ -309,7 +309,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         )
         self.assertEqual(
             self.manager.metadata()["reward_contract"],
-            "explicit_submission_binary_success1_failure0_v1",
+            "submission_success1_wrong0_invalid_minus0p01_v1",
         )
         self.assertEqual(
             self.manager.metadata()["submission_contract"],
@@ -317,7 +317,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         )
         self.assertEqual(
             self.manager.metadata()["horizon_contract"],
-            "unified_policy_step_terminal_failure_zero_v4",
+            "unified_policy_step_terminal_failure_minus0p01_v3",
         )
         reset = self.manager.reset(slot, 0)
         self.assertIs(reset.info["episode_success"], False)
@@ -336,8 +336,10 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("at most 8 total policy turns", reset.observation)
         self.assertIn("context compactions consume this same budget", reset.observation)
         self.assertIn("do not wait for the horizon", reset.observation)
-        self.assertIn("reward 0", reset.observation)
-        self.assertEqual(self.manager.metadata()["terminal_failure_reward"], 0.0)
+        self.assertIn("reward -0.01", reset.observation)
+        self.assertEqual(self.manager.metadata()["invalid_action_terminal_reward"], -0.01)
+        self.assertEqual(self.manager.metadata()["failed_submission_reward"], 0.0)
+        self.assertEqual(self.manager.metadata()["horizon_failure_reward"], -0.01)
         self.assertFalse(
             self.manager.metadata()["valid_shell_nonzero_exit_is_terminal"]
         )
@@ -553,7 +555,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         result = self.manager.step(slot, "shell_command pwd")
 
         self.assertTrue(result.done)
-        self.assertEqual(result.reward, 0.0)
+        self.assertEqual(result.reward, -0.01)
         self.assertFalse(result.info["sample_excluded"])
         self.assertEqual(
             result.info["actor_credit"],
@@ -588,7 +590,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         )
 
         self.assertTrue(result.done)
-        self.assertEqual(result.reward, 0.0)
+        self.assertEqual(result.reward, -0.01)
         self.assertFalse(result.info["sample_excluded"])
         self.assertEqual(result.info["action_kind"], "shell_command")
         self.assertEqual(
@@ -669,7 +671,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         )
 
         self.assertTrue(result.done)
-        self.assertEqual(result.reward, 0.0)
+        self.assertEqual(result.reward, -0.01)
         self.assertFalse(result.info["sample_excluded"])
         self.assertEqual(result.info["action_kind"], "parser_error")
         self.assertFalse(result.info["actor_credit"]["positive_eligible"])
@@ -784,7 +786,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         )
 
         self.assertTrue(result.done)
-        self.assertEqual(result.reward, 0.0)
+        self.assertEqual(result.reward, -0.01)
         self.assertFalse(result.info["sample_excluded"])
         self.assertIn("apply_patch failed", result.observation)
         self.assertEqual(
@@ -871,7 +873,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
 
         horizon = self.manager.finalize_horizon(slot)
         self.assertTrue(horizon.done)
-        self.assertEqual(horizon.reward, 0.0)
+        self.assertEqual(horizon.reward, -0.01)
         self.assertIs(horizon.info["episode_success"], False)
         self.assertEqual(self.grader.calls, 0)
         detail = self.manager.detail(slot)
@@ -908,7 +910,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         )
 
         self.assertTrue(result.done)
-        self.assertEqual(result.reward, 0.0)
+        self.assertEqual(result.reward, -0.01)
         self.assertFalse(result.info["sample_excluded"])
         self.assertIs(result.info["episode_success"], False)
         self.assertEqual(self.grader.calls, 0)

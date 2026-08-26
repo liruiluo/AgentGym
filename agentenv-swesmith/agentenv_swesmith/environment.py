@@ -39,10 +39,12 @@ DEFAULT_TRAINING_MAX_POLICY_TURNS = 75
 UPSTREAM_REFERENCE_MAX_POLICY_TURNS = 250
 UPSTREAM_AGENT_REPOSITORY = "SWE-agent/mini-swe-agent"
 UPSTREAM_AGENT_REVISION = "a83fcae82d2a08f0ee0c688f9d137b3566c097f8"
-TERMINAL_FAILURE_REWARD = 0.0
-REWARD_CONTRACT = "explicit_submission_binary_success1_failure0_v1"
+INVALID_ACTION_TERMINAL_REWARD = -0.01
+FAILED_SUBMISSION_REWARD = 0.0
+HORIZON_FAILURE_REWARD = -0.01
+REWARD_CONTRACT = "submission_success1_wrong0_invalid_minus0p01_v1"
 SUBMISSION_CONTRACT = "upstream_shell_output_sentinel_source_change_required_v2"
-HORIZON_CONTRACT = "unified_policy_step_terminal_failure_zero_v4"
+HORIZON_CONTRACT = "unified_policy_step_terminal_failure_minus0p01_v3"
 DEFAULT_MAX_OBSERVATION_BYTES = 6144
 GENERATED_PATH_PARTS = frozenset(
     {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox"}
@@ -288,6 +290,7 @@ class SwesmithEpisodeManager:
                     episode,
                     evidence,
                     termination_reason="parser_rejected",
+                    reward=INVALID_ACTION_TERMINAL_REWARD,
                     observation=episode.observation,
                 )
                 actor_credit = _actor_credit(False, "parser_rejected")
@@ -317,6 +320,7 @@ class SwesmithEpisodeManager:
                     episode,
                     horizon,
                     termination_reason="max_steps",
+                    reward=HORIZON_FAILURE_REWARD,
                 )
                 horizon["observation_after"] = episode.observation
                 episode.evidence.append(horizon)
@@ -358,6 +362,7 @@ class SwesmithEpisodeManager:
                 episode,
                 horizon,
                 termination_reason="policy_turn_horizon",
+                reward=HORIZON_FAILURE_REWARD,
             )
             horizon["observation_after"] = episode.observation
             episode.evidence.append(horizon)
@@ -433,14 +438,18 @@ class SwesmithEpisodeManager:
             ),
             "submission_contract": SUBMISSION_CONTRACT,
             "horizon_contract": HORIZON_CONTRACT,
-            "terminal_failure_reward": TERMINAL_FAILURE_REWARD,
-            "terminal_failure_conditions": [
+            "invalid_action_terminal_reward": INVALID_ACTION_TERMINAL_REWARD,
+            "failed_submission_reward": FAILED_SUBMISSION_REWARD,
+            "horizon_failure_reward": HORIZON_FAILURE_REWARD,
+            "penalized_terminal_conditions": [
                 "parser_rejected",
                 "executor_rejected",
-                "submission_without_source_change",
-                "grader_unresolved",
                 "max_steps",
                 "policy_turn_horizon",
+            ],
+            "zero_reward_submission_conditions": [
+                "submission_without_source_change",
+                "grader_unresolved",
             ],
             "valid_shell_nonzero_exit_is_terminal": False,
             "grader_infrastructure_failure": "sample_excluded",
@@ -492,6 +501,7 @@ class SwesmithEpisodeManager:
                 episode,
                 evidence,
                 termination_reason="executor_rejected",
+                reward=INVALID_ACTION_TERMINAL_REWARD,
                 observation=episode.observation,
             )
             return _actor_credit(False, "executor_rejected")
@@ -553,6 +563,7 @@ class SwesmithEpisodeManager:
                     episode,
                     evidence,
                     termination_reason="submission_without_source_change",
+                    reward=FAILED_SUBMISSION_REWARD,
                     observation=(
                         "Submission ended the episode without a source change. "
                         "The workspace was not graded."
@@ -592,6 +603,7 @@ class SwesmithEpisodeManager:
                 episode,
                 evidence,
                 termination_reason="executor_rejected",
+                reward=INVALID_ACTION_TERMINAL_REWARD,
                 observation=episode.observation,
             )
             return _actor_credit(False, "executor_rejected")
@@ -646,12 +658,12 @@ class SwesmithEpisodeManager:
             evidence["terminal_grade"]["reward"] = 1.0
             evidence["terminal_grade"]["sample_excluded"] = False
         elif not grade.resolved and grade.reward == 0.0:
-            episode.reward = TERMINAL_FAILURE_REWARD
+            episode.reward = FAILED_SUBMISSION_REWARD
             episode.observation = (
                 "Submission accepted and graded. The issue is not resolved."
             )
             evidence["termination_reason"] = "grader_unresolved"
-            evidence["terminal_grade"]["reward"] = TERMINAL_FAILURE_REWARD
+            evidence["terminal_grade"]["reward"] = FAILED_SUBMISSION_REWARD
             evidence["terminal_grade"]["sample_excluded"] = False
         else:
             episode.reward = 0.0
@@ -668,10 +680,11 @@ class SwesmithEpisodeManager:
         evidence: dict[str, Any],
         *,
         termination_reason: str,
+        reward: float,
         observation: str | None = None,
     ) -> None:
         episode.done = True
-        episode.reward = TERMINAL_FAILURE_REWARD
+        episode.reward = reward
         if observation is None:
             episode.observation = (
                 "Episode ended without a successful official submission."
@@ -680,7 +693,7 @@ class SwesmithEpisodeManager:
             episode.observation = observation
         evidence["termination_reason"] = termination_reason
         evidence["terminal_grade"] = {
-            "reward": TERMINAL_FAILURE_REWARD,
+            "reward": reward,
             "resolved": False,
             "grader_error": None,
             "graded": False,
@@ -835,7 +848,7 @@ def _initial_observation(
         '"workdir":"."}. The successful command must print the upstream submission '
         "sentinel as its first stdout line; then the current persistent workspace receives "
         "one official grade. Any plain text is invalid. Reaching the turn limit without "
-        "that sentinel ends the episode with reward 0 and does not grade the workspace. "
+        "that sentinel ends the episode with reward -0.01 and does not grade the workspace. "
         f"You have at most {max_policy_turns} total policy turns; task-neutral context "
         "compactions consume this same budget. Verify and submit as soon as the repair is "
         "ready; do not wait for the horizon.\n\n"
@@ -847,7 +860,7 @@ def _initial_observation(
 
 def _parser_error_observation(action: ParsedPolicyAction) -> str:
     return (
-        f"Invalid action syntax: {action.error}. The episode ended with reward 0. "
+        f"Invalid action syntax: {action.error}. The episode ended with reward -0.01. "
         'In a new episode, start at byte zero with exactly shell_command '
         '{"command":"pwd","workdir":"."} on one line. For a patch, start with the '
         "literal line apply_patch, then one complete *** Begin Patch ... *** End Patch "
