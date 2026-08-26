@@ -392,7 +392,11 @@ class LiteResearcherIntakeTests(unittest.TestCase):
 
     def test_native_search_keeps_query_array_strict(self) -> None:
         backend = FrozenLiteResearchBackend(self.coverage)
-        wrapper = LiteResearcherWrapper(self.coverage, backend)
+        wrapper = LiteResearcherWrapper(
+            self.coverage,
+            backend,
+            invalid_action_penalty=-0.01,
+        )
         env_id = wrapper.create(data_idx=0)["id"]
         result = wrapper.step(
             env_id,
@@ -400,8 +404,15 @@ class LiteResearcherIntakeTests(unittest.TestCase):
             "not-a-json-array\n</parameter>\n</function>\n</tool_call>",
         )
         self.assertFalse(result["done"])
+        self.assertEqual(result["reward"], -0.01)
         self.assertEqual(result["info"]["status"], "invalid_action")
         self.assertEqual(result["info"]["native_environment_call_count"], 0)
+        recovered = wrapper.step(
+            env_id,
+            '<tool_call>{"name":"search","arguments":{"query":["history"]}}</tool_call>',
+        )
+        self.assertFalse(recovered["done"])
+        self.assertEqual(recovered["reward"], 0.0)
         wrapper.close(env_id)
 
     def test_malformed_tool_and_unknown_visit_do_not_fallback_to_live_web(self) -> None:

@@ -269,6 +269,9 @@ def _build_literesearcher_wrapper(surface: str) -> LiteResearcherWrapper:
         split=split,
         surface=surface,
         judge=judge,
+        invalid_action_penalty=_env_float(
+            "AGENTMEMORY_INVALID_ACTION_REWARD", 0.0
+        ),
     )
 
 

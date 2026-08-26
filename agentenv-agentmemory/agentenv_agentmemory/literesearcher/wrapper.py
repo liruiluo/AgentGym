@@ -132,6 +132,7 @@ class LiteResearcherWrapper:
         split: str = "train",
         surface: str = LITERESEARCHER_SURFACE,
         judge: LiteResearchJudge | None = None,
+        invalid_action_penalty: float = 0.0,
     ) -> None:
         if backend.tasks_source is not task_source:
             raise ValueError("backend and wrapper must share the exact task source")
@@ -167,6 +168,13 @@ class LiteResearcherWrapper:
         self._workspace_runtime_metadata = dict(workspace_runtime_metadata or {})
         self._workspaces: dict[int, WorkspaceAdapter] = {}
         self.max_policy_steps = max_policy_steps
+        if isinstance(invalid_action_penalty, bool) or not isinstance(
+            invalid_action_penalty, (int, float)
+        ):
+            raise TypeError("LiteResearcher invalid-action penalty must be numeric")
+        self.invalid_action_penalty = float(invalid_action_penalty)
+        if self.invalid_action_penalty > 0.0:
+            raise ValueError("LiteResearcher invalid-action penalty must be non-positive")
         self._next_id = 0
         self._episodes: dict[int, dict[str, Any]] = {}
 
@@ -193,6 +201,7 @@ class LiteResearcherWrapper:
                 "judge_fallback": judge_metadata["fallback"],
                 "workspace_tool_contract": "codex_shell_command_apply_patch_v1",
                 "workspace_memory_reward": 0.0,
+                "recoverable_invalid_action_reward": self.invalid_action_penalty,
                 "workspace_runtime": deepcopy(self._workspace_runtime_metadata),
             }
         )
@@ -232,6 +241,9 @@ class LiteResearcherWrapper:
         episode = self._require(env_id)
         if episode["done"]:
             return deepcopy(episode["payload"])
+        # Reward is transition-local.  Reset it before every recoverable action so
+        # an invalid-action penalty cannot leak into the next valid tool call.
+        episode["reward"] = 0.0
         episode["step_count"] += 1
         step = episode["step_count"]
         if step > self.max_policy_steps:
@@ -276,6 +288,7 @@ class LiteResearcherWrapper:
                 wrapper_evidence={"step": step, "backend_error": type(exc).__name__},
             )
         except (TypeError, ValueError, KeyError) as exc:
+            episode["reward"] = self.invalid_action_penalty
             return self._ordinary_result(
                 env_id,
                 episode,

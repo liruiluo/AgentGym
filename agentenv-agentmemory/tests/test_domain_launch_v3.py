@@ -118,6 +118,19 @@ class DomainLaunchTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self._launch(arguments)
 
+    def test_literesearcher_accepts_frozen_recoverable_invalid_penalty(self):
+        arguments = self._literesearcher_arguments()
+        arguments.extend(["--invalid-action-reward", "-0.01"])
+        configured, uvicorn = self._launch(arguments)
+        self.assertEqual(configured["AGENTMEMORY_INVALID_ACTION_REWARD"], "-0.01")
+        uvicorn.assert_called_once()
+
+    def test_literesearcher_rejects_other_invalid_penalties(self):
+        arguments = self._literesearcher_arguments()
+        arguments.extend(["--invalid-action-reward", "-0.1"])
+        with self.assertRaises(SystemExit):
+            self._launch(arguments)
+
     @staticmethod
     def _literesearcher_fullpool_arguments(*, judge_key_file: str):
         return [

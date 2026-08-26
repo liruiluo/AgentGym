@@ -423,10 +423,13 @@ def launch() -> None:
                 args.memory_first_add_reward,
                 args.memory_first_later_retrieve_reward,
                 args.memory_exact_repeat_reward,
-                args.invalid_action_reward,
             )
         ):
             parser.error("LiteResearcher refuses memory-specific reward shaping")
+        if args.invalid_action_reward not in {None, 0.0, -0.01}:
+            parser.error(
+                "LiteResearcher invalid-action reward must be 0 or the frozen -0.01"
+            )
         if args.memory_prompt_mode != "legacy":
             parser.error("LiteResearcher owns its prompt and refuses memory prompt modes")
     elif args.surface in FILESYSTEM_SURFACES:
@@ -550,6 +553,11 @@ def launch() -> None:
                 ),
                 "AGENTMEMORY_WORKSPACE_RG_BINARY": args.workspace_rg_binary,
                 "AGENTMEMORY_WORKSPACE_RG_SHA256": args.workspace_rg_sha256,
+                "AGENTMEMORY_INVALID_ACTION_REWARD": str(
+                    0.0
+                    if args.invalid_action_reward is None
+                    else args.invalid_action_reward
+                ),
         })
         if args.surface == LITERESEARCHER_FULLPOOL_SURFACE:
             judge_api_key = "EMPTY"
