@@ -829,6 +829,7 @@ def _attest_metadata(
         "max_policy_actions": 30,
         "observation_max_bytes": 64 * 1024,
         "max_observation_tokens": expected_max_observation_tokens,
+        "recoverable_invalid_action_reward": -0.01,
         "executor_runtime_digest": expected_executor_runtime_digest,
     }
     for key, value in expected.items():
@@ -1058,8 +1059,16 @@ def _validate_step_response(
         not done and terminal_reason is not None
     ):
         raise RuntimeError("OpenMLE-fast terminal reason is invalid")
-    if not done and reward != 0.0:
-        raise RuntimeError("OpenMLE-fast intermediate reward must be zero")
+    if not done:
+        expected_reward = (
+            metadata["recoverable_invalid_action_reward"]
+            if info["action_status"] == "parser_error"
+            else 0.0
+        )
+        if reward != expected_reward:
+            raise RuntimeError(
+                "OpenMLE-fast intermediate reward does not match action status"
+            )
     if info["truncated"] and reward is not None:
         raise RuntimeError("OpenMLE-fast truncation must carry null reward")
     if done and not info["truncated"] and (reward is None or not -1.0 <= reward <= 1.0):

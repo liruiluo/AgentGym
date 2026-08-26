@@ -237,6 +237,7 @@ class OpenMLEFastClientTest(unittest.TestCase):
             "max_policy_actions": 30,
             "observation_max_bytes": 65536,
             "max_observation_tokens": 16_384,
+            "recoverable_invalid_action_reward": -0.01,
             "boundary_contracts": dict(_CLIENT_MODULE._EXPECTED_BOUNDARIES),
             "contracts": {
                 "action": _CLIENT_MODULE._EXPECTED_BOUNDARIES["actions"],
@@ -418,7 +419,7 @@ class OpenMLEFastClientTest(unittest.TestCase):
                     self.step_response(
                         observation="ran",
                         action_count=1,
-                        action_kind="parser_error",
+                        action_kind="shell_command",
                     )
                 )
             if path == "horizon":
@@ -466,6 +467,51 @@ class OpenMLEFastClientTest(unittest.TestCase):
             self.assertTrue(terminal.done)
             self.assertEqual(terminal.info["policy_step_after"], 1)
             client.close()
+
+    def test_recoverable_parser_penalty_is_accepted_and_clears_on_valid_action(
+        self,
+    ) -> None:
+        metadata = self.metadata()
+        step_index = 0
+
+        def request(method, url, **kwargs):
+            nonlocal step_index
+            path = url.rsplit("/", 1)[-1]
+            if path == "metadata":
+                return _Response(metadata)
+            if path == "create":
+                return _Response({"id": 7, "observation": "unbound", "info": {}})
+            if path == "reset":
+                return _Response(self.step_response())
+            if path == "step":
+                step_index += 1
+                response = self.step_response(
+                    observation="parser error" if step_index == 1 else "ran",
+                    reward=-0.01 if step_index == 1 else 0.0,
+                    action_count=step_index,
+                    action_kind="parser_error" if step_index == 1 else "shell_command",
+                )
+                response["info"]["action_status"] = (
+                    "parser_error" if step_index == 1 else "completed"
+                )
+                return _Response(response)
+            raise AssertionError(path)
+
+        with patch("requests.request", side_effect=request):
+            client = OpenMLEFastEnvClient(
+                "http://127.0.0.1:9000",
+                **self.client_kwargs(),
+            )
+            client.reset(0)
+            invalid = client.step("malformed")
+            recovered = client.step(
+                'shell_command {"command":"pwd","workdir":"."}'
+            )
+
+        self.assertEqual(invalid.reward, -0.01)
+        self.assertFalse(invalid.done)
+        self.assertEqual(recovered.reward, 0.0)
+        self.assertFalse(recovered.done)
 
     def test_context_pressure_executes_one_real_action_before_replacement(self) -> None:
         calls = []
@@ -630,6 +676,7 @@ class OpenMLEFastClientTest(unittest.TestCase):
             if path == "step":
                 response = self.step_response(
                     observation="parser_error: expected one exact action",
+                    reward=-0.01,
                     action_count=1,
                     action_kind="parser_error",
                 )
