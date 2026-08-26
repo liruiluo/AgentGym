@@ -39,10 +39,10 @@ DEFAULT_TRAINING_MAX_POLICY_TURNS = 75
 UPSTREAM_REFERENCE_MAX_POLICY_TURNS = 250
 UPSTREAM_AGENT_REPOSITORY = "SWE-agent/mini-swe-agent"
 UPSTREAM_AGENT_REVISION = "a83fcae82d2a08f0ee0c688f9d137b3566c097f8"
-TERMINAL_FAILURE_REWARD = -0.01
-REWARD_CONTRACT = "explicit_submission_success1_terminal_failure_minus0p01_v1"
+TERMINAL_FAILURE_REWARD = 0.0
+REWARD_CONTRACT = "explicit_submission_binary_success1_failure0_v1"
 SUBMISSION_CONTRACT = "upstream_shell_output_sentinel_source_change_required_v2"
-HORIZON_CONTRACT = "unified_policy_step_terminal_failure_minus0p01_v3"
+HORIZON_CONTRACT = "unified_policy_step_terminal_failure_zero_v4"
 DEFAULT_MAX_OBSERVATION_BYTES = 6144
 GENERATED_PATH_PARTS = frozenset(
     {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox"}
@@ -835,7 +835,7 @@ def _initial_observation(
         '"workdir":"."}. The successful command must print the upstream submission '
         "sentinel as its first stdout line; then the current persistent workspace receives "
         "one official grade. Any plain text is invalid. Reaching the turn limit without "
-        "that sentinel ends the episode with reward -0.01 and does not grade the workspace. "
+        "that sentinel ends the episode with reward 0 and does not grade the workspace. "
         f"You have at most {max_policy_turns} total policy turns; task-neutral context "
         "compactions consume this same budget. Verify and submit as soon as the repair is "
         "ready; do not wait for the horizon.\n\n"
@@ -847,7 +847,7 @@ def _initial_observation(
 
 def _parser_error_observation(action: ParsedPolicyAction) -> str:
     return (
-        f"Invalid action syntax: {action.error}. The episode ended with reward -0.01. "
+        f"Invalid action syntax: {action.error}. The episode ended with reward 0. "
         'In a new episode, start at byte zero with exactly shell_command '
         '{"command":"pwd","workdir":"."} on one line. For a patch, start with the '
         "literal line apply_patch, then one complete *** Begin Patch ... *** End Patch "
