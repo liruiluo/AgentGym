@@ -12,7 +12,6 @@ from .backend import (
     LiteResearchBackendError,
     LiteResearchRequestError,
     SearchHit,
-    _rank_windows_by_goal,
 )
 
 
@@ -25,6 +24,11 @@ UPSTREAM_SEARCH_TYPE = "hybrid"
 UPSTREAM_SPARSE_WEIGHT = 0.7
 UPSTREAM_DENSE_WEIGHT = 1.0
 UPSTREAM_DOCUMENT_COUNT = 32_127_370
+UPSTREAM_VISIT_ENDPOINT = "/visit_page"
+UPSTREAM_VISIT_BACKEND = "postgresql_exact_url_goal_bm25_page_v1"
+UPSTREAM_VISIT_PAGINATION_CONTRACT = "goal_bm25_overlapping_chars_v1"
+UPSTREAM_VISIT_PAGE_CHARS = 8192
+UPSTREAM_VISIT_PAGE_OVERLAP_CHARS = 1024
 _MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 
 
@@ -167,6 +171,32 @@ class UpstreamHybridLiteResearchBackend:
         ):
             raise LiteResearchBackendError(
                 "LiteResearcher upstream collection entity count mismatch"
+            )
+        if payload.get("visit_page_endpoint") != UPSTREAM_VISIT_ENDPOINT:
+            raise LiteResearchBackendError(
+                "LiteResearcher bounded Visit endpoint mismatch"
+            )
+        if payload.get("visit_page_backend") != UPSTREAM_VISIT_BACKEND:
+            raise LiteResearchBackendError(
+                "LiteResearcher bounded Visit backend mismatch"
+            )
+        if (
+            payload.get("visit_pagination_contract")
+            != UPSTREAM_VISIT_PAGINATION_CONTRACT
+        ):
+            raise LiteResearchBackendError(
+                "LiteResearcher bounded Visit pagination contract mismatch"
+            )
+        if payload.get("visit_page_chars") != UPSTREAM_VISIT_PAGE_CHARS:
+            raise LiteResearchBackendError(
+                "LiteResearcher bounded Visit page size mismatch"
+            )
+        if (
+            payload.get("visit_page_overlap_chars")
+            != UPSTREAM_VISIT_PAGE_OVERLAP_CHARS
+        ):
+            raise LiteResearchBackendError(
+                "LiteResearcher bounded Visit overlap mismatch"
             )
         return document_count
 
@@ -323,34 +353,111 @@ class UpstreamHybridLiteResearchBackend:
         if isinstance(page, bool) or not isinstance(page, int) or page < 1:
             raise LiteResearchRequestError("visit page must be a positive integer")
         requested_url = url.strip()
-        payload = self._request_json("/web_parser", {"url": requested_url})
+        goal_text = str(goal)
+        payload = self._request_json(
+            UPSTREAM_VISIT_ENDPOINT,
+            {"url": requested_url, "goal": goal_text, "page": page},
+        )
+        if payload.get("service_id") != UPSTREAM_SERVICE_ID:
+            raise LiteResearchBackendError(
+                "LiteResearcher bounded Visit identity mismatch"
+            )
+        if payload.get("backend") != UPSTREAM_VISIT_BACKEND:
+            raise LiteResearchBackendError(
+                "LiteResearcher bounded Visit backend mismatch"
+            )
+        if (
+            payload.get("pagination_contract")
+            != UPSTREAM_VISIT_PAGINATION_CONTRACT
+        ):
+            raise LiteResearchBackendError(
+                "LiteResearcher bounded Visit pagination contract mismatch"
+            )
+        if payload.get("page_chars") != UPSTREAM_VISIT_PAGE_CHARS:
+            raise LiteResearchBackendError(
+                "LiteResearcher bounded Visit page size mismatch"
+            )
+        if (
+            payload.get("page_overlap_chars")
+            != UPSTREAM_VISIT_PAGE_OVERLAP_CHARS
+        ):
+            raise LiteResearchBackendError(
+                "LiteResearcher bounded Visit overlap mismatch"
+            )
+
         found = payload.get("found")
         resolved_url = payload.get("url")
-        if payload.get("service_id") != UPSTREAM_SERVICE_ID:
-            raise LiteResearchBackendError("LiteResearcher web_parser identity mismatch")
-        if payload.get("backend") != "postgresql_exact_url":
-            raise LiteResearchBackendError("LiteResearcher web_parser backend mismatch")
-        if not isinstance(found, bool) or not isinstance(resolved_url, str):
-            raise LiteResearchBackendError("LiteResearcher web_parser schema mismatch")
-        if resolved_url != requested_url:
-            raise LiteResearchBackendError("LiteResearcher web_parser URL mismatch")
-        if not found:
-            raise LiteResearchRequestError("visit URL is outside the released corpus")
         title = payload.get("title")
-        text = payload.get("text")
-        if not isinstance(title, str) or not isinstance(text, str) or not text:
-            raise LiteResearchBackendError("LiteResearcher web_parser text is invalid")
-        pages = _rank_windows_by_goal(text, str(goal))
-        if page > len(pages):
+        content = payload.get("content")
+        response_goal = payload.get("goal")
+        response_page = payload.get("page")
+        page_count = payload.get("page_count")
+        next_page = payload.get("next_page")
+        if (
+            not isinstance(found, bool)
+            or not isinstance(resolved_url, str)
+            or not isinstance(title, str)
+            or not isinstance(content, str)
+            or not isinstance(response_goal, str)
+            or isinstance(response_page, bool)
+            or not isinstance(response_page, int)
+            or isinstance(page_count, bool)
+            or not isinstance(page_count, int)
+            or page_count < 0
+            or (
+                next_page is not None
+                and (isinstance(next_page, bool) or not isinstance(next_page, int))
+            )
+        ):
+            raise LiteResearchBackendError(
+                "LiteResearcher bounded Visit schema mismatch"
+            )
+        self._finite_number(
+            payload.get("visit_time"), "bounded Visit time", nonnegative=True
+        )
+        if resolved_url != requested_url:
+            raise LiteResearchBackendError(
+                "LiteResearcher bounded Visit URL mismatch"
+            )
+        if response_goal != goal_text or response_page != page:
+            raise LiteResearchBackendError(
+                "LiteResearcher bounded Visit request echo mismatch"
+            )
+        if not found:
+            if title or content or page_count != 0 or next_page is not None:
+                raise LiteResearchBackendError(
+                    "LiteResearcher missing Visit response is inconsistent"
+                )
             raise LiteResearchRequestError(
-                f"visit page {page} exceeds page_count {len(pages)}"
+                "visit URL is outside the released corpus"
+            )
+        if page_count < 1:
+            raise LiteResearchBackendError(
+                "LiteResearcher bounded Visit page count is invalid"
+            )
+        if page > page_count:
+            if content or next_page is not None:
+                raise LiteResearchBackendError(
+                    "LiteResearcher out-of-range Visit response is inconsistent"
+                )
+            raise LiteResearchRequestError(
+                f"visit page {page} exceeds page_count {page_count}"
+            )
+        expected_next_page = page + 1 if page < page_count else None
+        if not content or len(content) > UPSTREAM_VISIT_PAGE_CHARS:
+            raise LiteResearchBackendError(
+                "LiteResearcher bounded Visit content is invalid"
+            )
+        if next_page != expected_next_page:
+            raise LiteResearchBackendError(
+                "LiteResearcher bounded Visit next page mismatch"
             )
         return {
             "url": resolved_url,
             "title": title,
-            "content": pages[page - 1],
-            "goal": str(goal),
-            "page": page,
-            "page_count": len(pages),
-            "next_page": page + 1 if page < len(pages) else None,
+            "content": content,
+            "goal": response_goal,
+            "page": response_page,
+            "page_count": page_count,
+            "next_page": next_page,
         }

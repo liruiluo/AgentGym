@@ -12,6 +12,7 @@ from agentenv_agentmemory.literesearcher import (
     LiteResearchRequestError,
     UpstreamHybridLiteResearchBackend,
 )
+from agentenv_agentmemory.literesearcher.backend import _rank_windows_by_goal
 
 
 class _Tasks:
@@ -90,6 +91,11 @@ def _handler(state: _State):
                 "hybrid_weights": {"sparse": 0.7, "dense": 1.0},
                 "vector_dtype": "FP32",
                 "vector_precision": "FP32",
+                "visit_pagination_contract": "goal_bm25_overlapping_chars_v1",
+                "visit_page_chars": 8192,
+                "visit_page_overlap_chars": 1024,
+                "visit_page_endpoint": "/visit_page",
+                "visit_page_backend": "postgresql_exact_url_goal_bm25_page_v1",
             }
             if state.mode == "bad_health_index":
                 payload["index_type"] = "HNSW"
@@ -158,32 +164,38 @@ def _handler(state: _State):
                 finally:
                     state.leave()
                 return
-            if self.path == "/web_parser":
+            if self.path == "/visit_page":
                 url = payload["url"]
+                goal = payload["goal"]
+                page = payload["page"]
                 document = state.documents.get(url)
-                if document is None:
-                    self._respond(
-                        200,
-                        {
-                            "found": False,
-                            "url": url,
-                            "title": "",
-                            "text": "",
-                            "service_id": "literesearcher-i-bgem3-diskann-v1",
-                            "backend": "postgresql_exact_url",
-                        },
+                response = {
+                    "found": document is not None,
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "goal": goal,
+                    "page": page,
+                    "page_count": 0,
+                    "next_page": None,
+                    "visit_time": 0.01,
+                    "service_id": "literesearcher-i-bgem3-diskann-v1",
+                    "backend": "postgresql_exact_url_goal_bm25_page_v1",
+                    "pagination_contract": "goal_bm25_overlapping_chars_v1",
+                    "page_chars": 8192,
+                    "page_overlap_chars": 1024,
+                }
+                if document is not None:
+                    pages = _rank_windows_by_goal(document["text"], goal)
+                    response.update(
+                        title=document["title"],
+                        content=pages[page - 1] if page <= len(pages) else "",
+                        page_count=len(pages),
+                        next_page=page + 1 if page < len(pages) else None,
                     )
-                else:
-                    self._respond(
-                        200,
-                        {
-                            "found": True,
-                            "url": url,
-                            **document,
-                            "service_id": "literesearcher-i-bgem3-diskann-v1",
-                            "backend": "postgresql_exact_url",
-                        },
-                    )
+                if state.mode == "bad_visit_schema":
+                    response["backend"] = "postgresql_exact_url"
+                self._respond(200, response)
                 return
             self._respond(404, {"detail": "not found"})
 
@@ -240,20 +252,40 @@ class UpstreamHybridLiteResearchBackendTests(unittest.TestCase):
             },
         )
 
-    def test_visit_reads_only_released_web_parser_and_paginates(self) -> None:
+    def test_visit_uses_bounded_server_page_contract(self) -> None:
         backend = self.backend()
         page = backend.visit("https://docs.test/known", goal="alpha", page=1)
         self.assertEqual(page["url"], "https://docs.test/known")
         self.assertEqual(page["title"], "Known page")
         self.assertIn("alpha evidence", page["content"])
+        self.assertLessEqual(len(page["content"]), 8192)
         self.assertGreater(page["page_count"], 1)
-        self.assertEqual(self.state.requests[-1][0], "/web_parser")
+        self.assertEqual(
+            self.state.requests[-1],
+            (
+                "/visit_page",
+                {
+                    "url": "https://docs.test/known",
+                    "goal": "alpha",
+                    "page": 1,
+                },
+            ),
+        )
 
-    def test_unknown_visit_fails_closed(self) -> None:
+    def test_unknown_and_out_of_range_visit_fail_as_requests(self) -> None:
         backend = self.backend()
         with self.assertRaises(LiteResearchRequestError):
             backend.visit("https://outside.test/unknown")
-        self.assertEqual(self.state.requests[-1][0], "/web_parser")
+        self.assertEqual(self.state.requests[-1][0], "/visit_page")
+        with self.assertRaises(LiteResearchRequestError):
+            backend.visit("https://docs.test/known", goal="alpha", page=99)
+        self.assertEqual(self.state.requests[-1][0], "/visit_page")
+
+    def test_bounded_visit_schema_failure_is_backend_error(self) -> None:
+        backend = self.backend()
+        self.state.mode = "bad_visit_schema"
+        with self.assertRaises(LiteResearchBackendError):
+            backend.visit("https://docs.test/known", goal="alpha", page=1)
 
     def test_transport_and_schema_failures_raise_backend_error(self) -> None:
         backend = self.backend(timeout_seconds=0.05)
