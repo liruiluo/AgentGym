@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from typing import Any, Mapping, Sequence
 
 import requests
@@ -74,11 +75,22 @@ class LiteResearcherEnvClient(BaseEnvClient):
         data_len: int | None = None,
         *args,
         timeout: int = 900,
+        invalid_action_reward: float = 0.0,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
+        if (
+            isinstance(invalid_action_reward, bool)
+            or not isinstance(invalid_action_reward, (int, float))
+            or not math.isfinite(float(invalid_action_reward))
+            or float(invalid_action_reward) > 0.0
+        ):
+            raise ValueError(
+                "LiteResearcher invalid_action_reward must be finite and non-positive"
+            )
         self.env_server_base = env_server_base.rstrip("/")
         self.timeout = timeout
+        self.invalid_action_reward = float(invalid_action_reward)
         metadata = self._request("GET", "metadata")
         if metadata.get("domain_id") != "literesearcher":
             raise RuntimeError("LiteResearcher endpoint reports the wrong domain")
@@ -201,12 +213,47 @@ class LiteResearcherEnvClient(BaseEnvClient):
         self._policy_step_count += 1
         self.info = response
         response_info = response.get("info", {})
+        if not isinstance(response_info, Mapping):
+            raise RuntimeError("LiteResearcher endpoint returned non-object info")
         action_submission = response_info.get("action_submission")
         if not isinstance(action_submission, Mapping):
             action_submission = {"raw_policy_output": action}
+        server_wrapper_evidence = response_info.get("wrapper_evidence", {})
+        if not isinstance(server_wrapper_evidence, Mapping):
+            server_wrapper_evidence = {}
+        native_reward = float(response["reward"])
+        reward = native_reward
+        reward_overlay = None
+        invalid_action = (
+            response_info.get("status") == "invalid_action"
+            or server_wrapper_evidence.get("invalid_action") is True
+        )
+        if invalid_action and self.invalid_action_reward != 0.0:
+            if bool(response_info.get("sample_excluded", False)):
+                raise RuntimeError(
+                    "LiteResearcher invalid action cannot also be sample_excluded"
+                )
+            if native_reward != 0.0:
+                raise RuntimeError(
+                    "LiteResearcher invalid-action overlay requires zero native reward"
+                )
+            reward = native_reward + self.invalid_action_reward
+            reward_overlay = {
+                "schema": "literesearcher_invalid_action_reward_v1",
+                "native_reward": native_reward,
+                "penalty": self.invalid_action_reward,
+                "total_reward": reward,
+                "terminal": bool(response["done"]),
+            }
+        wrapper_evidence = {
+            "event": "native_action",
+            "server_wrapper_evidence": dict(server_wrapper_evidence),
+        }
+        if reward_overlay is not None:
+            wrapper_evidence["reward_overlay"] = reward_overlay
         return StepOutput(
             state=str(response["observation"]),
-            reward=float(response["reward"]),
+            reward=reward,
             done=bool(response["done"]),
             info=build_task_neutral_transition_info(
                 env_info=response_info,
@@ -221,12 +268,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 session_epoch_after=0,
                 policy_step_before=policy_before,
                 policy_step_after=self._policy_step_count,
-                wrapper_evidence={
-                    "event": "native_action",
-                    "server_wrapper_evidence": response_info.get(
-                        "wrapper_evidence", {}
-                    ),
-                },
+                wrapper_evidence=wrapper_evidence,
             ),
         )
 
