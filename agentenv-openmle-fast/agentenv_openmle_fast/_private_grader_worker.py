@@ -16,6 +16,11 @@ from typing import Any
 
 REQUEST_SCHEMA = "openmle_fast_private_worker_request_v1"
 RESULT_SCHEMA = "openmle_fast_private_worker_result_v1"
+_SAFE_EXCEPTION = Exception
+_SAFE_TYPE = type
+_ADMITTED_EVALUATOR_DOMAIN_ERROR_ARGS = (
+    "Spearman correlation is undefined for the provided data.",
+)
 
 
 def main() -> int:
@@ -125,12 +130,24 @@ def _grade(
             return _result("invalid_submission", None, expected_direction)
         if not _canonicalize_validation(validation, success_forms):
             return _result("invalid_submission", None, expected_direction)
-        score_value = instance.evaluate(y_true=truth.copy(), y_pred=prediction.copy())
+        # Sealed admission proves that this metric/runtime pair grades a known
+        # good submission. Only explicitly admitted evaluator-domain outcomes
+        # are policy-invalid; unknown scorer/runtime/control faults must reach
+        # the worker's infrastructure-fault boundary.
+        try:
+            score_value = instance.evaluate(y_true=truth.copy(), y_pred=prediction.copy())
+        except BaseException as error:  # noqa: BLE001 - classify exact native outcomes
+            if (
+                _SAFE_TYPE(error) is _SAFE_EXCEPTION
+                and error.args == _ADMITTED_EVALUATOR_DOMAIN_ERROR_ARGS
+            ):
+                return _result("invalid_submission", None, expected_direction)
+            raise
         if isinstance(score_value, bool) or not isinstance(score_value, numbers.Real):
             raise TypeError("invalid native score")
         score = float(score_value)
         if not math.isfinite(score):
-            raise ValueError("non-finite native score")
+            return _result("invalid_submission", None, expected_direction)
         return _result("graded", score, expected_direction)
     finally:
         sys.modules.pop(module_name, None)
