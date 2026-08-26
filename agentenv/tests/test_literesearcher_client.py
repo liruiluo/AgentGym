@@ -32,6 +32,27 @@ class LiteResearcherClientTests(unittest.TestCase):
             framing[1], {"role": "assistant", "content": "Understood."}
         )
 
+    def test_policy_framing_exposes_literal_workspace_actions(self) -> None:
+        prompt = self._client().policy_framing()[0]["content"]
+        self.assertIn(
+            'shell_command {"command":"cat .agent_memory/research.md",'
+            '"workdir":".","timeout_ms":10000}',
+            prompt,
+        )
+        self.assertIn(
+            "apply_patch\n*** Begin Patch\n*** Add File: "
+            ".agent_memory/research.md\n+question: ...\n+evidence: ...\n"
+            "+next_step: ...\n*** End Patch",
+            prompt,
+        )
+        self.assertIn("not <tool_call> objects", prompt)
+        self.assertIn("After the first useful Visit", prompt)
+        self.assertIn("source URL, extracted evidence, and next step", prompt)
+        self.assertIn("read it with shell_command after", prompt)
+        self.assertIn("context compaction before continuing", prompt)
+        self.assertIn("Except when an explicit context-compaction request", prompt)
+
+
     def test_shorter_rendered_candidate_does_not_fail_without_pressure(self) -> None:
         client = self._client()
         client._policy_context_bound = True
