@@ -34,13 +34,39 @@ outputs, tool results, workspace diffs, terminal reward, and hidden F2P/P2P grad
 before deleting the episode workspace. The sink path and its contents are never
 returned by the policy-facing API.
 
+## Upstream interaction parity
+
+The pinned interaction reference is Mini-SWE-Agent
+`SWE-agent/mini-swe-agent@a83fcae82d2a08f0ee0c688f9d137b3566c097f8`.
+SWE-smith `9b74ac08118a85c39c356802f7961893af73e07f` supplies task/image
+assets, while Mini-SWE-Agent supplies submission and horizon semantics.
+
+- A submission is recognized only when a successful shell command has
+  `COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` as its first stdout line. Plain text,
+  including `final`, is a parser error.
+- The pinned upstream command is `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT
+  && cat patch.txt`. AMG intentionally emits only the sentinel because its
+  persistent no-`.git` workspace is graded directly; this is a workspace-grade
+  adapter, not byte-equivalent patch transport.
+- The policy prompt preserves the upstream repair order: inspect, reproduce,
+  make a localized non-test source edit, rerun the reproduction, run relevant
+  existing tests and edge checks, then submit immediately. The action syntax is
+  adapted to one Codex-style action per policy turn, and the no-`.git` workspace
+  removes the upstream `patch.txt` transport step.
+- Upstream `LimitsExceeded` returns an empty submission and does not grade the
+  current workspace. AMG horizon exhaustion therefore ends with reward `0`,
+  `grade=None`, and no hidden-grader call.
+
 ## Interaction budget
 
-AgentMemoryGym training uses at most 75 policy turns per SWE-smith episode.
+AgentMemoryGym's endpoint default is 75 policy turns per SWE-smith episode;
+the r4 formal lineage used a 30-turn curriculum override.
 Every sampled policy output consumes one turn, including `shell_command`,
-`apply_patch`, final submission, parser errors, and policy-authored context
+`apply_patch`, sentinel submission, parser errors, and policy-authored context
 compaction. Successful submissions terminate early. This is a bounded training
-contract, not the upstream benchmark default.
+contract, not the upstream benchmark default. The initial observation states
+the exact configured budget and warns that compactions consume the same turns,
+so a policy can submit before an otherwise ungraded horizon.
 
 The pinned Mini-SWE-Agent SWE-bench configuration at commit
 `a83fcae82d2a08f0ee0c688f9d137b3566c097f8` uses `step_limit: 250` in

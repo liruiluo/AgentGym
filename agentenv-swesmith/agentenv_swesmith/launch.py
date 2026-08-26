@@ -79,8 +79,6 @@ def build_manager_from_environment() -> SwesmithEpisodeManager:
         )
 
     grader_timeout = _integer("SWESMITH_GRADER_TIMEOUT_MS", limits.max_timeout_ms)
-    if grader_timeout > limits.max_timeout_ms:
-        raise ValueError("SWESMITH_GRADER_TIMEOUT_MS exceeds sandbox max_timeout_ms")
     return SwesmithEpisodeManager(
         dataset=dataset,
         materializer=materializer,
@@ -101,6 +99,9 @@ def build_manager_from_environment() -> SwesmithEpisodeManager:
             "profile_contract": "swesmith_official_repo_profile_v1",
             "max_observation_tokens": max_observation_tokens,
             "max_observation_bytes": max_observation_bytes,
+            "policy_default_timeout_ms": limits.default_timeout_ms,
+            "policy_max_timeout_ms": limits.max_timeout_ms,
+            "trusted_grader_timeout_ms": grader_timeout,
             **runtime_source,
         },
     )

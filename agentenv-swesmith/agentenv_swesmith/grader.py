@@ -78,11 +78,15 @@ class SwesmithHiddenGrader:
         *,
         timeout_ms: int,
         output_joiner: str = "\n",
+        private_output_bytes: int = 4 * 1024 * 1024,
     ) -> None:
         if type(timeout_ms) is not int or timeout_ms <= 0:
             raise ValueError("grader timeout_ms must be a positive integer")
+        if type(private_output_bytes) is not int or private_output_bytes <= 0:
+            raise ValueError("private_output_bytes must be a positive integer")
         self.timeout_ms = timeout_ms
         self.output_joiner = output_joiner
+        self.private_output_bytes = private_output_bytes
 
     def grade(
         self,
@@ -166,10 +170,12 @@ class SwesmithHiddenGrader:
         instance: Mapping[str, Any],
         sandbox: LinuxNamespaceEpisodeSandbox,
     ) -> TestRunEvidence:
-        execution: SwesmithShellExecution = sandbox.run(
+        execution: SwesmithShellExecution = sandbox.run_trusted(
             command=command,
             workdir=".",
             timeout_ms=self.timeout_ms,
+            stdout_limit_bytes=self.private_output_bytes,
+            stderr_limit_bytes=self.private_output_bytes,
         )
         stdout = execution.result.stdout.decode("utf-8", errors="replace")
         stderr = execution.result.stderr.decode("utf-8", errors="replace")
@@ -260,7 +266,6 @@ def _resolution(profile: SwesmithProfileBinding, report: Mapping[str, Any]) -> s
 def _healthy(run: TestRunEvidence | None) -> bool:
     return bool(
         run is not None
-        and run.exit_code == 0
         and not run.timed_out
         and run.status_source in {"profile_log_parser", "exit_zero_declared_tests"}
     )

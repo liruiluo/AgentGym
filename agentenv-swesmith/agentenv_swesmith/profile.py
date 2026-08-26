@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 
+_SCRAPY_SYBIL_IMAGE = "swebench/swesmith.x86_64.scrapy_1776_scrapy.35212ec5"
+
+
 class SwesmithProfileError(RuntimeError):
     """Raised when the frozen SWE-smith profile contract cannot be loaded."""
 
@@ -26,6 +29,8 @@ class SwesmithProfileBinding:
     get_eval_tests_report: Callable[..., Mapping[str, Any]]
     get_resolution_status: Callable[[Mapping[str, Any]], str]
     full_resolution_status: str
+    source_full_command: str | None = None
+    command_corrections: tuple[str, ...] = ()
     profile_contract: str = "swesmith_official_repo_profile_v1"
 
     @property
@@ -41,6 +46,8 @@ class SwesmithProfileBinding:
             "p2p_test_paths": list(self.p2p_test_paths),
             "f2p_command": self.f2p_command,
             "full_command": self.full_command,
+            "source_full_command": self.source_full_command or self.full_command,
+            "command_corrections": list(self.command_corrections),
         }
 
 
@@ -78,7 +85,9 @@ class OfficialSwesmithProfileResolver:
             profile = self._registry.get_from_inst(dict(instance))
             f2p, p2p = profile.get_test_files(dict(instance))
             f2p_command, _ = profile.get_test_cmd(dict(instance), f2p_only=True)
-            full_command, _ = profile.get_test_cmd(dict(instance), f2p_only=False)
+            source_full_command, source_full_paths = profile.get_test_cmd(
+                dict(instance), f2p_only=False
+            )
         except Exception as exc:
             raise SwesmithProfileError(
                 f"failed to resolve official profile for {instance.get('instance_id')!r}"
@@ -89,11 +98,21 @@ class OfficialSwesmithProfileResolver:
             raise SwesmithProfileError("official profile returned no F2P test files")
         if not isinstance(f2p_command, str) or not f2p_command.strip():
             raise SwesmithProfileError("official profile returned an empty F2P command")
-        if not isinstance(full_command, str) or not full_command.strip():
+        if (
+            not isinstance(source_full_command, str)
+            or not source_full_command.strip()
+        ):
             raise SwesmithProfileError("official profile returned an empty full command")
+        image = _required_profile_text(profile, "image_name")
+        full_command, command_corrections = _effective_full_command(
+            source_full_command,
+            source_paths=tuple(str(path) for path in source_full_paths),
+            expected_paths=(*f2p_paths, *p2p_paths),
+            image=image,
+        )
         return SwesmithProfileBinding(
             repo=_required_text(instance, "repo"),
-            image=_required_profile_text(profile, "image_name"),
+            image=image,
             f2p_test_paths=f2p_paths,
             p2p_test_paths=p2p_paths,
             f2p_command=f2p_command,
@@ -102,6 +121,8 @@ class OfficialSwesmithProfileResolver:
             get_eval_tests_report=self._get_eval_tests_report,  # type: ignore[arg-type]
             get_resolution_status=self._get_resolution_status,  # type: ignore[arg-type]
             full_resolution_status=self._full_resolution_status or "FULL",
+            source_full_command=source_full_command,
+            command_corrections=command_corrections,
         )
 
     def _load(self) -> None:
@@ -153,6 +174,49 @@ def _normalize_paths(values: Sequence[Any], label: str) -> tuple[str, ...]:
             raise SwesmithProfileError(f"{label} must contain relative paths: {text!r}")
         normalized.append(path.as_posix())
     return tuple(dict.fromkeys(normalized))
+
+
+def _effective_full_command(
+    command: str,
+    *,
+    source_paths: Sequence[str],
+    expected_paths: Sequence[str],
+    image: str,
+) -> tuple[str, tuple[str, ...]]:
+    """Repair selection-only defects without weakening the declared test set."""
+
+    source = tuple(source_paths)
+    expected = tuple(expected_paths)
+    if not source:
+        return command, ()
+    if source != expected:
+        raise SwesmithProfileError(
+            "official full command paths disagree with FAIL_TO_PASS/PASS_TO_PASS"
+        )
+
+    suffix = " " + " ".join(source)
+    if not command.endswith(suffix):
+        raise SwesmithProfileError(
+            "official full command does not end with its declared test paths"
+        )
+
+    effective_paths = tuple(dict.fromkeys(source))
+    corrections: list[str] = []
+    if len(effective_paths) != len(source):
+        corrections.append("deduplicate_test_paths_preserve_first_occurrence_v1")
+
+    pytest_options: tuple[str, ...] = ()
+    if image == _SCRAPY_SYBIL_IMAGE and any(
+        path.endswith(".rst") for path in effective_paths
+    ):
+        pytest_options = ("-p", "no:doctest")
+        corrections.append("scrapy_sybil_disable_builtin_doctest_v1")
+
+    if not corrections:
+        return command, ()
+    command_prefix = command[: -len(suffix)].rstrip()
+    effective = " ".join((*pytest_options, *effective_paths))
+    return f"{command_prefix} {effective}", tuple(corrections)
 
 
 def _required_text(mapping: Mapping[str, Any], key: str) -> str:

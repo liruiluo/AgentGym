@@ -39,11 +39,16 @@ _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _LOCAL_SANDBOX_SCRATCH_ROOT = Path("/tmp")
 _SANDBOX_CLEANUP_TIMEOUT_SECONDS = 2.0
 _SANDBOX_CLEANUP_RETRY_SECONDS = 0.05
+_MAX_PRIVATE_OUTPUT_BYTES = 16 * 1024 * 1024
 _TRANSIENT_SANDBOX_CLEANUP_ERRNOS = {
     errno.EBUSY,
     errno.ENOENT,
     errno.ENOTEMPTY,
 }
+_LOCALHOST_HOSTS = (
+    "127.0.0.1 localhost\n"
+    "::1 localhost ip6-localhost ip6-loopback\n"
+)
 
 
 class SwesmithSandboxError(ShellSandboxError):
@@ -261,6 +266,7 @@ class LinuxNamespaceEpisodeSandbox:
                 "bash",
                 "chroot",
                 "hostname",
+                "ip",
                 "mknod",
                 "mount",
                 "unshare",
@@ -319,7 +325,7 @@ class LinuxNamespaceEpisodeSandbox:
         return {
             "contract": SWE_SHELL_SANDBOX_CONTRACT,
             "formal_eligible": True,
-            "network": "new_namespace_no_routes",
+            "network": "new_namespace_loopback_only_no_external_routes",
             "rootfs": "digest_pinned_oci_profile_rootfs_read_only",
             "oci_rootfs": rootfs,
             "workspace_mount": "episode_persistent_direct_rw_bind",
@@ -357,8 +363,6 @@ class LinuxNamespaceEpisodeSandbox:
                 command=(
                     "test \"$(command -v rg)\" = /run/tools/rg && "
                     "rg --version >/dev/null && "
-                    "test \"$(python --version 2>&1 | cut -d. -f1-2)\" = "
-                    "'Python 3.10' && "
                     "printf SWESMITH_OCI_ROOTFS_SANDBOX_OK > proof && "
                     "cat proof"
                 ),
@@ -415,14 +419,69 @@ class LinuxNamespaceEpisodeSandbox:
         command: str,
         workdir: str,
         timeout_ms: int,
+        stdout_limit_bytes: int | None = None,
+        stderr_limit_bytes: int | None = None,
+    ) -> SwesmithShellExecution:
+        """Run one policy-visible command within the configured timeout cap."""
+
+        return self._run_attested(
+            command=command,
+            workdir=workdir,
+            timeout_ms=timeout_ms,
+            max_timeout_ms=self.limits.max_timeout_ms,
+            stdout_limit_bytes=stdout_limit_bytes,
+            stderr_limit_bytes=stderr_limit_bytes,
+        )
+
+    def run_trusted(
+        self,
+        *,
+        command: str,
+        workdir: str,
+        timeout_ms: int,
+        stdout_limit_bytes: int | None = None,
+        stderr_limit_bytes: int | None = None,
+    ) -> SwesmithShellExecution:
+        """Run trusted wrapper work without widening the policy timeout cap."""
+
+        return self._run_attested(
+            command=command,
+            workdir=workdir,
+            timeout_ms=timeout_ms,
+            max_timeout_ms=None,
+            stdout_limit_bytes=stdout_limit_bytes,
+            stderr_limit_bytes=stderr_limit_bytes,
+        )
+
+    def _run_attested(
+        self,
+        *,
+        command: str,
+        workdir: str,
+        timeout_ms: int,
+        max_timeout_ms: int | None,
+        stdout_limit_bytes: int | None,
+        stderr_limit_bytes: int | None,
     ) -> SwesmithShellExecution:
         root, expected_before = self._attached_state()
         if not isinstance(command, str) or not command or "\x00" in command:
             raise SwesmithSandboxError("shell_command must be non-empty text without NUL")
         normalized_workdir = _normalize_workdir(workdir)
-        if type(timeout_ms) is not int or not 0 < timeout_ms <= self.limits.max_timeout_ms:
+        stdout_limit = _resolve_output_limit(
+            stdout_limit_bytes,
+            default=self.limits.stdout_bytes,
+            label="stdout",
+        )
+        stderr_limit = _resolve_output_limit(
+            stderr_limit_bytes,
+            default=self.limits.stderr_bytes,
+            label="stderr",
+        )
+        if type(timeout_ms) is not int or timeout_ms <= 0:
+            raise SwesmithSandboxError("shell_command timeout must be a positive integer")
+        if max_timeout_ms is not None and timeout_ms > max_timeout_ms:
             raise SwesmithSandboxError(
-                f"shell_command timeout must be within 1..{self.limits.max_timeout_ms} ms"
+                f"shell_command timeout must be within 1..{max_timeout_ms} ms"
             )
         _require_resolved_workdir(root, normalized_workdir)
         if not self._run_lock.acquire(blocking=False):
@@ -434,12 +493,21 @@ class LinuxNamespaceEpisodeSandbox:
             if before.tree_sha256 != expected_before.tree_sha256:
                 self._poison("workspace changed outside the attested episode action path")
                 raise SwesmithSandboxError(self._poisoned_reason or "workspace changed")
-            result = self._run_namespace(
-                root,
-                command=command,
-                workdir=normalized_workdir,
-                timeout_ms=timeout_ms,
-            )
+            try:
+                result = self._run_namespace(
+                    root,
+                    command=command,
+                    workdir=normalized_workdir,
+                    timeout_ms=timeout_ms,
+                    stdout_limit_bytes=stdout_limit,
+                    stderr_limit_bytes=stderr_limit,
+                )
+            except ShellSandboxError as exc:
+                if str(exc) != (
+                    "shell sandbox left an output pipe open after process cleanup"
+                ):
+                    raise
+                raise SwesmithSandboxError(str(exc)) from exc
             try:
                 after = snapshot_workspace_tree(root, self.limits, previous=before)
             except BaseException as exc:
@@ -492,6 +560,8 @@ class LinuxNamespaceEpisodeSandbox:
         command: str,
         workdir: str,
         timeout_ms: int,
+        stdout_limit_bytes: int | None = None,
+        stderr_limit_bytes: int | None = None,
     ) -> ShellExecutionResult:
         assert_executable_fingerprint(self.rg_binary, self.rg_fingerprint, "ripgrep")
         identity = self._oci_rootfs_identity
@@ -540,6 +610,7 @@ class LinuxNamespaceEpisodeSandbox:
                     str(self._binaries["chroot"]),
                     str(self._binaries["hostname"]),
                     str(self._binaries["mknod"]),
+                    str(self._binaries["ip"]),
                 ],
                 cwd=parent,
                 env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"},
@@ -551,8 +622,16 @@ class LinuxNamespaceEpisodeSandbox:
             stdout, stderr, stdout_truncated, stderr_truncated, timed_out = (
                 _collect_bounded_output(
                     process,
-                    stdout_limit=self.limits.stdout_bytes,
-                    stderr_limit=self.limits.stderr_bytes,
+                    stdout_limit=(
+                        self.limits.stdout_bytes
+                        if stdout_limit_bytes is None
+                        else stdout_limit_bytes
+                    ),
+                    stderr_limit=(
+                        self.limits.stderr_bytes
+                        if stderr_limit_bytes is None
+                        else stderr_limit_bytes
+                    ),
                     timeout_ms=timeout_ms,
                 )
             )
@@ -600,6 +679,9 @@ class LinuxNamespaceEpisodeSandbox:
         # from the training container: that would silently change dependencies.
         os.chmod(output, 0o700)
         os.chmod(rootfs, 0o700)
+        hosts = output / "hosts"
+        hosts.write_text(_LOCALHOST_HOSTS, encoding="ascii")
+        os.chmod(hosts, 0o400)
 
 
 @contextmanager
@@ -649,6 +731,15 @@ def _remove_temporary_sandbox_directory(
                 f"last_error={last_error}"
             ) from last_error
         time.sleep(min(_SANDBOX_CLEANUP_RETRY_SECONDS, remaining))
+
+
+def _resolve_output_limit(value: int | None, *, default: int, label: str) -> int:
+    resolved = default if value is None else value
+    if type(resolved) is not int or not 0 < resolved <= _MAX_PRIVATE_OUTPUT_BYTES:
+        raise SwesmithSandboxError(
+            f"{label} capture limit must be within 1..{_MAX_PRIVATE_OUTPUT_BYTES} bytes"
+        )
+    return resolved
 
 
 def snapshot_workspace_tree(
@@ -1195,10 +1286,29 @@ mount_binary=${16}
 chroot_binary=${17}
 hostname_binary=${18}
 mknod_binary=${19}
+ip_binary=${20}
+
+# The isolated network namespace has no routes or external interfaces.  Bring
+# up only loopback because several official repository tests use local sockets.
+"$ip_binary" link set dev lo up
 
 "$mount_binary" --make-rprivate /
 "$mount_binary" --bind "$oci_rootfs" "$mount_root"
 "$mount_binary" -o remount,bind,ro,nosuid,nodev "$mount_root"
+
+# OCI exports do not carry the runtime-generated /etc/hosts file.  Overlay
+# only /etc so localhost works while DNS and all external routes stay absent.
+etc_overlay="$output/etc-overlay"
+mkdir -p "$etc_overlay"
+"$mount_binary" -t tmpfs -o mode=0700,nosuid,nodev,size=1m,nr_inodes=64 tmpfs "$etc_overlay"
+mkdir -p "$etc_overlay/upper" "$etc_overlay/work" "$etc_overlay/merged"
+hosts_content=$(<"$output/hosts")
+printf '%s\n' "$hosts_content" > "$etc_overlay/upper/hosts"
+chmod 0644 "$etc_overlay/upper/hosts"
+"$mount_binary" -t overlay overlay -o "lowerdir=$oci_rootfs/etc,upperdir=$etc_overlay/upper,workdir=$etc_overlay/work" "$etc_overlay/merged"
+"$mount_binary" -o remount,ro,nosuid,nodev "$etc_overlay/merged"
+"$mount_binary" --bind "$etc_overlay/merged" "$mount_root/etc"
+"$mount_binary" -o remount,bind,ro,nosuid,nodev,noexec "$mount_root/etc"
 
 # The profile image is immutable.  Only the episode workspace and explicitly
 # bounded temporary mounts are writable inside this namespace.

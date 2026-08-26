@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import re
@@ -8,6 +9,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
@@ -15,6 +17,9 @@ from typing import Any, Iterable, Mapping, Sequence
 
 WORKSPACE_CONTRACT = "swesmith_git_archive_hidden_tests_v1"
 _INSTANCE_ID_RE = re.compile(r"\A[A-Za-z0-9_.-]+\Z")
+_EPISODE_CLEANUP_TIMEOUT_SECONDS = 2.0
+_EPISODE_CLEANUP_RETRY_SECONDS = 0.05
+_TRANSIENT_EPISODE_CLEANUP_ERRNOS = {errno.EBUSY, errno.ENOENT, errno.ENOTEMPTY}
 
 
 class SwesmithWorkspaceError(RuntimeError):
@@ -128,7 +133,46 @@ class SwesmithWorkspaceMaterializer:
             )
         if not episode_root.name.startswith("swesmith-episode-"):
             raise SwesmithWorkspaceError("refusing to remove an unrecognized episode path")
-        shutil.rmtree(episode_root)
+        _remove_episode_tree(episode_root)
+
+
+def _remove_episode_tree(
+    path: Path,
+    *,
+    timeout_seconds: float = _EPISODE_CLEANUP_TIMEOUT_SECONDS,
+) -> None:
+    """Remove one episode tree while tolerating transient NFS delete races."""
+
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    last_error: OSError | None = None
+    while True:
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            if not path.exists():
+                return
+            if exc.errno not in _TRANSIENT_EPISODE_CLEANUP_ERRNOS:
+                raise SwesmithWorkspaceError(
+                    f"SWE-smith episode cleanup failed for {path}: {exc}"
+                ) from exc
+            last_error = exc
+        else:
+            return
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            try:
+                residue = sorted(
+                    str(entry.relative_to(path)) for entry in path.rglob("*")
+                )[:16]
+            except OSError as exc:
+                residue = [f"<unreadable errno={exc.errno}>"]
+            raise SwesmithWorkspaceError(
+                "SWE-smith episode cleanup stayed busy after "
+                f"{timeout_seconds:.3f}s: path={path} residue={residue} "
+                f"last_error={last_error}"
+            ) from last_error
+        time.sleep(min(_EPISODE_CLEANUP_RETRY_SECONDS, remaining))
 
 
 def restore_hidden_tests(workspace: SwesmithWorkspace) -> tuple[str, ...]:
@@ -260,13 +304,7 @@ def _extract_archive_member(
         os.chmod(target, stat.S_IMODE(member.mode) or 0o644)
         return
     if member.issym():
-        link_target = PurePosixPath(member.linkname)
-        if link_target.is_absolute():
-            raise SwesmithWorkspaceError(
-                f"git archive contains an absolute symlink: {member.name}"
-            )
-        combined = PurePosixPath(relative).parent.joinpath(link_target)
-        _normalize_relative_path(str(combined), "git archive symlink target")
+        _validate_archive_symlink_target(relative, member.linkname)
         target.symlink_to(member.linkname)
         return
     raise SwesmithWorkspaceError(
@@ -367,6 +405,30 @@ def _normalize_relative_path(raw: str, label: str) -> str:
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise SwesmithWorkspaceError(f"{label} must be a normalized relative path: {raw!r}")
     return str(path)
+
+
+def _validate_archive_symlink_target(relative: str, raw_target: str) -> None:
+    if not raw_target or "\x00" in raw_target:
+        raise SwesmithWorkspaceError(
+            f"git archive symlink target is invalid: {relative}"
+        )
+    target = PurePosixPath(raw_target)
+    if target.is_absolute():
+        raise SwesmithWorkspaceError(
+            f"git archive contains an absolute symlink: {relative}"
+        )
+    resolved_parts = list(PurePosixPath(relative).parent.parts)
+    for part in target.parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not resolved_parts:
+                raise SwesmithWorkspaceError(
+                    f"git archive symlink target escapes workspace: {relative}"
+                )
+            resolved_parts.pop()
+        else:
+            resolved_parts.append(part)
 
 
 def _git_text(root: Path, arguments: Sequence[str], *, label: str) -> str:

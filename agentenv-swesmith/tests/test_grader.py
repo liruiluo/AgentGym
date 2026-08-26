@@ -47,12 +47,22 @@ class FakeSandbox:
         self.outputs = list(outputs)
         self.refresh_count = 0
         self.test_contents: list[str] = []
+        self.output_limits: list[tuple[int | None, int | None]] = []
 
     def refresh_after_host_mutation(self):
         self.refresh_count += 1
         return SimpleNamespace(changed_paths=("tests/test_fix.py",))
 
-    def run(self, *, command: str, workdir: str, timeout_ms: int):
+    def run(
+        self,
+        *,
+        command: str,
+        workdir: str,
+        timeout_ms: int,
+        stdout_limit_bytes: int | None = None,
+        stderr_limit_bytes: int | None = None,
+    ):
+        self.output_limits.append((stdout_limit_bytes, stderr_limit_bytes))
         self.test_contents.append(
             (self.policy_root / "tests/test_fix.py").read_text(encoding="utf-8")
         )
@@ -74,6 +84,28 @@ class FakeSandbox:
             model_uid=1000,
         )
         return SimpleNamespace(result=result)
+
+    def run_trusted(self, **kwargs):
+        return self.run(**kwargs)
+
+
+class PolicyCappedFakeSandbox(FakeSandbox):
+    """Expose a distinct trusted path while rejecting an oversized policy call."""
+
+    def __init__(self, policy_root: Path, outputs: list[dict]) -> None:
+        super().__init__(policy_root, outputs)
+        self.policy_timeouts: list[int] = []
+        self.trusted_timeouts: list[int] = []
+
+    def run(self, *, timeout_ms: int, **kwargs):
+        self.policy_timeouts.append(timeout_ms)
+        if timeout_ms > 120_000:
+            raise AssertionError("trusted grading used the policy command path")
+        return super().run(timeout_ms=timeout_ms, **kwargs)
+
+    def run_trusted(self, *, timeout_ms: int, **kwargs):
+        self.trusted_timeouts.append(timeout_ms)
+        return super().run(timeout_ms=timeout_ms, **kwargs)
 
 
 class HiddenGraderTests(unittest.TestCase):
@@ -174,6 +206,42 @@ class HiddenGraderTests(unittest.TestCase):
             result.restored_test_paths,
             ("tests/test_fix.py", "tests/test_fix.py"),
         )
+        self.assertEqual(
+            sandbox.output_limits,
+            [(4 * 1024 * 1024, 4 * 1024 * 1024)] * 2,
+        )
+
+    def test_unrelated_failures_do_not_override_declared_test_statuses(self) -> None:
+        sandbox = FakeSandbox(
+            self.policy,
+            [
+                {
+                    "stdout": (
+                        "tests/test_unrelated.py::test_other FAILED\n"
+                        "tests/test_fix.py::test_fix PASSED\n"
+                    ),
+                    "exit_code": 1,
+                },
+                {
+                    "stdout": (
+                        "tests/test_unrelated.py::test_other FAILED\n"
+                        "tests/test_fix.py::test_fix PASSED\n"
+                        "tests/test_keep.py::test_keep PASSED\n"
+                    ),
+                    "exit_code": 1,
+                },
+            ],
+        )
+        result = self.grader.grade(
+            instance=self.instance,
+            profile=self.profile,
+            workspace=self.workspace,
+            sandbox=sandbox,
+        )
+        self.assertEqual(result.reward, 1.0)
+        self.assertEqual(result.resolution_status, "FULL")
+        self.assertEqual(result.f2p_run.status_source, "profile_log_parser")
+        self.assertEqual(result.full_run.status_source, "profile_log_parser")
 
     def test_truncated_exit_zero_uses_declared_test_receipt(self) -> None:
         sandbox = FakeSandbox(
@@ -210,10 +278,10 @@ class HiddenGraderTests(unittest.TestCase):
             },
         )
 
-    def test_truncated_or_nonzero_full_run_fails_closed(self) -> None:
+    def test_incomplete_full_run_fails_closed(self) -> None:
         for override in (
-            {"exit_code": 1},
             {"stdout_truncated": True, "exit_code": 1},
+            {"timed_out": True, "exit_code": 124},
         ):
             with self.subTest(override=override):
                 (self.policy / "tests/test_fix.py").write_text(
@@ -240,6 +308,31 @@ class HiddenGraderTests(unittest.TestCase):
                     sandbox=sandbox,
                 )
                 self.assertEqual(result.reward, 0.0)
+
+    def test_grader_uses_separate_trusted_timeout_above_policy_cap(self) -> None:
+        grader = SwesmithHiddenGrader(timeout_ms=600_000)
+        sandbox = PolicyCappedFakeSandbox(
+            self.policy,
+            [
+                {"stdout": "tests/test_fix.py::test_fix PASSED\n"},
+                {
+                    "stdout": (
+                        "tests/test_fix.py::test_fix PASSED\n"
+                        "tests/test_keep.py::test_keep PASSED\n"
+                    )
+                },
+            ],
+        )
+        result = grader.grade(
+            instance=self.instance,
+            profile=self.profile,
+            workspace=self.workspace,
+            sandbox=sandbox,
+        )
+        self.assertEqual(result.reward, 1.0)
+        self.assertIsNone(result.error)
+        self.assertEqual(sandbox.policy_timeouts, [])
+        self.assertEqual(sandbox.trusted_timeouts, [600_000, 600_000])
 
 
 if __name__ == "__main__":

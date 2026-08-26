@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
@@ -12,6 +13,7 @@ from unittest import mock
 from agentenv_swesmith.workspace import (
     SwesmithWorkspaceError,
     SwesmithWorkspaceMaterializer,
+    _remove_episode_tree,
     restore_hidden_tests,
 )
 
@@ -115,6 +117,43 @@ class SwesmithWorkspaceTests(unittest.TestCase):
                     )
                 self.assertEqual(list(self.episodes.iterdir()), [])
 
+    def test_materializer_accepts_safe_parent_segments_in_git_symlinks(self) -> None:
+        self.write("docs/creating-a-site.rst", "safe target\n")
+        link = self.mirror / "docs/sphinx/creating-a-site.rst"
+        link.parent.mkdir(parents=True)
+        link.symlink_to("../creating-a-site.rst")
+        self.git("add", ".")
+        self.git("commit", "-q", "-m", "add safe relative symlink")
+        instance_id = "owner__repo.12345678.safe_symlink__opaque"
+        self.git("branch", instance_id)
+
+        workspace = self.materializer.materialize(
+            {"instance_id": instance_id, "repo": self.instance["repo"]},
+            test_paths=["tests/test_keep.py"],
+        )
+        try:
+            exported = workspace.policy_root / "docs/sphinx/creating-a-site.rst"
+            self.assertTrue(exported.is_symlink())
+            self.assertEqual(os.readlink(exported), "../creating-a-site.rst")
+            self.assertEqual(exported.read_text(encoding="utf-8"), "safe target\n")
+        finally:
+            self.materializer.close(workspace)
+
+    def test_materializer_rejects_git_symlink_that_escapes_workspace(self) -> None:
+        link = self.mirror / "escape"
+        link.symlink_to("../outside")
+        self.git("add", ".")
+        self.git("commit", "-q", "-m", "add escaping symlink")
+        instance_id = "owner__repo.12345678.escape_symlink__opaque"
+        self.git("branch", instance_id)
+
+        with self.assertRaisesRegex(SwesmithWorkspaceError, "symlink target"):
+            self.materializer.materialize(
+                {"instance_id": instance_id, "repo": self.instance["repo"]},
+                test_paths=["tests/test_fix.py", "tests/test_keep.py"],
+            )
+        self.assertEqual(list(self.episodes.iterdir()), [])
+
     def test_materializer_scopes_every_git_call_to_the_exact_mirror(self) -> None:
         real_git = shutil.which("git")
         self.assertIsNotNone(real_git)
@@ -167,6 +206,47 @@ os.execv(real_git, [real_git, *sys.argv[1:]])
             all(arguments[:4] == expected_prefix for arguments in invocations),
             invocations,
         )
+
+
+    def test_close_retries_transient_nonempty_directory_race(self) -> None:
+        workspace = self.materializer.materialize(
+            self.instance,
+            test_paths=["tests/test_fix.py", "tests/test_keep.py"],
+        )
+        actual_rmtree = shutil.rmtree
+        attempts = 0
+
+        def transient_rmtree(path: Path, *args: object, **kwargs: object) -> None:
+            nonlocal attempts
+            if Path(path).resolve() == workspace.episode_root.resolve():
+                attempts += 1
+                if attempts == 1:
+                    raise OSError(errno.ENOTEMPTY, "Directory not empty", path)
+            actual_rmtree(path, *args, **kwargs)
+
+        with mock.patch(
+            "agentenv_swesmith.workspace.shutil.rmtree",
+            side_effect=transient_rmtree,
+        ):
+            self.materializer.close(workspace)
+
+        self.assertEqual(attempts, 2)
+        self.assertFalse(workspace.episode_root.exists())
+
+    def test_persistent_episode_cleanup_failure_stays_fail_closed(self) -> None:
+        path = Path(tempfile.mkdtemp(prefix="swesmith-episode-cleanup-test-"))
+        (path / ".nfs-placeholder").write_text("held", encoding="ascii")
+        try:
+            with mock.patch(
+                "agentenv_swesmith.workspace.shutil.rmtree",
+                side_effect=OSError(errno.ENOTEMPTY, "Directory not empty", path),
+            ), self.assertRaisesRegex(
+                SwesmithWorkspaceError,
+                r"stayed busy.*\.nfs-placeholder",
+            ):
+                _remove_episode_tree(path, timeout_seconds=0.0)
+        finally:
+            shutil.rmtree(path)
 
 
 if __name__ == "__main__":
