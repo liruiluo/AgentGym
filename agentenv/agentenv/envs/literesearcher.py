@@ -9,11 +9,26 @@ from agentenv.controller import BaseEnvClient, BaseTask
 from agentenv.controller.types import (
     CONTEXT_OPERATION_REPLACE,
     ConversationMessage,
-    POLICY_CONTINUATION_MARKER,
     PolicyContextPressure,
     StepOutput,
     build_task_neutral_context_transition,
     build_task_neutral_transition_info,
+)
+from .filesystem_checkpoint import (
+    FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER,
+    FILESYSTEM_CHECKPOINT_MAX_BYTES,
+    FILESYSTEM_CHECKPOINT_PATH,
+    FILESYSTEM_CHECKPOINT_REQUEST,
+    checkpoint_retry_trigger_tokens,
+    build_filesystem_checkpoint_read_retry_observation,
+    build_filesystem_checkpoint_retry_observation,
+    build_post_checkpoint_context,
+    filesystem_checkpoint_failure_reason,
+    filesystem_checkpoint_framing_sha256,
+    filesystem_checkpoint_read_failure_reason,
+    filesystem_checkpoint_read_observed,
+    filesystem_checkpoint_write_succeeded,
+    normalize_filesystem_checkpoint_receipt,
 )
 
 
@@ -27,12 +42,15 @@ LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE = 12_288
 
 
 LITERESEARCHER_CONTEXT_COMPACTION_REQUEST = (
-    "The research conversation is nearing its context limit. Write the "
-    "continuation state you want to retain after the earlier interaction is "
-    "removed. Your response will be preserved verbatim and will not call a "
-    "research or workspace tool. Include the unresolved question, useful "
-    "evidence, and paths to any workspace notes you want to consult later."
+    FILESYSTEM_CHECKPOINT_REQUEST
+    + " For this research task, preserve the unresolved question, decisive "
+    "evidence with source URLs, conflicts or uncertainty, and the next search "
+    "or visit action."
 )
+LITERESEARCHER_POLICY_CONTINUATION_MARKER = (
+    FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER
+)
+
 
 
 LITERESEARCHER_SYSTEM_PROMPT = """# Tools
@@ -80,6 +98,7 @@ Required parameters must be present. Emit no text after a function call.
 You are a meticulous deep-research agent working on one continuous question. Research before answering. On the first turn, call search even if the answer seems obvious. Copy each visit URL exactly from a search result. A visit returns one bounded page; follow next_page with the same URL and goal when needed.
 
 An empty episode-private workspace persists across context compaction. Use files when evidence or a continuation plan should survive a long interaction.
+At an explicit context-boundary request, use one normal shell_command or apply_patch action to overwrite `.agent_memory/CONTINUATION.md`; only a verified non-empty write allows old messages to be removed. After replacement, read that file through a normal action before continuing. Other workspace files remain available for voluntary notes at any time.
 
 Valid shell action:
 shell_command {"command":"cat .agent_memory/research.md","workdir":".","timeout_ms":10000}
@@ -129,7 +148,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
             raise RuntimeError("LiteResearcher endpoint reports the wrong domain")
         if (
             metadata.get("compaction_contract")
-            != "task_neutral_client_replace_messages_v1"
+            != "policy_filesystem_checkpoint_then_client_replace_v2"
         ):
             raise RuntimeError("LiteResearcher endpoint reports the wrong compaction contract")
         task_count = int(metadata["task_count"])
@@ -152,6 +171,8 @@ class LiteResearcherEnvClient(BaseEnvClient):
         self._current_policy_context: list[dict[str, str]] | None = None
         self._policy_context_bound = False
         self._selected_policy_control: str | None = None
+        self._checkpoint_retry_pending = False
+        self._pending_checkpoint_read: dict[str, Any] | None = None
 
     def __len__(self) -> int:
         return self.data_len
@@ -197,7 +218,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
         self._current_policy_context = normalized
 
     def policy_turn_candidate(self) -> str | None:
-        if not self._policy_context_bound:
+        if not self._policy_context_bound or self._pending_checkpoint_read is not None:
             return None
         return LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
 
@@ -206,6 +227,8 @@ class LiteResearcherEnvClient(BaseEnvClient):
     ) -> str | None:
         self._selected_policy_control = None
         if not self._policy_context_bound:
+            return None
+        if self._pending_checkpoint_read is not None:
             return None
         if pressure is None:
             raise RuntimeError(
@@ -233,7 +256,13 @@ class LiteResearcherEnvClient(BaseEnvClient):
         # normalization may make the rendered control candidate shorter than the
         # ordinary action prompt, so candidate-minus-action is not a valid size
         # or safety invariant.
-        if pressure.projected_next_prompt_tokens_without_control < capacity:
+        if (
+            not self._checkpoint_retry_pending
+            and checkpoint_retry_trigger_tokens(
+                pressure, control_request=LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
+            )
+            < capacity
+        ):
             return None
         self._selected_policy_control = "context_compaction"
         return LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
@@ -247,6 +276,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
         native_before = self._native_call_count
         policy_before = self._policy_step_count
         context_before = self._context_epoch
+        checkpoint_read_pending_before = self._pending_checkpoint_read
         response = self._request(
             "POST",
             "step",
@@ -259,8 +289,104 @@ class LiteResearcherEnvClient(BaseEnvClient):
         action_submission = response_info.get("action_submission")
         if not isinstance(action_submission, Mapping):
             action_submission = {"raw_policy_output": action}
+        server_wrapper = (
+            response_info.get("wrapper_evidence", {})
+            if isinstance(response_info, Mapping)
+            else {}
+        )
+        wrapper_evidence: dict[str, Any] = {
+            "event": "native_action",
+            "server_wrapper_evidence": (
+                dict(server_wrapper) if isinstance(server_wrapper, Mapping) else {}
+            ),
+        }
+        read_receipt = None
+        if isinstance(server_wrapper, Mapping):
+            read_receipt = server_wrapper.get("filesystem_checkpoint_read")
+            if filesystem_checkpoint_read_observed(read_receipt):
+                wrapper_evidence.update(
+                    {
+                        "memory_event": "read",
+                        "document_read_observed": True,
+                        "filesystem_checkpoint_read": dict(read_receipt),
+                    }
+                )
+            else:
+                changed_paths = server_wrapper.get("workspace_changed_paths")
+                noncheckpoint_paths = (
+                    sorted(
+                        {
+                            str(path)
+                            for path in changed_paths
+                            if isinstance(path, str)
+                            and path
+                            and path != FILESYSTEM_CHECKPOINT_PATH
+                        }
+                    )
+                    if isinstance(changed_paths, Sequence)
+                    and not isinstance(changed_paths, (str, bytes))
+                    else []
+                )
+                if (
+                    server_wrapper.get("workspace_action_completed") is True
+                    and noncheckpoint_paths
+                ):
+                    wrapper_evidence.update(
+                        {
+                            "memory_event": "modify",
+                            "workspace_change_observed": True,
+                            "workspace_changed_paths": noncheckpoint_paths,
+                        }
+                    )
+                elif (
+                    server_wrapper.get("workspace_action_completed") is True
+                    and str(server_wrapper.get("workspace_op", "")).upper()
+                    == "SHELL_COMMAND"
+                ):
+                    wrapper_evidence.update(
+                        {
+                            "memory_event": "execute",
+                            "outcome": "success",
+                            "execution_completed_observed": True,
+                        }
+                    )
+        read_satisfied = False
+        read_failure_reason = None
+        if checkpoint_read_pending_before is not None:
+            read_failure_reason = filesystem_checkpoint_read_failure_reason(
+                read_receipt,
+                checkpoint_read_pending_before,
+            )
+            read_satisfied = read_failure_reason is None
+            wrapper_evidence.update(
+                {
+                    "checkpoint_read_required": True,
+                    "checkpoint_read_satisfied": read_satisfied,
+                    "checkpoint_read_retry_pending": bool(
+                        not read_satisfied and not bool(response["done"])
+                    ),
+                    "checkpoint_read_failure_reason": read_failure_reason,
+                    "checkpoint_read_expected_size_bytes": (
+                        checkpoint_read_pending_before.get("size_bytes")
+                    ),
+                    "checkpoint_read_expected_sha256": (
+                        checkpoint_read_pending_before.get("sha256")
+                    ),
+                }
+            )
+            if read_satisfied or bool(response["done"]):
+                self._pending_checkpoint_read = None
+        policy_state = (
+            build_filesystem_checkpoint_read_retry_observation(
+                read_failure_reason or "checkpoint_read_not_observed"
+            )
+            if checkpoint_read_pending_before is not None
+            and not read_satisfied
+            and not bool(response["done"])
+            else str(response["observation"])
+        )
         return StepOutput(
-            state=str(response["observation"]),
+            state=policy_state,
             reward=float(response["reward"]),
             done=bool(response["done"]),
             info=build_task_neutral_transition_info(
@@ -276,61 +402,108 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 session_epoch_after=0,
                 policy_step_before=policy_before,
                 policy_step_after=self._policy_step_count,
-                wrapper_evidence={
-                    "event": "native_action",
-                    "server_wrapper_evidence": response_info.get(
-                        "wrapper_evidence", {}
-                    ),
-                },
+                wrapper_evidence=wrapper_evidence,
             ),
         )
 
     def _complete_context_compaction(self, action: str) -> StepOutput:
-        framing = self._immutable_policy_context
-        if framing is None:
-            raise RuntimeError("LiteResearcher compaction lost its task framing")
-        native_before = self._native_call_count
-        policy_before = self._policy_step_count
-        context_before = self._context_epoch
-        replacement = deepcopy(framing)
-        replacement.extend(
-            [
-                {"role": "assistant", "content": str(action)},
-                {"role": "user", "content": POLICY_CONTINUATION_MARKER},
-            ]
-        )
-        self._policy_step_count += 1
-        self._context_epoch += 1
+        native_output = self._step_native_policy_action(action)
         self._selected_policy_control = None
+        info = dict(native_output.info)
+        env_info = info.get("env_info", {})
+        server_wrapper = (
+            env_info.get("wrapper_evidence", {})
+            if isinstance(env_info, Mapping)
+            else {}
+        )
+        receipt_value = (
+            server_wrapper.get("filesystem_checkpoint")
+            if isinstance(server_wrapper, Mapping)
+            else None
+        )
+        checkpoint_receipt = normalize_filesystem_checkpoint_receipt(receipt_value)
+        persisted = filesystem_checkpoint_write_succeeded(checkpoint_receipt)
+        checkpoint_failure_reason = filesystem_checkpoint_failure_reason(
+            checkpoint_receipt
+        )
+        self._checkpoint_retry_pending = bool(not persisted and not native_output.done)
+        policy_observation = (
+            build_filesystem_checkpoint_retry_observation(
+                checkpoint_failure_reason or "unknown_checkpoint_failure"
+            )
+            if self._checkpoint_retry_pending
+            else native_output.state
+        )
+
+        context_transition = None
+        checkpoint_framing_sha256 = None
+        if persisted and not native_output.done:
+            framing = self._immutable_policy_context
+            if framing is None:
+                raise RuntimeError("LiteResearcher compaction lost its task framing")
+            checkpoint_framing_sha256 = filesystem_checkpoint_framing_sha256(
+                framing
+            )
+            replacement = build_post_checkpoint_context(
+                framing, checkpoint_receipt
+            )
+            self._context_epoch += 1
+            self._pending_checkpoint_read = dict(checkpoint_receipt)
+            context_transition = build_task_neutral_context_transition(
+                CONTEXT_OPERATION_REPLACE,
+                messages=replacement,
+            )
+        elif native_output.done:
+            self._pending_checkpoint_read = None
+
         return StepOutput(
-            state=str(self.info.get("observation", "")),
-            reward=0.0,
-            done=False,
+            state=policy_observation,
+            reward=native_output.reward,
+            done=native_output.done,
             info=build_task_neutral_transition_info(
-                env_info=self.info.get("info", {}),
-                action_submission={
-                    "raw_policy_output": str(action),
-                    "submitted_action": None,
-                    "parser_status": "policy_context_compaction",
-                },
-                native_step_before=native_before,
-                native_step_after=self._native_call_count,
-                native_call_count_before=native_before,
-                native_call_count_after=self._native_call_count,
-                context_epoch_before=context_before,
+                env_info=env_info if isinstance(env_info, Mapping) else {},
+                action_submission=info.get(
+                    "action_submission", {"raw_policy_output": action}
+                ),
+                native_step_before=info.get("native_step_before"),
+                native_step_after=info.get("native_step_after"),
+                native_call_count_before=info.get("native_call_count_before"),
+                native_call_count_after=info.get("native_call_count_after"),
+                context_epoch_before=info.get("context_epoch_before"),
                 context_epoch_after=self._context_epoch,
                 session_epoch_before=0,
                 session_epoch_after=0,
-                policy_step_before=policy_before,
-                policy_step_after=self._policy_step_count,
-                context_transition=build_task_neutral_context_transition(
-                    CONTEXT_OPERATION_REPLACE,
-                    messages=replacement,
-                ),
+                policy_step_before=info.get("policy_step_before"),
+                policy_step_after=info.get("policy_step_after"),
+                context_transition=context_transition,
                 wrapper_evidence={
                     "event": "context_compaction",
                     "workspace_continuity_id": self.env_id,
-                    "native_environment_call_count": 0,
+                    "native_environment_call_count": 1,
+                    "continuation_path": FILESYSTEM_CHECKPOINT_PATH,
+                    "continuation_max_bytes": FILESYSTEM_CHECKPOINT_MAX_BYTES,
+                    "continuation_persisted": persisted,
+                    "checkpoint_receipt": checkpoint_receipt,
+                    "checkpoint_failure_reason": checkpoint_failure_reason,
+                    "context_replaced": bool(persisted and not native_output.done),
+                    "retry_pending": self._checkpoint_retry_pending,
+                    "checkpoint_retry_observation_bounded": (
+                        self._checkpoint_retry_pending
+                    ),
+                    "preserved_policy_output": persisted,
+                    "preserved_native_observation": persisted,
+                    "checkpoint_action_in_successor_context": False,
+                    "checkpoint_observation_in_successor_context": False,
+                    "checkpoint_content_in_successor_context": False,
+                    "checkpoint_framing_sha256": checkpoint_framing_sha256,
+                    "checkpoint_read_required_after": bool(
+                        persisted and not native_output.done
+                    ),
+                    "server_wrapper_evidence": (
+                        dict(server_wrapper)
+                        if isinstance(server_wrapper, Mapping)
+                        else {}
+                    ),
                 },
             ),
         )

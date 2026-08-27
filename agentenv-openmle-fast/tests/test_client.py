@@ -45,7 +45,14 @@ def _load_client_module():
             "session_epoch_after": kwargs.get("session_epoch_after"),
             "policy_step_before": kwargs.get("policy_step_before"),
             "policy_step_after": kwargs.get("policy_step_after"),
-            "context_transition": kwargs.get("context_transition"),
+            "context_transition": (
+                kwargs.get("context_transition")
+                or {
+                    "schema": "agentmemory_task_neutral_context_transition_v1",
+                    "operation": "append",
+                    "messages": [],
+                }
+            ),
             "wrapper_evidence": kwargs.get("wrapper_evidence"),
         }
 
@@ -94,24 +101,37 @@ def _load_client_module():
     controller_types.StepOutput = StepOutput
     controller_types.build_task_neutral_context_transition = context_transition
     controller_types.build_task_neutral_transition_info = transition_info
-    agentenv = types.ModuleType("agentenv")
-    agentenv.__path__ = []
-    sys.modules["agentenv"] = agentenv
-    sys.modules["agentenv.controller"] = controller
-    sys.modules["agentenv.controller.types"] = controller_types
-    path = (
+    envs_dir = (
         Path(__file__).resolve().parents[2]
         / "agentenv"
         / "agentenv"
         / "envs"
-        / "openmle_fast.py"
     )
+    agentenv = types.ModuleType("agentenv")
+    agentenv.__path__ = [str(envs_dir.parent)]
+    envs = types.ModuleType("agentenv.envs")
+    envs.__path__ = [str(envs_dir)]
+    sys.modules["agentenv"] = agentenv
+    sys.modules["agentenv.envs"] = envs
+    sys.modules["agentenv.controller"] = controller
+    sys.modules["agentenv.controller.types"] = controller_types
+
+    helper_name = "agentenv.envs.filesystem_checkpoint"
+    helper_spec = importlib.util.spec_from_file_location(
+        helper_name, envs_dir / "filesystem_checkpoint.py"
+    )
+    assert helper_spec is not None and helper_spec.loader is not None
+    helper = importlib.util.module_from_spec(helper_spec)
+    sys.modules[helper_name] = helper
+    helper_spec.loader.exec_module(helper)
+
+    module_name = "agentenv.envs.openmle_fast"
     spec = importlib.util.spec_from_file_location(
-        "openmle_fast_client_under_test", path
+        module_name, envs_dir / "openmle_fast.py"
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -125,6 +145,29 @@ OPENMLE_CONTEXT_COMPACTION_REQUEST = (
 OPENMLE_POLICY_CONTINUATION_MARKER = (
     _CLIENT_MODULE.OPENMLE_POLICY_CONTINUATION_MARKER
 )
+
+
+def checkpoint_receipt(
+    *,
+    action_kind: str = "apply_patch",
+    action_completed: bool = True,
+    changed: bool = True,
+    exists: bool = True,
+    regular_file: bool = True,
+    size_bytes: int = 31,
+    sha256: str = "f" * 64,
+) -> dict:
+    return {
+        "schema": "agentmemory_filesystem_checkpoint_receipt_v1",
+        "path": ".agent_memory/CONTINUATION.md",
+        "action_kind": action_kind,
+        "action_completed": action_completed,
+        "changed": changed,
+        "exists": exists,
+        "regular_file": regular_file,
+        "size_bytes": size_bytes,
+        "sha256": sha256,
+    }
 
 
 class _Response:
@@ -171,7 +214,7 @@ class OpenMLEFastClientTest(unittest.TestCase):
         self.assertIn("print one explicit measured metric line", prompt)
         self.assertIn("use only public labelled training data", prompt)
         self.assertIn("deterministic local validation split", prompt)
-        self.assertIn(".agent_memory/OPENMLE_CONTINUATION.md", prompt)
+        self.assertIn(".agent_memory/CONTINUATION.md", prompt)
         self.assertIn("after a continuation marker, read it", prompt)
         self.assertIn("On the following turn, run `python train.py`", prompt)
         self.assertIn("Do not write the continuation note before the first measured validation", prompt)
@@ -200,17 +243,17 @@ class OpenMLEFastClientTest(unittest.TestCase):
             None,
         )
         self.assertNotIn("but you may instead", request)
-        self.assertIn("use this action to create or update", request)
+        self.assertIn("exactly one normal executable shell_command or apply_patch", request)
         self.assertIn("not measured yet", request)
         self.assertIn(
-            "make `next_action` one concrete `train.py` code improvement", request
+            "one concrete `next_action` that changes `train.py`", request
         )
         self.assertIsInstance(marker, str)
         self.assertIn("Earlier conversation was removed", marker)
-        self.assertIn("read .agent_memory/OPENMLE_CONTINUATION.md exactly once", marker)
+        self.assertIn("read that file", marker)
         self.assertIn("immediately execute its `next_action`", marker)
         self.assertIn("modify `train.py` once before running it again", marker)
-        self.assertIn("the next action is `submit`", marker)
+        self.assertIn("submit now", marker)
         self.assertIn("do not start a third iteration", marker)
         self.assertIn("Do not inspect the task or schema again", marker)
         self.assertIn("only one action remains", marker)
@@ -513,9 +556,10 @@ class OpenMLEFastClientTest(unittest.TestCase):
         self.assertEqual(recovered.reward, 0.0)
         self.assertFalse(recovered.done)
 
-    def test_context_pressure_executes_one_real_action_before_replacement(self) -> None:
+    def test_context_pressure_executes_checkpoint_without_injecting_its_body(self) -> None:
         calls = []
         metadata = self.metadata()
+        receipt = checkpoint_receipt(size_bytes=31, sha256="e" * 64)
 
         def request(method, url, **kwargs):
             calls.append((method, url, kwargs))
@@ -533,9 +577,8 @@ class OpenMLEFastClientTest(unittest.TestCase):
                     action_kind="apply_patch",
                 )
                 response["info"]["execution"] = {
-                    "changed_paths": [
-                        ".agent_memory/OPENMLE_CONTINUATION.md"
-                    ],
+                    "changed_paths": [".agent_memory/CONTINUATION.md"],
+                    "filesystem_checkpoint": receipt,
                 }
                 return _Response(response)
             raise AssertionError(path)
@@ -562,59 +605,32 @@ class OpenMLEFastClientTest(unittest.TestCase):
                     _CLIENT_MODULE.PolicyContextPressure(
                         action_prompt_tokens=50,
                         candidate_prompt_tokens=80,
-                        max_prompt_tokens=300,
-                        max_model_tokens=332,
+                        max_prompt_tokens=10_000,
+                        max_model_tokens=10_032,
                         max_response_tokens=32,
-                        max_observation_tokens=100,
+                        max_observation_tokens=20,
                         action_observation_envelope_tokens=4,
                     )
                 )
             )
             selected = client.prepare_policy_turn(
                 _CLIENT_MODULE.PolicyContextPressure(
-                    action_prompt_tokens=120,
-                    candidate_prompt_tokens=130,
-                    max_prompt_tokens=300,
-                    max_model_tokens=332,
+                    action_prompt_tokens=8_000,
+                    candidate_prompt_tokens=8_030,
+                    max_prompt_tokens=10_000,
+                    max_model_tokens=10_032,
                     max_response_tokens=32,
                     max_observation_tokens=150,
                     action_observation_envelope_tokens=4,
                 )
             )
             self.assertEqual(selected, candidate)
-            selected_after_history_normalization = client.prepare_policy_turn(
-                _CLIENT_MODULE.PolicyContextPressure(
-                    action_prompt_tokens=140,
-                    candidate_prompt_tokens=130,
-                    max_prompt_tokens=300,
-                    max_model_tokens=332,
-                    max_response_tokens=32,
-                    max_observation_tokens=150,
-                    action_observation_envelope_tokens=4,
-                )
-            )
-            self.assertEqual(selected_after_history_normalization, candidate)
-            selected_when_preserved_runtime_would_overflow = (
-                client.prepare_policy_turn(
-                    _CLIENT_MODULE.PolicyContextPressure(
-                        action_prompt_tokens=180,
-                        candidate_prompt_tokens=100,
-                        max_prompt_tokens=300,
-                        max_model_tokens=332,
-                        max_response_tokens=32,
-                        max_observation_tokens=100,
-                        action_observation_envelope_tokens=4,
-                    )
-                )
-            )
-            self.assertEqual(
-                selected_when_preserved_runtime_would_overflow, candidate
-            )
 
-            action = """apply_patch
+            secret_body = "next inspect train.csv"
+            action = f"""apply_patch
 *** Begin Patch
-*** Add File: .agent_memory/OPENMLE_CONTINUATION.md
-+inspect train.csv; next fit baseline
+*** Add File: .agent_memory/CONTINUATION.md
++{secret_body}
 *** End Patch"""
             output = client.step(action)
 
@@ -633,36 +649,26 @@ class OpenMLEFastClientTest(unittest.TestCase):
             ),
             (0, 1, 0, 1, 0, 1),
         )
-        transition = output.info["context_transition"]
-        self.assertEqual(transition["operation"], "replace_messages")
-        self.assertEqual(transition["messages"][:-2], initial)
-        self.assertEqual(
-            transition["messages"][-2],
-            {"role": "assistant", "content": action},
-        )
-        self.assertEqual(
-            transition["messages"][-1]["content"],
-            "action_status=completed\n\n"
-            + OPENMLE_POLICY_CONTINUATION_MARKER,
-        )
-        self.assertEqual(
-            output.info["wrapper_evidence"],
-            {
-                "event": "context_compaction",
-                "workspace_continuity_id": 7,
-                "action_contract": _CLIENT_MODULE._EXPECTED_BOUNDARIES["actions"],
-                "native_action_kind": "apply_patch",
-                "native_action_status": "completed",
-                "continuation_path": ".agent_memory/OPENMLE_CONTINUATION.md",
-                "continuation_persisted": True,
-                "preserved_policy_output": True,
-                "preserved_native_observation": True,
-            },
-        )
+        replacement = output.info["context_transition"]["messages"]
+        self.assertEqual(len(replacement), len(initial))
+        self.assertEqual(replacement[0], initial[0])
+        self.assertTrue(replacement[-1]["content"].startswith(initial[-1]["content"]))
+        self.assertIn(".agent_memory/CONTINUATION.md", replacement[-1]["content"])
+        self.assertIn(receipt["sha256"], replacement[-1]["content"])
+        self.assertNotIn(secret_body, str(replacement))
+        self.assertNotIn(action, str(replacement))
+        self.assertNotIn("action_status=completed", str(replacement))
+        self.assertFalse(any(message["role"] == "assistant" for message in replacement))
+        evidence = output.info["wrapper_evidence"]
+        self.assertEqual(evidence["event"], "context_compaction")
+        self.assertTrue(evidence["continuation_persisted"])
+        self.assertTrue(evidence["context_replaced"])
+        self.assertFalse(evidence["retry_pending"])
+        self.assertEqual(evidence["checkpoint_receipt"], receipt)
+        self.assertFalse(evidence["checkpoint_action_in_successor_context"])
+        self.assertFalse(evidence["checkpoint_content_in_successor_context"])
 
-    def test_context_pressure_preserves_malformed_action_and_native_result(
-        self,
-    ) -> None:
+    def test_failed_checkpoint_write_keeps_context_and_forces_retry(self) -> None:
         metadata = self.metadata()
 
         def request(method, url, **kwargs):
@@ -681,7 +687,7 @@ class OpenMLEFastClientTest(unittest.TestCase):
                     action_kind="parser_error",
                 )
                 response["info"]["action_status"] = "parser_error"
-                response["info"]["execution"] = {"changed_paths": []}
+                response["info"]["execution"] = None
                 return _Response(response)
             raise AssertionError(path)
 
@@ -706,25 +712,11 @@ class OpenMLEFastClientTest(unittest.TestCase):
                     action_observation_envelope_tokens=4,
                 )
             )
-            self.assertEqual(
-                selected,
-                _CLIENT_MODULE.OPENMLE_CONTEXT_COMPACTION_REQUEST,
-            )
+            self.assertEqual(selected, OPENMLE_CONTEXT_COMPACTION_REQUEST)
             malformed = 'apply_patch {"patch":"unfinished state"}'
             output = client.step(malformed)
 
-        transition = output.info["context_transition"]
-        self.assertEqual(transition["operation"], "replace_messages")
-        self.assertEqual(transition["messages"][:-2], initial)
-        self.assertEqual(
-            transition["messages"][-2],
-            {"role": "assistant", "content": malformed},
-        )
-        self.assertEqual(
-            transition["messages"][-1]["content"],
-            "parser_error: expected one exact action\n\n"
-            + OPENMLE_POLICY_CONTINUATION_MARKER,
-        )
+        self.assertEqual(output.info["context_transition"]["operation"], "append")
         self.assertEqual(
             (
                 output.info["native_call_count_before"],
@@ -734,63 +726,52 @@ class OpenMLEFastClientTest(unittest.TestCase):
                 output.info["context_epoch_before"],
                 output.info["context_epoch_after"],
             ),
-            (0, 1, 0, 1, 0, 1),
+            (0, 1, 0, 1, 0, 0),
         )
-        self.assertEqual(
-            output.info["wrapper_evidence"],
-            {
-                "event": "context_compaction",
-                "workspace_continuity_id": 7,
-                "action_contract": _CLIENT_MODULE._EXPECTED_BOUNDARIES["actions"],
-                "native_action_kind": "parser_error",
-                "native_action_status": "parser_error",
-                "continuation_path": ".agent_memory/OPENMLE_CONTINUATION.md",
-                "continuation_persisted": False,
-                "preserved_policy_output": True,
-                "preserved_native_observation": True,
-            },
+        evidence = output.info["wrapper_evidence"]
+        self.assertFalse(evidence["continuation_persisted"])
+        self.assertFalse(evidence["context_replaced"])
+        self.assertTrue(evidence["retry_pending"])
+        self.assertEqual(evidence["checkpoint_failure_reason"], "missing_receipt")
+        self.assertFalse(evidence["checkpoint_action_in_successor_context"])
+        self.assertFalse(evidence["checkpoint_content_in_successor_context"])
+
+        # Retry is selected even when ordinary pressure is low.
+        retry = client.prepare_policy_turn(
+            _CLIENT_MODULE.PolicyContextPressure(
+                action_prompt_tokens=20,
+                candidate_prompt_tokens=40,
+                max_prompt_tokens=300,
+                max_model_tokens=332,
+                max_response_tokens=32,
+                max_observation_tokens=20,
+                action_observation_envelope_tokens=4,
+            )
         )
+        self.assertEqual(retry, OPENMLE_CONTEXT_COMPACTION_REQUEST)
 
     def test_continuation_receipt_requires_completed_write_to_exact_path(
         self,
     ) -> None:
         for action_kind in ("apply_patch", "shell_command"):
+            receipt = checkpoint_receipt(action_kind=action_kind)
             self.assertTrue(
                 _CLIENT_MODULE._continuation_write_succeeded(
-                    {
-                        "action_kind": action_kind,
-                        "action_status": "completed",
-                        "execution": {
-                            "changed_paths": [
-                                ".agent_memory/OPENMLE_CONTINUATION.md"
-                            ]
-                        },
-                    }
+                    {"execution": {"filesystem_checkpoint": receipt}}
                 )
             )
         for receipt in (
-            {
-                "action_kind": "parser_error",
-                "action_status": "parser_error",
-                "execution": {"changed_paths": []},
-            },
-            {
-                "action_kind": "shell_command",
-                "action_status": "completed",
-                "execution": {"changed_paths": ["solution.py"]},
-            },
-            {
-                "action_kind": "apply_patch",
-                "action_status": "rejected",
-                "execution": {
-                    "changed_paths": [
-                        ".agent_memory/OPENMLE_CONTINUATION.md"
-                    ]
-                },
-            },
+            None,
+            checkpoint_receipt(action_kind="parser_error"),
+            checkpoint_receipt(changed=False),
+            checkpoint_receipt(action_completed=False),
+            checkpoint_receipt(size_bytes=0),
+            checkpoint_receipt(size_bytes=8193),
         ):
             self.assertFalse(
-                _CLIENT_MODULE._continuation_write_succeeded(receipt)
+                _CLIENT_MODULE._continuation_write_succeeded(
+                    {"execution": {"filesystem_checkpoint": receipt}}
+                )
             )
 
     def test_rejects_manifest_or_data_len_mismatch_before_create(self) -> None:

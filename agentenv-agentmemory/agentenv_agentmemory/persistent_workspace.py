@@ -708,6 +708,7 @@ class PersistentWorkspace:
                         "path": relative,
                         "sha256": hashlib.sha256(data).hexdigest(),
                         "bytes": len(data),
+                        "kind": "file",
                     }
                 )
         if len(files) > self.limits.max_files:

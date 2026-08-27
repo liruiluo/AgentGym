@@ -10,6 +10,7 @@ from .dataset import SwesmithDataset
 from .environment import (
     DEFAULT_MAX_OBSERVATION_BYTES,
     DEFAULT_TRAINING_MAX_POLICY_TURNS,
+    FILESYSTEM_CHECKPOINT_MAX_BYTES,
     SwesmithEpisodeManager,
 )
 from .grader import SwesmithHiddenGrader
@@ -131,14 +132,17 @@ def _limits_from_environment(max_observation_bytes: int | None = None) -> ShellS
         )
     if type(max_observation_bytes) is not int or max_observation_bytes <= 0:
         raise ValueError("max_observation_bytes must be a positive integer")
-    stdout_bytes = _integer("SWESMITH_STDOUT_BYTES", max_observation_bytes // 2)
+    stdout_bytes = _integer(
+        "SWESMITH_STDOUT_BYTES",
+        max(FILESYSTEM_CHECKPOINT_MAX_BYTES, max_observation_bytes // 2),
+    )
     stderr_bytes = _integer(
         "SWESMITH_STDERR_BYTES",
-        max_observation_bytes - stdout_bytes,
+        max_observation_bytes - max_observation_bytes // 2,
     )
-    if stdout_bytes + stderr_bytes > max_observation_bytes:
+    if stdout_bytes < FILESYSTEM_CHECKPOINT_MAX_BYTES:
         raise ValueError(
-            "SWE-smith stdout/stderr caps must fit the combined observation budget"
+            "SWE-smith stdout capture must fit the filesystem checkpoint bound"
         )
     return ShellSandboxLimits(
         workspace_bytes=_integer("SWESMITH_WORKSPACE_BYTES", 2 * gib),

@@ -19,6 +19,22 @@ from agentenv.controller.types import (
     build_task_neutral_context_transition,
     build_task_neutral_transition_info,
 )
+from .filesystem_checkpoint import (
+    FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER,
+    FILESYSTEM_CHECKPOINT_MAX_BYTES,
+    FILESYSTEM_CHECKPOINT_PATH,
+    FILESYSTEM_CHECKPOINT_REQUEST,
+    checkpoint_retry_trigger_tokens,
+    build_filesystem_checkpoint_read_retry_observation,
+    build_filesystem_checkpoint_retry_observation,
+    build_post_checkpoint_context,
+    filesystem_checkpoint_failure_reason,
+    filesystem_checkpoint_framing_sha256,
+    filesystem_checkpoint_read_failure_reason,
+    filesystem_checkpoint_read_observed,
+    filesystem_checkpoint_write_succeeded,
+    normalize_filesystem_checkpoint_receipt,
+)
 
 OPENMLE_FAST_POLICY_SYSTEM_PROMPT = """You are solving one OpenMLE-fast task in an isolated /workspace with exactly 30 total policy actions.
 This interface is a plain-text action protocol, not a native tool-calling API. Start every response at byte zero with exactly one action. Output no reasoning, explanation, Markdown fence, XML/tool_call tag, native tool wrapper, action-number prefix, or bare JSON before or after it. Put reflection that must survive context replacement into a workspace file through a valid action.
@@ -45,7 +61,7 @@ On a later turn, create workspace-relative `train.py` with one shell_command and
 
 Work as an iterative ML engineer. Training-set metrics do not count as local validation. The printed validation value must come from executed code, not a placeholder. Keep each run within the managed 15000 ms runtime; do not use broad sweeps, nested parallelism, or large grid searches. After a traceback or measured validation result, modify `train.py` and run it again. The environment exposes no repeatable private score or free validation oracle.
 
-Do not write the continuation note before the first measured validation unless an explicit context-compaction request requires it. At that request, write `.agent_memory/OPENMLE_CONTINUATION.md` exactly once: `shell_command {"command":"mkdir -p .agent_memory && printf '%s\\n' 'objective: ...' 'measured_validation_or_failure: ...' 'conclusion: ...' 'code_path: train.py' 'next_action: ...' > .agent_memory/OPENMLE_CONTINUATION.md","workdir":".","timeout_ms":20000}`. Fill the fields with the last metric or exact failure and a `next_action` that changes `train.py` before rerunning; `python train.py` alone is not enough. When compaction finishes, after a continuation marker, read it exactly once and perform that edit; do not re-inspect the task or repeat the note without new evidence.
+Do not write the continuation note before the first measured validation unless an explicit context-compaction request requires it. At that request, write `.agent_memory/CONTINUATION.md` exactly once: `shell_command {"command":"mkdir -p .agent_memory && printf '%s\\n' 'objective: ...' 'measured_validation_or_failure: ...' 'conclusion: ...' 'code_path: train.py' 'next_action: ...' > .agent_memory/CONTINUATION.md","workdir":".","timeout_ms":20000}`. Fill the fields with the last metric or exact failure and a `next_action` that changes `train.py` before rerunning; `python train.py` alone is not enough. When compaction finishes, after a continuation marker, read it exactly once and perform that edit; do not re-inspect the task or repeat the note without new evidence.
 
 Reading, editing, running, writing or reading memory, compaction, and submit all consume the same 30-action budget. Every observation reports completed and remaining actions. TASK.md and data are read-only. When a measured local validation and `submission.csv` exist, iterate only while enough actions remain and submit no later than action 27. `submit` grades against the protected private data exactly once; the first submit is terminal, and there is no automatic submission at the action limit; action 30 ends in failure if it is not submit.
 If an observation reports a parser error, respond next with only a corrected action in one of the exact forms above. Never describe the correction.
@@ -54,33 +70,24 @@ OPENMLE_FAST_POLICY_PROMPT_SHA256 = hashlib.sha256(
     OPENMLE_FAST_POLICY_SYSTEM_PROMPT.encode("utf-8")
 ).hexdigest()
 OPENMLE_CONTEXT_COMPACTION_REQUEST = (
-    "The conversation is nearing its context limit. Take exactly one normal "
-    "OpenMLE action now and use this action to create or update the workspace-relative "
-    ".agent_memory/OPENMLE_CONTINUATION.md exactly once. Record the immediate "
-    "objective, last measured validation metric or exact failure, conclusion, "
-    "`code_path: train.py`, and make `next_action` one concrete `train.py` code improvement "
-    "to perform before rerunning; a bare run is not enough. If validation has "
-    "not completed, write `validation: not measured yet` and the exact blocker. "
-    "Use a valid relative apply_patch or the prompt's `mkdir -p ... && printf` "
-    "form. Do not inspect data, run code, or submit instead. This is one charged "
-    "action; emit only one of the three valid raw action forms."
+    FILESYSTEM_CHECKPOINT_REQUEST
+    + " For this ML task, include the last measured validation metric or exact "
+    "failure, `code_path: train.py`, and one concrete `next_action` that changes "
+    "`train.py` before rerunning. If validation has not completed, write "
+    "`validation: not measured yet` and the exact blocker. Do not inspect data, "
+    "run code, or submit instead."
 )
 OPENMLE_POLICY_CONTINUATION_MARKER = (
-    "Earlier conversation was removed; the workspace is unchanged. If the "
-    "budget line says only one action remains and submission.csv exists, submit "
-    "now. Otherwise read .agent_memory/OPENMLE_CONTINUATION.md exactly once with "
-    "one normal shell_command, then immediately execute its `next_action`: modify "
-    "`train.py` once before running it again. Do not inspect the task or schema again, "
-    "and do not reread or rewrite the note before "
-    "the next edit/run produces a new measured validation or exact failure. If "
-    "the post-compaction rerun prints a finite validation metric and submission.csv "
-    "exists, the next action is `submit`; do not rewrite the note or edit again, and "
-    "do not start a third iteration. If that rerun fails, update the note once and "
-    "continue while preserving one final action. All operations consume the shared "
-    "30-action budget."
+    FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER
+    + " If the budget line says only one action remains and submission.csv exists, "
+    "submit now. Otherwise, after reading the checkpoint, immediately execute its "
+    "`next_action`: modify `train.py` once before running it again. Do not inspect "
+    "the task or schema again. If that rerun produces a finite validation metric "
+    "and submission.csv exists, submit next; do not start a third iteration."
 )
 
-_OPENMLE_CONTINUATION_PATH = ".agent_memory/OPENMLE_CONTINUATION.md"
+_OPENMLE_CONTINUATION_PATH = FILESYSTEM_CHECKPOINT_PATH
+
 _EXPECTED_BOUNDARIES = {
     "actions": "openmle_fast_three_tool_v1",
     "workspace": "openmle_fast_public_workspace_v1",
@@ -311,6 +318,8 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         self._current_policy_context: list[dict[str, str]] | None = None
         self._policy_context_bound = False
         self._selected_policy_control: str | None = None
+        self._checkpoint_retry_pending = False
+        self._pending_checkpoint_read: dict[str, Any] | None = None
 
     def __len__(self) -> int:
         return self.data_len
@@ -366,13 +375,15 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         self._current_policy_context = normalized
 
     def policy_turn_candidate(self) -> str | None:
-        if not self._policy_context_bound:
+        if not self._policy_context_bound or self._pending_checkpoint_read is not None:
             return None
         return OPENMLE_CONTEXT_COMPACTION_REQUEST
 
     def prepare_policy_turn(self, pressure: PolicyContextPressure | None) -> str | None:
         self._selected_policy_control = None
         if not self._policy_context_bound:
+            return None
+        if self._pending_checkpoint_read is not None:
             return None
         if pressure is None:
             raise RuntimeError(
@@ -391,7 +402,13 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         # Continuous Token runtime.  The freshly rendered control candidate may
         # legitimately be shorter after generation-only history normalization,
         # so using it here can miss an imminent overflow on the ordinary path.
-        if pressure.projected_next_prompt_tokens_without_control < capacity:
+        if (
+            not self._checkpoint_retry_pending
+            and checkpoint_retry_trigger_tokens(
+                pressure, control_request=OPENMLE_CONTEXT_COMPACTION_REQUEST
+            )
+            < capacity
+        ):
             return None
         self._selected_policy_control = "context_compaction"
         return OPENMLE_CONTEXT_COMPACTION_REQUEST
@@ -403,6 +420,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         policy_before = self._policy_step_count
         context_before = self._context_epoch
         session_before = self._session_epoch
+        checkpoint_read_pending_before = self._pending_checkpoint_read
         context_control_selected = self._selected_policy_control == "context_compaction"
         response = self._request(
             "POST", "step", json={"id": self.env_id, "action": action}
@@ -424,33 +442,143 @@ class OpenMLEFastEnvClient(BaseEnvClient):
             env_info=env_info,
         )
         context_transition = None
-        wrapper_evidence = {
+        checkpoint_framing_sha256 = None
+        policy_state = state
+        wrapper_evidence: dict[str, Any] = {
             "event": "native_action",
             "workspace_continuity_id": self.env_id,
             "action_contract": _EXPECTED_BOUNDARIES["actions"],
         }
-        if context_control_selected and not done:
-            framing = self._immutable_policy_context
-            if framing is None:
-                raise RuntimeError(
-                    "OpenMLE-fast compaction lost its immutable task framing"
-                )
-            replacement = deepcopy(framing)
-            replacement.extend(
-                [
-                    {"role": "assistant", "content": action},
+        execution = env_info.get("execution")
+        read_receipt = None
+        if isinstance(execution, Mapping):
+            read_receipt = execution.get("filesystem_checkpoint_read")
+            if filesystem_checkpoint_read_observed(read_receipt):
+                wrapper_evidence.update(
                     {
-                        "role": "user",
-                        "content": f"{state}\n\n{OPENMLE_POLICY_CONTINUATION_MARKER}",
-                    },
-                ]
+                        "memory_event": "read",
+                        "document_read_observed": True,
+                        "filesystem_checkpoint_read": dict(read_receipt),
+                    }
+                )
+            else:
+                changed_paths = execution.get("changed_paths")
+                noncheckpoint_paths = (
+                    sorted(
+                        {
+                            str(path)
+                            for path in changed_paths
+                            if isinstance(path, str)
+                            and path
+                            and path != FILESYSTEM_CHECKPOINT_PATH
+                        }
+                    )
+                    if isinstance(changed_paths, Sequence)
+                    and not isinstance(changed_paths, (str, bytes))
+                    else []
+                )
+                if env_info.get("action_status") == "completed" and noncheckpoint_paths:
+                    wrapper_evidence.update(
+                        {
+                            "memory_event": "modify",
+                            "workspace_change_observed": True,
+                            "workspace_changed_paths": noncheckpoint_paths,
+                        }
+                    )
+                else:
+                    counter_delta = env_info.get("counter_delta")
+                    completed_delta = (
+                        counter_delta.get("execution_completed_count")
+                        if isinstance(counter_delta, Mapping)
+                        else None
+                    )
+                    if (
+                        env_info.get("action_status") == "completed"
+                        and execution.get("status") == "completed"
+                        and isinstance(execution.get("exit_code"), int)
+                        and not isinstance(execution.get("exit_code"), bool)
+                        and execution.get("exit_code") == 0
+                        and execution.get("timed_out") is False
+                        and completed_delta == 1
+                    ):
+                        wrapper_evidence.update(
+                            {
+                                "memory_event": "execute",
+                                "outcome": "success",
+                                "execution_completed_observed": True,
+                            }
+                        )
+        read_satisfied = False
+        read_failure_reason = None
+        if checkpoint_read_pending_before is not None:
+            read_failure_reason = filesystem_checkpoint_read_failure_reason(
+                read_receipt,
+                checkpoint_read_pending_before,
             )
-            self._context_epoch += 1
-            context_transition = build_task_neutral_context_transition(
-                CONTEXT_OPERATION_REPLACE,
-                messages=replacement,
+            read_satisfied = read_failure_reason is None
+            wrapper_evidence.update(
+                {
+                    "checkpoint_read_required": True,
+                    "checkpoint_read_satisfied": read_satisfied,
+                    "checkpoint_read_retry_pending": bool(
+                        not read_satisfied and not done
+                    ),
+                    "checkpoint_read_failure_reason": read_failure_reason,
+                    "checkpoint_read_expected_size_bytes": (
+                        checkpoint_read_pending_before.get("size_bytes")
+                    ),
+                    "checkpoint_read_expected_sha256": (
+                        checkpoint_read_pending_before.get("sha256")
+                    ),
+                }
             )
-            continuation_persisted = _continuation_write_succeeded(env_info)
+            if read_satisfied or done:
+                self._pending_checkpoint_read = None
+            elif not context_control_selected:
+                policy_state = build_filesystem_checkpoint_read_retry_observation(
+                    read_failure_reason or "checkpoint_read_not_observed"
+                )
+        if context_control_selected:
+            execution = env_info.get("execution")
+            receipt_value = (
+                execution.get("filesystem_checkpoint")
+                if isinstance(execution, Mapping)
+                else None
+            )
+            checkpoint_receipt = normalize_filesystem_checkpoint_receipt(
+                receipt_value
+            )
+            continuation_persisted = filesystem_checkpoint_write_succeeded(
+                checkpoint_receipt
+            )
+            checkpoint_failure_reason = filesystem_checkpoint_failure_reason(
+                checkpoint_receipt
+            )
+            self._checkpoint_retry_pending = bool(
+                not continuation_persisted and not done
+            )
+            if self._checkpoint_retry_pending:
+                policy_state = build_filesystem_checkpoint_retry_observation(
+                    checkpoint_failure_reason or "unknown_checkpoint_failure"
+                )
+            if continuation_persisted and not done:
+                framing = self._immutable_policy_context
+                if framing is None:
+                    raise RuntimeError(
+                        "OpenMLE-fast compaction lost its immutable task framing"
+                    )
+                checkpoint_framing_sha256 = filesystem_checkpoint_framing_sha256(
+                    framing
+                )
+                replacement = build_post_checkpoint_context(
+                    framing, checkpoint_receipt
+                )
+                self._context_epoch += 1
+                self._pending_checkpoint_read = dict(checkpoint_receipt)
+                context_transition = build_task_neutral_context_transition(
+                    CONTEXT_OPERATION_REPLACE,
+                    messages=replacement,
+                )
             wrapper_evidence = {
                 "event": "context_compaction",
                 "workspace_continuity_id": self.env_id,
@@ -458,12 +586,31 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                 "native_action_kind": env_info["action_kind"],
                 "native_action_status": env_info["action_status"],
                 "continuation_path": _OPENMLE_CONTINUATION_PATH,
+                "continuation_max_bytes": FILESYSTEM_CHECKPOINT_MAX_BYTES,
                 "continuation_persisted": continuation_persisted,
-                "preserved_policy_output": True,
-                "preserved_native_observation": True,
+                "checkpoint_receipt": checkpoint_receipt,
+                "checkpoint_failure_reason": checkpoint_failure_reason,
+                "context_replaced": bool(continuation_persisted and not done),
+                "retry_pending": self._checkpoint_retry_pending,
+                "checkpoint_retry_observation_bounded": (
+                    self._checkpoint_retry_pending
+                ),
+                # The action and observation stay in the trajectory ledger for
+                # PPO credit, but neither is injected into the successor prompt.
+                "preserved_policy_output": continuation_persisted,
+                "preserved_native_observation": continuation_persisted,
+                "checkpoint_action_in_successor_context": False,
+                "checkpoint_observation_in_successor_context": False,
+                "checkpoint_content_in_successor_context": False,
+                "checkpoint_framing_sha256": checkpoint_framing_sha256,
+                "checkpoint_read_required_after": bool(
+                    continuation_persisted and not done
+                ),
             }
+        elif done:
+            self._pending_checkpoint_read = None
         return StepOutput(
-            state=state,
+            state=policy_state,
             reward=reward,
             done=done,
             info=build_task_neutral_transition_info(
@@ -596,21 +743,13 @@ class OpenMLEFastEnvClient(BaseEnvClient):
 
 
 def _continuation_write_succeeded(env_info: Mapping[str, Any]) -> bool:
-    if (
-        env_info.get("action_kind") not in {"apply_patch", "shell_command"}
-        or env_info.get("action_status") != "completed"
-    ):
-        return False
     execution = env_info.get("execution")
-    if not isinstance(execution, Mapping):
-        return False
-    changed_paths = execution.get("changed_paths")
-    if (
-        not isinstance(changed_paths, Sequence)
-        or isinstance(changed_paths, (str, bytes))
-    ):
-        return False
-    return _OPENMLE_CONTINUATION_PATH in changed_paths
+    receipt = (
+        execution.get("filesystem_checkpoint")
+        if isinstance(execution, Mapping)
+        else None
+    )
+    return filesystem_checkpoint_write_succeeded(receipt)
 
 
 def _action_submission(

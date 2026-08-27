@@ -25,16 +25,29 @@ from agentenv.controller.types import (
     CONTEXT_OPERATION_PRESERVE,
     CONTEXT_OPERATION_REPLACE,
     ConversationMessage,
-    POLICY_CONTINUATION_MARKER,
     PolicyContextPressure,
     StepOutput,
     build_task_neutral_context_transition,
     build_task_neutral_transition_info,
 )
-from .webshop_handoff import (
-    WEBSHOP_SESSION_HANDOFF_REQUEST,
-    parse_webshop_session_handoff,
+from .filesystem_checkpoint import (
+    FILESYSTEM_CHECKPOINT_MAX_BYTES,
+    FILESYSTEM_CHECKPOINT_PATH,
+    build_filesystem_checkpoint_read_retry_observation,
+    build_filesystem_checkpoint_read_receipt,
+    build_filesystem_checkpoint_receipt,
+    build_filesystem_checkpoint_retry_observation,
+    build_post_checkpoint_context,
+    checkpoint_retry_ceiling_tokens,
+    filesystem_checkpoint_action_completed,
+    filesystem_checkpoint_failure_reason,
+    filesystem_checkpoint_framing_sha256,
+    filesystem_checkpoint_read_observed,
+    filesystem_checkpoint_read_failure_reason,
+    filesystem_workspace_action_request_sha256,
+    filesystem_checkpoint_write_succeeded,
 )
+from .webshop_handoff import WEBSHOP_SESSION_HANDOFF_REQUEST
 
 AGENTMEMORY_FUNCTION_DESCRIPTION = [
     {
@@ -1343,8 +1356,13 @@ def build_filesystem_conversation_start(
         "and timeout_ms to inspect or manipulate files. Use apply_patch followed by a "
         "multiline *** Begin Patch ... *** End Patch payload for precise file edits. "
         "The shell is networkless and resource-bounded; paths stay inside the workspace. "
-        "Workspace actions have zero task reward and are optional. There is no host-path "
-        "access or dedicated memory API."
+        "Workspace actions have zero task reward and are optional outside a context "
+        "boundary. At each shopping-session boundary, use one normal shell_command "
+        "or apply_patch action to overwrite .agent_memory/CONTINUATION.md; only a "
+        "verified non-empty write lets the wrapper remove old messages. Then read "
+        "that file through a normal action in the new context. Other workspace files "
+        "remain available for voluntary notes. There is no host-path access or "
+        "dedicated memory API."
     )
     if surface == LATENT_PREFERENCE_FILESYSTEM_WEBSHOP_SURFACE:
         interface += (
@@ -1985,6 +2003,56 @@ class IntentClarificationFilesystemAgentMemoryAdapter(FilesystemAgentMemoryAdapt
     allow_ask = True
 
 
+def _workspace_event_matches_current_action(
+    latest_event: Any,
+    tool_ops: Any,
+    *,
+    native_step_after: Any,
+    submitted_action: Any,
+) -> bool:
+    """Bind endpoint workspace evidence to this exact dispatched policy action."""
+
+    if (
+        not isinstance(latest_event, Mapping)
+        or not isinstance(tool_ops, Sequence)
+        or isinstance(tool_ops, (str, bytes))
+        or not tool_ops
+        or not isinstance(tool_ops[-1], Mapping)
+        or isinstance(native_step_after, bool)
+        or not isinstance(native_step_after, int)
+    ):
+        return False
+    latest_tool_op = tool_ops[-1]
+    event_step = latest_event.get("step")
+    tool_step = latest_tool_op.get("step")
+    if (
+        isinstance(event_step, bool)
+        or not isinstance(event_step, int)
+        or event_step != tool_step
+        or event_step != native_step_after
+        or str(latest_event.get("op", "")).upper()
+        != str(latest_tool_op.get("op", "")).upper()
+    ):
+        return False
+    event_id = latest_event.get("event_id")
+    tool_event_id = latest_tool_op.get("event_id")
+    event_request_sha256 = latest_event.get("request_sha256")
+    tool_request_sha256 = latest_tool_op.get("request_sha256")
+    expected_request_sha256 = filesystem_workspace_action_request_sha256(
+        submitted_action
+    )
+    return bool(
+        isinstance(event_id, int)
+        and not isinstance(event_id, bool)
+        and event_id == tool_event_id
+        and isinstance(event_request_sha256, str)
+        and len(event_request_sha256) == 64
+        and all(char in "0123456789abcdef" for char in event_request_sha256)
+        and event_request_sha256 == tool_request_sha256
+        and event_request_sha256 == expected_request_sha256
+    )
+
+
 class AgentMemoryEnvClient(BaseEnvClient):
     adapter_cls = AgentMemoryAdapter
     requires_ephemeral_context = True
@@ -2215,6 +2283,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self._current_policy_context: list[dict[str, str]] | None = None
         self._policy_context_bound = False
         self._pending_session_handoff: dict[str, Any] | None = None
+        self._pending_checkpoint_read: dict[str, Any] | None = None
         self._selected_policy_control: str | None = None
 
     def bind_policy_context(
@@ -2243,6 +2312,8 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self._current_policy_context = normalized
 
     def policy_turn_candidate(self) -> str | None:
+        if self._pending_checkpoint_read is not None:
+            return None
         if self._pending_session_handoff is None:
             return None
         return WEBSHOP_SESSION_HANDOFF_REQUEST
@@ -2251,6 +2322,8 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self, pressure: PolicyContextPressure | None
     ) -> str | None:
         self._selected_policy_control = None
+        if self._pending_checkpoint_read is not None:
+            return None
         if self._pending_session_handoff is None:
             return None
         if not self._policy_context_bound or self._current_policy_context is None:
@@ -2264,6 +2337,14 @@ class AgentMemoryEnvClient(BaseEnvClient):
         if pressure.candidate_prompt_tokens > pressure.effective_prompt_capacity:
             raise RuntimeError(
                 "WebShop session handoff request exceeds the policy prompt capacity"
+            )
+        if checkpoint_retry_ceiling_tokens(
+            pressure,
+            control_request=WEBSHOP_SESSION_HANDOFF_REQUEST,
+        ) > pressure.effective_prompt_capacity:
+            raise RuntimeError(
+                "WebShop session handoff does not leave room for one bounded "
+                "failed checkpoint attempt and retry"
             )
         self._selected_policy_control = "webshop_session_handoff"
         return WEBSHOP_SESSION_HANDOFF_REQUEST
@@ -2298,7 +2379,10 @@ class AgentMemoryEnvClient(BaseEnvClient):
             self.is_filesystem = False
         if self._selected_policy_control == "webshop_session_handoff":
             return self._complete_session_handoff(action)
-        if self._pending_session_handoff is not None:
+        if (
+            self._pending_session_handoff is not None
+            and self._pending_checkpoint_read is None
+        ):
             raise RuntimeError(
                 "WebShop session handoff is pending; prepare the wrapper control "
                 "turn before submitting another native action"
@@ -2332,6 +2416,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         policy_before = self._policy_step_count
         context_before = self._context_epoch
         session_before = self._session_epoch
+        checkpoint_read_pending_before = self._pending_checkpoint_read
         response = self.post("step", {"action": parsed_action})
         self._native_call_count += 1
         self._policy_step_count += 1
@@ -2350,6 +2435,9 @@ class AgentMemoryEnvClient(BaseEnvClient):
         response_env_info = response.get("info", {})
         if not isinstance(response_env_info, Mapping):
             response_env_info = {}
+        else:
+            response_env_info = dict(response_env_info)
+        self.info["env_info"] = response_env_info
         session_after = session_before
         session_advanced = False
         if self.is_filesystem:
@@ -2367,14 +2455,123 @@ class AgentMemoryEnvClient(BaseEnvClient):
         context_transition = build_task_neutral_context_transition(
             CONTEXT_OPERATION_APPEND
         )
-        if self._policy_context_bound and not bool(response["done"]):
-            if self.is_filesystem and session_advanced:
-                self._pending_session_handoff = {
-                    "fresh_observation": str(response["observation"]),
-                    "session_before": session_before,
-                    "session_after": session_after,
-                    "native_call_count": self._native_call_count,
+        native_wrapper_evidence = {
+            "event": "native_action",
+            "session_advanced": session_advanced,
+            "native_call_count_before": native_before,
+            "native_call_count_after": self._native_call_count,
+            "policy_step_before": policy_before,
+            "policy_step_after": self._policy_step_count,
+            "context_epoch_before": context_before,
+            "context_epoch_after": self._context_epoch,
+            "session_epoch_before": session_before,
+            "session_epoch_after": self._session_epoch,
+            "successor_context_policy": self.rollout_context_policy,
+        }
+        read_receipt = None
+        if self.is_filesystem:
+            latest_event = response_env_info.get("workspace_latest_event")
+            tool_ops = response_env_info.get("tool_ops")
+            event_is_current = _workspace_event_matches_current_action(
+                latest_event,
+                tool_ops,
+                native_step_after=self._native_call_count,
+                submitted_action=parsed_action,
+            )
+            if event_is_current:
+                action_kind = str(
+                    latest_event.get("tool_name", latest_event.get("op", ""))
+                ).lower()
+                action_completed = filesystem_checkpoint_action_completed(
+                    action_kind,
+                    latest_event,
+                )
+                checkpoint_receipt = build_filesystem_checkpoint_receipt(
+                    action_kind=action_kind,
+                    action_completed=action_completed,
+                    workspace_diff=latest_event.get("workspace_diff"),
+                    workspace_snapshot=response_env_info.get("workspace_snapshot"),
+                )
+                native_wrapper_evidence[
+                    "filesystem_checkpoint"
+                ] = checkpoint_receipt
+                response_env_info["action_kind"] = action_kind
+                response_env_info["filesystem_checkpoint"] = checkpoint_receipt
+                read_receipt = build_filesystem_checkpoint_read_receipt(
+                    checkpoint_receipt,
+                    action_kind=action_kind,
+                    action_completed=action_completed,
+                    stdout=latest_event.get("stdout"),
+                )
+                native_wrapper_evidence[
+                    "filesystem_checkpoint_read"
+                ] = read_receipt
+                response_env_info["filesystem_checkpoint_read"] = read_receipt
+                if filesystem_checkpoint_read_observed(read_receipt):
+                    native_wrapper_evidence.update(
+                        {
+                            "memory_event": "read",
+                            "document_read_observed": True,
+                        }
+                    )
+        checkpoint_read_satisfied = False
+        read_failure_reason = None
+        if checkpoint_read_pending_before is not None:
+            read_failure_reason = filesystem_checkpoint_read_failure_reason(
+                read_receipt,
+                checkpoint_read_pending_before,
+            )
+            checkpoint_read_satisfied = read_failure_reason is None
+            native_wrapper_evidence.update(
+                {
+                    "checkpoint_read_required": True,
+                    "checkpoint_read_satisfied": checkpoint_read_satisfied,
+                    "checkpoint_read_retry_pending": bool(
+                        not checkpoint_read_satisfied and not bool(response["done"])
+                    ),
+                    "checkpoint_read_failure_reason": read_failure_reason,
+                    "checkpoint_read_expected_size_bytes": (
+                        checkpoint_read_pending_before.get("size_bytes")
+                    ),
+                    "checkpoint_read_expected_sha256": (
+                        checkpoint_read_pending_before.get("sha256")
+                    ),
                 }
+            )
+            if checkpoint_read_satisfied or bool(response["done"]):
+                self._pending_checkpoint_read = None
+
+        policy_observation = (
+            build_filesystem_checkpoint_read_retry_observation(
+                read_failure_reason or "checkpoint_read_not_observed"
+            )
+            if checkpoint_read_pending_before is not None
+            and not checkpoint_read_satisfied
+            and not bool(response["done"])
+            else response["observation"]
+        )
+        if self.is_filesystem and session_advanced:
+            self._pending_session_handoff = {
+                "fresh_observation": str(response["observation"]),
+                "session_before": session_before,
+                "session_after": session_after,
+                "native_call_count": self._native_call_count,
+            }
+        if self._policy_context_bound and not bool(response["done"]):
+            if self._selected_policy_control == "webshop_session_handoff":
+                # The ordinary filesystem action used for a pending handoff must
+                # not clear history before its receipt is checked below.
+                context_transition = build_task_neutral_context_transition(
+                    CONTEXT_OPERATION_PRESERVE
+                )
+            elif (
+                checkpoint_read_pending_before is not None
+                and not checkpoint_read_satisfied
+            ):
+                context_transition = build_task_neutral_context_transition(
+                    CONTEXT_OPERATION_APPEND
+                )
+            elif self.is_filesystem and session_advanced:
                 context_transition = build_task_neutral_context_transition(
                     CONTEXT_OPERATION_PRESERVE
                 )
@@ -2383,11 +2580,10 @@ class AgentMemoryEnvClient(BaseEnvClient):
                     CONTEXT_OPERATION_REPLACE,
                     messages=self._fresh_policy_context(
                         str(response["observation"]),
-                        locator=None,
                     ),
                 )
         return StepOutput(
-            state=response["observation"],
+            state=policy_observation,
             reward=response["reward"],
             done=response["done"],
             info=build_task_neutral_transition_info(
@@ -2405,17 +2601,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 policy_step_after=self._policy_step_count,
                 context_transition=context_transition,
                 wrapper_evidence={
-                    "event": "native_action",
-                    "session_advanced": session_advanced,
-                    "native_call_count_before": native_before,
-                    "native_call_count_after": self._native_call_count,
-                    "policy_step_before": policy_before,
-                    "policy_step_after": self._policy_step_count,
-                    "context_epoch_before": context_before,
-                    "context_epoch_after": self._context_epoch,
-                    "session_epoch_before": session_before,
-                    "session_epoch_after": self._session_epoch,
-                    "successor_context_policy": self.rollout_context_policy,
+                    **native_wrapper_evidence,
                     "raw_history_cleared": (
                         context_transition["operation"]
                         == CONTEXT_OPERATION_REPLACE
@@ -2430,84 +2616,145 @@ class AgentMemoryEnvClient(BaseEnvClient):
             raise RuntimeError("WebShop session handoff was selected without a boundary")
         if self._immutable_policy_context is None:
             raise RuntimeError("WebShop session handoff lost its immutable framing")
-        native_before = self._native_call_count
-        policy_before = self._policy_step_count
-        context_before = self._context_epoch
-        session_before = self._session_epoch
-        parse = parse_webshop_session_handoff(action)
-        locator = parse["forwarded_content"]
-        replacement = self._fresh_policy_context(
-            str(pending["fresh_observation"]),
-            locator=locator,
-        )
-        self._policy_step_count += 1
-        self._context_epoch += 1
-        self.last_action_submission = {
-            "raw_policy_output": action,
-            "submitted_action": None,
-            "parser_status": "webshop_session_handoff",
-        }
-        self._pending_session_handoff = None
+
+        native_output = self._step_native_policy_action(action)
         self._selected_policy_control = None
-        context_transition = build_task_neutral_context_transition(
-            CONTEXT_OPERATION_REPLACE,
-            messages=replacement,
+        info = dict(native_output.info)
+        env_info = info.get("env_info", {})
+        latest_event = (
+            env_info.get("workspace_latest_event")
+            if isinstance(env_info, Mapping)
+            else None
         )
+        tool_ops = env_info.get("tool_ops") if isinstance(env_info, Mapping) else None
+        checkpoint_receipt = None
+        if _workspace_event_matches_current_action(
+            latest_event,
+            tool_ops,
+            native_step_after=info.get("native_step_after"),
+            submitted_action=(
+                info.get("action_submission", {}).get("submitted_action")
+                if isinstance(info.get("action_submission"), Mapping)
+                else None
+            ),
+        ):
+            action_kind = str(
+                latest_event.get("tool_name", latest_event.get("op", ""))
+            ).lower()
+            checkpoint_receipt = build_filesystem_checkpoint_receipt(
+                action_kind=action_kind,
+                action_completed=filesystem_checkpoint_action_completed(
+                    action_kind,
+                    latest_event,
+                ),
+                workspace_diff=latest_event.get("workspace_diff"),
+                workspace_snapshot=env_info.get("workspace_snapshot"),
+            )
+        persisted = filesystem_checkpoint_write_succeeded(checkpoint_receipt)
+        session_stable = self._session_epoch == int(pending["session_after"])
+        checkpoint_failure_reason = (
+            filesystem_checkpoint_failure_reason(checkpoint_receipt)
+            if session_stable
+            else "unexpected_session_advance"
+        )
+        replace_context = bool(persisted and session_stable and not native_output.done)
+        retry_pending = bool(
+            self._pending_session_handoff is not None
+            and not replace_context
+            and not native_output.done
+        )
+        policy_observation = (
+            build_filesystem_checkpoint_retry_observation(
+                checkpoint_failure_reason or "unknown_checkpoint_failure"
+            )
+            if retry_pending
+            else native_output.state
+        )
+
+        context_transition = None
+        checkpoint_framing_sha256 = None
+        if replace_context:
+            framing = self._fresh_policy_context(str(pending["fresh_observation"]))
+            checkpoint_framing_sha256 = filesystem_checkpoint_framing_sha256(
+                framing
+            )
+            replacement = build_post_checkpoint_context(framing, checkpoint_receipt)
+            self._context_epoch += 1
+            self._pending_session_handoff = None
+            self._pending_checkpoint_read = dict(checkpoint_receipt)
+            context_transition = build_task_neutral_context_transition(
+                CONTEXT_OPERATION_REPLACE,
+                messages=replacement,
+            )
+        elif native_output.done:
+            self._pending_session_handoff = None
+            self._pending_checkpoint_read = None
+
         return StepOutput(
-            state=str(pending["fresh_observation"]),
-            reward=0.0,
-            done=False,
+            state=policy_observation,
+            reward=native_output.reward,
+            done=native_output.done,
             info=build_task_neutral_transition_info(
-                env_info=self.info.get("env_info", {}),
-                action_submission=self.last_action_submission,
-                native_step_before=native_before,
-                native_step_after=self._native_call_count,
-                native_call_count_before=native_before,
-                native_call_count_after=self._native_call_count,
-                context_epoch_before=context_before,
+                env_info=env_info if isinstance(env_info, Mapping) else {},
+                action_submission=info.get(
+                    "action_submission", {"raw_policy_output": action}
+                ),
+                native_step_before=info.get("native_step_before"),
+                native_step_after=info.get("native_step_after"),
+                native_call_count_before=info.get("native_call_count_before"),
+                native_call_count_after=info.get("native_call_count_after"),
+                context_epoch_before=info.get("context_epoch_before"),
                 context_epoch_after=self._context_epoch,
-                session_epoch_before=session_before,
-                session_epoch_after=self._session_epoch,
-                policy_step_before=policy_before,
-                policy_step_after=self._policy_step_count,
+                session_epoch_before=info.get("session_epoch_before"),
+                session_epoch_after=info.get("session_epoch_after"),
+                policy_step_before=info.get("policy_step_before"),
+                policy_step_after=info.get("policy_step_after"),
                 context_transition=context_transition,
                 wrapper_evidence={
                     "event": "webshop_session_handoff",
                     "session_before": pending["session_before"],
                     "session_after": pending["session_after"],
-                    "native_call_count": pending["native_call_count"],
-                    "native_call_count_before": native_before,
-                    "native_call_count_after": self._native_call_count,
-                    "policy_step_before": policy_before,
-                    "policy_step_after": self._policy_step_count,
-                    "context_epoch_before": context_before,
+                    "native_call_count_before": info.get(
+                        "native_call_count_before"
+                    ),
+                    "native_call_count_after": info.get("native_call_count_after"),
+                    "policy_step_before": info.get("policy_step_before"),
+                    "policy_step_after": info.get("policy_step_after"),
+                    "context_epoch_before": info.get("context_epoch_before"),
                     "context_epoch_after": self._context_epoch,
-                    "session_epoch_before": session_before,
-                    "session_epoch_after": self._session_epoch,
-                    "raw_history_cleared": True,
-                    "handoff_parse": parse,
+                    "session_epoch_before": info.get("session_epoch_before"),
+                    "session_epoch_after": info.get("session_epoch_after"),
+                    "continuation_path": FILESYSTEM_CHECKPOINT_PATH,
+                    "continuation_max_bytes": FILESYSTEM_CHECKPOINT_MAX_BYTES,
+                    "continuation_persisted": persisted,
+                    "checkpoint_receipt": checkpoint_receipt,
+                    "checkpoint_failure_reason": checkpoint_failure_reason,
+                    "context_replaced": replace_context,
+                    "retry_pending": retry_pending,
+                    "checkpoint_retry_observation_bounded": retry_pending,
+                    "raw_history_cleared": replace_context,
+                    "preserved_policy_output": replace_context,
+                    "preserved_native_observation": replace_context,
+                    "checkpoint_action_in_successor_context": False,
+                    "checkpoint_observation_in_successor_context": False,
+                    "checkpoint_content_in_successor_context": False,
+                    "checkpoint_framing_sha256": checkpoint_framing_sha256,
+                    "checkpoint_read_required_after": replace_context,
+                    "native_wrapper_evidence": (
+                        dict(info.get("wrapper_evidence", {}))
+                        if isinstance(info.get("wrapper_evidence"), Mapping)
+                        else {}
+                    ),
                 },
             ),
         )
 
-    def _fresh_policy_context(
-        self,
-        observation: str,
-        *,
-        locator: str | None,
-    ) -> list[dict[str, str]]:
+    def _fresh_policy_context(self, observation: str) -> list[dict[str, str]]:
         framing = self._immutable_policy_context
         if framing is None:
             raise RuntimeError("AgentMemory policy context was not initialized")
         messages = deepcopy(framing)
         messages.append({"role": "user", "content": str(observation)})
-        if locator is not None:
-            messages.extend(
-                [
-                    {"role": "assistant", "content": str(locator)},
-                    {"role": "user", "content": POLICY_CONTINUATION_MARKER},
-                ]
-            )
         return messages
 
     @property

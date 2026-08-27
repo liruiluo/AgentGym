@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -27,6 +29,8 @@ from .profile import SwesmithProfileBinding
 from .sandbox import (
     LinuxNamespaceEpisodeSandbox,
     SwesmithSandboxError,
+    WorkspaceTreeSnapshot,
+    diff_workspace_trees,
     snapshot_workspace_tree,
 )
 from .workspace import SwesmithWorkspace, SwesmithWorkspaceMaterializer
@@ -37,13 +41,36 @@ DEFAULT_TRAINING_MAX_POLICY_TURNS = 75
 UPSTREAM_REFERENCE_MAX_POLICY_TURNS = 250
 UPSTREAM_AGENT_REPOSITORY = "SWE-agent/mini-swe-agent"
 UPSTREAM_AGENT_REVISION = "a83fcae82d2a08f0ee0c688f9d137b3566c097f8"
-REWARD_CONTRACT = "explicit_submission_full_resolution_binary_v2"
-SUBMISSION_CONTRACT = "upstream_shell_output_sentinel_v1"
-HORIZON_CONTRACT = "unified_policy_step_no_submission_failure_v2"
+INVALID_ACTION_TERMINAL_REWARD = -0.01
+FAILED_SUBMISSION_REWARD = 0.0
+HORIZON_FAILURE_REWARD = -0.01
+REWARD_CONTRACT = "submission_success1_wrong0_invalid_minus0p01_v1"
+SUBMISSION_CONTRACT = "upstream_shell_output_sentinel_source_change_required_v2"
+HORIZON_CONTRACT = "unified_policy_step_terminal_failure_minus0p01_v3"
 DEFAULT_MAX_OBSERVATION_BYTES = 6144
+GENERATED_PATH_PARTS = frozenset(
+    {
+        ".agent_memory",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".nox",
+    }
+)
+GENERATED_FILE_NAMES = frozenset({".coverage", "coverage.xml"})
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
 ACTION_PROGRESS_SCHEMA = "swesmith_action_progress_v1"
 MAX_VISIBLE_CHANGED_PATHS_BYTES = 1024
+FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA = (
+    "agentmemory_filesystem_checkpoint_receipt_v1"
+)
+FILESYSTEM_CHECKPOINT_READ_RECEIPT_SCHEMA = (
+    "agentmemory_filesystem_checkpoint_read_receipt_v1"
+)
+FILESYSTEM_CHECKPOINT_PATH = ".agent_memory/CONTINUATION.md"
+FILESYSTEM_CHECKPOINT_MAX_BYTES = 8 * 1024
 
 
 class ProfileResolver(Protocol):
@@ -84,6 +111,7 @@ class _Episode:
     profile: SwesmithProfileBinding
     workspace: SwesmithWorkspace
     sandbox: LinuxNamespaceEpisodeSandbox
+    initial_snapshot: WorkspaceTreeSnapshot
     observation: str
     initial_observation: str
     step_count: int = 0
@@ -91,6 +119,8 @@ class _Episode:
     reward: float = 0.0
     evidence: list[dict[str, Any]] = field(default_factory=list)
     grade: SwesmithGradeResult | None = None
+    sample_excluded: bool = False
+    sample_exclusion_reason: str | None = None
 
 
 @dataclass
@@ -226,6 +256,7 @@ class SwesmithEpisodeManager:
                     profile=profile,
                     workspace=workspace,
                     sandbox=sandbox,
+                    initial_snapshot=initial_snapshot,
                     observation=observation,
                     initial_observation=observation,
                 )
@@ -273,6 +304,13 @@ class SwesmithEpisodeManager:
             if action.kind == "parser_error":
                 episode.observation = _parser_error_observation(action)
                 evidence["result"] = {"parser_error": action.error}
+                self._terminate_policy_failure(
+                    episode,
+                    evidence,
+                    termination_reason="parser_rejected",
+                    reward=INVALID_ACTION_TERMINAL_REWARD,
+                    observation=episode.observation,
+                )
                 actor_credit = _actor_credit(False, "parser_rejected")
             elif action.kind == "shell_command":
                 actor_credit = self._run_shell(episode, action, evidence)
@@ -296,18 +334,70 @@ class SwesmithEpisodeManager:
                     "observation_before": episode.observation,
                     "action": {"kind": "horizon"},
                 }
-                self._terminate_without_submission(
+                self._terminate_policy_failure(
                     episode,
                     horizon,
                     termination_reason="max_steps",
+                    reward=HORIZON_FAILURE_REWARD,
                 )
                 horizon["observation_after"] = episode.observation
                 episode.evidence.append(horizon)
+            action_result = evidence.get("result")
+            action_completed = _action_completed_for_checkpoint(
+                action.kind, actor_credit, action_result
+            )
+            checkpoint_receipt = _filesystem_checkpoint_receipt(
+                episode.workspace.policy_root,
+                action_kind=action.kind,
+                action_completed=action_completed,
+                workspace_diff=(
+                    action_result.get("workspace_diff")
+                    if isinstance(action_result, Mapping)
+                    else None
+                ),
+            )
+            checkpoint_read_receipt = _filesystem_checkpoint_read_receipt(
+                checkpoint_receipt,
+                action_kind=action.kind,
+                action_completed=action_completed,
+                result=action_result,
+            )
+            if (
+                checkpoint_read_receipt["observed"]
+                and isinstance(action_result, Mapping)
+                and isinstance(action_result.get("stdout"), str)
+            ):
+                # This is not a free injection: the policy just spent an ordinary
+                # shell action to read the exact attested bytes. Preserve all 8 KiB
+                # in the next observation even though ordinary logs stay tighter.
+                episode.observation = action_result["stdout"]
+                evidence["observation_after"] = episode.observation
+            workspace_changed_paths: tuple[str, ...] = ()
+            if isinstance(action_result, Mapping):
+                workspace_diff = action_result.get("workspace_diff")
+                if isinstance(workspace_diff, Mapping):
+                    raw_changed_paths = workspace_diff.get("changed_paths")
+                    if isinstance(raw_changed_paths, (list, tuple)):
+                        workspace_changed_paths = tuple(
+                            sorted(
+                                {
+                                    str(path)
+                                    for path in raw_changed_paths
+                                    if isinstance(path, str) and path
+                                }
+                            )
+                        )
             return self._public_step(
                 episode,
                 action_kind=public_action_kind,
                 actor_credit=actor_credit,
                 action_progress=evidence.get("action_progress"),
+                filesystem_checkpoint=checkpoint_receipt,
+                filesystem_checkpoint_read=checkpoint_read_receipt,
+                workspace_changed_paths=workspace_changed_paths,
+                shell_action_succeeded=bool(
+                    action.kind == "shell_command" and action_completed
+                ),
             )
 
     def observation(self, slot_id: int) -> str:
@@ -318,10 +408,10 @@ class SwesmithEpisodeManager:
     def finalize_horizon(self, slot_id: int) -> EpisodeStep:
         """Fail the episode when the unified policy budget expires.
 
-        The rollout owns the unified policy-step counter because model-authored
-        compactions consume steps without calling this native environment. This
-        control call therefore does not increment the native action counter or
-        invoke the hidden grader.  This matches the upstream agent's
+        The rollout owns the unified policy-step counter. A context checkpoint is
+        an ordinary workspace action executed by this environment before the client
+        replaces old messages; this terminal horizon call itself does not increment
+        the native action counter or invoke the hidden grader. This matches the upstream agent's
         ``LimitsExceeded`` path: an episode without an explicit submission is
         a terminal failure, even when the current workspace would pass.
         """
@@ -337,10 +427,11 @@ class SwesmithEpisodeManager:
                 "observation_before": episode.observation,
                 "action": {"kind": "policy_turn_horizon"},
             }
-            self._terminate_without_submission(
+            self._terminate_policy_failure(
                 episode,
                 horizon,
                 termination_reason="policy_turn_horizon",
+                reward=HORIZON_FAILURE_REWARD,
             )
             horizon["observation_after"] = episode.observation
             episode.evidence.append(horizon)
@@ -361,6 +452,8 @@ class SwesmithEpisodeManager:
                 "step_count": episode.step_count,
                 "done": episode.done,
                 "reward": episode.reward,
+                "sample_excluded": episode.sample_excluded,
+                "sample_exclusion_reason": episode.sample_exclusion_reason,
                 "workspace": {
                     "episode_root": str(episode.workspace.episode_root),
                     "policy_root": str(episode.workspace.policy_root),
@@ -410,10 +503,25 @@ class SwesmithEpisodeManager:
             "reward_contract": REWARD_CONTRACT,
             "context_contract": "one_native_issue_continuous_episode_v1",
             "memory_contract": (
-                "policy_compaction_plus_optional_durable_filesystem_v1"
+                "policy_filesystem_checkpoint_then_client_replace_v2"
             ),
             "submission_contract": SUBMISSION_CONTRACT,
             "horizon_contract": HORIZON_CONTRACT,
+            "invalid_action_terminal_reward": INVALID_ACTION_TERMINAL_REWARD,
+            "failed_submission_reward": FAILED_SUBMISSION_REWARD,
+            "horizon_failure_reward": HORIZON_FAILURE_REWARD,
+            "penalized_terminal_conditions": [
+                "parser_rejected",
+                "executor_rejected",
+                "max_steps",
+                "policy_turn_horizon",
+            ],
+            "zero_reward_submission_conditions": [
+                "submission_without_source_change",
+                "grader_unresolved",
+            ],
+            "valid_shell_nonzero_exit_is_terminal": False,
+            "grader_infrastructure_failure": "sample_excluded",
             "active_slot_count": slot_count,
             "active_environment_count": active_count,
             "active_workspace_count": active_count,
@@ -458,9 +566,13 @@ class SwesmithEpisodeManager:
                 "poisoned": poisoned,
             }
             episode.observation = f"shell_command failed: {exc}"
-            if poisoned is not None:
-                episode.done = True
-                episode.reward = 0.0
+            self._terminate_policy_failure(
+                episode,
+                evidence,
+                termination_reason="executor_rejected",
+                reward=INVALID_ACTION_TERMINAL_REWARD,
+                observation=episode.observation,
+            )
             return _actor_credit(False, "executor_rejected")
         result = execution.result
         stdout = result.stdout.decode("utf-8", errors="replace")
@@ -501,18 +613,37 @@ class SwesmithEpisodeManager:
             timed_out=result.timed_out,
         )
         if submission is not None:
+            final_diff = diff_workspace_trees(
+                episode.initial_snapshot,
+                execution.workspace_after,
+            )
+            source_changed_paths = _meaningful_changed_paths(final_diff.changed_paths)
             evidence["submission"] = {
                 "sentinel": UPSTREAM_SUBMISSION_SENTINEL,
                 "output_bytes": len(submission.encode("utf-8")),
                 "output_sha256": hashlib.sha256(
                     submission.encode("utf-8")
                 ).hexdigest(),
+                "workspace_diff_from_reset": final_diff.as_dict(),
+                "source_changed_paths": list(source_changed_paths),
             }
-            self._grade_terminal(
-                episode,
-                evidence,
-                termination_reason="submission_sentinel",
-            )
+            if not source_changed_paths:
+                self._terminate_policy_failure(
+                    episode,
+                    evidence,
+                    termination_reason="submission_without_source_change",
+                    reward=FAILED_SUBMISSION_REWARD,
+                    observation=(
+                        "Submission ended the episode without a source change. "
+                        "The workspace was not graded."
+                    ),
+                )
+            else:
+                self._grade_terminal(
+                    episode,
+                    evidence,
+                    termination_reason="submission_sentinel",
+                )
             return _actor_credit(True, "terminal_submission")
         return _actor_credit(True, "shell_executed")
 
@@ -537,9 +668,13 @@ class SwesmithEpisodeManager:
         except (WorkspacePatchError, SwesmithSandboxError) as exc:
             evidence["result"] = {"error": f"{type(exc).__name__}: {exc}"}
             episode.observation = f"apply_patch failed: {exc}"
-            if episode.sandbox.poisoned_reason is not None:
-                episode.done = True
-                episode.reward = 0.0
+            self._terminate_policy_failure(
+                episode,
+                evidence,
+                termination_reason="executor_rejected",
+                reward=INVALID_ACTION_TERMINAL_REWARD,
+                observation=episode.observation,
+            )
             return _actor_credit(False, "executor_rejected")
         evidence["result"] = {
             "changed_paths": list(result.changed_paths),
@@ -570,38 +705,68 @@ class SwesmithEpisodeManager:
             sandbox=episode.sandbox,
         )
         episode.grade = grade
-        episode.done = True
-        episode.reward = grade.reward
-        episode.observation = (
-            "Submission accepted and graded. "
-            + ("The issue is resolved." if grade.resolved else "The issue is not resolved.")
-        )
         evidence["termination_reason"] = termination_reason
         evidence["terminal_grade"] = {
-            "reward": grade.reward,
+            "native_reward": grade.reward,
             "resolved": grade.resolved,
             "grader_error": grade.error,
         }
+        episode.done = True
+        if grade.error is not None:
+            episode.reward = 0.0
+            episode.sample_excluded = True
+            episode.sample_exclusion_reason = "grader_infrastructure_failure"
+            episode.observation = (
+                "Submission reached the grader, but infrastructure prevented a valid score."
+            )
+            evidence["terminal_grade"]["reward"] = 0.0
+            evidence["terminal_grade"]["sample_excluded"] = True
+        elif grade.resolved and grade.reward == 1.0:
+            episode.reward = 1.0
+            episode.observation = "Submission accepted and graded. The issue is resolved."
+            evidence["terminal_grade"]["reward"] = 1.0
+            evidence["terminal_grade"]["sample_excluded"] = False
+        elif not grade.resolved and grade.reward == 0.0:
+            episode.reward = FAILED_SUBMISSION_REWARD
+            episode.observation = (
+                "Submission accepted and graded. The issue is not resolved."
+            )
+            evidence["termination_reason"] = "grader_unresolved"
+            evidence["terminal_grade"]["reward"] = FAILED_SUBMISSION_REWARD
+            evidence["terminal_grade"]["sample_excluded"] = False
+        else:
+            episode.reward = 0.0
+            episode.sample_excluded = True
+            episode.sample_exclusion_reason = "unexpected_grader_contract"
+            episode.observation = "Submission returned an unsupported grader result."
+            evidence["termination_reason"] = "unexpected_grader_contract"
+            evidence["terminal_grade"]["reward"] = 0.0
+            evidence["terminal_grade"]["sample_excluded"] = True
 
-    def _terminate_without_submission(
+    def _terminate_policy_failure(
         self,
         episode: _Episode,
         evidence: dict[str, Any],
         *,
         termination_reason: str,
+        reward: float,
+        observation: str | None = None,
     ) -> None:
         episode.done = True
-        episode.reward = 0.0
-        episode.observation = (
-            "Episode ended without the explicit submission sentinel. "
-            "The workspace was not graded."
-        )
+        episode.reward = reward
+        if observation is None:
+            episode.observation = (
+                "Episode ended without a successful official submission."
+            )
+        else:
+            episode.observation = observation
         evidence["termination_reason"] = termination_reason
         evidence["terminal_grade"] = {
-            "reward": 0.0,
+            "reward": reward,
             "resolved": False,
             "grader_error": None,
             "graded": False,
+            "sample_excluded": False,
         }
 
     def _public_step(
@@ -611,12 +776,18 @@ class SwesmithEpisodeManager:
         action_kind: str,
         actor_credit: Mapping[str, Any] | None = None,
         action_progress: Mapping[str, Any] | None = None,
+        filesystem_checkpoint: Mapping[str, Any] | None = None,
+        filesystem_checkpoint_read: Mapping[str, Any] | None = None,
+        workspace_changed_paths: tuple[str, ...] = (),
+        shell_action_succeeded: bool = False,
     ) -> EpisodeStep:
         info: dict[str, Any] = {
             "schema": EPISODE_SCHEMA,
             "step": episode.step_count,
             "action_kind": action_kind,
             "terminal": episode.done,
+            "sample_excluded": episode.sample_excluded,
+            "sample_exclusion_reason": episode.sample_exclusion_reason,
             "episode_success": bool(
                 episode.done
                 and episode.grade is not None
@@ -627,6 +798,14 @@ class SwesmithEpisodeManager:
             info["actor_credit"] = dict(actor_credit)
         if action_progress is not None:
             info["action_progress"] = dict(action_progress)
+        if filesystem_checkpoint is not None:
+            info["filesystem_checkpoint"] = dict(filesystem_checkpoint)
+        if filesystem_checkpoint_read is not None:
+            info["filesystem_checkpoint_read"] = dict(filesystem_checkpoint_read)
+        if workspace_changed_paths:
+            info["workspace_changed_paths"] = list(workspace_changed_paths)
+        if action_kind == "shell_command":
+            info["shell_action_succeeded"] = bool(shell_action_succeeded)
         return EpisodeStep(
             observation=episode.observation,
             reward=episode.reward,
@@ -673,6 +852,8 @@ class SwesmithEpisodeManager:
                         "step_count": episode.step_count,
                         "done": episode.done,
                         "reward": episode.reward,
+                        "sample_excluded": episode.sample_excluded,
+                        "sample_exclusion_reason": episode.sample_exclusion_reason,
                         "runtime_metadata": dict(self.runtime_metadata),
                         "evidence": list(episode.evidence),
                         "grade": (
@@ -689,6 +870,243 @@ class SwesmithEpisodeManager:
                 self.materializer.close(episode.workspace)
 
 
+def _action_completed_for_checkpoint(
+    action_kind: str,
+    actor_credit: Mapping[str, Any],
+    result: Any,
+) -> bool:
+    if not isinstance(result, Mapping):
+        return False
+    if action_kind == "apply_patch":
+        return actor_credit.get("basis") in {"workspace_changed", "no_workspace_change"}
+    if action_kind == "shell_command":
+        exit_code = result.get("exit_code")
+        return bool(
+            actor_credit.get("basis") in {
+                "shell_executed",
+                "terminal_submission",
+                "no_workspace_change",
+                "zero_progress_repeat",
+            }
+            and isinstance(exit_code, int)
+            and not isinstance(exit_code, bool)
+            and exit_code == 0
+            and result.get("timed_out") is False
+        )
+    return False
+
+
+def _checkpoint_diff_entry_size(entry: Any) -> int | None:
+    if not isinstance(entry, Mapping):
+        return None
+    value = entry.get("bytes", entry.get("size"))
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _explicit_regular_checkpoint_diff_entry(entry: Any) -> bool:
+    if not isinstance(entry, Mapping) or entry.get("kind") != "file":
+        return False
+    digest = entry.get("sha256")
+    return bool(
+        _checkpoint_diff_entry_size(entry) is not None
+        and isinstance(digest, str)
+        and len(digest) == 64
+        and all(character in "0123456789abcdef" for character in digest)
+    )
+
+
+def _filesystem_checkpoint_receipt(
+    root: Path,
+    *,
+    action_kind: str,
+    action_completed: bool,
+    workspace_diff: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    diff = workspace_diff if isinstance(workspace_diff, Mapping) else {}
+    changed_entry: Mapping[str, Any] | None = None
+    added = diff.get("added", ())
+    if isinstance(added, (list, tuple)):
+        for item in added:
+            if (
+                isinstance(item, Mapping)
+                and item.get("path") == FILESYSTEM_CHECKPOINT_PATH
+                and _explicit_regular_checkpoint_diff_entry(item)
+            ):
+                changed_entry = item
+                break
+    modified = diff.get("modified", ())
+    if changed_entry is None and isinstance(modified, (list, tuple)):
+        for item in modified:
+            if not isinstance(item, Mapping):
+                continue
+            before = item.get("before")
+            after = item.get("after")
+            if (
+                isinstance(before, Mapping)
+                and isinstance(after, Mapping)
+                and before.get("path") == FILESYSTEM_CHECKPOINT_PATH
+                and after.get("path") == FILESYSTEM_CHECKPOINT_PATH
+                and _explicit_regular_checkpoint_diff_entry(before)
+                and _explicit_regular_checkpoint_diff_entry(after)
+                and before.get("sha256") != after.get("sha256")
+            ):
+                changed_entry = after
+                break
+    exists, regular_file, size_bytes, digest, _payload = (
+        _read_filesystem_checkpoint_beneath(root)
+    )
+    changed = bool(
+        changed_entry is not None
+        and exists
+        and regular_file
+        and _checkpoint_diff_entry_size(changed_entry) == size_bytes
+        and changed_entry.get("sha256") == digest
+    )
+    return {
+        "schema": FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA,
+        "path": FILESYSTEM_CHECKPOINT_PATH,
+        "action_kind": str(action_kind).lower(),
+        "action_completed": bool(action_completed),
+        "changed": changed,
+        "exists": exists,
+        "regular_file": regular_file,
+        "size_bytes": size_bytes,
+        "sha256": digest,
+    }
+
+
+def _filesystem_checkpoint_read_receipt(
+    checkpoint_receipt: Mapping[str, Any],
+    *,
+    action_kind: str,
+    action_completed: bool,
+    result: Any,
+) -> dict[str, Any]:
+    result_map = result if isinstance(result, Mapping) else {}
+    stdout = result_map.get("stdout")
+    payload = stdout.encode("utf-8") if isinstance(stdout, str) else None
+    size = checkpoint_receipt.get("size_bytes")
+    digest = checkpoint_receipt.get("sha256")
+    observed = bool(
+        action_kind == "shell_command"
+        and action_completed
+        and result_map.get("stdout_truncated") is False
+        and checkpoint_receipt.get("changed") is False
+        and checkpoint_receipt.get("exists") is True
+        and checkpoint_receipt.get("regular_file") is True
+        and isinstance(size, int)
+        and not isinstance(size, bool)
+        and 0 < size <= FILESYSTEM_CHECKPOINT_MAX_BYTES
+        and isinstance(digest, str)
+        and payload is not None
+        and len(payload) == size
+        and hashlib.sha256(payload).hexdigest() == digest
+    )
+    return {
+        "schema": FILESYSTEM_CHECKPOINT_READ_RECEIPT_SCHEMA,
+        "path": FILESYSTEM_CHECKPOINT_PATH,
+        "observed": observed,
+        "size_bytes": size if isinstance(size, int) and not isinstance(size, bool) else None,
+        "sha256": digest if isinstance(digest, str) else None,
+    }
+
+
+def _read_filesystem_checkpoint_beneath(
+    root: Path,
+) -> tuple[bool, bool, int | None, str | None, bytes | None]:
+    """Read the fixed checkpoint through stable directory/file descriptors."""
+
+    directory_flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        directory_flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        directory_flags |= os.O_CLOEXEC
+    file_flags = os.O_RDONLY | os.O_NONBLOCK
+    if hasattr(os, "O_NOFOLLOW"):
+        file_flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        file_flags |= os.O_CLOEXEC
+
+    root_fd: int | None = None
+    memory_fd: int | None = None
+    checkpoint_fd: int | None = None
+    try:
+        root_fd = os.open(root, directory_flags)
+        try:
+            memory_fd = os.open(".agent_memory", directory_flags, dir_fd=root_fd)
+        except OSError:
+            return False, False, None, None, None
+        try:
+            path_before = os.stat(
+                "CONTINUATION.md", dir_fd=memory_fd, follow_symlinks=False
+            )
+        except OSError:
+            return False, False, None, None, None
+        try:
+            checkpoint_fd = os.open(
+                "CONTINUATION.md", file_flags, dir_fd=memory_fd
+            )
+        except OSError:
+            return True, False, None, None, None
+
+        before = os.fstat(checkpoint_fd)
+        if not _same_file_identity(path_before, before):
+            return True, False, None, None, None
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            return True, False, None, None, None
+        size = int(before.st_size)
+        payload: bytes | None = None
+        if size <= FILESYSTEM_CHECKPOINT_MAX_BYTES:
+            chunks: list[bytes] = []
+            remaining = FILESYSTEM_CHECKPOINT_MAX_BYTES + 1
+            while remaining > 0:
+                chunk = os.read(checkpoint_fd, min(remaining, 64 * 1024))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            payload = b"".join(chunks)
+
+        after = os.fstat(checkpoint_fd)
+        try:
+            path_after = os.stat(
+                "CONTINUATION.md", dir_fd=memory_fd, follow_symlinks=False
+            )
+        except OSError:
+            return True, False, None, None, None
+        if not (
+            _same_file_identity(before, after)
+            and _same_file_identity(before, path_after)
+        ):
+            return True, False, None, None, None
+        if size > FILESYSTEM_CHECKPOINT_MAX_BYTES:
+            return True, True, size, None, None
+        if payload is None or len(payload) != size:
+            return True, False, None, None, None
+        return True, True, size, hashlib.sha256(payload).hexdigest(), payload
+    except OSError:
+        return False, False, None, None, None
+    finally:
+        for descriptor in (checkpoint_fd, memory_fd, root_fd):
+            if descriptor is not None:
+                os.close(descriptor)
+
+
+def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
+    fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size")
+    if any(getattr(left, name) != getattr(right, name) for name in fields):
+        return False
+    for name in ("st_mtime_ns", "st_ctime_ns", "st_blocks"):
+        if hasattr(left, name) and hasattr(right, name):
+            if getattr(left, name) != getattr(right, name):
+                return False
+    return True
+
+
 def _normalize_patch_path(raw: str) -> str:
     if not isinstance(raw, str) or not raw or "\x00" in raw:
         raise WorkspacePatchError("apply_patch path must be non-empty text")
@@ -696,6 +1114,20 @@ def _normalize_patch_path(raw: str) -> str:
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise WorkspacePatchError(f"apply_patch path escapes the workspace: {raw!r}")
     return str(path)
+
+
+def _meaningful_changed_paths(changed_paths: tuple[str, ...]) -> tuple[str, ...]:
+    meaningful: list[str] = []
+    for raw_path in changed_paths:
+        path = PurePosixPath(raw_path)
+        if path.name in GENERATED_FILE_NAMES:
+            continue
+        if path.suffix in {".pyc", ".pyo"}:
+            continue
+        if any(part in GENERATED_PATH_PARTS for part in path.parts):
+            continue
+        meaningful.append(raw_path)
+    return tuple(sorted(set(meaningful)))
 
 
 def _submission_from_shell_result(
@@ -734,7 +1166,7 @@ def _initial_observation(
         '"workdir":"."}. The successful command must print the upstream submission '
         "sentinel as its first stdout line; then the current persistent workspace receives "
         "one official grade. Any plain text is invalid. Reaching the turn limit without "
-        "that sentinel ends the episode with reward 0 and does not grade the workspace. "
+        "that sentinel ends the episode with reward -0.01 and does not grade the workspace. "
         f"You have at most {max_policy_turns} total policy turns; task-neutral context "
         "compactions consume this same budget. Verify and submit as soon as the repair is "
         "ready; do not wait for the horizon.\n\n"
@@ -746,14 +1178,13 @@ def _initial_observation(
 
 def _parser_error_observation(action: ParsedPolicyAction) -> str:
     return (
-        f"Invalid action syntax: {action.error}. Start at byte zero and retry exactly "
-        'like shell_command {"command":"pwd","workdir":"."} on one line. '
-        "For a patch, start with the literal line apply_patch, then one complete "
-        "*** Begin Patch ... *** End Patch payload. Output only one action, with no XML "
-        "tags, reasoning, Markdown, second action, or surrounding text. Keep the edit "
-        "localized instead of pasting or rewriting an entire existing file. After editing "
-        "and testing, submit with exactly shell_command "
-        '{"command":"echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}.'
+        f"Invalid action syntax: {action.error}. The episode ended with reward -0.01. "
+        'In a new episode, start at byte zero with exactly shell_command '
+        '{"command":"pwd","workdir":"."} on one line. For a patch, start with the '
+        "literal line apply_patch, then one complete *** Begin Patch ... *** End Patch "
+        "payload. Output only one action, with no XML tags, reasoning, Markdown, second "
+        "action, or surrounding text. Keep the edit localized instead of pasting or "
+        "rewriting an entire existing file."
     )
 
 

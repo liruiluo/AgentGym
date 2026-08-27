@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import tempfile
 import time
@@ -15,6 +16,7 @@ from agentenv_openmle_fast.deadline import MonotonicDeadline
 from agentenv_openmle_fast.environment import (
     OpenMLEFastEpisodeManager,
     _bound_text,
+    _read_filesystem_checkpoint_beneath,
     _read_submission,
 )
 from agentenv_openmle_fast.executor import (
@@ -208,6 +210,114 @@ class OpenMLEFastEnvironmentTest(unittest.TestCase):
             len(first.observation.encode("utf-8")),
             self.limits.observation_bytes,
         )
+
+    def test_checkpoint_receipt_attests_current_action_write_only(self) -> None:
+        manager, slot, _ = self.reset()
+        payload = "objective: improve model\nnext_action: edit train.py\n"
+        written = manager.step(
+            slot,
+            "shell_command "
+            + json.dumps(
+                {
+                    "command": (
+                        "mkdir -p .agent_memory && printf '%s\n' "
+                        "'objective: improve model' "
+                        "'next_action: edit train.py' "
+                        "> .agent_memory/CONTINUATION.md"
+                    ),
+                    "workdir": ".",
+                    "timeout_ms": 20000,
+                }
+            ),
+        )
+        receipt = written.info["execution"]["filesystem_checkpoint"]
+        self.assertEqual(
+            receipt,
+            {
+                "schema": "agentmemory_filesystem_checkpoint_receipt_v1",
+                "path": ".agent_memory/CONTINUATION.md",
+                "action_kind": "shell_command",
+                "action_completed": True,
+                "changed": True,
+                "exists": True,
+                "regular_file": True,
+                "size_bytes": len(payload.encode("utf-8")),
+                "sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+            },
+        )
+
+        read = manager.step(
+            slot,
+            'shell_command {"command":"cat .agent_memory/CONTINUATION.md",'
+            '"workdir":".","timeout_ms":20000}',
+        )
+        self.assertIn(payload.strip(), read.observation)
+        read_receipt = read.info["execution"]["filesystem_checkpoint"]
+        self.assertFalse(read_receipt["changed"])
+        self.assertTrue(read_receipt["exists"])
+
+    def test_failed_shell_write_cannot_complete_checkpoint(self) -> None:
+        manager, slot, _ = self.reset()
+        result = manager.step(
+            slot,
+            "shell_command "
+            + json.dumps(
+                {
+                    "command": (
+                        "mkdir -p .agent_memory && printf checkpoint > "
+                        ".agent_memory/CONTINUATION.md; exit 7"
+                    ),
+                    "workdir": ".",
+                    "timeout_ms": 20000,
+                }
+            ),
+        )
+        receipt = result.info["execution"]["filesystem_checkpoint"]
+        self.assertFalse(receipt["action_completed"])
+        self.assertTrue(receipt["changed"])
+        self.assertTrue(receipt["exists"])
+        self.assertTrue(receipt["regular_file"])
+
+    def test_checkpoint_reader_rejects_symlink_and_hardlink(self) -> None:
+        memory = self.root / "checkpoint-security" / ".agent_memory"
+        memory.mkdir(parents=True)
+        target = memory.parent / "target.md"
+        target.write_text("checkpoint", encoding="utf-8")
+        checkpoint = memory / "CONTINUATION.md"
+        checkpoint.symlink_to(target)
+        self.assertEqual(
+            _read_filesystem_checkpoint_beneath(memory.parent),
+            (True, False, None, None, None),
+        )
+        checkpoint.unlink()
+        os.link(target, checkpoint)
+        self.assertEqual(
+            _read_filesystem_checkpoint_beneath(memory.parent),
+            (True, False, None, None, None),
+        )
+
+    def test_checkpoint_reader_rejects_path_swap_during_read(self) -> None:
+        memory = self.root / "checkpoint-race" / ".agent_memory"
+        memory.mkdir(parents=True)
+        checkpoint = memory / "CONTINUATION.md"
+        checkpoint.write_bytes(b"first-checkpoint")
+        replacement = memory / "replacement.tmp"
+        replacement.write_bytes(b"other-checkpoint")
+        real_read = os.read
+        swapped = False
+
+        def read_then_swap(descriptor: int, size: int) -> bytes:
+            nonlocal swapped
+            payload = real_read(descriptor, size)
+            if not swapped:
+                os.replace(replacement, checkpoint)
+                swapped = True
+            return payload
+
+        with patch("agentenv_openmle_fast.environment.os.read", read_then_swap):
+            result = _read_filesystem_checkpoint_beneath(memory.parent)
+        self.assertTrue(swapped)
+        self.assertEqual(result, (True, False, None, None, None))
 
     def test_protected_patch_attempt_is_terminal_minus_one(self) -> None:
         manager, slot, _ = self.reset()

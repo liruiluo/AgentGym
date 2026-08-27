@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agentenv_agentmemory.workspace_sandbox import (
     ExecutableFingerprint,
@@ -18,7 +19,12 @@ from agentenv_agentmemory.workspace_sandbox import (
 from agentenv_swesmith.dataset import SwesmithDataset
 from agentenv_swesmith.audit import AUDIT_SCHEMA, SwesmithEpisodeAuditSink
 from agentenv_swesmith.environment import SwesmithEpisodeManager
-from agentenv_swesmith.environment import _changed_paths_observation, _shell_observation
+from agentenv_swesmith.environment import (
+    _changed_paths_observation,
+    _filesystem_checkpoint_receipt,
+    _read_filesystem_checkpoint_beneath,
+    _shell_observation,
+)
 from agentenv_swesmith.grader import SwesmithGradeResult
 from agentenv_swesmith.profile import SwesmithProfileBinding
 from agentenv_swesmith.sandbox import LinuxNamespaceEpisodeSandbox
@@ -155,6 +161,23 @@ class Grader:
         )
 
 
+class InfrastructureFailingGrader:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def grade(self, *, instance, profile, workspace, sandbox):
+        self.calls += 1
+        return SwesmithGradeResult(
+            reward=0.0,
+            resolution_status=None,
+            report={},
+            restored_test_paths=(),
+            f2p_run=None,
+            full_run=None,
+            error="RuntimeError: grader backend unavailable",
+        )
+
+
 class FailingAuditSink:
     def write(self, **_kwargs) -> None:
         raise OSError("audit storage unavailable")
@@ -275,7 +298,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.manager.metadata()["max_observation_bytes"], 6144)
         self.assertEqual(
             self.manager.metadata()["memory_contract"],
-            "policy_compaction_plus_optional_durable_filesystem_v1",
+            "policy_filesystem_checkpoint_then_client_replace_v2",
         )
         self.assertEqual(self.manager.metadata()["training_max_policy_turns"], 75)
         self.assertEqual(
@@ -292,15 +315,15 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         )
         self.assertEqual(
             self.manager.metadata()["reward_contract"],
-            "explicit_submission_full_resolution_binary_v2",
+            "submission_success1_wrong0_invalid_minus0p01_v1",
         )
         self.assertEqual(
             self.manager.metadata()["submission_contract"],
-            "upstream_shell_output_sentinel_v1",
+            "upstream_shell_output_sentinel_source_change_required_v2",
         )
         self.assertEqual(
             self.manager.metadata()["horizon_contract"],
-            "unified_policy_step_no_submission_failure_v2",
+            "unified_policy_step_terminal_failure_minus0p01_v3",
         )
         reset = self.manager.reset(slot, 0)
         self.assertIs(reset.info["episode_success"], False)
@@ -319,6 +342,17 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("at most 8 total policy turns", reset.observation)
         self.assertIn("context compactions consume this same budget", reset.observation)
         self.assertIn("do not wait for the horizon", reset.observation)
+        self.assertIn("reward -0.01", reset.observation)
+        self.assertEqual(self.manager.metadata()["invalid_action_terminal_reward"], -0.01)
+        self.assertEqual(self.manager.metadata()["failed_submission_reward"], 0.0)
+        self.assertEqual(self.manager.metadata()["horizon_failure_reward"], -0.01)
+        self.assertFalse(
+            self.manager.metadata()["valid_shell_nonzero_exit_is_terminal"]
+        )
+        self.assertEqual(
+            self.manager.metadata()["grader_infrastructure_failure"],
+            "sample_excluded",
+        )
         self.assertNotIn("SECRET_GOLD_PATCH", reset.observation)
         self.assertNotIn(self.instance_id, reset.observation)
 
@@ -401,6 +435,117 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.audits.stat().st_mode & 0o777, 0o700)
         self.assertEqual(list(self.audits.glob(".*.tmp")), [])
 
+    def test_no_source_change_submission_is_terminal_once_without_grading(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+        generated = self.manager.step(
+            slot,
+            'shell_command {"command":"mkdir -p src/__pycache__; '
+            'printf cache > src/__pycache__/noise.pyc","workdir":"."}',
+        )
+        self.assertFalse(generated.done)
+
+        result = self.manager.step(
+            slot,
+            'shell_command {"command":"echo '
+            'COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}',
+        )
+
+        self.assertTrue(result.done)
+        self.assertEqual(result.reward, 0.0)
+        self.assertFalse(result.info["sample_excluded"])
+        self.assertEqual(self.grader.calls, 0)
+        detail = self.manager.detail(slot)
+        event = detail["evidence"][-1]
+        self.assertEqual(event["termination_reason"], "submission_without_source_change")
+        self.assertEqual(event["submission"]["source_changed_paths"], [])
+        with self.assertRaisesRegex(RuntimeError, "already terminal"):
+            self.manager.step(slot, 'shell_command {"command":"pwd","workdir":"."}')
+        self.manager.close(slot)
+
+    def test_checkpoint_only_does_not_satisfy_source_change_submission(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+        checkpoint = self.manager.step(
+            slot,
+            'shell_command {"command":"mkdir -p .agent_memory && printf state > '
+            '.agent_memory/CONTINUATION.md","workdir":"."}',
+        )
+        self.assertFalse(checkpoint.done)
+        self.assertTrue(checkpoint.info["filesystem_checkpoint"]["changed"])
+
+        result = self.manager.step(
+            slot,
+            'shell_command {"command":"echo '
+            'COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}',
+        )
+
+        self.assertTrue(result.done)
+        self.assertEqual(result.reward, 0.0)
+        self.assertFalse(result.info["sample_excluded"])
+        self.assertEqual(self.grader.calls, 0)
+        event = self.manager.detail(slot)["evidence"][-1]
+        self.assertEqual(event["termination_reason"], "submission_without_source_change")
+        self.assertEqual(event["submission"]["source_changed_paths"], [])
+        self.manager.close(slot)
+
+    def test_changed_but_unresolved_submission_gets_zero_terminal_reward(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+        self.manager.step(
+            slot,
+            'shell_command {"command":"printf still-wrong > src/value.py","workdir":"."}',
+        )
+
+        result = self.manager.step(
+            slot,
+            'shell_command {"command":"echo '
+            'COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}',
+        )
+
+        self.assertTrue(result.done)
+        self.assertEqual(result.reward, 0.0)
+        self.assertFalse(result.info["sample_excluded"])
+        self.assertEqual(self.grader.calls, 1)
+        detail = self.manager.detail(slot)
+        event = detail["evidence"][-1]
+        self.assertEqual(event["termination_reason"], "grader_unresolved")
+        self.assertEqual(event["terminal_grade"]["native_reward"], 0.0)
+        self.manager.close(slot)
+
+    def test_grader_infrastructure_failure_is_excluded_not_penalized(self) -> None:
+        grader = InfrastructureFailingGrader()
+        manager = SwesmithEpisodeManager(
+            dataset=self.manager.dataset,
+            materializer=self.manager.materializer,
+            profile_resolver=Resolver(),
+            sandbox_factory=lambda _record, _profile: LocalSandbox(),
+            grader=grader,
+            max_steps=8,
+        )
+        slot = manager.create()
+        manager.reset(slot, 0)
+        manager.step(
+            slot,
+            'shell_command {"command":"printf changed > src/value.py","workdir":"."}',
+        )
+
+        result = manager.step(
+            slot,
+            'shell_command {"command":"echo '
+            'COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}',
+        )
+
+        self.assertTrue(result.done)
+        self.assertEqual(result.reward, 0.0)
+        self.assertTrue(result.info["sample_excluded"])
+        self.assertEqual(
+            result.info["sample_exclusion_reason"],
+            "grader_infrastructure_failure",
+        )
+        self.assertEqual(grader.calls, 1)
+        manager.close(slot)
+
     def test_submission_sentinel_must_be_the_first_stdout_line(self) -> None:
         slot = self.manager.create()
         self.manager.reset(slot, 0)
@@ -435,13 +580,209 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("exit_code=7", result.observation)
         self.manager.close(slot)
 
+    def test_checkpoint_receipt_attests_current_action_write_only(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+        payload = "objective: fix parser\nnext_action: inspect parser.py\n"
+        command = (
+            "mkdir -p .agent_memory && printf '%s\\n' "
+            "'objective: fix parser' 'next_action: inspect parser.py' "
+            "> .agent_memory/CONTINUATION.md"
+        )
+        written = self.manager.step(
+            slot,
+            "shell_command " + json.dumps({"command": command, "workdir": "."}),
+        )
+        receipt = written.info["filesystem_checkpoint"]
+        self.assertEqual(
+            receipt,
+            {
+                "schema": "agentmemory_filesystem_checkpoint_receipt_v1",
+                "path": ".agent_memory/CONTINUATION.md",
+                "action_kind": "shell_command",
+                "action_completed": True,
+                "changed": True,
+                "exists": True,
+                "regular_file": True,
+                "size_bytes": len(payload.encode("utf-8")),
+                "sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+            },
+        )
+
+        read = self.manager.step(
+            slot,
+            'shell_command {"command":"cat .agent_memory/CONTINUATION.md",'
+            '"workdir":"."}',
+        )
+        self.assertIn(payload.strip(), read.observation)
+        read_receipt = read.info["filesystem_checkpoint"]
+        self.assertFalse(read_receipt["changed"])
+        self.assertTrue(read_receipt["exists"])
+        self.manager.close(slot)
+
+    def test_checkpoint_receipt_rejects_stale_or_untyped_diff_entry(self) -> None:
+        root = self.root / "checkpoint-receipt"
+        checkpoint = root / ".agent_memory" / "CONTINUATION.md"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_text("current checkpoint\n", encoding="utf-8")
+        payload = checkpoint.read_bytes()
+        current = {
+            "path": ".agent_memory/CONTINUATION.md",
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "bytes": len(payload),
+            "kind": "file",
+        }
+        valid = _filesystem_checkpoint_receipt(
+            root,
+            action_kind="shell_command",
+            action_completed=True,
+            workspace_diff={"added": [current], "modified": [], "deleted": []},
+        )
+        self.assertTrue(valid["changed"])
+
+        stale = dict(current, sha256="a" * 64)
+        stale_receipt = _filesystem_checkpoint_receipt(
+            root,
+            action_kind="shell_command",
+            action_completed=True,
+            workspace_diff={"added": [stale], "modified": [], "deleted": []},
+        )
+        self.assertFalse(stale_receipt["changed"])
+
+        untyped = dict(current)
+        untyped.pop("kind")
+        untyped_receipt = _filesystem_checkpoint_receipt(
+            root,
+            action_kind="shell_command",
+            action_completed=True,
+            workspace_diff={"added": [untyped], "modified": [], "deleted": []},
+        )
+        self.assertFalse(untyped_receipt["changed"])
+
+        same_digest_receipt = _filesystem_checkpoint_receipt(
+            root,
+            action_kind="apply_patch",
+            action_completed=True,
+            workspace_diff={
+                "added": [],
+                "modified": [{"before": current, "after": current}],
+                "deleted": [],
+            },
+        )
+        self.assertFalse(same_digest_receipt["changed"])
+
+    def test_checkpoint_metadata_only_change_cannot_authorize_replacement(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+        initial = self.manager.step(
+            slot,
+            'shell_command {"command":"mkdir -p .agent_memory && printf state > '
+            '.agent_memory/CONTINUATION.md","workdir":"."}',
+        )
+        self.assertTrue(initial.info["filesystem_checkpoint"]["changed"])
+
+        touched = self.manager.step(
+            slot,
+            'shell_command {"command":"touch .agent_memory/CONTINUATION.md",'
+            '"workdir":"."}',
+        )
+        self.assertFalse(touched.info["filesystem_checkpoint"]["changed"])
+        self.manager.close(slot)
+
+    def test_full_size_checkpoint_read_is_exact_policy_observation(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+        payload = "x" * (8 * 1024)
+        command = (
+            "mkdir -p .agent_memory && python3 -c "
+            + repr(
+                "from pathlib import Path; "
+                "Path('.agent_memory/CONTINUATION.md').write_bytes(b'x' * 8192)"
+            )
+        )
+        written = self.manager.step(
+            slot,
+            "shell_command " + json.dumps({"command": command, "workdir": "."}),
+        )
+        self.assertTrue(written.info["filesystem_checkpoint"]["changed"])
+
+        read = self.manager.step(
+            slot,
+            'shell_command {"command":"cat .agent_memory/CONTINUATION.md",'
+            '"workdir":"."}',
+        )
+        self.assertTrue(read.info["filesystem_checkpoint_read"]["observed"])
+        self.assertEqual(read.observation, payload)
+        self.manager.close(slot)
+
+    def test_failed_shell_write_cannot_complete_checkpoint(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+        command = (
+            "mkdir -p .agent_memory && printf checkpoint > "
+            ".agent_memory/CONTINUATION.md; exit 7"
+        )
+        result = self.manager.step(
+            slot,
+            "shell_command " + json.dumps({"command": command, "workdir": "."}),
+        )
+        receipt = result.info["filesystem_checkpoint"]
+        self.assertFalse(receipt["action_completed"])
+        self.assertTrue(receipt["changed"])
+        self.assertTrue(receipt["exists"])
+        self.assertTrue(receipt["regular_file"])
+        self.manager.close(slot)
+
+    def test_checkpoint_reader_rejects_symlink_and_hardlink(self) -> None:
+        memory = self.root / "checkpoint-security" / ".agent_memory"
+        memory.mkdir(parents=True)
+        target = memory.parent / "target.md"
+        target.write_text("checkpoint", encoding="utf-8")
+        checkpoint = memory / "CONTINUATION.md"
+        checkpoint.symlink_to(target)
+        self.assertEqual(
+            _read_filesystem_checkpoint_beneath(memory.parent),
+            (True, False, None, None, None),
+        )
+        checkpoint.unlink()
+        os.link(target, checkpoint)
+        self.assertEqual(
+            _read_filesystem_checkpoint_beneath(memory.parent),
+            (True, False, None, None, None),
+        )
+
+    def test_checkpoint_reader_rejects_path_swap_during_read(self) -> None:
+        memory = self.root / "checkpoint-race" / ".agent_memory"
+        memory.mkdir(parents=True)
+        checkpoint = memory / "CONTINUATION.md"
+        checkpoint.write_bytes(b"first-checkpoint")
+        replacement = memory / "replacement.tmp"
+        replacement.write_bytes(b"other-checkpoint")
+        real_read = os.read
+        swapped = False
+
+        def read_then_swap(descriptor: int, size: int) -> bytes:
+            nonlocal swapped
+            payload = real_read(descriptor, size)
+            if not swapped:
+                os.replace(replacement, checkpoint)
+                swapped = True
+            return payload
+
+        with patch("agentenv_swesmith.environment.os.read", read_then_swap):
+            result = _read_filesystem_checkpoint_beneath(memory.parent)
+        self.assertTrue(swapped)
+        self.assertEqual(result, (True, False, None, None, None))
+
     def test_parser_error_repeats_exact_action_shapes(self) -> None:
         slot = self.manager.create()
         self.manager.reset(slot, 0)
 
         result = self.manager.step(slot, "shell_command pwd")
 
-        self.assertFalse(result.done)
+        self.assertTrue(result.done)
+        self.assertEqual(result.reward, -0.01)
+        self.assertFalse(result.info["sample_excluded"])
         self.assertEqual(
             result.info["actor_credit"],
             {
@@ -474,8 +815,9 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             'shell_command {"command":"sleep 30 &","workdir":"."}',
         )
 
-        self.assertFalse(result.done)
-        self.assertEqual(result.reward, 0.0)
+        self.assertTrue(result.done)
+        self.assertEqual(result.reward, -0.01)
+        self.assertFalse(result.info["sample_excluded"])
         self.assertEqual(result.info["action_kind"], "shell_command")
         self.assertEqual(
             result.info["actor_credit"],
@@ -554,7 +896,9 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             'shell_command {"command":"printf changed > notes.txt"}',
         )
 
-        self.assertFalse(result.done)
+        self.assertTrue(result.done)
+        self.assertEqual(result.reward, -0.01)
+        self.assertFalse(result.info["sample_excluded"])
         self.assertEqual(result.info["action_kind"], "parser_error")
         self.assertFalse(result.info["actor_credit"]["positive_eligible"])
         self.assertIn("Invalid action syntax", result.observation)
@@ -667,7 +1011,9 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             "*** End Patch",
         )
 
-        self.assertFalse(result.done)
+        self.assertTrue(result.done)
+        self.assertEqual(result.reward, -0.01)
+        self.assertFalse(result.info["sample_excluded"])
         self.assertIn("apply_patch failed", result.observation)
         self.assertEqual(
             result.info["actor_credit"],
@@ -753,7 +1099,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
 
         horizon = self.manager.finalize_horizon(slot)
         self.assertTrue(horizon.done)
-        self.assertEqual(horizon.reward, 0.0)
+        self.assertEqual(horizon.reward, -0.01)
         self.assertIs(horizon.info["episode_success"], False)
         self.assertEqual(self.grader.calls, 0)
         detail = self.manager.detail(slot)
@@ -790,7 +1136,8 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         )
 
         self.assertTrue(result.done)
-        self.assertEqual(result.reward, 0.0)
+        self.assertEqual(result.reward, -0.01)
+        self.assertFalse(result.info["sample_excluded"])
         self.assertIs(result.info["episode_success"], False)
         self.assertEqual(self.grader.calls, 0)
         detail = manager.detail(slot)

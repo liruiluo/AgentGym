@@ -38,6 +38,14 @@ HORIZON_CONTRACT = "openmle_fast_global_30_action_v1"
 CLEANUP_CONTRACT = "openmle_fast_owned_resource_cleanup_v1"
 OBSERVATION_CONTRACT = "openmle_fast_bounded_observation_v1"
 RECOVERABLE_INVALID_ACTION_REWARD = -0.01
+FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA = (
+    "agentmemory_filesystem_checkpoint_receipt_v1"
+)
+FILESYSTEM_CHECKPOINT_READ_RECEIPT_SCHEMA = (
+    "agentmemory_filesystem_checkpoint_read_receipt_v1"
+)
+FILESYSTEM_CHECKPOINT_PATH = ".agent_memory/CONTINUATION.md"
+FILESYSTEM_CHECKPOINT_MAX_BYTES = 8 * 1024
 BOUNDARY_CONTRACTS = {
     "actions": ACTION_CONTRACT,
     "workspace": "openmle_fast_public_workspace_v1",
@@ -82,7 +90,7 @@ On a later turn, create workspace-relative `train.py` with one shell_command and
 
 Work as an iterative ML engineer. Training-set metrics do not count as local validation. The printed validation value must come from executed code, not a placeholder. Keep each run within the managed 15000 ms runtime; do not use broad sweeps, nested parallelism, or large grid searches. After a traceback or measured validation result, modify `train.py` and run it again. The environment exposes no repeatable private score or free validation oracle.
 
-Do not write the continuation note before the first measured validation unless an explicit context-compaction request requires it. At that request, write `.agent_memory/OPENMLE_CONTINUATION.md` exactly once: `shell_command {"command":"mkdir -p .agent_memory && printf '%s\\n' 'objective: ...' 'measured_validation_or_failure: ...' 'conclusion: ...' 'code_path: train.py' 'next_action: ...' > .agent_memory/OPENMLE_CONTINUATION.md","workdir":".","timeout_ms":20000}`. Fill the fields with the last metric or exact failure and a `next_action` that changes `train.py` before rerunning; `python train.py` alone is not enough. When compaction finishes, after a continuation marker, read it exactly once and perform that edit; do not re-inspect the task or repeat the note without new evidence.
+Do not write the continuation note before the first measured validation unless an explicit context-compaction request requires it. At that request, write `.agent_memory/CONTINUATION.md` exactly once: `shell_command {"command":"mkdir -p .agent_memory && printf '%s\\n' 'objective: ...' 'measured_validation_or_failure: ...' 'conclusion: ...' 'code_path: train.py' 'next_action: ...' > .agent_memory/CONTINUATION.md","workdir":".","timeout_ms":20000}`. Fill the fields with the last metric or exact failure and a `next_action` that changes `train.py` before rerunning; `python train.py` alone is not enough. When compaction finishes, after a continuation marker, read it exactly once and perform that edit; do not re-inspect the task or repeat the note without new evidence.
 
 Reading, editing, running, writing or reading memory, compaction, and submit all consume the same 30-action budget. Every observation reports completed and remaining actions. TASK.md and data are read-only. When a measured local validation and `submission.csv` exist, iterate only while enough actions remain and submit no later than action 27. `submit` grades against the protected private data exactly once; the first submit is terminal, and there is no automatic submission at the action limit; action 30 ends in failure if it is not submit.
 If an observation reports a parser error, respond next with only a corrected action in one of the exact forms above. Never describe the correction.
@@ -777,9 +785,42 @@ class OpenMLEFastEpisodeManager:
     ) -> EpisodeStep:
         record = episode.record
         grade = None if episode.grade is None else episode.grade.public_payload()
-        execution = (
-            None if episode.last_execution is None else episode.last_execution.as_dict()
+        current_execution = (
+            episode.last_execution
+            if (
+                episode.last_execution is not None
+                and action_kind in {"shell_command", "apply_patch"}
+                and episode.last_execution.action_kind == action_kind
+            )
+            else None
         )
+        execution = None if current_execution is None else current_execution.as_dict()
+        if current_execution is not None and episode.workspace is not None:
+            action_completed = bool(
+                action_status == "completed"
+                and (
+                    current_execution.action_kind != "shell_command"
+                    or (
+                        isinstance(current_execution.exit_code, int)
+                        and not isinstance(current_execution.exit_code, bool)
+                        and current_execution.exit_code == 0
+                        and current_execution.timed_out is False
+                    )
+                )
+            )
+            checkpoint_receipt = _filesystem_checkpoint_receipt(
+                episode.workspace.policy_root,
+                current_execution,
+                action_completed=action_completed,
+            )
+            execution["filesystem_checkpoint"] = checkpoint_receipt
+            execution["filesystem_checkpoint_read"] = (
+                _filesystem_checkpoint_read_receipt(
+                    checkpoint_receipt,
+                    current_execution,
+                    action_completed=action_completed,
+                )
+            )
         info = {
             "schema": EPISODE_SCHEMA,
             "episode_id": episode.episode_id,
@@ -992,6 +1033,160 @@ def _read_submission(
         raise ValueError("submission exceeds the input cap")
     deadline.check()
     return payload
+
+
+def _filesystem_checkpoint_receipt(
+    root: Path,
+    execution: ExecutionReceipt,
+    *,
+    action_completed: bool,
+) -> dict[str, Any]:
+    exists, regular_file, size_bytes, digest, _payload = (
+        _read_filesystem_checkpoint_beneath(root)
+    )
+    return {
+        "schema": FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA,
+        "path": FILESYSTEM_CHECKPOINT_PATH,
+        "action_kind": execution.action_kind,
+        "action_completed": bool(action_completed),
+        "changed": FILESYSTEM_CHECKPOINT_PATH in execution.changed_paths,
+        "exists": exists,
+        "regular_file": regular_file,
+        "size_bytes": size_bytes,
+        "sha256": digest,
+    }
+
+
+def _filesystem_checkpoint_read_receipt(
+    checkpoint_receipt: Mapping[str, Any],
+    execution: ExecutionReceipt,
+    *,
+    action_completed: bool,
+) -> dict[str, Any]:
+    payload = execution.stdout.encode("utf-8")
+    size = checkpoint_receipt.get("size_bytes")
+    digest = checkpoint_receipt.get("sha256")
+    observed = bool(
+        execution.action_kind == "shell_command"
+        and action_completed
+        and execution.visible_output_truncated is False
+        and checkpoint_receipt.get("changed") is False
+        and checkpoint_receipt.get("exists") is True
+        and checkpoint_receipt.get("regular_file") is True
+        and isinstance(size, int)
+        and not isinstance(size, bool)
+        and 0 < size <= FILESYSTEM_CHECKPOINT_MAX_BYTES
+        and isinstance(digest, str)
+        and len(payload) == size
+        and hashlib.sha256(payload).hexdigest() == digest
+    )
+    return {
+        "schema": FILESYSTEM_CHECKPOINT_READ_RECEIPT_SCHEMA,
+        "path": FILESYSTEM_CHECKPOINT_PATH,
+        "observed": observed,
+        "size_bytes": size if isinstance(size, int) and not isinstance(size, bool) else None,
+        "sha256": digest if isinstance(digest, str) else None,
+    }
+
+
+def _read_filesystem_checkpoint_beneath(
+    root: Path,
+) -> tuple[bool, bool, int | None, str | None, bytes | None]:
+    """Read the fixed checkpoint through stable directory/file descriptors.
+
+    The receipt fails closed on symlinks, hard links, path replacement, in-place
+    mutation, special files, and files above the 8 KiB contract.  Returning the
+    payload only to this module lets the endpoint attest an exact stdout read
+    without exposing checkpoint contents as free wrapper state.
+    """
+
+    directory_flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        directory_flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        directory_flags |= os.O_CLOEXEC
+    file_flags = os.O_RDONLY | os.O_NONBLOCK
+    if hasattr(os, "O_NOFOLLOW"):
+        file_flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        file_flags |= os.O_CLOEXEC
+
+    root_fd: int | None = None
+    memory_fd: int | None = None
+    checkpoint_fd: int | None = None
+    try:
+        root_fd = os.open(root, directory_flags)
+        try:
+            memory_fd = os.open(".agent_memory", directory_flags, dir_fd=root_fd)
+        except OSError:
+            return False, False, None, None, None
+        try:
+            path_before = os.stat(
+                "CONTINUATION.md", dir_fd=memory_fd, follow_symlinks=False
+            )
+        except OSError:
+            return False, False, None, None, None
+        try:
+            checkpoint_fd = os.open(
+                "CONTINUATION.md", file_flags, dir_fd=memory_fd
+            )
+        except OSError:
+            return True, False, None, None, None
+
+        before = os.fstat(checkpoint_fd)
+        if not _same_file_identity(path_before, before):
+            return True, False, None, None, None
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            return True, False, None, None, None
+        size = int(before.st_size)
+        payload: bytes | None = None
+        if size <= FILESYSTEM_CHECKPOINT_MAX_BYTES:
+            chunks: list[bytes] = []
+            remaining = FILESYSTEM_CHECKPOINT_MAX_BYTES + 1
+            while remaining > 0:
+                chunk = os.read(checkpoint_fd, min(remaining, 64 * 1024))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            payload = b"".join(chunks)
+
+        after = os.fstat(checkpoint_fd)
+        try:
+            path_after = os.stat(
+                "CONTINUATION.md", dir_fd=memory_fd, follow_symlinks=False
+            )
+        except OSError:
+            return True, False, None, None, None
+        if not (
+            _same_file_identity(before, after)
+            and _same_file_identity(before, path_after)
+        ):
+            return True, False, None, None, None
+        if size > FILESYSTEM_CHECKPOINT_MAX_BYTES:
+            return True, True, size, None, None
+        if payload is None or len(payload) != size:
+            return True, False, None, None, None
+        return True, True, size, hashlib.sha256(payload).hexdigest(), payload
+    except OSError:
+        return False, False, None, None, None
+    finally:
+        for descriptor in (checkpoint_fd, memory_fd, root_fd):
+            if descriptor is not None:
+                os.close(descriptor)
+
+
+def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
+    fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size")
+    if any(getattr(left, name) != getattr(right, name) for name in fields):
+        return False
+    for name in ("st_mtime_ns", "st_ctime_ns", "st_blocks"):
+        if hasattr(left, name) and hasattr(right, name):
+            if getattr(left, name) != getattr(right, name):
+                return False
+    return True
 
 
 def _execution_observation(

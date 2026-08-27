@@ -54,20 +54,13 @@ class SwesmithRuntimeSourceTests(unittest.TestCase):
                 },
             )
 
-    def test_output_caps_fit_the_visible_observation_budget(self) -> None:
-        with patch.dict(
-            os.environ,
-            {
-                "SWESMITH_STDOUT_BYTES": "3000",
-                "SWESMITH_STDERR_BYTES": "3000",
-            },
-            clear=True,
-        ):
+    def test_stdout_capture_covers_full_filesystem_checkpoint(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
             limits = _limits_from_environment(6144)
-        self.assertEqual(limits.stdout_bytes, 3000)
-        self.assertEqual(limits.stderr_bytes, 3000)
+        self.assertEqual(limits.stdout_bytes, 8192)
+        self.assertEqual(limits.stderr_bytes, 3072)
 
-    def test_output_caps_cannot_exceed_the_visible_observation_budget(self) -> None:
+    def test_stdout_capture_cannot_undercut_checkpoint_bound(self) -> None:
         with patch.dict(
             os.environ,
             {
@@ -76,7 +69,7 @@ class SwesmithRuntimeSourceTests(unittest.TestCase):
             },
             clear=True,
         ):
-            with self.assertRaisesRegex(ValueError, "combined observation budget"):
+            with self.assertRaisesRegex(ValueError, "filesystem checkpoint bound"):
                 _limits_from_environment(6144)
 
     def test_policy_and_trusted_grader_timeouts_are_independent(self) -> None:
