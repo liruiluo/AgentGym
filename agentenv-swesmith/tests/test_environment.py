@@ -19,11 +19,14 @@ from agentenv_agentmemory.workspace_sandbox import (
 from agentenv_swesmith.dataset import SwesmithDataset
 from agentenv_swesmith.audit import AUDIT_SCHEMA, SwesmithEpisodeAuditSink
 from agentenv_swesmith.environment import SwesmithEpisodeManager
+from agentenv_swesmith.actions import ParsedPolicyAction, parse_policy_action
 from agentenv_swesmith.environment import (
     _changed_paths_observation,
     _filesystem_checkpoint_receipt,
     _read_filesystem_checkpoint_beneath,
+    _shell_action_progress,
     _shell_observation,
+    _stable_json_sha256,
 )
 from agentenv_swesmith.grader import SwesmithGradeResult
 from agentenv_swesmith.profile import SwesmithProfileBinding
@@ -849,6 +852,50 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             result.observation,
         )
         manager.close(slot)
+
+    def test_stable_json_sha256_accepts_lone_surrogate(self) -> None:
+        digest = _stable_json_sha256({"command": "\udcff"})
+
+        self.assertEqual(
+            digest,
+            "e4049663273d87ec3e803d43db4d495f22fbc23bae7b455170aeb0fd0c483bc9",
+        )
+        self.assertEqual(digest, _stable_json_sha256({"command": "\udcff"}))
+
+    def test_stable_json_sha256_preserves_ascii_digest(self) -> None:
+        self.assertEqual(
+            _stable_json_sha256({"command": "printf ok", "workdir": "."}),
+            "ce54a7b3a1f4907ea937c40a52d805131ea3c1f485678f3a2f7ef177019e0411",
+        )
+
+    def test_shell_action_progress_accepts_surrogate_payloads(self) -> None:
+        action = parse_policy_action(
+            'shell_command {"command":"printf \\udcff","workdir":"."}'
+        )
+        self.assertIsInstance(action, ParsedPolicyAction)
+        self.assertEqual(action.arguments, {"command": "printf \udcff", "workdir": "."})
+        progress = _shell_action_progress(
+            action,
+            result={
+                "exit_code": 0,
+                "timed_out": False,
+                "stdout": "\udcff",
+                "stderr": "",
+                "stdout_truncated": False,
+                "stderr_truncated": False,
+                "termination_reason": None,
+                "workspace_diff": {
+                    "before_tree_sha256": "a" * 64,
+                    "after_tree_sha256": "a" * 64,
+                    "changed_paths": [],
+                },
+            },
+        )
+
+        self.assertEqual(progress["schema"], "swesmith_action_progress_v1")
+        self.assertRegex(progress["action_fingerprint"], r"\A[0-9a-f]{64}\Z")
+        self.assertRegex(progress["result_fingerprint"], r"\A[0-9a-f]{64}\Z")
+        self.assertFalse(progress["workspace_changed"])
 
     def test_oversized_shell_output_is_bounded_with_a_visible_marker(self) -> None:
         observation = _shell_observation(
