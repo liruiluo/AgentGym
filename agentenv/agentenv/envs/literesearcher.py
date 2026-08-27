@@ -420,7 +420,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
         ):
             checkpoint_valid = False
             rejection_reason = "checkpoint_action_submission_mismatch"
-        if response_info.get("native_environment_call_count") != 0:
+        if server_evidence.get("native_environment_call_count") != 0:
             raise RuntimeError(
                 "LiteResearcher checkpoint workspace action called the research backend"
             )

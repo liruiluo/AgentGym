@@ -120,6 +120,7 @@ class LiteResearcherClientTests(unittest.TestCase):
                 },
                 "wrapper_evidence": {
                     "continuation_checkpoint": receipt,
+                    "native_environment_call_count": 0,
                 },
             },
         }
@@ -262,6 +263,22 @@ class LiteResearcherClientTests(unittest.TestCase):
             "inconsistent_valid_receipt",
         )
 
+    def test_checkpoint_accepts_prior_cumulative_research_calls(self) -> None:
+        client = self._bound_client()
+        response = self._checkpoint_response(valid=True)
+        response["info"]["native_environment_call_count"] = 7
+        client._request = Mock(return_value=response)
+
+        output = client.step(
+            'shell_command {"command":"printf state > '
+            '.agent_memory/CONTINUATION.md","workdir":"."}'
+        )
+
+        self.assertEqual(
+            output.info["context_transition"]["operation"],
+            "replace_messages",
+        )
+
     def test_checkpoint_reward_or_backend_call_fails_closed(self) -> None:
         for mutation, message in (
             (("reward", 0.25), "changed reward"),
@@ -274,7 +291,7 @@ class LiteResearcherClientTests(unittest.TestCase):
                 if key == "reward":
                     response[key] = value
                 else:
-                    response["info"][key] = value
+                    response["info"]["wrapper_evidence"][key] = value
                 client._request = Mock(return_value=response)
                 with self.assertRaisesRegex(RuntimeError, message):
                     client.step(
