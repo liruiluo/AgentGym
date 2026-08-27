@@ -8,7 +8,9 @@ import requests
 from agentenv.controller.types import PolicyContextPressure
 from agentenv.envs.literesearcher import (
     LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+    LITERESEARCHER_CONTINUATION_PATH,
     LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
+    LITERESEARCHER_POLICY_CONTINUATION_MARKER,
     LiteResearcherEnvClient,
 )
 
@@ -20,6 +22,9 @@ class LiteResearcherClientTests(unittest.TestCase):
         client.env_server_base = "http://literesearcher.example"
         client.timeout = 30
         client.env_id = 7
+        client.info = {"observation": "Which source answers this question?"}
+        client.max_policy_steps = 40
+        client._policy_step_count = 0
         return client
 
     def test_policy_framing_exposes_normalized_conversation_start(self) -> None:
@@ -52,6 +57,141 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn("context compaction before continuing", prompt)
         self.assertIn("Except when an explicit context-compaction request", prompt)
 
+
+    def test_compaction_request_requires_one_real_bounded_workspace_write(self) -> None:
+        self.assertIn("shell_command", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
+        self.assertIn(
+            LITERESEARCHER_CONTINUATION_PATH,
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
+        self.assertIn("overwrite", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST.lower())
+        self.assertIn("8192", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
+        self.assertNotIn("will not call", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
+
+    @staticmethod
+    def _bound_client(*, selected: bool = True) -> LiteResearcherEnvClient:
+        client = LiteResearcherClientTests._client()
+        client.metadata = {
+            "max_policy_steps": 40,
+            "compaction_contract": "task_neutral_filesystem_checkpoint_v1",
+        }
+        client._reset_policy_transition_state()
+        client._immutable_policy_context = [
+            {"role": "system", "content": "system framing"},
+            {"role": "user", "content": "original question"},
+        ]
+        client._policy_context_bound = True
+        client._selected_policy_control = (
+            "context_compaction" if selected else None
+        )
+        return client
+
+    @staticmethod
+    def _checkpoint_response(*, valid: bool, done: bool = False) -> dict:
+        receipt = {
+            "schema": "agentmemory_continuation_checkpoint_v1",
+            "path": ".agent_memory/CONTINUATION.md",
+            "changed_in_action": valid,
+            "nonempty": valid,
+            "within_size_limit": valid,
+            "bytes": 128 if valid else None,
+            "sha256": "a" * 64 if valid else None,
+            "valid": valid,
+            "rejection_reason": None if valid else "not_changed_in_action",
+        }
+        return {
+            "observation": "Done!",
+            "reward": 0.0,
+            "done": done,
+            "info": {
+                "status": "active" if not done else "success",
+                "action_submission": {
+                    "kind": "workspace",
+                    "op": "SHELL_COMMAND",
+                },
+                "wrapper_evidence": {
+                    "continuation_checkpoint": receipt,
+                },
+            },
+        }
+
+    def test_verified_checkpoint_write_replaces_without_leaking_write_content(self) -> None:
+        client = self._bound_client()
+        client._request = Mock(return_value=self._checkpoint_response(valid=True))
+        raw_action = (
+            'shell_command {"command":"printf secret-evidence > '
+            '.agent_memory/CONTINUATION.md","workdir":"."}'
+        )
+
+        output = client.step(raw_action)
+
+        transition = output.info["context_transition"]
+        self.assertEqual(transition["operation"], "replace_messages")
+        self.assertEqual(
+            transition["messages"],
+            [
+                {"role": "system", "content": "system framing"},
+                {"role": "user", "content": "original question"},
+                {
+                    "role": "user",
+                    "content": LITERESEARCHER_POLICY_CONTINUATION_MARKER,
+                },
+            ],
+        )
+        rendered = repr(transition["messages"])
+        self.assertNotIn("secret-evidence", rendered)
+        self.assertNotIn(raw_action, rendered)
+        self.assertEqual(output.info["native_call_count_after"], 1)
+        self.assertEqual(output.info["policy_step_after"], 1)
+        self.assertEqual(output.info["context_epoch_after"], 1)
+        self.assertEqual(
+            output.info["wrapper_evidence"]["event"],
+            "forced_checkpoint_write",
+        )
+        self.assertTrue(
+            output.info["wrapper_evidence"]["continuation_checkpoint"]["valid"]
+        )
+
+    def test_failed_checkpoint_write_does_not_replace_context(self) -> None:
+        client = self._bound_client()
+        client._request = Mock(return_value=self._checkpoint_response(valid=False))
+
+        output = client.step('shell_command {"command":"true"}')
+
+        self.assertEqual(
+            output.info["context_transition"]["operation"],
+            "append_observation",
+        )
+        self.assertEqual(output.info["context_epoch_after"], 0)
+        self.assertEqual(output.info["native_call_count_after"], 1)
+        self.assertEqual(output.info["policy_step_after"], 1)
+        self.assertIn("not accepted", output.state.lower())
+        self.assertIn(LITERESEARCHER_CONTINUATION_PATH, output.state)
+        self.assertEqual(
+            output.info["wrapper_evidence"]["event"],
+            "forced_checkpoint_rejected",
+        )
+
+    def test_compaction_is_not_forced_when_fewer_than_three_actions_remain(self) -> None:
+        pressure = PolicyContextPressure(
+            action_prompt_tokens=18_000,
+            candidate_prompt_tokens=17_900,
+            max_prompt_tokens=30_720,
+            max_model_tokens=32_768,
+            max_response_tokens=2_048,
+            max_observation_tokens=LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
+            action_observation_envelope_tokens=4,
+        )
+        client = self._bound_client(selected=False)
+        client._policy_step_count = 38
+        self.assertIsNone(client.prepare_policy_turn(pressure))
+        self.assertIsNone(client._selected_policy_control)
+
+        client._policy_step_count = 37
+        self.assertEqual(
+            client.prepare_policy_turn(pressure),
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
 
     def test_shorter_rendered_candidate_does_not_fail_without_pressure(self) -> None:
         client = self._client()

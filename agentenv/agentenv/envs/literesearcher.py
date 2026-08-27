@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 import math
 from typing import Any, Mapping, Sequence
@@ -25,14 +26,42 @@ from agentenv.controller.types import (
 # margin so compaction is sampled before the
 # next native action can push the prompt past the 30,720-token PPO width.
 LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE = 12_288
+LITERESEARCHER_CONTINUATION_PATH = ".agent_memory/CONTINUATION.md"
+LITERESEARCHER_CONTINUATION_MAX_BYTES = 8192
+LITERESEARCHER_COMPACTION_CONTRACT = "task_neutral_filesystem_checkpoint_v1"
+LITERESEARCHER_MIN_ACTIONS_FOR_CHECKPOINT_READ_ANSWER = 3
+_RECEIPT_SCHEMA = "agentmemory_continuation_checkpoint_v1"
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE = (
+    "shell_command {\"command\":\"mkdir -p .agent_memory && printf %s "
+    "'question=...; evidence=...; next_action=...' > "
+    ".agent_memory/CONTINUATION.md\",\"workdir\":\".\","
+    "\"timeout_ms\":10000}"
+)
 
 
 LITERESEARCHER_CONTEXT_COMPACTION_REQUEST = (
-    "The research conversation is nearing its context limit. Write the "
-    "continuation state you want to retain after the earlier interaction is "
-    "removed. Your response will be preserved verbatim and will not call a "
-    "research or workspace tool. Include the unresolved question, useful "
-    "evidence, and paths to any workspace notes you want to consult later."
+    "The research conversation is nearing its context limit. Emit exactly one "
+    "normal executable workspace action that overwrites "
+    f"`{LITERESEARCHER_CONTINUATION_PATH}` with a concise continuation "
+    "checkpoint. Use canonical shell_command or apply_patch syntax, no research "
+    "tool, answer, code fence, or prose outside the action. The resulting file "
+    f"must be nonempty and at most {LITERESEARCHER_CONTINUATION_MAX_BYTES} "
+    "bytes. Preserve the unresolved question, evidence with exact source URLs, "
+    "failed attempts, other useful file paths, and the next action. Example: `"
+    f"{LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE}`."
+)
+
+
+LITERESEARCHER_POLICY_CONTINUATION_MARKER = (
+    "The earlier interaction was removed after a verified policy-authored "
+    f"checkpoint was written to `{LITERESEARCHER_CONTINUATION_PATH}`. Before "
+    "any search, visit, or answer, read it with exactly this normal action: "
+    f'`shell_command {{"command":"cat {LITERESEARCHER_CONTINUATION_PATH}",'
+    '"workdir":".","timeout_ms":10000}`. Continue from the file output; do not '
+    "reconstruct omitted history from this marker."
 )
 
 
@@ -106,11 +135,23 @@ class LiteResearcherEnvClient(BaseEnvClient):
         metadata = self._request("GET", "metadata")
         if metadata.get("domain_id") != "literesearcher":
             raise RuntimeError("LiteResearcher endpoint reports the wrong domain")
-        if (
-            metadata.get("compaction_contract")
-            != "task_neutral_client_replace_messages_v1"
-        ):
+        if metadata.get("compaction_contract") != LITERESEARCHER_COMPACTION_CONTRACT:
             raise RuntimeError("LiteResearcher endpoint reports the wrong compaction contract")
+        if metadata.get("compaction_calls_endpoint_step") is not True:
+            raise RuntimeError("LiteResearcher endpoint does not charge checkpoint writes")
+        if metadata.get("compaction_calls_research_backend") is not False:
+            raise RuntimeError("LiteResearcher checkpoint unexpectedly calls research backend")
+        if metadata.get("continuation_checkpoint_path") != LITERESEARCHER_CONTINUATION_PATH:
+            raise RuntimeError("LiteResearcher endpoint reports the wrong checkpoint path")
+        if (
+            metadata.get("continuation_checkpoint_max_bytes")
+            != LITERESEARCHER_CONTINUATION_MAX_BYTES
+        ):
+            raise RuntimeError("LiteResearcher endpoint reports the wrong checkpoint limit")
+        max_policy_steps = metadata.get("max_policy_steps")
+        if type(max_policy_steps) is not int or max_policy_steps <= 0:
+            raise RuntimeError("LiteResearcher endpoint reports invalid max_policy_steps")
+        self.max_policy_steps = max_policy_steps
         task_count = int(metadata["task_count"])
         if data_len is not None and int(data_len) > task_count:
             raise ValueError(
@@ -204,6 +245,12 @@ class LiteResearcherEnvClient(BaseEnvClient):
         # or safety invariant.
         if pressure.projected_next_prompt_tokens_without_control < capacity:
             return None
+        remaining_actions = self.max_policy_steps - self._policy_step_count
+        if remaining_actions < LITERESEARCHER_MIN_ACTIONS_FOR_CHECKPOINT_READ_ANSWER:
+            # A forced write with fewer than write/read/answer actions remaining
+            # creates an unavoidable checkpoint dead end. The current prompt is
+            # still within capacity, so leave the final actions to the policy.
+            return None
         self._selected_policy_control = "context_compaction"
         return LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
 
@@ -291,27 +338,61 @@ class LiteResearcherEnvClient(BaseEnvClient):
         native_before = self._native_call_count
         policy_before = self._policy_step_count
         context_before = self._context_epoch
-        replacement = deepcopy(framing)
-        replacement.extend(
-            [
-                {"role": "assistant", "content": str(action)},
-                {"role": "user", "content": POLICY_CONTINUATION_MARKER},
-            ]
+        response = self._request(
+            "POST",
+            "step",
+            json={"id": self.env_id, "action": action},
         )
+        self._native_call_count += 1
         self._policy_step_count += 1
-        self._context_epoch += 1
+        self.info = response
         self._selected_policy_control = None
+
+        response_info = response.get("info", {})
+        action_submission = response_info.get("action_submission")
+        if not isinstance(action_submission, Mapping):
+            action_submission = {"raw_policy_output": action}
+        server_evidence = response_info.get("wrapper_evidence")
+        if not isinstance(server_evidence, Mapping):
+            server_evidence = {}
+        receipt = server_evidence.get("continuation_checkpoint")
+        checkpoint_valid, rejection_reason = _validate_checkpoint_receipt(receipt)
+        done = bool(response["done"])
+        context_transition = None
+        state = str(response["observation"])
+        event = "forced_checkpoint_rejected"
+        if checkpoint_valid and not done:
+            replacement = deepcopy(framing)
+            replacement.append(
+                {
+                    "role": "user",
+                    "content": LITERESEARCHER_POLICY_CONTINUATION_MARKER,
+                }
+            )
+            self._context_epoch += 1
+            context_transition = build_task_neutral_context_transition(
+                CONTEXT_OPERATION_REPLACE,
+                messages=replacement,
+            )
+            event = "forced_checkpoint_write"
+        elif done:
+            event = "forced_checkpoint_terminal"
+        else:
+            state = (
+                "Continuation checkpoint was not accepted "
+                f"({rejection_reason}). Use exactly one canonical shell_command "
+                f"or apply_patch action to overwrite {LITERESEARCHER_CONTINUATION_PATH} "
+                f"with 1-{LITERESEARCHER_CONTINUATION_MAX_BYTES} bytes; the earlier "
+                "context has not been removed."
+            )
+
         return StepOutput(
-            state=str(self.info.get("observation", "")),
-            reward=0.0,
-            done=False,
+            state=state,
+            reward=float(response["reward"]),
+            done=done,
             info=build_task_neutral_transition_info(
-                env_info=self.info.get("info", {}),
-                action_submission={
-                    "raw_policy_output": str(action),
-                    "submitted_action": None,
-                    "parser_status": "policy_context_compaction",
-                },
+                env_info=response_info,
+                action_submission=action_submission,
                 native_step_before=native_before,
                 native_step_after=self._native_call_count,
                 native_call_count_before=native_before,
@@ -322,13 +403,15 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 session_epoch_after=0,
                 policy_step_before=policy_before,
                 policy_step_after=self._policy_step_count,
-                context_transition=build_task_neutral_context_transition(
-                    CONTEXT_OPERATION_REPLACE,
-                    messages=replacement,
-                ),
+                context_transition=context_transition,
                 wrapper_evidence={
-                    "event": "context_compaction",
+                    "event": event,
                     "workspace_continuity_id": self.env_id,
+                    "continuation_checkpoint": (
+                        dict(receipt) if isinstance(receipt, Mapping) else None
+                    ),
+                    "checkpoint_rejection_reason": rejection_reason,
+                    "server_wrapper_evidence": dict(server_evidence),
                     "native_environment_call_count": 0,
                 },
             ),
@@ -401,6 +484,32 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 f"status={response.status_code} body={response.text[-1000:]}"
             )
         return response.json()
+
+
+def _validate_checkpoint_receipt(value: Any) -> tuple[bool, str | None]:
+    if not isinstance(value, Mapping):
+        return False, "missing_receipt"
+    if value.get("schema") != _RECEIPT_SCHEMA:
+        return False, "invalid_receipt_schema"
+    if value.get("path") != LITERESEARCHER_CONTINUATION_PATH:
+        return False, "wrong_checkpoint_path"
+    if value.get("valid") is not True:
+        reason = value.get("rejection_reason")
+        return False, reason if isinstance(reason, str) and reason else "invalid_checkpoint"
+    size = value.get("bytes")
+    digest = value.get("sha256")
+    if (
+        value.get("changed_in_action") is not True
+        or value.get("nonempty") is not True
+        or value.get("within_size_limit") is not True
+        or type(size) is not int
+        or not 1 <= size <= LITERESEARCHER_CONTINUATION_MAX_BYTES
+        or not isinstance(digest, str)
+        or _SHA256_RE.fullmatch(digest) is None
+        or value.get("rejection_reason") is not None
+    ):
+        return False, "inconsistent_valid_receipt"
+    return True, None
 
 
 def _copy_policy_messages(
