@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -46,6 +48,11 @@ REWARD_CONTRACT = "submission_success1_wrong0_invalid_minus0p01_v1"
 SUBMISSION_CONTRACT = "upstream_shell_output_sentinel_source_change_required_v2"
 HORIZON_CONTRACT = "unified_policy_step_terminal_failure_minus0p01_v3"
 DEFAULT_MAX_OBSERVATION_BYTES = 6144
+FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA = (
+    "agentmemory_filesystem_checkpoint_receipt_v1"
+)
+FILESYSTEM_CHECKPOINT_PATH = ".agent_memory/CONTINUATION.md"
+FILESYSTEM_CHECKPOINT_MAX_BYTES = 8 * 1024
 GENERATED_PATH_PARTS = frozenset(
     {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox"}
 )
@@ -324,11 +331,24 @@ class SwesmithEpisodeManager:
                 )
                 horizon["observation_after"] = episode.observation
                 episode.evidence.append(horizon)
+            checkpoint_receipt = _filesystem_checkpoint_receipt(
+                episode.workspace.policy_root,
+                action_kind=action.kind,
+                action_completed=_action_completed_for_checkpoint(
+                    action.kind, actor_credit, evidence.get("result")
+                ),
+                workspace_diff=(
+                    evidence.get("result", {}).get("workspace_diff")
+                    if isinstance(evidence.get("result"), Mapping)
+                    else None
+                ),
+            )
             return self._public_step(
                 episode,
                 action_kind=public_action_kind,
                 actor_credit=actor_credit,
                 action_progress=evidence.get("action_progress"),
+                filesystem_checkpoint=checkpoint_receipt,
             )
 
     def observation(self, slot_id: int) -> str:
@@ -434,7 +454,7 @@ class SwesmithEpisodeManager:
             "reward_contract": REWARD_CONTRACT,
             "context_contract": "one_native_issue_continuous_episode_v1",
             "memory_contract": (
-                "policy_compaction_plus_optional_durable_filesystem_v1"
+                "policy_filesystem_checkpoint_then_client_replace_v2"
             ),
             "submission_contract": SUBMISSION_CONTRACT,
             "horizon_contract": HORIZON_CONTRACT,
@@ -707,6 +727,7 @@ class SwesmithEpisodeManager:
         action_kind: str,
         actor_credit: Mapping[str, Any] | None = None,
         action_progress: Mapping[str, Any] | None = None,
+        filesystem_checkpoint: Mapping[str, Any] | None = None,
     ) -> EpisodeStep:
         info: dict[str, Any] = {
             "schema": EPISODE_SCHEMA,
@@ -725,6 +746,8 @@ class SwesmithEpisodeManager:
             info["actor_credit"] = dict(actor_credit)
         if action_progress is not None:
             info["action_progress"] = dict(action_progress)
+        if filesystem_checkpoint is not None:
+            info["filesystem_checkpoint"] = dict(filesystem_checkpoint)
         return EpisodeStep(
             observation=episode.observation,
             reward=episode.reward,
@@ -787,6 +810,80 @@ class SwesmithEpisodeManager:
                 episode.sandbox.close()
             finally:
                 self.materializer.close(episode.workspace)
+
+
+def _action_completed_for_checkpoint(
+    action_kind: str,
+    actor_credit: Mapping[str, Any],
+    result: Any,
+) -> bool:
+    if not isinstance(result, Mapping):
+        return False
+    if action_kind == "apply_patch":
+        return actor_credit.get("basis") in {"workspace_changed", "no_workspace_change"}
+    if action_kind == "shell_command":
+        return bool(
+            actor_credit.get("basis")
+            in {
+                "shell_executed",
+                "terminal_submission",
+                "no_workspace_change",
+                "zero_progress_repeat",
+            }
+            and result.get("exit_code") == 0
+            and result.get("timed_out") is False
+        )
+    return False
+
+
+def _filesystem_checkpoint_receipt(
+    root: Path,
+    *,
+    action_kind: str,
+    action_completed: bool,
+    workspace_diff: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    diff = workspace_diff if isinstance(workspace_diff, Mapping) else {}
+    changed_paths = diff.get("changed_paths", ())
+    changed = bool(
+        isinstance(changed_paths, (list, tuple))
+        and FILESYSTEM_CHECKPOINT_PATH in changed_paths
+    )
+    checkpoint = root / FILESYSTEM_CHECKPOINT_PATH
+    exists = False
+    regular_file = False
+    size_bytes: int | None = None
+    digest: str | None = None
+    try:
+        info = os.lstat(checkpoint)
+    except FileNotFoundError:
+        pass
+    else:
+        exists = True
+        regular_file = stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+        if regular_file:
+            size_bytes = int(info.st_size)
+            if size_bytes <= FILESYSTEM_CHECKPOINT_MAX_BYTES:
+                digest = _file_sha256(checkpoint)
+    return {
+        "schema": FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA,
+        "path": FILESYSTEM_CHECKPOINT_PATH,
+        "action_kind": str(action_kind).lower(),
+        "action_completed": bool(action_completed),
+        "changed": changed,
+        "exists": exists,
+        "regular_file": regular_file,
+        "size_bytes": size_bytes,
+        "sha256": digest,
+    }
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(64 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _normalize_patch_path(raw: str) -> str:

@@ -292,7 +292,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.manager.metadata()["max_observation_bytes"], 6144)
         self.assertEqual(
             self.manager.metadata()["memory_contract"],
-            "policy_compaction_plus_optional_durable_filesystem_v1",
+            "policy_filesystem_checkpoint_then_client_replace_v2",
         )
         self.assertEqual(self.manager.metadata()["training_max_policy_turns"], 75)
         self.assertEqual(
@@ -428,6 +428,90 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertEqual(audits[0].stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.audits.stat().st_mode & 0o777, 0o700)
         self.assertEqual(list(self.audits.glob(".*.tmp")), [])
+
+    def test_filesystem_checkpoint_receipt_requires_current_action_change(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+        action = (
+            'shell_command {"command":"mkdir -p .agent_memory && '
+            'printf checkpoint > .agent_memory/CONTINUATION.md","workdir":"."}'
+        )
+        written = self.manager.step(slot, action)
+        self.assertFalse(written.done)
+        receipt = written.info["filesystem_checkpoint"]
+        self.assertEqual(
+            receipt["schema"], "agentmemory_filesystem_checkpoint_receipt_v1"
+        )
+        self.assertEqual(receipt["path"], ".agent_memory/CONTINUATION.md")
+        self.assertEqual(receipt["action_kind"], "shell_command")
+        self.assertTrue(receipt["action_completed"])
+        self.assertTrue(receipt["changed"])
+        self.assertTrue(receipt["exists"])
+        self.assertTrue(receipt["regular_file"])
+        self.assertEqual(receipt["size_bytes"], len(b"checkpoint"))
+        self.assertEqual(len(receipt["sha256"]), 64)
+
+        unchanged = self.manager.step(slot, action)
+        self.assertFalse(unchanged.done)
+        unchanged_receipt = unchanged.info["filesystem_checkpoint"]
+        self.assertTrue(unchanged_receipt["action_completed"])
+        self.assertFalse(unchanged_receipt["changed"])
+        self.assertTrue(unchanged_receipt["exists"])
+
+    def test_empty_oversized_or_failed_checkpoint_write_is_not_valid(self) -> None:
+        cases = (
+            (
+                'mkdir -p .agent_memory && : > .agent_memory/CONTINUATION.md',
+                0,
+                True,
+            ),
+            (
+                'mkdir -p .agent_memory && head -c 8193 /dev/zero > '
+                '.agent_memory/CONTINUATION.md',
+                8193,
+                True,
+            ),
+            (
+                'mkdir -p .agent_memory && printf partial > '
+                '.agent_memory/CONTINUATION.md; exit 1',
+                len(b"partial"),
+                False,
+            ),
+        )
+        for command, expected_size, completed in cases:
+            with self.subTest(command=command):
+                slot = self.manager.create()
+                self.manager.reset(slot, 0)
+                result = self.manager.step(
+                    slot,
+                    'shell_command ' + json.dumps(
+                        {"command": command, "workdir": "."},
+                        separators=(",", ":"),
+                    ),
+                )
+                receipt = result.info["filesystem_checkpoint"]
+                self.assertEqual(receipt["size_bytes"], expected_size)
+                self.assertEqual(receipt["action_completed"], completed)
+                self.assertTrue(receipt["changed"])
+                self.assertTrue(receipt["exists"])
+                self.assertTrue(receipt["regular_file"])
+                if expected_size > 8192:
+                    self.assertIsNone(receipt["sha256"])
+                self.manager.close(slot)
+
+    def test_unrelated_workspace_write_does_not_authorize_checkpoint(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+        result = self.manager.step(
+            slot,
+            'shell_command {"command":"printf note > notes.txt","workdir":"."}',
+        )
+        receipt = result.info["filesystem_checkpoint"]
+        self.assertTrue(receipt["action_completed"])
+        self.assertFalse(receipt["changed"])
+        self.assertFalse(receipt["exists"])
+        self.assertIsNone(receipt["size_bytes"])
+        self.assertIsNone(receipt["sha256"])
 
     def test_no_source_change_submission_is_terminal_once_without_grading(self) -> None:
         slot = self.manager.create()
