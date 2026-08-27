@@ -32,6 +32,10 @@ LITERESEARCHER_COMPACTION_CONTRACT = "task_neutral_filesystem_checkpoint_v1"
 LITERESEARCHER_MIN_ACTIONS_FOR_CHECKPOINT_READ_ANSWER = 3
 _RECEIPT_SCHEMA = "agentmemory_continuation_checkpoint_v1"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
+_WORKSPACE_ACTION_MARKER_RE = re.compile(
+    r"(?m)^(shell_command(?= \{)|apply_patch(?=\r?$))"
+)
+_MAX_WORKSPACE_REASONING_PREFIX_CHARS = 2048
 
 
 LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE = (
@@ -338,6 +342,50 @@ class LiteResearcherEnvClient(BaseEnvClient):
         native_before = self._native_call_count
         policy_before = self._policy_step_count
         context_before = self._context_epoch
+        if not _is_workspace_action_candidate(action):
+            self._policy_step_count += 1
+            self._selected_policy_control = None
+            state = (
+                "Continuation checkpoint was not accepted (workspace action required). "
+                "Use exactly one canonical shell_command or apply_patch action to "
+                f"overwrite {LITERESEARCHER_CONTINUATION_PATH}; no search, visit, "
+                "answer, code fence, or standalone prose was executed. The earlier "
+                "context has not been removed."
+            )
+            return StepOutput(
+                state=state,
+                reward=0.0,
+                done=False,
+                info=build_task_neutral_transition_info(
+                    env_info=self.info.get("info", {}),
+                    action_submission={
+                        "raw_policy_output": str(action),
+                        "submitted_action": None,
+                        "parser_status": (
+                            "forced_checkpoint_requires_workspace_action"
+                        ),
+                    },
+                    native_step_before=native_before,
+                    native_step_after=self._native_call_count,
+                    native_call_count_before=native_before,
+                    native_call_count_after=self._native_call_count,
+                    context_epoch_before=context_before,
+                    context_epoch_after=self._context_epoch,
+                    session_epoch_before=0,
+                    session_epoch_after=0,
+                    policy_step_before=policy_before,
+                    policy_step_after=self._policy_step_count,
+                    wrapper_evidence={
+                        "event": "forced_checkpoint_rejected",
+                        "workspace_continuity_id": self.env_id,
+                        "checkpoint_rejection_reason": (
+                            "workspace_action_required"
+                        ),
+                        "endpoint_step_dispatched": False,
+                        "native_environment_call_count": 0,
+                    },
+                ),
+            )
         response = self._request(
             "POST",
             "step",
@@ -412,6 +460,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
                     ),
                     "checkpoint_rejection_reason": rejection_reason,
                     "server_wrapper_evidence": dict(server_evidence),
+                    "endpoint_step_dispatched": True,
                     "native_environment_call_count": 0,
                 },
             ),
@@ -486,6 +535,21 @@ class LiteResearcherEnvClient(BaseEnvClient):
         return response.json()
 
 
+def _is_workspace_action_candidate(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    if value.startswith("shell_command") or value.startswith("apply_patch\n"):
+        return True
+    match = _WORKSPACE_ACTION_MARKER_RE.search(value)
+    if match is None:
+        return False
+    prefix = value[: match.start(1)]
+    return (
+        "```" not in prefix
+        and len(prefix) <= _MAX_WORKSPACE_REASONING_PREFIX_CHARS
+    )
+
+
 def _validate_checkpoint_receipt(value: Any) -> tuple[bool, str | None]:
     if not isinstance(value, Mapping):
         return False, "missing_receipt"
@@ -496,6 +560,10 @@ def _validate_checkpoint_receipt(value: Any) -> tuple[bool, str | None]:
     if value.get("valid") is not True:
         reason = value.get("rejection_reason")
         return False, reason if isinstance(reason, str) and reason else "invalid_checkpoint"
+    if value.get("action_kind") not in {"SHELL_COMMAND", "APPLY_PATCH"}:
+        return False, "wrong_checkpoint_action_kind"
+    if value.get("action_execution_succeeded") is not True:
+        return False, "checkpoint_action_failed"
     size = value.get("bytes")
     digest = value.get("sha256")
     if (

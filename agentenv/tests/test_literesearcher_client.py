@@ -91,6 +91,8 @@ class LiteResearcherClientTests(unittest.TestCase):
         receipt = {
             "schema": "agentmemory_continuation_checkpoint_v1",
             "path": ".agent_memory/CONTINUATION.md",
+            "action_kind": "SHELL_COMMAND",
+            "action_execution_succeeded": valid,
             "changed_in_action": valid,
             "nonempty": valid,
             "within_size_limit": valid,
@@ -150,6 +152,62 @@ class LiteResearcherClientTests(unittest.TestCase):
         )
         self.assertTrue(
             output.info["wrapper_evidence"]["continuation_checkpoint"]["valid"]
+        )
+
+    def test_forced_checkpoint_rejects_research_action_without_endpoint_dispatch(self) -> None:
+        client = self._bound_client()
+        client._request = Mock()
+        search_action = (
+            '<tool_call>{"name":"search","arguments":'
+            '{"query":["source"]}}</tool_call>'
+        )
+
+        output = client.step(search_action)
+
+        client._request.assert_not_called()
+        self.assertEqual(output.reward, 0.0)
+        self.assertFalse(output.done)
+        self.assertEqual(
+            output.info["context_transition"]["operation"],
+            "append_observation",
+        )
+        self.assertEqual(output.info["native_call_count_after"], 0)
+        self.assertEqual(output.info["policy_step_after"], 1)
+        self.assertEqual(
+            output.info["action_submission"]["raw_policy_output"],
+            search_action,
+        )
+        self.assertFalse(
+            output.info["wrapper_evidence"]["endpoint_step_dispatched"]
+        )
+        self.assertEqual(
+            output.info["wrapper_evidence"]["checkpoint_rejection_reason"],
+            "workspace_action_required",
+        )
+
+    def test_valid_diff_from_failed_checkpoint_action_does_not_replace(self) -> None:
+        client = self._bound_client()
+        response = self._checkpoint_response(valid=True)
+        receipt = response["info"]["wrapper_evidence"][
+            "continuation_checkpoint"
+        ]
+        receipt["action_execution_succeeded"] = False
+        receipt["valid"] = False
+        receipt["rejection_reason"] = "action_execution_failed"
+        client._request = Mock(return_value=response)
+
+        output = client.step(
+            'shell_command {"command":"write-then-exit-7"}'
+        )
+
+        self.assertEqual(
+            output.info["context_transition"]["operation"],
+            "append_observation",
+        )
+        self.assertEqual(output.info["context_epoch_after"], 0)
+        self.assertEqual(
+            output.info["wrapper_evidence"]["checkpoint_rejection_reason"],
+            "action_execution_failed",
         )
 
     def test_failed_checkpoint_write_does_not_replace_context(self) -> None:
