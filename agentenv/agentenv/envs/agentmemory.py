@@ -38,6 +38,7 @@ from .filesystem_checkpoint import (
     build_filesystem_checkpoint_receipt,
     build_filesystem_checkpoint_retry_observation,
     build_post_checkpoint_context,
+    build_post_checkpoint_read_retry_context,
     checkpoint_retry_ceiling_tokens,
     filesystem_checkpoint_action_completed,
     filesystem_checkpoint_failure_reason,
@@ -2284,6 +2285,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self._policy_context_bound = False
         self._pending_session_handoff: dict[str, Any] | None = None
         self._pending_checkpoint_read: dict[str, Any] | None = None
+        self._pending_checkpoint_read_framing: list[dict[str, str]] | None = None
         self._selected_policy_control: str | None = None
 
     def bind_policy_context(
@@ -2417,6 +2419,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         context_before = self._context_epoch
         session_before = self._session_epoch
         checkpoint_read_pending_before = self._pending_checkpoint_read
+        checkpoint_read_framing_before = self._pending_checkpoint_read_framing
         response = self.post("step", {"action": parsed_action})
         self._native_call_count += 1
         self._policy_step_count += 1
@@ -2540,6 +2543,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
             )
             if checkpoint_read_satisfied or bool(response["done"]):
                 self._pending_checkpoint_read = None
+                self._pending_checkpoint_read_framing = None
 
         policy_observation = (
             build_filesystem_checkpoint_read_retry_observation(
@@ -2568,8 +2572,17 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 checkpoint_read_pending_before is not None
                 and not checkpoint_read_satisfied
             ):
+                if checkpoint_read_framing_before is None:
+                    raise RuntimeError(
+                        "WebShop pending checkpoint read lost its trusted framing"
+                    )
                 context_transition = build_task_neutral_context_transition(
-                    CONTEXT_OPERATION_APPEND
+                    CONTEXT_OPERATION_REPLACE,
+                    messages=build_post_checkpoint_read_retry_context(
+                        checkpoint_read_framing_before,
+                        checkpoint_read_pending_before,
+                        read_failure_reason or "checkpoint_read_not_observed",
+                    ),
                 )
             elif self.is_filesystem and session_advanced:
                 context_transition = build_task_neutral_context_transition(
@@ -2682,6 +2695,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
             self._context_epoch += 1
             self._pending_session_handoff = None
             self._pending_checkpoint_read = dict(checkpoint_receipt)
+            self._pending_checkpoint_read_framing = deepcopy(framing)
             context_transition = build_task_neutral_context_transition(
                 CONTEXT_OPERATION_REPLACE,
                 messages=replacement,
@@ -2689,6 +2703,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         elif native_output.done:
             self._pending_session_handoff = None
             self._pending_checkpoint_read = None
+            self._pending_checkpoint_read_framing = None
 
         return StepOutput(
             state=policy_observation,

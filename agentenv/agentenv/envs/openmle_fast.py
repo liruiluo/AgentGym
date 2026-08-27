@@ -28,6 +28,7 @@ from .filesystem_checkpoint import (
     build_filesystem_checkpoint_read_retry_observation,
     build_filesystem_checkpoint_retry_observation,
     build_post_checkpoint_context,
+    build_post_checkpoint_read_retry_context,
     filesystem_checkpoint_failure_reason,
     filesystem_checkpoint_framing_sha256,
     filesystem_checkpoint_read_failure_reason,
@@ -320,6 +321,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         self._selected_policy_control: str | None = None
         self._checkpoint_retry_pending = False
         self._pending_checkpoint_read: dict[str, Any] | None = None
+        self._pending_checkpoint_read_framing: list[dict[str, str]] | None = None
 
     def __len__(self) -> int:
         return self.data_len
@@ -421,6 +423,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         context_before = self._context_epoch
         session_before = self._session_epoch
         checkpoint_read_pending_before = self._pending_checkpoint_read
+        checkpoint_read_framing_before = self._pending_checkpoint_read_framing
         context_control_selected = self._selected_policy_control == "context_compaction"
         response = self._request(
             "POST", "step", json={"id": self.env_id, "action": action}
@@ -534,9 +537,22 @@ class OpenMLEFastEnvClient(BaseEnvClient):
             )
             if read_satisfied or done:
                 self._pending_checkpoint_read = None
+                self._pending_checkpoint_read_framing = None
             elif not context_control_selected:
                 policy_state = build_filesystem_checkpoint_read_retry_observation(
                     read_failure_reason or "checkpoint_read_not_observed"
+                )
+                if checkpoint_read_framing_before is None:
+                    raise RuntimeError(
+                        "OpenMLE-fast pending checkpoint read lost its trusted framing"
+                    )
+                context_transition = build_task_neutral_context_transition(
+                    CONTEXT_OPERATION_REPLACE,
+                    messages=build_post_checkpoint_read_retry_context(
+                        checkpoint_read_framing_before,
+                        checkpoint_read_pending_before,
+                        read_failure_reason or "checkpoint_read_not_observed",
+                    ),
                 )
         if context_control_selected:
             execution = env_info.get("execution")
@@ -575,6 +591,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                 )
                 self._context_epoch += 1
                 self._pending_checkpoint_read = dict(checkpoint_receipt)
+                self._pending_checkpoint_read_framing = deepcopy(framing)
                 context_transition = build_task_neutral_context_transition(
                     CONTEXT_OPERATION_REPLACE,
                     messages=replacement,
@@ -609,6 +626,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
             }
         elif done:
             self._pending_checkpoint_read = None
+            self._pending_checkpoint_read_framing = None
         return StepOutput(
             state=policy_state,
             reward=reward,

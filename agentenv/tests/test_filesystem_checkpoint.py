@@ -14,6 +14,7 @@ from agentenv.envs.filesystem_checkpoint import (
     build_filesystem_checkpoint_receipt,
     build_filesystem_checkpoint_retry_observation,
     build_post_checkpoint_context,
+    build_post_checkpoint_read_retry_context,
     checkpoint_retry_ceiling_tokens,
     checkpoint_retry_trigger_tokens,
     filesystem_checkpoint_action_completed,
@@ -28,6 +29,44 @@ from agentenv.envs.filesystem_checkpoint import (
 
 
 class FilesystemCheckpointContractTest(unittest.TestCase):
+
+    def test_failed_read_retry_context_is_bounded_stable_and_nonleaking(self) -> None:
+        receipt = {
+            "schema": "agentmemory_filesystem_checkpoint_receipt_v1",
+            "path": FILESYSTEM_CHECKPOINT_PATH,
+            "action_kind": "shell_command",
+            "action_completed": True,
+            "changed": True,
+            "exists": True,
+            "regular_file": True,
+            "size_bytes": len(b"secret checkpoint body"),
+            "sha256": hashlib.sha256(b"secret checkpoint body").hexdigest(),
+        }
+        framing = [
+            {"role": "system", "content": "trusted task contract"},
+            {"role": "user", "content": "immutable task observation"},
+        ]
+        reason = "checkpoint_read_not_observed"
+
+        first = build_post_checkpoint_read_retry_context(
+            framing,
+            receipt,
+            reason,
+        )
+        second = build_post_checkpoint_read_retry_context(
+            framing,
+            receipt,
+            reason,
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(first[0], framing[0])
+        self.assertIn(receipt["sha256"], first[-1]["content"])
+        self.assertIn("Checkpoint read failed", first[-1]["content"])
+        self.assertNotIn("secret checkpoint body", str(first))
+        self.assertNotIn("failed policy action", str(first))
+        self.assertNotIn("large native observation", str(first))
+        self.assertLess(len(str(first).encode("utf-8")), 4096)
 
     def test_shell_checkpoint_requires_zero_exit_without_timeout(self) -> None:
         self.assertTrue(

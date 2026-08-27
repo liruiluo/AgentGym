@@ -24,6 +24,7 @@ from .filesystem_checkpoint import (
     build_filesystem_checkpoint_read_retry_observation,
     build_filesystem_checkpoint_retry_observation,
     build_post_checkpoint_context,
+    build_post_checkpoint_read_retry_context,
     filesystem_checkpoint_failure_reason,
     filesystem_checkpoint_framing_sha256,
     filesystem_checkpoint_read_failure_reason,
@@ -267,6 +268,7 @@ class SwesmithEnvClient(BaseEnvClient):
         self._selected_policy_control: str | None = None
         self._checkpoint_retry_pending = False
         self._pending_checkpoint_read: dict[str, Any] | None = None
+        self._pending_checkpoint_read_framing: list[dict[str, str]] | None = None
         self._zero_progress_shell_receipts: set[tuple[str, str]] = set()
 
     def _classify_shell_actor_credit(
@@ -388,6 +390,7 @@ class SwesmithEnvClient(BaseEnvClient):
         context_before = self._context_epoch
         session_before = self._session_epoch
         checkpoint_read_pending_before = self._pending_checkpoint_read
+        checkpoint_read_framing_before = self._pending_checkpoint_read_framing
         response = self._request(
             "POST",
             "step",
@@ -506,6 +509,7 @@ class SwesmithEnvClient(BaseEnvClient):
             )
             if read_satisfied or bool(response["done"]):
                 self._pending_checkpoint_read = None
+                self._pending_checkpoint_read_framing = None
         policy_state = (
             build_filesystem_checkpoint_read_retry_observation(
                 read_failure_reason or "checkpoint_read_not_observed"
@@ -515,6 +519,24 @@ class SwesmithEnvClient(BaseEnvClient):
             and not bool(response["done"])
             else str(response["observation"])
         )
+        context_transition = None
+        if (
+            checkpoint_read_pending_before is not None
+            and not read_satisfied
+            and not bool(response["done"])
+        ):
+            if checkpoint_read_framing_before is None:
+                raise RuntimeError(
+                    "SWE-smith pending checkpoint read lost its trusted framing"
+                )
+            context_transition = build_task_neutral_context_transition(
+                CONTEXT_OPERATION_REPLACE,
+                messages=build_post_checkpoint_read_retry_context(
+                    checkpoint_read_framing_before,
+                    checkpoint_read_pending_before,
+                    read_failure_reason or "checkpoint_read_not_observed",
+                ),
+            )
         return StepOutput(
             state=policy_state,
             reward=reward,
@@ -532,6 +554,7 @@ class SwesmithEnvClient(BaseEnvClient):
                 session_epoch_after=self._session_epoch,
                 policy_step_before=policy_before,
                 policy_step_after=self._policy_step_count,
+                context_transition=context_transition,
                 wrapper_evidence=wrapper_evidence,
             ),
         )
@@ -574,6 +597,7 @@ class SwesmithEnvClient(BaseEnvClient):
             )
             self._context_epoch += 1
             self._pending_checkpoint_read = dict(checkpoint_receipt)
+            self._pending_checkpoint_read_framing = deepcopy(framing)
             self._zero_progress_shell_receipts.clear()
             context_transition = build_task_neutral_context_transition(
                 CONTEXT_OPERATION_REPLACE,
@@ -581,6 +605,7 @@ class SwesmithEnvClient(BaseEnvClient):
             )
         elif native_output.done:
             self._pending_checkpoint_read = None
+            self._pending_checkpoint_read_framing = None
 
         native_wrapper = info.get("wrapper_evidence", {})
         actor_credit = (

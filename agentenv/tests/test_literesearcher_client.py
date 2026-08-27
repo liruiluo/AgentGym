@@ -39,6 +39,7 @@ class LiteResearcherClientTests(unittest.TestCase):
         client._selected_policy_control = None
         client._checkpoint_retry_pending = False
         client._pending_checkpoint_read = None
+        client._pending_checkpoint_read_framing = None
         return client
 
     def test_prompt_uses_exact_native_tool_and_workspace_formats(self) -> None:
@@ -216,10 +217,11 @@ class LiteResearcherClientTests(unittest.TestCase):
             "agentenv.envs.literesearcher.requests.request",
             return_value=write_response,
         ):
-            client.step(
+            write = client.step(
                 'shell_command {"command":"printf checkpoint > '
                 '.agent_memory/CONTINUATION.md"}'
             )
+        post_checkpoint_messages = write.info["context_transition"]["messages"]
 
         pressure = PolicyContextPressure(
             action_prompt_tokens=100,
@@ -234,7 +236,7 @@ class LiteResearcherClientTests(unittest.TestCase):
 
         wrong_response = Mock(status_code=200)
         wrong_response.json.return_value = {
-            "observation": "search result",
+            "observation": "UNIQUE_LARGE_NATIVE_SEARCH_OBSERVATION",
             "reward": 0.0,
             "done": False,
             "info": {
@@ -252,6 +254,26 @@ class LiteResearcherClientTests(unittest.TestCase):
             wrong.info["wrapper_evidence"]["checkpoint_read_retry_pending"]
         )
         self.assertIsNotNone(client._pending_checkpoint_read)
+        self.assertEqual(
+            wrong.info["context_transition"]["operation"], "replace_messages"
+        )
+        retry_messages = wrong.info["context_transition"]["messages"]
+        self.assertIn("Checkpoint read failed", str(retry_messages))
+        self.assertNotIn('<function=search>["query"]', str(retry_messages))
+        self.assertNotIn("UNIQUE_LARGE_NATIVE_SEARCH_OBSERVATION", str(retry_messages))
+        self.assertEqual(retry_messages[0], post_checkpoint_messages[0])
+        self.assertEqual(wrong.info["context_epoch_after"], 1)
+
+        with patch(
+            "agentenv.envs.literesearcher.requests.request",
+            return_value=wrong_response,
+        ):
+            second_wrong = client.step('<function=search>["second query"]')
+        self.assertEqual(
+            second_wrong.info["context_transition"]["messages"], retry_messages
+        )
+        self.assertNotIn("second query", str(retry_messages))
+        self.assertEqual(second_wrong.info["context_epoch_after"], 1)
 
         read_receipt = {
             "schema": FILESYSTEM_CHECKPOINT_READ_RECEIPT_SCHEMA,
@@ -284,6 +306,7 @@ class LiteResearcherClientTests(unittest.TestCase):
             )
         self.assertTrue(read.info["wrapper_evidence"]["checkpoint_read_satisfied"])
         self.assertIsNone(client._pending_checkpoint_read)
+        self.assertIsNone(client._pending_checkpoint_read_framing)
 
     def test_failed_checkpoint_keeps_context_epoch_and_requests_retry(self) -> None:
         client = self._client()

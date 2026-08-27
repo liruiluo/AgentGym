@@ -294,6 +294,30 @@ def build_post_checkpoint_context(
     return normalized
 
 
+def build_post_checkpoint_read_retry_context(
+    messages: Sequence[Mapping[str, str]],
+    receipt_value: Any,
+    reason: str,
+) -> list[dict[str, str]]:
+    """Rebuild the bounded post-checkpoint prompt after a failed required read.
+
+    The failed policy action and its native observation remain in the trajectory
+    ledger, but neither is copied into the next prompt.  Rebuilding from the
+    same trusted framing and verified checkpoint receipt makes repeated failed
+    reads constant-size while still requiring a later ordinary filesystem read.
+    """
+
+    replacement = build_post_checkpoint_context(messages, receipt_value)
+    retry = build_filesystem_checkpoint_read_retry_observation(reason)
+    if replacement[-1]["role"] == "user":
+        replacement[-1]["content"] = (
+            f"{replacement[-1]['content']}\n\n{retry}"
+        )
+    else:
+        replacement.append({"role": "user", "content": retry})
+    return replacement
+
+
 def build_filesystem_checkpoint_receipt(
     *,
     action_kind: str,
