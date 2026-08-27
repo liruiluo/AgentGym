@@ -11,6 +11,8 @@ from agentenv_agentmemory.literesearcher import (
     LiteResearcherWrapper,
     load_coverage_manifest,
 )
+from agentenv_agentmemory.persistent_workspace import parse_workspace_action
+from agentenv_agentmemory.workspace_patch import parse_workspace_patch
 
 
 FIXTURE = (
@@ -33,13 +35,18 @@ class FakeWorkspace:
         self.closed = False
 
     def apply(self, action: str, *, env_step: int, phase_index: int):
+        parsed = parse_workspace_action(action)
+        if parsed is None:
+            raise ValueError("expected a canonical workspace action")
+        if parsed.tool_name == "apply_patch":
+            parse_workspace_patch(parsed.tool_input)
         self.actions.append(action)
         return type(
             "WorkspaceResult",
             (),
             {
                 "message": f"workspace step={env_step} phase={phase_index}",
-                "op": "SHELL_COMMAND",
+                "op": parsed.tool_name.upper(),
             },
         )()
 
@@ -490,6 +497,167 @@ class LiteResearcherIntakeTests(unittest.TestCase):
         wrapper.close(second["id"])
         self.assertEqual(wrapper.metadata()["active_environment_count"], 0)
         self.assertEqual(wrapper.metadata()["active_workspace_count"], 0)
+
+    def test_workspace_accepts_bounded_visible_prefix_before_one_action(self) -> None:
+        workspaces: dict[int, FakeWorkspace] = {}
+
+        def factory(env_id: int) -> FakeWorkspace:
+            workspace = FakeWorkspace()
+            workspaces[env_id] = workspace
+            return workspace
+
+        wrapper = LiteResearcherWrapper(
+            self.coverage,
+            FrozenLiteResearchBackend(self.coverage),
+            workspace_factory=factory,
+        )
+        env_id = wrapper.create(data_idx=0)["id"]
+        patch_prefix = "I found useful evidence and will preserve it.\n\n"
+        executed_patch = (
+            "apply_patch\n*** Begin Patch\n"
+            "*** Add File: .agent_memory/research.md\n"
+            "+evidence\n*** End Patch"
+        )
+        patch_action = patch_prefix + executed_patch
+        patch_result = wrapper.step(env_id, patch_action)
+        self.assertFalse(patch_result["done"])
+        self.assertEqual(patch_result["info"]["status"], "active")
+        self.assertEqual(workspaces[0].actions[-1], executed_patch)
+        self.assertEqual(
+            patch_result["info"]["action_submission"]["raw_policy_output"],
+            patch_action,
+        )
+        self.assertEqual(
+            patch_result["info"]["action_submission"]["reasoning_prefix_chars"],
+            len(patch_prefix),
+        )
+        self.assertEqual(
+            patch_result["info"]["action_submission"]
+            ["executed_workspace_action_sha256"],
+            hashlib.sha256(executed_patch.encode("utf-8")).hexdigest(),
+        )
+
+        shell_prefix = "I will read the saved evidence before answering.\n\n"
+        executed_shell = (
+            'shell_command {"command":"cat .agent_memory/research.md",'
+            '"workdir":".","timeout_ms":10000}'
+        )
+        shell_result = wrapper.step(env_id, shell_prefix + executed_shell)
+        self.assertFalse(shell_result["done"])
+        self.assertEqual(shell_result["info"]["status"], "active")
+        self.assertEqual(workspaces[0].actions[-1], executed_shell)
+        self.assertEqual(
+            shell_result["info"]["action_submission"]["reasoning_prefix_chars"],
+            len(shell_prefix),
+        )
+        wrapper.close(env_id)
+
+    def test_workspace_zero_prefix_actions_keep_legacy_execution_path(self) -> None:
+        workspaces: dict[int, FakeWorkspace] = {}
+
+        def factory(env_id: int) -> FakeWorkspace:
+            workspace = FakeWorkspace()
+            workspaces[env_id] = workspace
+            return workspace
+
+        wrapper = LiteResearcherWrapper(
+            self.coverage,
+            FrozenLiteResearchBackend(self.coverage),
+            workspace_factory=factory,
+        )
+        env_id = wrapper.create(data_idx=0)["id"]
+        actions = (
+            'shell_command {"command":"pwd"}',
+            "apply_patch\n*** Begin Patch\n*** Add File: note.md\n+x\n*** End Patch",
+            "apply_patch\n*** Begin Patch\n*** Update File: note.md\n@@\n"
+            "-old\n+new\n apply_patch\n"
+            ' shell_command {"command":"pwd"}\n*** End Patch',
+        )
+        for action in actions:
+            result = wrapper.step(env_id, action)
+            self.assertFalse(result["done"])
+            self.assertEqual(result["info"]["status"], "active")
+            self.assertEqual(workspaces[0].actions[-1], action)
+            self.assertEqual(
+                result["info"]["action_submission"]["reasoning_prefix_chars"],
+                0,
+            )
+        wrapper.close(env_id)
+
+    def test_workspace_prefix_boundary_is_measured_on_raw_prefix(self) -> None:
+        workspaces: dict[int, FakeWorkspace] = {}
+
+        def factory(env_id: int) -> FakeWorkspace:
+            workspace = FakeWorkspace()
+            workspaces[env_id] = workspace
+            return workspace
+
+        wrapper = LiteResearcherWrapper(
+            self.coverage,
+            FrozenLiteResearchBackend(self.coverage),
+            workspace_factory=factory,
+        )
+        accepted_prefix = "x" * 2047 + "\n"
+        env_id = wrapper.create(data_idx=0)["id"]
+        accepted = wrapper.step(
+            env_id, accepted_prefix + 'shell_command {"command":"pwd"}'
+        )
+        self.assertEqual(accepted["info"]["status"], "active")
+        self.assertEqual(
+            accepted["info"]["action_submission"]["reasoning_prefix_chars"],
+            2048,
+        )
+        wrapper.close(env_id)
+
+        for rejected_prefix in ("x" * 2048 + "\n", " " * 2049 + "\n"):
+            env_id = wrapper.create(data_idx=0)["id"]
+            result = wrapper.step(
+                env_id, rejected_prefix + 'shell_command {"command":"pwd"}'
+            )
+            self.assertEqual(result["info"]["status"], "invalid_action")
+            self.assertEqual(workspaces[env_id].actions, [])
+            wrapper.close(env_id)
+
+    def test_workspace_prefix_parser_rejects_ambiguous_rows(self) -> None:
+        workspaces: dict[int, FakeWorkspace] = {}
+
+        def factory(env_id: int) -> FakeWorkspace:
+            workspace = FakeWorkspace()
+            workspaces[env_id] = workspace
+            return workspace
+
+        wrapper = LiteResearcherWrapper(
+            self.coverage,
+            FrozenLiteResearchBackend(self.coverage),
+            workspace_factory=factory,
+        )
+        rejected = (
+            "reason\nshell_command {\"command\":\"pwd\"}\n"
+            'shell_command {"command":"pwd"}',
+            "reason\napply_patch\n*** Begin Patch\n*** Add File: x\n+x\n"
+            "*** End Patch\napply_patch\n*** Begin Patch\n*** Add File: y\n"
+            "+y\n*** End Patch",
+            "<tool_call>{\"name\":\"search\",\"arguments\":"
+            "{\"query\":[\"history\"]}}</tool_call>\n"
+            "apply_patch\n*** Begin Patch\n*** Add File: x\n+x\n*** End Patch",
+            "<answer>answer</answer>\n"
+            "apply_patch\n*** Begin Patch\n*** Add File: x\n+x\n*** End Patch",
+            "```text\napply_patch\n*** Begin Patch\n"
+            "*** Add File: x\n+x\n*** End Patch",
+            'reason\nshell_command {"command":"pwd"} trailing-junk',
+            "reason\napply_patch\n*** Begin Patch\n*** Add File: x\n+x\n"
+            "*** End Patch\ntrailing-junk",
+            "shell_command not-json",
+            "apply_patch\nnot-a-patch",
+        )
+        for action in rejected:
+            with self.subTest(action=action[:80]):
+                env_id = wrapper.create(data_idx=0)["id"]
+                result = wrapper.step(env_id, action)
+                self.assertFalse(result["done"])
+                self.assertEqual(result["info"]["status"], "invalid_action")
+                self.assertEqual(workspaces[env_id].actions, [])
+                wrapper.close(env_id)
 
     def test_server_rejects_compaction_rows_because_client_owns_them(self) -> None:
         wrapper = LiteResearcherWrapper(

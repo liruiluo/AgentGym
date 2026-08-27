@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from copy import deepcopy
@@ -20,6 +21,10 @@ LITERESEARCHER_FULLPOOL_SURFACE = (
 _APPEND_SCHEMA = "agentmemory_task_neutral_context_transition_v1"
 _TOOL_CALL_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.IGNORECASE | re.DOTALL)
 _ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.IGNORECASE | re.DOTALL)
+_WORKSPACE_ACTION_MARKER_RE = re.compile(
+    r"(?m)^(shell_command(?= \{)|apply_patch(?=\r?$))"
+)
+_MAX_WORKSPACE_REASONING_PREFIX_CHARS = 2048
 
 
 class WorkspaceAdapter(Protocol):
@@ -48,6 +53,31 @@ def _parse_tool_call(raw: str) -> tuple[str, dict[str, Any]] | None:
     if not isinstance(name, str) or not name.strip() or not isinstance(arguments, Mapping):
         raise ValueError("tool_call requires a name and object arguments")
     return name.strip().lower(), dict(arguments)
+
+
+def _parse_workspace_action_with_prefix(raw: str) -> tuple[str, int] | None:
+    """Extract one strict workspace action after a bounded visible prefix.
+
+    Exact zero-prefix actions keep the pre-existing path. For prefixed rows, the
+    first column-zero canonical marker starts the action; the downstream
+    workspace parser still owns full syntax and trailing-content validation.
+    """
+
+    if raw.startswith("shell_command") or raw.startswith("apply_patch\n"):
+        return raw, 0
+
+    match = _WORKSPACE_ACTION_MARKER_RE.search(raw)
+    if match is None:
+        return None
+    prefix = raw[: match.start(1)]
+    if "```" in prefix:
+        raise ValueError("workspace reasoning prefix cannot contain a code fence")
+    if len(prefix) > _MAX_WORKSPACE_REASONING_PREFIX_CHARS:
+        raise ValueError(
+            "workspace reasoning prefix exceeds "
+            f"{_MAX_WORKSPACE_REASONING_PREFIX_CHARS} characters"
+        )
+    return raw[match.start(1) :].strip(), len(prefix)
 
 
 class LiteResearcherWrapper:
@@ -188,16 +218,31 @@ class LiteResearcherWrapper:
             )
 
         try:
-            parsed_tool = _parse_tool_call(str(action))
-            answer_match = _ANSWER_RE.search(str(action))
-            if parsed_tool is not None and answer_match is not None:
-                raise ValueError("one policy row cannot contain both tool_call and answer")
+            raw_action = str(action)
+            parsed_tool = _parse_tool_call(raw_action)
+            answer_match = _ANSWER_RE.search(raw_action)
+            parsed_workspace = _parse_workspace_action_with_prefix(raw_action)
+            action_kind_count = sum(
+                item is not None
+                for item in (parsed_tool, answer_match, parsed_workspace)
+            )
+            if action_kind_count > 1:
+                raise ValueError(
+                    "one policy row cannot mix tool_call, answer, and workspace actions"
+                )
             if parsed_tool is not None:
-                return self._apply_domain_tool(env_id, episode, str(action), parsed_tool)
+                return self._apply_domain_tool(env_id, episode, raw_action, parsed_tool)
             if answer_match is not None:
-                return self._apply_answer(env_id, episode, str(action), answer_match.group(1))
-            if str(action).startswith("shell_command") or str(action).startswith("apply_patch\n"):
-                return self._apply_workspace(env_id, episode, str(action))
+                return self._apply_answer(env_id, episode, raw_action, answer_match.group(1))
+            if parsed_workspace is not None:
+                workspace_action, reasoning_prefix_chars = parsed_workspace
+                return self._apply_workspace(
+                    env_id,
+                    episode,
+                    workspace_action,
+                    raw_policy_output=raw_action,
+                    reasoning_prefix_chars=reasoning_prefix_chars,
+                )
             raise ValueError(
                 "expected one search/visit tool_call, one answer, or one workspace action"
             )
@@ -381,25 +426,46 @@ class LiteResearcherWrapper:
         )
 
     def _apply_workspace(
-        self, env_id: int, episode: dict[str, Any], raw_action: str
+        self,
+        env_id: int,
+        episode: dict[str, Any],
+        workspace_action: str,
+        *,
+        raw_policy_output: str,
+        reasoning_prefix_chars: int,
     ) -> dict[str, Any]:
         workspace = episode.get("workspace")
         if workspace is None:
             raise ValueError("workspace tools are unavailable in this intake instance")
-        result = workspace.apply(raw_action, env_step=episode["step_count"], phase_index=0)
+        result = workspace.apply(
+            workspace_action,
+            env_step=episode["step_count"],
+            phase_index=0,
+        )
         message = str(getattr(result, "message", result))
         op = str(getattr(result, "op", "WORKSPACE")).upper()
+        workspace_action_sha256 = hashlib.sha256(
+            workspace_action.encode("utf-8")
+        ).hexdigest()
         return self._ordinary_result(
             env_id,
             episode,
             observation=message,
             status="active",
-            action_submission={"raw_policy_output": raw_action, "kind": "workspace", "op": op},
+            action_submission={
+                "raw_policy_output": raw_policy_output,
+                "kind": "workspace",
+                "op": op,
+                "reasoning_prefix_chars": reasoning_prefix_chars,
+                "executed_workspace_action_sha256": workspace_action_sha256,
+            },
             transition=self._append_transition(episode, message),
             wrapper_evidence={
                 "step": episode["step_count"],
                 "workspace_op": op,
                 "workspace_reward": 0.0,
+                "workspace_reasoning_prefix_chars": reasoning_prefix_chars,
+                "executed_workspace_action_sha256": workspace_action_sha256,
                 "native_environment_call_count": 0,
             },
         )
