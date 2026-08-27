@@ -9,6 +9,7 @@ import requests
 from agentenv.controller import BaseEnvClient, BaseTask
 from agentenv.controller.types import (
     CONTEXT_OPERATION_REPLACE,
+    CONTEXT_OPERATION_RETRY_CONTROL,
     ConversationMessage,
     PolicyContextPressure,
     StepOutput,
@@ -20,7 +21,7 @@ from .filesystem_checkpoint import (
     FILESYSTEM_CHECKPOINT_MAX_BYTES,
     FILESYSTEM_CHECKPOINT_PATH,
     FILESYSTEM_CHECKPOINT_REQUEST,
-    checkpoint_retry_trigger_tokens,
+    checkpoint_bounded_retry_trigger_tokens,
     filesystem_checkpoint_failure_reason,
     filesystem_checkpoint_write_succeeded,
     normalize_filesystem_checkpoint_receipt,
@@ -357,7 +358,7 @@ class SwesmithEnvClient(BaseEnvClient):
         # so using it here can miss an imminent overflow on the ordinary path.
         if (
             not self._checkpoint_retry_pending
-            and checkpoint_retry_trigger_tokens(pressure) < capacity
+            and checkpoint_bounded_retry_trigger_tokens(pressure) < capacity
         ):
             return None
         self._selected_policy_control = "context_compaction"
@@ -512,6 +513,10 @@ class SwesmithEnvClient(BaseEnvClient):
                 CONTEXT_OPERATION_REPLACE,
                 messages=replacement,
             )
+        elif not native_output.done:
+            context_transition = build_task_neutral_context_transition(
+                CONTEXT_OPERATION_RETRY_CONTROL
+            )
 
         native_wrapper = info.get("wrapper_evidence", {})
         actor_credit = (
@@ -553,6 +558,9 @@ class SwesmithEnvClient(BaseEnvClient):
                     ),
                     "context_replaced": bool(persisted and not native_output.done),
                     "retry_pending": self._checkpoint_retry_pending,
+                    "retry_context_restored": bool(
+                        not persisted and not native_output.done
+                    ),
                     "sampled_policy_output_preserved_in_ledger": True,
                     "native_observation_preserved_in_ledger": True,
                     "replacement_contains_policy_output": False,

@@ -42,15 +42,36 @@ FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER = (
 )
 
 
-def checkpoint_retry_trigger_tokens(pressure: Any) -> int:
-    """Conservative prompt projection that leaves room for one failed write retry."""
-
-    per_turn = (
+def _maximum_policy_turn_growth(pressure: Any) -> int:
+    return (
         int(pressure.max_response_tokens)
         + int(pressure.max_observation_tokens)
         + int(pressure.action_observation_envelope_tokens)
     )
-    return int(pressure.action_prompt_tokens) + 2 * per_turn
+
+
+def checkpoint_retry_trigger_tokens(pressure: Any) -> int:
+    """Legacy projection that reserves room for a growing failed retry."""
+
+    return (
+        int(pressure.action_prompt_tokens)
+        + 2 * _maximum_policy_turn_growth(pressure)
+    )
+
+
+def checkpoint_bounded_retry_trigger_tokens(pressure: Any) -> int:
+    """Project one ordinary turn before a bounded control retry is required.
+
+    A failed control turn is restored to its exact pre-control context, so it
+    does not need another response-plus-observation reserve.  Taking the larger
+    of the ordinary and candidate render remains conservative when a chat
+    template shortens generation-only history while appending the control.
+    """
+
+    return max(
+        int(pressure.action_prompt_tokens),
+        int(pressure.candidate_prompt_tokens),
+    ) + _maximum_policy_turn_growth(pressure)
 
 
 def build_filesystem_checkpoint_receipt(

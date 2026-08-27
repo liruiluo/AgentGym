@@ -9,6 +9,7 @@ from .types import (
     CONTEXT_OPERATION_APPEND,
     CONTEXT_OPERATION_PRESERVE,
     CONTEXT_OPERATION_REPLACE,
+    CONTEXT_OPERATION_RETRY_CONTROL,
     TASK_NEUTRAL_CONTEXT_TRANSITION_SCHEMA,
     PolicyContextPressure,
     StepOutput,
@@ -127,6 +128,20 @@ def complete_policy_turn(
         return step_output, messages
     if operation == CONTEXT_OPERATION_PRESERVE:
         return step_output, messages
+    if operation == CONTEXT_OPERATION_RETRY_CONTROL:
+        if prepared.control_request is None:
+            raise ValueError("retry_control requires a prepared control request")
+        if len(prepared.messages) < 2:
+            raise ValueError("retry_control has no pre-control policy context")
+        control_message = prepared.messages[-1]
+        if control_message != {
+            "role": "user",
+            "content": prepared.control_request,
+        }:
+            raise ValueError("prepared control request is not the final message")
+        return step_output, [
+            dict(message) for message in prepared.messages[:-1]
+        ]
     if operation == CONTEXT_OPERATION_REPLACE:
         if not replacement:
             raise ValueError("replace_messages receipt has no messages")
