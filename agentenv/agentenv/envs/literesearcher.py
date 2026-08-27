@@ -229,7 +229,6 @@ class LiteResearcherEnvClient(BaseEnvClient):
         self, pressure: PolicyContextPressure | None
     ) -> str | None:
         self._selected_policy_control = None
-        self._checkpoint_retry_context = None
         if not self._policy_context_bound:
             return None
         if pressure is None:
@@ -254,6 +253,18 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 "LiteResearcher context reached the prompt cap before a trainable "
                 "compaction could be sampled"
             )
+        # A rejected checkpoint remains pending independently of a fresh token-
+        # pressure estimate.  Re-rendering the restored message list can change
+        # its token count slightly; recomputing the threshold here could
+        # otherwise dispatch a normal research action before the checkpoint is
+        # completed.
+        if self._checkpoint_retry_context is not None:
+            if self._current_policy_context != self._checkpoint_retry_context:
+                raise RuntimeError(
+                    "LiteResearcher checkpoint retry context changed before retry"
+                )
+            self._selected_policy_control = "context_compaction"
+            return LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
         # Decide from the no-control append path.  Continuous Token chat
         # normalization may make the rendered control candidate shorter than the
         # ordinary action prompt, so candidate-minus-action is not a valid size
@@ -378,7 +389,6 @@ class LiteResearcherEnvClient(BaseEnvClient):
             raise RuntimeError(
                 "LiteResearcher checkpoint retry lost its pre-attempt research context"
             )
-        self._checkpoint_retry_context = None
         return (
             False,
             build_task_neutral_context_transition(

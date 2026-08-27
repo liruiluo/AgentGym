@@ -233,6 +233,61 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertEqual(client._policy_step_count, 30)
         client._request.assert_not_called()
 
+    def test_rejected_checkpoint_remains_pending_below_pressure_threshold(
+        self,
+    ) -> None:
+        client = self._bound_client(selected=False)
+        client._request = Mock()
+        research_context = [
+            {"role": "system", "content": "system framing"},
+            {"role": "user", "content": "original question"},
+            {"role": "assistant", "content": "evidence"},
+            {"role": "user", "content": "bounded visit result"},
+        ]
+        messages = [dict(message) for message in research_context]
+
+        over_threshold = PolicyContextPressure(
+            action_prompt_tokens=16_257,
+            candidate_prompt_tokens=16_415,
+            max_prompt_tokens=30_720,
+            max_model_tokens=32_768,
+            max_response_tokens=2_048,
+            max_observation_tokens=LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
+            action_observation_envelope_tokens=127,
+        )
+        self.assertEqual(
+            client.prepare_policy_turn(over_threshold),
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
+        output = client.step(
+            '<tool_call>{"name":"search","arguments":'
+            '{"query":["source"]}}</tool_call>'
+        )
+        self.assertFalse(output.done)
+        self.assertTrue(
+            output.info["wrapper_evidence"]["retry_context_restored"]
+        )
+
+        # A full chat-template rerender can shorten an otherwise identical
+        # message list by one token.  An already-pending checkpoint must not be
+        # dropped merely because the recomputed pressure is now just below the
+        # threshold.
+        below_threshold_after_rerender = PolicyContextPressure(
+            action_prompt_tokens=16_256,
+            candidate_prompt_tokens=16_414,
+            max_prompt_tokens=30_720,
+            max_model_tokens=32_768,
+            max_response_tokens=2_048,
+            max_observation_tokens=LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
+            action_observation_envelope_tokens=127,
+        )
+        self.assertEqual(
+            client.prepare_policy_turn(below_threshold_after_rerender),
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
+        self.assertEqual(client._selected_policy_control, "context_compaction")
+        client._request.assert_not_called()
+
     def test_forced_checkpoint_rejects_research_action_without_endpoint_dispatch(self) -> None:
         client = self._bound_client()
         client._request = Mock()
