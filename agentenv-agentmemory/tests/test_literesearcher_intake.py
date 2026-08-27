@@ -387,6 +387,46 @@ class LiteResearcherIntakeTests(unittest.TestCase):
         self.assertLessEqual(len(observation["page"]["content"]), 8192)
         wrapper.close(env_id)
 
+    def test_multiple_same_kind_envelopes_are_rejected_before_execution(self) -> None:
+        backend = FrozenLiteResearchBackend(self.coverage)
+        wrapper = LiteResearcherWrapper(self.coverage, backend)
+
+        duplicate_tool = (
+            '<tool_call>{"name":"search","arguments":{"query":["first"]}}</tool_call>'
+            '<tool_call>{"name":"search","arguments":{"query":["second"]}}</tool_call>'
+        )
+        env_id = wrapper.create(data_idx=0)["id"]
+        result = wrapper.step(env_id, duplicate_tool)
+        self.assertFalse(result["done"])
+        self.assertEqual(result["info"]["status"], "invalid_action")
+        self.assertEqual(result["info"]["native_environment_call_count"], 0)
+        self.assertIn("exactly one complete tool_call envelope", result["observation"])
+        wrapper.close(env_id)
+
+        duplicate_answer = "<answer>first</answer><answer>second</answer>"
+        env_id = wrapper.create(data_idx=0)["id"]
+        result = wrapper.step(env_id, duplicate_answer)
+        self.assertFalse(result["done"])
+        self.assertEqual(result["info"]["status"], "invalid_action")
+        self.assertEqual(result["info"]["native_environment_call_count"], 0)
+        self.assertIn("exactly one complete answer envelope", result["observation"])
+        wrapper.close(env_id)
+
+    def test_valid_envelope_cannot_hide_a_second_malformed_action(self) -> None:
+        backend = FrozenLiteResearchBackend(self.coverage)
+        wrapper = LiteResearcherWrapper(self.coverage, backend)
+        env_id = wrapper.create(data_idx=0)["id"]
+        action = (
+            '<tool_call>{"name":"search","arguments":{"query":["first"]}}</tool_call>'
+            '<tool_call>{"name":"search","arguments":{"query":["truncated"]}}'
+        )
+        result = wrapper.step(env_id, action)
+        self.assertFalse(result["done"])
+        self.assertEqual(result["info"]["status"], "invalid_action")
+        self.assertEqual(result["info"]["native_environment_call_count"], 0)
+        self.assertIn("exactly one complete tool_call envelope", result["observation"])
+        wrapper.close(env_id)
+
     def test_malformed_tool_and_unknown_visit_do_not_fallback_to_live_web(self) -> None:
         backend = FrozenLiteResearchBackend(self.coverage)
         wrapper = LiteResearcherWrapper(self.coverage, backend)

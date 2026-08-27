@@ -178,8 +178,35 @@ class WorkspaceAdapter(Protocol):
         ...
 
 
+def _single_envelope_match(
+    raw: str,
+    *,
+    pattern: re.Pattern[str],
+    tag: str,
+) -> re.Match[str] | None:
+    """Return one complete tagged action and reject duplicate/malformed tags.
+
+    Prefix/suffix prose remains compatible with the existing parser contract, but
+    a policy row may contain only one complete envelope of a given action kind.
+    Counting tag markers as well as complete matches prevents a valid first action
+    from hiding a second truncated or malformed action.
+    """
+
+    matches = list(pattern.finditer(raw))
+    markers = re.findall(rf"<\s*/?\s*{re.escape(tag)}\b", raw, re.IGNORECASE)
+    if not matches:
+        if markers:
+            raise ValueError(f"{tag} must contain exactly one complete envelope")
+        return None
+    if len(matches) != 1 or len(markers) != 2:
+        raise ValueError(f"policy row must contain exactly one complete {tag} envelope")
+    return matches[0]
+
+
 def _parse_tool_call(raw: str) -> tuple[str, dict[str, Any]] | None:
-    match = _TOOL_CALL_RE.search(raw)
+    match = _single_envelope_match(
+        raw, pattern=_TOOL_CALL_RE, tag="tool_call"
+    )
     if match is None:
         return None
     try:
@@ -372,7 +399,9 @@ class LiteResearcherWrapper:
         try:
             raw_action = str(action)
             parsed_tool = _parse_tool_call(raw_action)
-            answer_match = _ANSWER_RE.search(raw_action)
+            answer_match = _single_envelope_match(
+                raw_action, pattern=_ANSWER_RE, tag="answer"
+            )
             parsed_workspace = _parse_workspace_action_with_prefix(raw_action)
             action_kind_count = sum(
                 item is not None
