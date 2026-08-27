@@ -22,6 +22,7 @@ from .filesystem_checkpoint import (
     checkpoint_retry_trigger_tokens,
     build_filesystem_checkpoint_read_retry_observation,
     build_filesystem_checkpoint_retry_observation,
+    build_filesystem_checkpoint_write_retry_context,
     build_post_checkpoint_context,
     build_post_checkpoint_read_retry_context,
     filesystem_checkpoint_failure_reason,
@@ -173,6 +174,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
         self._policy_context_bound = False
         self._selected_policy_control: str | None = None
         self._checkpoint_retry_pending = False
+        self._checkpoint_write_retry_framing: list[dict[str, str]] | None = None
         self._pending_checkpoint_read: dict[str, Any] | None = None
         self._pending_checkpoint_read_framing: list[dict[str, str]] | None = None
 
@@ -266,6 +268,18 @@ class LiteResearcherEnvClient(BaseEnvClient):
             < capacity
         ):
             return None
+        if not self._checkpoint_retry_pending:
+            if self._current_policy_context is None:
+                raise RuntimeError(
+                    "LiteResearcher checkpoint request lost its pre-boundary context"
+                )
+            self._checkpoint_write_retry_framing = deepcopy(
+                self._current_policy_context
+            )
+        elif self._checkpoint_write_retry_framing is None:
+            raise RuntimeError(
+                "LiteResearcher checkpoint retry lost its pre-boundary context"
+            )
         self._selected_policy_control = "context_compaction"
         return LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
 
@@ -430,6 +444,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
         )
 
     def _complete_context_compaction(self, action: str) -> StepOutput:
+        write_retry_framing_before = self._checkpoint_write_retry_framing
         native_output = self._step_native_policy_action(action)
         self._selected_policy_control = None
         info = dict(native_output.info)
@@ -473,13 +488,27 @@ class LiteResearcherEnvClient(BaseEnvClient):
             self._context_epoch += 1
             self._pending_checkpoint_read = dict(checkpoint_receipt)
             self._pending_checkpoint_read_framing = deepcopy(framing)
+            self._checkpoint_write_retry_framing = None
             context_transition = build_task_neutral_context_transition(
                 CONTEXT_OPERATION_REPLACE,
                 messages=replacement,
             )
         elif native_output.done:
+            self._checkpoint_write_retry_framing = None
             self._pending_checkpoint_read = None
             self._pending_checkpoint_read_framing = None
+        else:
+            if write_retry_framing_before is None:
+                raise RuntimeError(
+                    "LiteResearcher failed checkpoint write lost its retry context"
+                )
+            context_transition = build_task_neutral_context_transition(
+                CONTEXT_OPERATION_REPLACE,
+                messages=build_filesystem_checkpoint_write_retry_context(
+                    write_retry_framing_before,
+                    checkpoint_failure_reason or "unknown_checkpoint_failure",
+                ),
+            )
 
         return StepOutput(
             state=policy_observation,
@@ -515,6 +544,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
                     "checkpoint_retry_observation_bounded": (
                         self._checkpoint_retry_pending
                     ),
+                    "checkpoint_retry_context_rebuilt": self._checkpoint_retry_pending,
                     "preserved_policy_output": persisted,
                     "preserved_native_observation": persisted,
                     "checkpoint_action_in_successor_context": False,

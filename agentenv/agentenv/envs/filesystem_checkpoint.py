@@ -148,6 +148,30 @@ def build_filesystem_checkpoint_retry_observation(reason: str) -> str:
     return observation
 
 
+def build_filesystem_checkpoint_write_retry_context(
+    messages: Sequence[Mapping[str, str]],
+    reason: str,
+) -> list[dict[str, str]]:
+    """Rebuild a stable prompt after a failed checkpoint-write action.
+
+    ``messages`` is the complete policy context captured immediately before the
+    first checkpoint request. The sampled failed action and native observation
+    remain in the PPO trajectory ledger, but neither is copied into the next
+    prompt. Reusing the same captured context on every retry preserves all
+    pre-boundary task evidence without letting malformed writes grow the prompt.
+    """
+
+    replacement = _normalize_checkpoint_framing(messages)
+    retry = build_filesystem_checkpoint_retry_observation(reason)
+    if replacement[-1]["role"] == "user":
+        replacement[-1]["content"] = (
+            f"{replacement[-1]['content']}\n\n{retry}"
+        )
+    else:
+        replacement.append({"role": "user", "content": retry})
+    return replacement
+
+
 def build_filesystem_checkpoint_read_retry_observation(reason: str) -> str:
     """Return a bounded reminder while the verified continuation is unread."""
 

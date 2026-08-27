@@ -37,6 +37,7 @@ from .filesystem_checkpoint import (
     build_filesystem_checkpoint_read_receipt,
     build_filesystem_checkpoint_receipt,
     build_filesystem_checkpoint_retry_observation,
+    build_filesystem_checkpoint_write_retry_context,
     build_post_checkpoint_context,
     build_post_checkpoint_read_retry_context,
     checkpoint_retry_ceiling_tokens,
@@ -2284,6 +2285,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self._current_policy_context: list[dict[str, str]] | None = None
         self._policy_context_bound = False
         self._pending_session_handoff: dict[str, Any] | None = None
+        self._checkpoint_write_retry_framing: list[dict[str, str]] | None = None
         self._pending_checkpoint_read: dict[str, Any] | None = None
         self._pending_checkpoint_read_framing: list[dict[str, str]] | None = None
         self._selected_policy_control: str | None = None
@@ -2347,6 +2349,14 @@ class AgentMemoryEnvClient(BaseEnvClient):
             raise RuntimeError(
                 "WebShop session handoff does not leave room for one bounded "
                 "failed checkpoint attempt and retry"
+            )
+        if self._checkpoint_write_retry_framing is None:
+            if self._current_policy_context is None:
+                raise RuntimeError(
+                    "WebShop checkpoint request lost its pre-boundary context"
+                )
+            self._checkpoint_write_retry_framing = deepcopy(
+                self._current_policy_context
             )
         self._selected_policy_control = "webshop_session_handoff"
         return WEBSHOP_SESSION_HANDOFF_REQUEST
@@ -2625,6 +2635,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
 
     def _complete_session_handoff(self, action: str) -> StepOutput:
         pending = self._pending_session_handoff
+        write_retry_framing_before = self._checkpoint_write_retry_framing
         if pending is None:
             raise RuntimeError("WebShop session handoff was selected without a boundary")
         if self._immutable_policy_context is None:
@@ -2696,14 +2707,28 @@ class AgentMemoryEnvClient(BaseEnvClient):
             self._pending_session_handoff = None
             self._pending_checkpoint_read = dict(checkpoint_receipt)
             self._pending_checkpoint_read_framing = deepcopy(framing)
+            self._checkpoint_write_retry_framing = None
             context_transition = build_task_neutral_context_transition(
                 CONTEXT_OPERATION_REPLACE,
                 messages=replacement,
             )
         elif native_output.done:
             self._pending_session_handoff = None
+            self._checkpoint_write_retry_framing = None
             self._pending_checkpoint_read = None
             self._pending_checkpoint_read_framing = None
+        elif retry_pending:
+            if write_retry_framing_before is None:
+                raise RuntimeError(
+                    "WebShop failed checkpoint write lost its retry context"
+                )
+            context_transition = build_task_neutral_context_transition(
+                CONTEXT_OPERATION_REPLACE,
+                messages=build_filesystem_checkpoint_write_retry_context(
+                    write_retry_framing_before,
+                    checkpoint_failure_reason or "unknown_checkpoint_failure",
+                ),
+            )
 
         return StepOutput(
             state=policy_observation,
@@ -2747,6 +2772,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
                     "context_replaced": replace_context,
                     "retry_pending": retry_pending,
                     "checkpoint_retry_observation_bounded": retry_pending,
+                    "checkpoint_retry_context_rebuilt": retry_pending,
                     "raw_history_cleared": replace_context,
                     "preserved_policy_output": replace_context,
                     "preserved_native_observation": replace_context,

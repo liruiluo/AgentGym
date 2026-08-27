@@ -27,6 +27,7 @@ from .filesystem_checkpoint import (
     checkpoint_retry_trigger_tokens,
     build_filesystem_checkpoint_read_retry_observation,
     build_filesystem_checkpoint_retry_observation,
+    build_filesystem_checkpoint_write_retry_context,
     build_post_checkpoint_context,
     build_post_checkpoint_read_retry_context,
     filesystem_checkpoint_failure_reason,
@@ -320,6 +321,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         self._policy_context_bound = False
         self._selected_policy_control: str | None = None
         self._checkpoint_retry_pending = False
+        self._checkpoint_write_retry_framing: list[dict[str, str]] | None = None
         self._pending_checkpoint_read: dict[str, Any] | None = None
         self._pending_checkpoint_read_framing: list[dict[str, str]] | None = None
 
@@ -412,6 +414,18 @@ class OpenMLEFastEnvClient(BaseEnvClient):
             < capacity
         ):
             return None
+        if not self._checkpoint_retry_pending:
+            if self._current_policy_context is None:
+                raise RuntimeError(
+                    "OpenMLE-fast checkpoint request lost its pre-boundary context"
+                )
+            self._checkpoint_write_retry_framing = deepcopy(
+                self._current_policy_context
+            )
+        elif self._checkpoint_write_retry_framing is None:
+            raise RuntimeError(
+                "OpenMLE-fast checkpoint retry lost its pre-boundary context"
+            )
         self._selected_policy_control = "context_compaction"
         return OPENMLE_CONTEXT_COMPACTION_REQUEST
 
@@ -425,6 +439,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         checkpoint_read_pending_before = self._pending_checkpoint_read
         checkpoint_read_framing_before = self._pending_checkpoint_read_framing
         context_control_selected = self._selected_policy_control == "context_compaction"
+        write_retry_framing_before = self._checkpoint_write_retry_framing
         response = self._request(
             "POST", "step", json={"id": self.env_id, "action": action}
         )
@@ -577,6 +592,17 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                 policy_state = build_filesystem_checkpoint_retry_observation(
                     checkpoint_failure_reason or "unknown_checkpoint_failure"
                 )
+                if write_retry_framing_before is None:
+                    raise RuntimeError(
+                        "OpenMLE-fast failed checkpoint write lost its retry context"
+                    )
+                context_transition = build_task_neutral_context_transition(
+                    CONTEXT_OPERATION_REPLACE,
+                    messages=build_filesystem_checkpoint_write_retry_context(
+                        write_retry_framing_before,
+                        checkpoint_failure_reason or "unknown_checkpoint_failure",
+                    ),
+                )
             if continuation_persisted and not done:
                 framing = self._immutable_policy_context
                 if framing is None:
@@ -592,10 +618,13 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                 self._context_epoch += 1
                 self._pending_checkpoint_read = dict(checkpoint_receipt)
                 self._pending_checkpoint_read_framing = deepcopy(framing)
+                self._checkpoint_write_retry_framing = None
                 context_transition = build_task_neutral_context_transition(
                     CONTEXT_OPERATION_REPLACE,
                     messages=replacement,
                 )
+            if done:
+                self._checkpoint_write_retry_framing = None
             wrapper_evidence = {
                 "event": "context_compaction",
                 "workspace_continuity_id": self.env_id,
@@ -612,6 +641,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                 "checkpoint_retry_observation_bounded": (
                     self._checkpoint_retry_pending
                 ),
+                "checkpoint_retry_context_rebuilt": self._checkpoint_retry_pending,
                 # The action and observation stay in the trajectory ledger for
                 # PPO credit, but neither is injected into the successor prompt.
                 "preserved_policy_output": continuation_persisted,
@@ -625,6 +655,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                 ),
             }
         elif done:
+            self._checkpoint_write_retry_framing = None
             self._pending_checkpoint_read = None
             self._pending_checkpoint_read_framing = None
         return StepOutput(

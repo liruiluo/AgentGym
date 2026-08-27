@@ -38,6 +38,7 @@ class LiteResearcherClientTests(unittest.TestCase):
         client._policy_context_bound = True
         client._selected_policy_control = None
         client._checkpoint_retry_pending = False
+        client._checkpoint_write_retry_framing = None
         client._pending_checkpoint_read = None
         client._pending_checkpoint_read_framing = None
         return client
@@ -308,9 +309,27 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIsNone(client._pending_checkpoint_read)
         self.assertIsNone(client._pending_checkpoint_read_framing)
 
-    def test_failed_checkpoint_keeps_context_epoch_and_requests_retry(self) -> None:
+    def test_failed_checkpoint_retries_from_stable_preboundary_context(self) -> None:
         client = self._client()
-        client._selected_policy_control = "context_compaction"
+        original = [
+            *client._immutable_policy_context,
+            {"role": "assistant", "content": "useful prior action"},
+            {"role": "user", "content": "useful prior observation"},
+        ]
+        client.bind_policy_context(original, initial=False)
+        pressure = PolicyContextPressure(
+            action_prompt_tokens=18_000,
+            candidate_prompt_tokens=18_200,
+            max_prompt_tokens=30_720,
+            max_model_tokens=32_768,
+            max_response_tokens=2_048,
+            max_observation_tokens=LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
+            action_observation_envelope_tokens=4,
+        )
+        self.assertEqual(
+            client.prepare_policy_turn(pressure),
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
         response = Mock(status_code=200)
         response.json.return_value = {
             "observation": "invalid workspace action",
@@ -326,22 +345,28 @@ class LiteResearcherClientTests(unittest.TestCase):
         ):
             output = client.step("bad")
         self.assertEqual(
-            output.info["context_transition"]["operation"], "append_observation"
+            output.info["context_transition"]["operation"], "replace_messages"
         )
+        first_retry = output.info["context_transition"]["messages"]
+        self.assertIn("useful prior action", str(first_retry))
+        self.assertNotIn("bad", str(first_retry))
+        self.assertNotIn("invalid workspace action", str(first_retry))
         self.assertEqual(output.info["context_epoch_after"], 0)
-        self.assertTrue(output.info["wrapper_evidence"]["retry_pending"])
-        retry = client.prepare_policy_turn(
-            PolicyContextPressure(
-                action_prompt_tokens=100,
-                candidate_prompt_tokens=200,
-                max_prompt_tokens=30_720,
-                max_model_tokens=32_768,
-                max_response_tokens=2_048,
-                max_observation_tokens=LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
-                action_observation_envelope_tokens=4,
-            )
+        self.assertTrue(output.info["wrapper_evidence"]["retry_pending"] )
+        self.assertTrue(
+            output.info["wrapper_evidence"]["checkpoint_retry_context_rebuilt"]
         )
+
+        client.bind_policy_context(first_retry, initial=False)
+        retry = client.prepare_policy_turn(pressure)
         self.assertEqual(retry, LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
+        with patch(
+            "agentenv.envs.literesearcher.requests.request", return_value=response
+        ):
+            second = client.step("second bad action with a large native observation")
+        second_retry = second.info["context_transition"]["messages"]
+        self.assertEqual(second_retry, first_retry)
+        self.assertNotIn("second bad action", str(second_retry))
 
     def test_endpoint_attested_workspace_events_are_emitted(self) -> None:
         cases = (

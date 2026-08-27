@@ -668,7 +668,7 @@ class OpenMLEFastClientTest(unittest.TestCase):
         self.assertFalse(evidence["checkpoint_action_in_successor_context"])
         self.assertFalse(evidence["checkpoint_content_in_successor_context"])
 
-    def test_failed_checkpoint_write_keeps_context_and_forces_retry(self) -> None:
+    def test_failed_checkpoint_write_rebuilds_context_and_forces_retry(self) -> None:
         metadata = self.metadata()
 
         def request(method, url, **kwargs):
@@ -716,7 +716,18 @@ class OpenMLEFastClientTest(unittest.TestCase):
             malformed = 'apply_patch {"patch":"unfinished state"}'
             output = client.step(malformed)
 
-        self.assertEqual(output.info["context_transition"]["operation"], "append")
+        self.assertEqual(
+            output.info["context_transition"]["operation"], "replace_messages"
+        )
+        replacement = output.info["context_transition"]["messages"]
+        self.assertEqual(len(replacement), len(initial))
+        self.assertEqual(replacement[:-1], initial[:-1])
+        self.assertTrue(replacement[-1]["content"].startswith(initial[-1]["content"]))
+        self.assertIn("Filesystem checkpoint was not accepted", str(replacement))
+        self.assertNotIn(malformed, str(replacement))
+        self.assertNotIn(
+            "parser_error: expected one exact action", str(replacement)
+        )
         self.assertEqual(
             (
                 output.info["native_call_count_before"],
@@ -732,8 +743,10 @@ class OpenMLEFastClientTest(unittest.TestCase):
         self.assertFalse(evidence["continuation_persisted"])
         self.assertFalse(evidence["context_replaced"])
         self.assertTrue(evidence["retry_pending"])
+        self.assertTrue(evidence["checkpoint_retry_context_rebuilt"])
         self.assertEqual(evidence["checkpoint_failure_reason"], "missing_receipt")
         self.assertFalse(evidence["checkpoint_action_in_successor_context"])
+        self.assertFalse(evidence["checkpoint_observation_in_successor_context"])
         self.assertFalse(evidence["checkpoint_content_in_successor_context"])
 
         # Retry is selected even when ordinary pressure is low.

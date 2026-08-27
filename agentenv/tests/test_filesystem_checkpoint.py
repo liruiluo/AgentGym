@@ -13,6 +13,7 @@ from agentenv.envs.filesystem_checkpoint import (
     build_filesystem_checkpoint_read_receipt,
     build_filesystem_checkpoint_receipt,
     build_filesystem_checkpoint_retry_observation,
+    build_filesystem_checkpoint_write_retry_context,
     build_post_checkpoint_context,
     build_post_checkpoint_read_retry_context,
     checkpoint_retry_ceiling_tokens,
@@ -29,6 +30,31 @@ from agentenv.envs.filesystem_checkpoint import (
 
 
 class FilesystemCheckpointContractTest(unittest.TestCase):
+
+    def test_failed_write_retry_context_is_bounded_stable_and_preserves_history(
+        self,
+    ) -> None:
+        framing = [
+            {"role": "system", "content": "trusted task contract"},
+            {"role": "user", "content": "original evidence and current state"},
+            {"role": "assistant", "content": "earlier useful action"},
+            {"role": "user", "content": "earlier useful observation"},
+        ]
+        reason = "missing_receipt"
+
+        first = build_filesystem_checkpoint_write_retry_context(framing, reason)
+        second = build_filesystem_checkpoint_write_retry_context(framing, reason)
+
+        self.assertEqual(first, second)
+        self.assertEqual(first[:3], framing[:3])
+        self.assertIn(framing[-1]["content"], first[-1]["content"])
+        self.assertIn("Filesystem checkpoint was not accepted", str(first))
+        self.assertNotIn("failed policy action", str(first))
+        self.assertNotIn("large native observation", str(first))
+        self.assertLess(
+            len(str(first).encode("utf-8")),
+            len(str(framing).encode("utf-8")) + 1024,
+        )
 
     def test_failed_read_retry_context_is_bounded_stable_and_nonleaking(self) -> None:
         receipt = {
