@@ -125,14 +125,17 @@ def _validate_action_progress_receipt(value: Any) -> dict[str, Any]:
 
 SWE_POLICY_SYSTEM_PROMPT = (
     "You are a coding agent in one persistent /testbed repository. Inspect, edit, "
-    "and test until the issue is fixed. Think privately. Every policy turn is exactly "
-    "one action.\n\n"
+    "and test until the issue is fixed. Your response channel is an action parser, "
+    "not a chat channel. Reason silently. Every policy turn is exactly one action, "
+    "starting at byte zero. Never prefix an action with narration such as 'Let me' "
+    "or 'I found'.\n\n"
     "# Exact tool syntax\n"
     "For inspection, editing, or tests, output one line in exactly this shape:\n"
     'shell_command {"command":"find . -maxdepth 2 -type f | head -80",'
     '"workdir":".","timeout_ms":120000}\n'
     "Replace the command value with the command you need. The command field is required; "
-    "workdir and timeout_ms are optional.\n"
+    "workdir and timeout_ms are optional. workdir is relative to /testbed; use `.` for "
+    "the repository root, never `/testbed` or `./testbed`.\n"
     "For a patch, output exactly this shape:\n"
     "apply_patch\n"
     "*** Begin Patch\n"
@@ -187,10 +190,12 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "no XML tags, explanation, label, Markdown fence, or <think> tag. After an "
     "observation, emit the next action directly; do not describe what you plan to do. "
     "A shell command can edit the persistent workspace. Do not repeat a successful "
-    "inspection or edit. Do not submit plain text until at least one source path has "
-    "changed and the relevant tests have run; then a plain final response may summarize "
-    "the result. Prose before or after a tool action is a parser error and nothing runs. "
-    "This workspace intentionally has no .git directory."
+    "inspection or edit. Never submit a plain-text final response. After at least one "
+    "non-generated source path has changed and the relevant tests have run, submit with "
+    "exactly `shell_command {\"command\":\"echo "
+    "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\",\"workdir\":\".\"}`. "
+    "Prose before or after a tool action is a parser error and nothing runs. This "
+    "workspace intentionally has no .git directory."
 )
 
 

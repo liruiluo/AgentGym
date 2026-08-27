@@ -83,6 +83,19 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
         ):
             self.assertIn(fragment, self.prompt)
 
+    def test_prompt_requires_action_only_and_upstream_submission_sentinel(self) -> None:
+        for fragment in (
+            "response channel is an action parser, not a chat channel",
+            "starting at byte zero",
+            "Never prefix an action with narration",
+            "workdir is relative to /testbed",
+            "never `/testbed` or `./testbed`",
+            "Never submit a plain-text final response",
+            "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",
+        ):
+            self.assertIn(fragment, self.prompt)
+        self.assertNotIn("a plain final response may summarize", self.prompt)
+
     def test_prompt_uses_only_codex_general_tools_for_memory(self) -> None:
         self.assertIn("shell_command", self.prompt)
         self.assertIn("apply_patch", self.prompt)
