@@ -309,7 +309,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         )
         self.assertEqual(
             self.manager.metadata()["reward_contract"],
-            "submission_success1_wrong0_invalid_minus0p01_v1",
+            "submission_success1_wrong0_recoverable_invalid_minus0p01_v2",
         )
         self.assertEqual(
             self.manager.metadata()["submission_contract"],
@@ -337,7 +337,16 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("context compactions consume this same budget", reset.observation)
         self.assertIn("do not wait for the horizon", reset.observation)
         self.assertIn("reward -0.01", reset.observation)
-        self.assertEqual(self.manager.metadata()["invalid_action_terminal_reward"], -0.01)
+        self.assertEqual(self.manager.metadata()["invalid_action_reward"], -0.01)
+        self.assertFalse(self.manager.metadata()["invalid_action_terminal"])
+        self.assertEqual(
+            self.manager.metadata()["penalized_nonterminal_conditions"],
+            ["parser_rejected", "executor_rejected"],
+        )
+        self.assertEqual(
+            self.manager.metadata()["penalized_terminal_conditions"],
+            ["max_steps", "policy_turn_horizon"],
+        )
         self.assertEqual(self.manager.metadata()["failed_submission_reward"], 0.0)
         self.assertEqual(self.manager.metadata()["horizon_failure_reward"], -0.01)
         self.assertFalse(
@@ -638,7 +647,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
 
         result = self.manager.step(slot, "shell_command pwd")
 
-        self.assertTrue(result.done)
+        self.assertFalse(result.done)
         self.assertEqual(result.reward, -0.01)
         self.assertFalse(result.info["sample_excluded"])
         self.assertEqual(
@@ -654,6 +663,14 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("one complete *** Begin Patch", result.observation)
         self.assertIn("no XML tags", result.observation)
         self.assertIn("surrounding text", result.observation)
+        recovered = self.manager.step(
+            slot, 'shell_command {"command":"pwd","workdir":"."}'
+        )
+        self.assertFalse(recovered.done)
+        self.assertEqual(recovered.reward, 0.0)
+        self.assertEqual(
+            recovered.info["actor_credit"]["basis"], "shell_executed"
+        )
         self.manager.close(slot)
 
     def test_output_pipe_cleanup_failure_is_an_executor_rejection(self) -> None:
@@ -673,7 +690,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             'shell_command {"command":"sleep 30 &","workdir":"."}',
         )
 
-        self.assertTrue(result.done)
+        self.assertFalse(result.done)
         self.assertEqual(result.reward, -0.01)
         self.assertFalse(result.info["sample_excluded"])
         self.assertEqual(result.info["action_kind"], "shell_command")
@@ -873,7 +890,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             "*** End Patch",
         )
 
-        self.assertTrue(result.done)
+        self.assertFalse(result.done)
         self.assertEqual(result.reward, -0.01)
         self.assertFalse(result.info["sample_excluded"])
         self.assertIn("apply_patch failed", result.observation)
@@ -884,6 +901,14 @@ class SwesmithEnvironmentTests(unittest.TestCase):
                 "positive_eligible": False,
                 "basis": "executor_rejected",
             },
+        )
+        recovered = self.manager.step(
+            slot, 'shell_command {"command":"pwd","workdir":"."}'
+        )
+        self.assertFalse(recovered.done)
+        self.assertEqual(recovered.reward, 0.0)
+        self.assertEqual(
+            recovered.info["actor_credit"]["basis"], "shell_executed"
         )
         self.manager.close(slot)
 

@@ -41,10 +41,10 @@ DEFAULT_TRAINING_MAX_POLICY_TURNS = 75
 UPSTREAM_REFERENCE_MAX_POLICY_TURNS = 250
 UPSTREAM_AGENT_REPOSITORY = "SWE-agent/mini-swe-agent"
 UPSTREAM_AGENT_REVISION = "a83fcae82d2a08f0ee0c688f9d137b3566c097f8"
-INVALID_ACTION_TERMINAL_REWARD = -0.01
+INVALID_ACTION_REWARD = -0.01
 FAILED_SUBMISSION_REWARD = 0.0
 HORIZON_FAILURE_REWARD = -0.01
-REWARD_CONTRACT = "submission_success1_wrong0_invalid_minus0p01_v1"
+REWARD_CONTRACT = "submission_success1_wrong0_recoverable_invalid_minus0p01_v2"
 SUBMISSION_CONTRACT = "upstream_shell_output_sentinel_source_change_required_v2"
 HORIZON_CONTRACT = "unified_policy_step_terminal_failure_minus0p01_v3"
 DEFAULT_MAX_OBSERVATION_BYTES = 6144
@@ -281,6 +281,9 @@ class SwesmithEpisodeManager:
             if episode.done:
                 raise RuntimeError("SWE-smith episode is already terminal")
             episode.step_count += 1
+            # Rewards are per transition. Recoverable invalid actions receive the
+            # configured penalty without contaminating the next valid step.
+            episode.reward = 0.0
             observation_before = episode.observation
             action = parse_policy_action(raw_output)
             evidence: dict[str, Any] = {
@@ -293,13 +296,7 @@ class SwesmithEpisodeManager:
             if action.kind == "parser_error":
                 episode.observation = _parser_error_observation(action)
                 evidence["result"] = {"parser_error": action.error}
-                self._terminate_policy_failure(
-                    episode,
-                    evidence,
-                    termination_reason="parser_rejected",
-                    reward=INVALID_ACTION_TERMINAL_REWARD,
-                    observation=episode.observation,
-                )
+                episode.reward = INVALID_ACTION_REWARD
                 actor_credit = _actor_credit(False, "parser_rejected")
             elif action.kind == "shell_command":
                 actor_credit = self._run_shell(episode, action, evidence)
@@ -458,12 +455,15 @@ class SwesmithEpisodeManager:
             ),
             "submission_contract": SUBMISSION_CONTRACT,
             "horizon_contract": HORIZON_CONTRACT,
-            "invalid_action_terminal_reward": INVALID_ACTION_TERMINAL_REWARD,
+            "invalid_action_reward": INVALID_ACTION_REWARD,
+            "invalid_action_terminal": False,
             "failed_submission_reward": FAILED_SUBMISSION_REWARD,
             "horizon_failure_reward": HORIZON_FAILURE_REWARD,
-            "penalized_terminal_conditions": [
+            "penalized_nonterminal_conditions": [
                 "parser_rejected",
                 "executor_rejected",
+            ],
+            "penalized_terminal_conditions": [
                 "max_steps",
                 "policy_turn_horizon",
             ],
@@ -517,13 +517,7 @@ class SwesmithEpisodeManager:
                 "poisoned": poisoned,
             }
             episode.observation = f"shell_command failed: {exc}"
-            self._terminate_policy_failure(
-                episode,
-                evidence,
-                termination_reason="executor_rejected",
-                reward=INVALID_ACTION_TERMINAL_REWARD,
-                observation=episode.observation,
-            )
+            episode.reward = INVALID_ACTION_REWARD
             return _actor_credit(False, "executor_rejected")
         result = execution.result
         stdout = result.stdout.decode("utf-8", errors="replace")
@@ -619,13 +613,7 @@ class SwesmithEpisodeManager:
         except (WorkspacePatchError, SwesmithSandboxError) as exc:
             evidence["result"] = {"error": f"{type(exc).__name__}: {exc}"}
             episode.observation = f"apply_patch failed: {exc}"
-            self._terminate_policy_failure(
-                episode,
-                evidence,
-                termination_reason="executor_rejected",
-                reward=INVALID_ACTION_TERMINAL_REWARD,
-                observation=episode.observation,
-            )
+            episode.reward = INVALID_ACTION_REWARD
             return _actor_credit(False, "executor_rejected")
         evidence["result"] = {
             "changed_paths": list(result.changed_paths),
@@ -957,8 +945,8 @@ def _initial_observation(
 
 def _parser_error_observation(action: ParsedPolicyAction) -> str:
     return (
-        f"Invalid action syntax: {action.error}. The episode ended with reward -0.01. "
-        'In a new episode, start at byte zero with exactly shell_command '
+        f"Invalid action syntax: {action.error}. This action received reward -0.01; "
+        'the episode remains open. Retry with exactly shell_command '
         '{"command":"pwd","workdir":"."} on one line. For a patch, start with the '
         "literal line apply_patch, then one complete *** Begin Patch ... *** End Patch "
         "payload. Output only one action, with no XML tags, reasoning, Markdown, second "
