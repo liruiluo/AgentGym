@@ -10,28 +10,35 @@ from agentenv.controller import BaseEnvClient, BaseTask
 from agentenv.controller.types import (
     CONTEXT_OPERATION_REPLACE,
     ConversationMessage,
-    POLICY_CONTINUATION_MARKER,
     PolicyContextPressure,
     StepOutput,
     build_task_neutral_context_transition,
     build_task_neutral_transition_info,
 )
+from .filesystem_checkpoint import (
+    FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER,
+    FILESYSTEM_CHECKPOINT_MAX_BYTES,
+    FILESYSTEM_CHECKPOINT_PATH,
+    FILESYSTEM_CHECKPOINT_REQUEST,
+    checkpoint_retry_trigger_tokens,
+    filesystem_checkpoint_failure_reason,
+    filesystem_checkpoint_write_succeeded,
+    normalize_filesystem_checkpoint_receipt,
+)
 
 
 SWE_CONTEXT_COMPACTION_REQUEST = (
-    "The conversation is nearing its context limit. Write the continuation "
-    "state you want to retain after the earlier interaction is removed. Your "
-    "response will be preserved verbatim and will not be sent to the "
-    "environment. Include only information you choose to carry forward. Keep "
-    "this response short: retain the immediate objective, decisive current "
-    "state, next action, and the path/search key of any durable notes you "
-    "already wrote. Do not claim that this response executed a shell command "
-    "or changed a file."
+    FILESYSTEM_CHECKPOINT_REQUEST
+    + " For this coding task, preserve the issue objective, decisive inspection "
+    "and test evidence, changed source paths, unresolved failure, and the next "
+    "concrete edit or test."
 )
+SWE_POLICY_CONTINUATION_MARKER = FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER
+
 
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
 ACTION_PROGRESS_SCHEMA = "swesmith_action_progress_v1"
-SWE_MEMORY_CONTRACT = "policy_compaction_plus_optional_durable_filesystem_v1"
+SWE_MEMORY_CONTRACT = "policy_filesystem_checkpoint_then_client_replace_v2"
 _POSITIVE_ACTOR_CREDIT_BASES = {
     "shell_executed",
     "workspace_changed",
@@ -155,13 +162,15 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "next checks. Choose a safe relative path and organization; no filename or note "
     "format is prescribed, and a short task may not need notes at all. Keep notes "
     "separate from source code when practical.\n"
-    "Before context compaction, make sure important detailed evidence needed later is "
-    "already in an ordinary file. The compaction response is only a short "
-    "working-state handoff: include the locator of notes you already wrote, not the "
-    "whole debugging history. That response is not executed by the environment. After "
-    "compaction, rediscover and read the notes with normal commands such as find, rg, "
-    "grep, sed, head, tail, or cat before taking an action that depends on them. The "
-    "harness will not create, list, summarize, or restore note contents for you.\n"
+    "Before context compaction, keep detailed evidence that may be needed later in "
+    "ordinary task files. At an explicit context-boundary request, use one normal "
+    "shell_command or apply_patch action to overwrite "
+    "`.agent_memory/CONTINUATION.md` with a short working-state snapshot and locators "
+    "for those longer-lived files. That action is executed normally and consumes the "
+    "same policy-action budget. Old messages are removed only after the exact write is "
+    "verified. After replacement, read the checkpoint with a normal command, then read "
+    "any detailed notes it points to before acting on them. The checkpoint does not "
+    "replace source files, test artifacts, or voluntary debugging notes.\n"
     "Illustrative pattern only (do not copy its content as a task answer): one turn may "
     "append a concise entry to a relative debugging file, a later turn may search or "
     "read that file, and a subsequent patch may use the recovered evidence. For example, "
@@ -249,6 +258,7 @@ class SwesmithEnvClient(BaseEnvClient):
         self._current_policy_context: list[dict[str, str]] | None = None
         self._policy_context_bound = False
         self._selected_policy_control: str | None = None
+        self._checkpoint_retry_pending = False
         self._zero_progress_shell_receipts: set[tuple[str, str]] = set()
 
     def _classify_shell_actor_credit(
@@ -340,7 +350,10 @@ class SwesmithEnvClient(BaseEnvClient):
         # Continuous Token runtime.  The freshly rendered control candidate may
         # legitimately be shorter after generation-only history normalization,
         # so using it here can miss an imminent overflow on the ordinary path.
-        if pressure.projected_next_prompt_tokens_without_control < capacity:
+        if (
+            not self._checkpoint_retry_pending
+            and checkpoint_retry_trigger_tokens(pressure) < capacity
+        ):
             return None
         self._selected_policy_control = "context_compaction"
         return SWE_CONTEXT_COMPACTION_REQUEST
@@ -460,57 +473,90 @@ class SwesmithEnvClient(BaseEnvClient):
         )
 
     def _complete_context_compaction(self, action: str) -> StepOutput:
-        framing = self._immutable_policy_context
-        if framing is None:
-            raise RuntimeError("SWE-smith compaction lost its immutable task framing")
-        native_before = self._native_call_count
-        policy_before = self._policy_step_count
-        context_before = self._context_epoch
-        session_before = self._session_epoch
-        replacement = deepcopy(framing)
-        replacement.extend(
-            [
-                {"role": "assistant", "content": str(action)},
-                {"role": "user", "content": POLICY_CONTINUATION_MARKER},
-            ]
-        )
-        self._policy_step_count += 1
-        self._context_epoch += 1
+        # The checkpoint is an ordinary sampled policy action. Execute it first;
+        # only an attested, bounded write to the exact continuation path may
+        # authorize the wrapper-owned context replacement.
+        native_output = self._step_native_policy_action(action)
         self._selected_policy_control = None
-        self._zero_progress_shell_receipts.clear()
+        info = dict(native_output.info)
+        env_info = info.get("env_info", {})
+        receipt_value = (
+            env_info.get("filesystem_checkpoint")
+            if isinstance(env_info, Mapping)
+            else None
+        )
+        checkpoint_receipt = normalize_filesystem_checkpoint_receipt(receipt_value)
+        persisted = filesystem_checkpoint_write_succeeded(checkpoint_receipt)
+        self._checkpoint_retry_pending = bool(not persisted and not native_output.done)
+
+        context_transition = None
+        if persisted and not native_output.done:
+            framing = self._immutable_policy_context
+            if framing is None:
+                raise RuntimeError("SWE-smith compaction lost its immutable task framing")
+            replacement = deepcopy(framing)
+            # The successor prompt contains only immutable task framing plus a
+            # fixed locator. The sampled write and native observation remain in
+            # the rollout ledger, never as a shortcut around the later file read.
+            replacement.append(
+                {"role": "user", "content": SWE_POLICY_CONTINUATION_MARKER}
+            )
+            self._context_epoch += 1
+            self._zero_progress_shell_receipts.clear()
+            context_transition = build_task_neutral_context_transition(
+                CONTEXT_OPERATION_REPLACE,
+                messages=replacement,
+            )
+
+        native_wrapper = info.get("wrapper_evidence", {})
+        actor_credit = (
+            native_wrapper.get("actor_credit")
+            if isinstance(native_wrapper, Mapping)
+            else None
+        )
         return StepOutput(
-            state=str(self.info.get("observation", "")),
-            reward=0.0,
-            done=False,
+            state=native_output.state,
+            reward=native_output.reward,
+            done=native_output.done,
             info=build_task_neutral_transition_info(
-                env_info=self.info.get("info", {}),
-                action_submission={
-                    "raw_policy_output": action,
-                    "submitted_action": None,
-                    "parser_status": "policy_context_compaction",
-                },
-                native_step_before=native_before,
-                native_step_after=self._native_call_count,
-                native_call_count_before=native_before,
-                native_call_count_after=self._native_call_count,
-                context_epoch_before=context_before,
-                context_epoch_after=self._context_epoch,
-                session_epoch_before=session_before,
-                session_epoch_after=self._session_epoch,
-                policy_step_before=policy_before,
-                policy_step_after=self._policy_step_count,
-                context_transition=build_task_neutral_context_transition(
-                    CONTEXT_OPERATION_REPLACE,
-                    messages=replacement,
+                env_info=env_info if isinstance(env_info, Mapping) else {},
+                action_submission=info.get(
+                    "action_submission", {"raw_policy_output": action}
                 ),
+                native_step_before=info.get("native_step_before"),
+                native_step_after=info.get("native_step_after"),
+                native_call_count_before=info.get("native_call_count_before"),
+                native_call_count_after=info.get("native_call_count_after"),
+                context_epoch_before=info.get("context_epoch_before"),
+                context_epoch_after=self._context_epoch,
+                session_epoch_before=info.get("session_epoch_before"),
+                session_epoch_after=info.get("session_epoch_after"),
+                policy_step_before=info.get("policy_step_before"),
+                policy_step_after=info.get("policy_step_after"),
+                context_transition=context_transition,
                 wrapper_evidence={
                     "event": "context_compaction",
                     "workspace_continuity_id": self.env_id,
-                    "actor_credit": {
-                        "schema": ACTOR_CREDIT_SCHEMA,
-                        "positive_eligible": True,
-                        "basis": "policy_context_compaction",
-                    },
+                    "native_environment_call_count": 1,
+                    "actor_credit": actor_credit,
+                    "continuation_path": FILESYSTEM_CHECKPOINT_PATH,
+                    "continuation_max_bytes": FILESYSTEM_CHECKPOINT_MAX_BYTES,
+                    "continuation_persisted": persisted,
+                    "checkpoint_receipt": checkpoint_receipt,
+                    "checkpoint_failure_reason": (
+                        filesystem_checkpoint_failure_reason(checkpoint_receipt)
+                    ),
+                    "context_replaced": bool(persisted and not native_output.done),
+                    "retry_pending": self._checkpoint_retry_pending,
+                    "sampled_policy_output_preserved_in_ledger": True,
+                    "native_observation_preserved_in_ledger": True,
+                    "replacement_contains_policy_output": False,
+                    "replacement_contains_native_observation": False,
+                    "native_wrapper_evidence": (
+                        dict(native_wrapper)
+                        if isinstance(native_wrapper, Mapping)
+                        else {}
+                    ),
                 },
             ),
         )

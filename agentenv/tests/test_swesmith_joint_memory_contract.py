@@ -5,32 +5,49 @@ from pathlib import Path
 import unittest
 
 
-SWESMITH_PATH = Path(__file__).resolve().parents[1] / "agentenv" / "envs" / "swesmith.py"
+ENV_DIR = Path(__file__).resolve().parents[1] / "agentenv" / "envs"
+FILESYSTEM_CHECKPOINT_PATH = ENV_DIR / "filesystem_checkpoint.py"
+SWESMITH_PATH = ENV_DIR / "swesmith.py"
 
 
 def extract_static_string_assignments() -> dict[str, str]:
-    tree = ast.parse(SWESMITH_PATH.read_text(encoding="utf-8"))
     values: dict[str, str] = {}
 
-    def resolve(node: ast.expr) -> str:
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+    def resolve(node: ast.expr):
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, int)):
             return node.value
         if isinstance(node, ast.Name) and node.id in values:
             return values[node.id]
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             return resolve(node.left) + resolve(node.right)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+            return resolve(node.left) * resolve(node.right)
+        if isinstance(node, ast.JoinedStr):
+            parts: list[str] = []
+            for item in node.values:
+                if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                    parts.append(item.value)
+                elif isinstance(item, ast.FormattedValue):
+                    parts.append(str(resolve(item.value)))
+                else:
+                    raise ValueError(
+                        f"unsupported f-string component: {ast.dump(item)}"
+                    )
+            return "".join(parts)
         raise ValueError(f"unsupported static string expression: {ast.dump(node)}")
 
-    for node in tree.body:
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if not isinstance(target, ast.Name):
-            continue
-        try:
-            values[target.id] = resolve(node.value)
-        except ValueError:
-            continue
+    for source_path in (FILESYSTEM_CHECKPOINT_PATH, SWESMITH_PATH):
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target = node.targets[0]
+            if not isinstance(target, ast.Name):
+                continue
+            try:
+                values[target.id] = resolve(node.value)
+            except ValueError:
+                continue
     return values
 
 
@@ -39,12 +56,13 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
         values = extract_static_string_assignments()
         self.prompt = values["SWE_POLICY_SYSTEM_PROMPT"]
         self.compaction = values["SWE_CONTEXT_COMPACTION_REQUEST"]
+        self.continuation_marker = values["SWE_POLICY_CONTINUATION_MARKER"]
         self.memory_contract = values["SWE_MEMORY_CONTRACT"]
 
     def test_contract_has_a_distinct_joint_memory_identity(self) -> None:
         self.assertEqual(
             self.memory_contract,
-            "policy_compaction_plus_optional_durable_filesystem_v1",
+            "policy_filesystem_checkpoint_then_client_replace_v2",
         )
 
     def test_prompt_exposes_optional_durable_debugging_notes(self) -> None:
@@ -58,8 +76,9 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
             "failed approaches and why they failed",
             "no filename or note format is prescribed",
             "a short task may not need notes at all",
-            "Before context compaction, make sure",
-            "rediscover and read the notes",
+            "Before context compaction, keep detailed evidence",
+            "overwrite `.agent_memory/CONTINUATION.md`",
+            "read the checkpoint with a normal command",
             "Writing or reading a note has no separate reward",
         ):
             self.assertIn(fragment, self.prompt)
@@ -83,15 +102,23 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
         self.assertIn("followed in a later action", self.prompt)
         self.assertIn("only a syntax illustration", self.prompt)
 
-    def test_compaction_is_short_state_and_locator_not_file_execution(self) -> None:
+    def test_compaction_is_an_executed_checkpoint_write_then_later_read(self) -> None:
         for fragment in (
-            "Keep this response short",
-            "immediate objective",
-            "path/search key of any durable notes you already wrote",
-            "not be sent to the environment",
-            "Do not claim that this response executed a shell command",
+            "exactly one normal executable shell_command or apply_patch action",
+            ".agent_memory/CONTINUATION.md",
+            "executed normally and consumes one policy-action step",
+            "removed only after the environment verifies this exact file write",
         ):
             self.assertIn(fragment, self.compaction)
+        self.assertIn(
+            "Use the next normal action to read that file",
+            self.continuation_marker,
+        )
+        for forbidden in (
+            "will not be sent to the environment",
+            "Do not claim that this response executed a shell command",
+        ):
+            self.assertNotIn(forbidden, self.compaction)
 
 
 if __name__ == "__main__":
