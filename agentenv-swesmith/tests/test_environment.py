@@ -886,25 +886,29 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertIn("3230 paths", observation)
         self.assertNotIn(paths[100], observation)
 
-    def test_embedded_tool_payload_does_not_submit_or_execute(self) -> None:
+    def test_bounded_reasoning_prefix_executes_exactly_one_shell_action(self) -> None:
         slot = self.manager.create()
         self.manager.reset(slot, 0)
 
         result = self.manager.step(
             slot,
-            "I found the bug. Let me fix it.\n\n"
+            "I found the bug. Let me record it.\n\n"
             'shell_command {"command":"printf changed > notes.txt"}',
         )
 
-        self.assertTrue(result.done)
-        self.assertEqual(result.reward, -0.01)
+        self.assertFalse(result.done)
+        self.assertEqual(result.reward, 0.0)
         self.assertFalse(result.info["sample_excluded"])
-        self.assertEqual(result.info["action_kind"], "parser_error")
-        self.assertFalse(result.info["actor_credit"]["positive_eligible"])
-        self.assertIn("Invalid action syntax", result.observation)
+        self.assertEqual(result.info["action_kind"], "shell_command")
+        self.assertTrue(result.info["actor_credit"]["positive_eligible"])
         self.assertEqual(self.grader.calls, 0)
         detail = self.manager.detail(slot)
-        self.assertFalse(Path(detail["workspace"]["policy_root"], "notes.txt").exists())
+        self.assertEqual(
+            Path(detail["workspace"]["policy_root"], "notes.txt").read_text(),
+            "changed",
+        )
+        action = detail["evidence"][-1]["action"]
+        self.assertEqual(action["thought"], "I found the bug. Let me record it.")
         self.manager.close(slot)
 
     def test_native_shell_and_patch_use_the_existing_execution_paths(self) -> None:

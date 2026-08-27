@@ -19,6 +19,12 @@ _NATIVE_FUNCTION_END = "</function>"
 _NATIVE_PARAMETER_END = "</parameter>"
 _NATIVE_FUNCTION_RE = re.compile(r"\A<function=([a-z][a-z0-9_]*)>\Z")
 _NATIVE_PARAMETER_RE = re.compile(r"\A<parameter=([a-z][a-z0-9_]*)>\Z")
+MAX_PRE_ACTION_REASONING_BYTES = 512
+_ACTION_LINE_START_RES = (
+    re.compile(r"(?m)^shell_command (?=\{)"),
+    re.compile(r"(?m)^apply_patch\r?\n(?=\*\*\* Begin Patch)"),
+    re.compile(r"(?m)^<tool_call>\r?$"),
+)
 _THINK_START_RE = re.compile(r"\A<think\s*>", re.IGNORECASE)
 _THINK_END_RE = re.compile(r"</think\s*>", re.IGNORECASE)
 _TOOLISH_PREFIX_RE = re.compile(
@@ -106,6 +112,19 @@ def parse_policy_action(raw_output: str) -> ParsedPolicyAction:
             thought,
             "policy output is empty after removing optional thinking text",
         )
+    visible_reasoning, action_text, prefix_error = _split_bounded_action_prefix(
+        action_text
+    )
+    if prefix_error is not None:
+        return _parser_error(
+            raw_output,
+            action_text,
+            thought,
+            prefix_error,
+            tool_hint=_infer_toolish_attempt(action_text),
+        )
+    if visible_reasoning:
+        thought = "\n\n".join(part for part in (thought, visible_reasoning) if part)
 
     if action_text.startswith(_SHELL_PREFIX):
         return _parse_shell_command(raw_output, action_text, thought)
@@ -388,6 +407,36 @@ def _parse_native_tool_call(
         thought,
         parameters["patch"],
     )
+
+
+def _split_bounded_action_prefix(
+    text: str,
+) -> tuple[str, str, str | None]:
+    """Accept one upstream-style visible rationale before one canonical action.
+
+    The prefix is inert evidence: only the suffix is parsed and executed.  Requiring
+    the action marker at the beginning of a line plus the existing whole-suffix
+    parser keeps trailing prose and multiple actions fail-closed.
+    """
+
+    if text.startswith((_SHELL_PREFIX, _PATCH_PREFIX, _NATIVE_TOOL_START)):
+        return "", text, None
+    starts = [
+        match.start()
+        for pattern in _ACTION_LINE_START_RES
+        for match in pattern.finditer(text)
+    ]
+    if not starts:
+        return "", text, None
+    action_start = min(starts)
+    visible_reasoning = text[:action_start].rstrip()
+    if len(visible_reasoning.encode("utf-8")) > MAX_PRE_ACTION_REASONING_BYTES:
+        return (
+            visible_reasoning,
+            text[action_start:],
+            "pre-action reasoning exceeds the 512-byte safety bound",
+        )
+    return visible_reasoning, text[action_start:], None
 
 
 def _split_thinking(raw_output: str) -> tuple[str, str, str | None]:
