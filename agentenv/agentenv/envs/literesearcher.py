@@ -38,34 +38,54 @@ _MAX_WORKSPACE_REASONING_PREFIX_CHARS = 2048
 
 
 LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE = (
-    "shell_command {\"command\":\"mkdir -p .agent_memory && printf %s "
-    "'question=...; evidence=...; next_action=...' > "
-    ".agent_memory/CONTINUATION.md\",\"workdir\":\".\","
-    "\"timeout_ms\":10000}"
+    'shell_command {"command":"mkdir -p .agent_memory && cat > '
+    ".agent_memory/CONTINUATION.md <<'AMG_CHECKPOINT'\\n"
+    "question: ...\\n"
+    "evidence: ...\\n"
+    "failed_attempts: ...\\n"
+    "other_files: ...\\n"
+    "next_action: ...\\n"
+    'AMG_CHECKPOINT\\n","workdir":"."}'
 )
 
 
 LITERESEARCHER_CONTEXT_COMPACTION_REQUEST = (
-    "The research conversation is nearing its context limit. Emit exactly one "
-    "normal executable workspace action that overwrites "
+    "CHECKPOINT WRITE PHASE (before context reset). The research conversation "
+    "is nearing its context limit. Emit exactly one normal executable workspace "
+    "action that overwrites "
     f"`{LITERESEARCHER_CONTINUATION_PATH}` with a concise continuation "
-    "checkpoint. Use canonical shell_command or apply_patch syntax, no research "
-    "tool, answer, code fence, or prose outside the action. The resulting file "
-    f"must be nonempty and at most {LITERESEARCHER_CONTINUATION_MAX_BYTES} "
+    "checkpoint. Use the canonical workspace-action syntax shown below; emit no "
+    "research tool, answer, code fence, or prose outside the action. The resulting "
+    f"file must be nonempty and at most {LITERESEARCHER_CONTINUATION_MAX_BYTES} "
     "bytes. Preserve the unresolved question, evidence with exact source URLs, "
     "failed attempts, other useful file paths, and the next action. Example: `"
-    f"{LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE}`."
+    f"{LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE}`. This is a write-only phase. "
+    f"Do not read `{LITERESEARCHER_CONTINUATION_PATH}` or "
+    "`.agent_memory/research.md`; do not Search, Visit, or answer. Do not wrap "
+    "shell_command in <tool_call>."
 )
 
 
 LITERESEARCHER_POLICY_CONTINUATION_MARKER = (
-    "The earlier interaction was removed after a verified policy-authored "
-    f"checkpoint was written to `{LITERESEARCHER_CONTINUATION_PATH}`. Before "
-    "any search, visit, or answer, read it with exactly this normal action: "
+    "CHECKPOINT READ PHASE (after context reset). The earlier interaction was "
+    "removed after a verified policy-authored checkpoint was written to "
+    f"`{LITERESEARCHER_CONTINUATION_PATH}`. Before any search, visit, or answer, "
+    "read it with exactly this normal action: "
     f'`shell_command {{"command":"cat {LITERESEARCHER_CONTINUATION_PATH}",'
-    '"workdir":".","timeout_ms":10000}`. Continue from the file output; do not '
-    "reconstruct omitted history from this marker."
+    '"workdir":"."}`. Continue from the file output; do not reconstruct omitted '
+    "history from this marker."
 )
+
+
+def _checkpoint_write_retry_request(rejection_reason: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", rejection_reason) is None:
+        rejection_reason = "checkpoint_rejected"
+    return (
+        "CHECKPOINT WRITE RETRY (before context reset). The previous checkpoint "
+        f"action was rejected with reason `{rejection_reason}`. Correct that "
+        "specific error; the rejected action itself was removed. "
+        f"{LITERESEARCHER_CONTEXT_COMPACTION_REQUEST}"
+    )
 
 
 class LiteResearcherEnvClient(BaseEnvClient):
@@ -184,6 +204,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
         self._immutable_policy_context: list[dict[str, str]] | None = None
         self._current_policy_context: list[dict[str, str]] | None = None
         self._checkpoint_retry_context: list[dict[str, str]] | None = None
+        self._checkpoint_retry_reason: str | None = None
         self._policy_context_bound = False
         self._selected_policy_control: str | None = None
 
@@ -220,10 +241,15 @@ class LiteResearcherEnvClient(BaseEnvClient):
             self._policy_context_bound = True
         self._current_policy_context = normalized
 
+    def _checkpoint_control_request(self) -> str:
+        if self._checkpoint_retry_reason is None:
+            return LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
+        return _checkpoint_write_retry_request(self._checkpoint_retry_reason)
+
     def policy_turn_candidate(self) -> str | None:
         if not self._policy_context_bound:
             return None
-        return LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
+        return self._checkpoint_control_request()
 
     def prepare_policy_turn(
         self, pressure: PolicyContextPressure | None
@@ -264,7 +290,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
                     "LiteResearcher checkpoint retry context changed before retry"
                 )
             self._selected_policy_control = "context_compaction"
-            return LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
+            return self._checkpoint_control_request()
         # Decide from the no-control append path.  Continuous Token chat
         # normalization may make the rendered control candidate shorter than the
         # ordinary action prompt, so candidate-minus-action is not a valid size
@@ -282,8 +308,9 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 "LiteResearcher compaction lost its pre-attempt policy context"
             )
         self._checkpoint_retry_context = deepcopy(self._current_policy_context)
+        self._checkpoint_retry_reason = None
         self._selected_policy_control = "context_compaction"
-        return LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
+        return self._checkpoint_control_request()
 
     def step(self, action: str) -> StepOutput:
         if self._selected_policy_control == "context_compaction":
@@ -383,6 +410,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
         remaining_actions = self.max_policy_steps - self._policy_step_count
         if remaining_actions < LITERESEARCHER_MIN_ACTIONS_FOR_CHECKPOINT_READ_ANSWER:
             self._checkpoint_retry_context = None
+            self._checkpoint_retry_reason = None
             return True, None, False, remaining_actions
         retry_context = self._checkpoint_retry_context
         if retry_context is None:
@@ -415,6 +443,9 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 retry_context_restored,
                 remaining_actions,
             ) = self._checkpoint_rejection_lifecycle()
+            self._checkpoint_retry_reason = (
+                None if done else "workspace_action_required"
+            )
             state = (
                 "Continuation checkpoint was not accepted (workspace action required). "
                 "Use exactly one canonical shell_command or apply_patch action to "
@@ -542,6 +573,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
         event = "forced_checkpoint_rejected"
         if checkpoint_valid and not done:
             self._checkpoint_retry_context = None
+            self._checkpoint_retry_reason = None
             replacement = deepcopy(framing)
             replacement.append(
                 {
@@ -557,6 +589,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
             event = "forced_checkpoint_write"
         elif done:
             self._checkpoint_retry_context = None
+            self._checkpoint_retry_reason = None
             event = "forced_checkpoint_terminal"
         else:
             (
@@ -565,6 +598,9 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 retry_context_restored,
                 remaining_actions,
             ) = self._checkpoint_rejection_lifecycle()
+            self._checkpoint_retry_reason = (
+                None if done else str(rejection_reason or "checkpoint_rejected")
+            )
             state = (
                 "Continuation checkpoint was not accepted "
                 f"({rejection_reason}). Use exactly one canonical shell_command "

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import requests
@@ -67,14 +71,38 @@ class LiteResearcherClientTests(unittest.TestCase):
 
 
     def test_compaction_request_requires_one_real_bounded_workspace_write(self) -> None:
+        self.assertIn("CHECKPOINT WRITE PHASE", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
         self.assertIn("shell_command", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
         self.assertIn(
             LITERESEARCHER_CONTINUATION_PATH,
             LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
         )
         self.assertIn("overwrite", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST.lower())
+        self.assertIn("Do not read", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
+        self.assertIn("Do not wrap shell_command in <tool_call>", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
+        self.assertIn("cat > .agent_memory/CONTINUATION.md <<'AMG_CHECKPOINT'", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
         self.assertIn("8192", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
         self.assertNotIn("will not call", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
+        self.assertIn("CHECKPOINT READ PHASE", LITERESEARCHER_POLICY_CONTINUATION_MARKER)
+
+    def test_compaction_example_is_json_parseable_and_shell_executable(self) -> None:
+        prefix = "shell_command "
+        start = LITERESEARCHER_CONTEXT_COMPACTION_REQUEST.index(prefix)
+        payload_text = LITERESEARCHER_CONTEXT_COMPACTION_REQUEST[start + len(prefix):]
+        payload_text = payload_text.split("`. This", 1)[0].rstrip("`")
+        payload = json.loads(payload_text)
+        with tempfile.TemporaryDirectory() as td:
+            result = subprocess.run(
+                ["bash", "-lc", payload["command"]],
+                cwd=td,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            checkpoint = Path(td) / LITERESEARCHER_CONTINUATION_PATH
+            self.assertTrue(checkpoint.is_file())
+            self.assertGreater(checkpoint.stat().st_size, 0)
 
     @staticmethod
     def _bound_client(*, selected: bool = True) -> LiteResearcherEnvClient:
@@ -141,6 +169,7 @@ class LiteResearcherClientTests(unittest.TestCase):
     def test_verified_checkpoint_write_replaces_without_leaking_write_content(self) -> None:
         client = self._bound_client()
         client._request = Mock(return_value=self._checkpoint_response(valid=True))
+        client._checkpoint_retry_reason = "previous_rejection"
         raw_action = (
             'shell_command {"command":"printf secret-evidence > '
             '.agent_memory/CONTINUATION.md","workdir":"."}'
@@ -174,6 +203,7 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertTrue(
             output.info["wrapper_evidence"]["continuation_checkpoint"]["valid"]
         )
+        self.assertIsNone(client._checkpoint_retry_reason)
 
     def test_rejected_checkpoint_retries_restore_pre_attempt_context_without_growth(
         self,
@@ -209,10 +239,16 @@ class LiteResearcherClientTests(unittest.TestCase):
                     LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE
                 ),
             )
-            self.assertEqual(
-                prepared.control_request,
-                LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
-            )
+            if attempt == 0:
+                self.assertEqual(
+                    prepared.control_request,
+                    LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+                )
+            else:
+                self.assertIn("CHECKPOINT WRITE RETRY", prepared.control_request)
+                self.assertIn("workspace_action_required", prepared.control_request)
+                self.assertIn("Do not read", prepared.control_request)
+                self.assertNotIn('query":["source"]', prepared.control_request)
             prompt_sizes.append(prepared.prompt_token_count)
             output, messages = complete_policy_turn(
                 client, prepared, invalid_action
@@ -229,7 +265,7 @@ class LiteResearcherClientTests(unittest.TestCase):
             )
             self.assertEqual(client._policy_step_count, attempt + 1)
 
-        self.assertEqual(len(set(prompt_sizes)), 1)
+        self.assertEqual(len(set(prompt_sizes[1:])), 1)
         self.assertEqual(client._policy_step_count, 30)
         client._request.assert_not_called()
 
@@ -281,10 +317,10 @@ class LiteResearcherClientTests(unittest.TestCase):
             max_observation_tokens=LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
             action_observation_envelope_tokens=127,
         )
-        self.assertEqual(
-            client.prepare_policy_turn(below_threshold_after_rerender),
-            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
-        )
+        retry = client.prepare_policy_turn(below_threshold_after_rerender)
+        self.assertIn("CHECKPOINT WRITE RETRY", retry)
+        self.assertIn("workspace_action_required", retry)
+        self.assertEqual(client.policy_turn_candidate(), retry)
         self.assertEqual(client._selected_policy_control, "context_compaction")
         client._request.assert_not_called()
 
@@ -399,6 +435,33 @@ class LiteResearcherClientTests(unittest.TestCase):
             output.info["wrapper_evidence"]["reward_overlay"]["penalty"],
             -0.01,
         )
+
+
+    def test_endpoint_rejection_reason_is_visible_on_next_retry_prompt(self) -> None:
+        client = self._bound_client()
+        response = self._checkpoint_response(valid=False)
+        response["info"]["wrapper_evidence"]["continuation_checkpoint"][
+            "rejection_reason"
+        ] = "action_execution_failed"
+        client._request = Mock(return_value=response)
+
+        output = client.step('shell_command {"command":"false","workdir":"."}')
+        self.assertFalse(output.done)
+        pressure = PolicyContextPressure(
+            action_prompt_tokens=100,
+            candidate_prompt_tokens=200,
+            max_prompt_tokens=30_720,
+            max_model_tokens=32_768,
+            max_response_tokens=2_048,
+            max_observation_tokens=LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
+            action_observation_envelope_tokens=4,
+        )
+        retry = client.prepare_policy_turn(pressure)
+        self.assertEqual(client.policy_turn_candidate(), retry)
+        self.assertIn("CHECKPOINT WRITE RETRY", retry)
+        self.assertIn("action_execution_failed", retry)
+        self.assertIn("Do not read", retry)
+        self.assertNotIn('shell_command {"command":"false"', retry)
 
     def test_stale_modified_receipt_with_identical_digest_does_not_replace(self) -> None:
         client = self._bound_client()
