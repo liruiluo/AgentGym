@@ -25,6 +25,7 @@ class LiteResearcherClientTests(unittest.TestCase):
         client.info = {"observation": "Which source answers this question?"}
         client.max_policy_steps = 40
         client._policy_step_count = 0
+        client.invalid_action_reward = -0.01
         return client
 
     def test_policy_framing_exposes_normalized_conversation_start(self) -> None:
@@ -173,8 +174,18 @@ class LiteResearcherClientTests(unittest.TestCase):
         output = client.step(search_action)
 
         client._request.assert_not_called()
-        self.assertEqual(output.reward, 0.0)
+        self.assertEqual(output.reward, -0.01)
         self.assertFalse(output.done)
+        self.assertEqual(
+            output.info["wrapper_evidence"]["reward_overlay"],
+            {
+                "schema": "literesearcher_invalid_action_reward_v1",
+                "native_reward": 0.0,
+                "penalty": -0.01,
+                "total_reward": -0.01,
+                "terminal": False,
+            },
+        )
         self.assertEqual(
             output.info["context_transition"]["operation"],
             "append_observation",
@@ -237,6 +248,11 @@ class LiteResearcherClientTests(unittest.TestCase):
             output.info["wrapper_evidence"]["event"],
             "forced_checkpoint_rejected",
         )
+        self.assertEqual(output.reward, -0.01)
+        self.assertEqual(
+            output.info["wrapper_evidence"]["reward_overlay"]["penalty"],
+            -0.01,
+        )
 
     def test_stale_modified_receipt_with_identical_digest_does_not_replace(self) -> None:
         client = self._bound_client()
@@ -261,6 +277,44 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertEqual(
             output.info["wrapper_evidence"]["checkpoint_rejection_reason"],
             "inconsistent_valid_receipt",
+        )
+        self.assertEqual(output.reward, -0.01)
+        self.assertEqual(
+            output.info["wrapper_evidence"]["reward_overlay"]["penalty"],
+            -0.01,
+        )
+
+    def test_checkpoint_backend_fault_is_excluded_without_policy_penalty(self) -> None:
+        client = self._bound_client()
+        client._request = Mock(
+            return_value={
+                "observation": "Workspace backend failed; episode excluded.",
+                "reward": 0.0,
+                "done": True,
+                "info": {
+                    "status": "environment_error",
+                    "sample_excluded": True,
+                    "action_submission": {"raw_policy_output": "checkpoint"},
+                    "wrapper_evidence": {
+                        "native_environment_call_count": 0,
+                        "backend_error": "WorkspaceError",
+                    },
+                },
+            }
+        )
+
+        output = client.step(
+            'shell_command {"command":"printf state > '
+            '.agent_memory/CONTINUATION.md","workdir":"."}'
+        )
+
+        self.assertEqual(output.reward, 0.0)
+        self.assertTrue(output.done)
+        self.assertTrue(output.info["env_info"]["sample_excluded"])
+        self.assertNotIn("reward_overlay", output.info["wrapper_evidence"])
+        self.assertEqual(
+            output.info["wrapper_evidence"]["event"],
+            "forced_checkpoint_terminal",
         )
 
     def test_checkpoint_accepts_prior_cumulative_research_calls(self) -> None:

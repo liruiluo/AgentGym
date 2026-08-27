@@ -300,23 +300,12 @@ class LiteResearcherEnvClient(BaseEnvClient):
             response_info.get("status") == "invalid_action"
             or server_wrapper_evidence.get("invalid_action") is True
         )
-        if invalid_action and self.invalid_action_reward != 0.0:
-            if bool(response_info.get("sample_excluded", False)):
-                raise RuntimeError(
-                    "LiteResearcher invalid action cannot also be sample_excluded"
-                )
-            if native_reward != 0.0:
-                raise RuntimeError(
-                    "LiteResearcher invalid-action overlay requires zero native reward"
-                )
-            reward = native_reward + self.invalid_action_reward
-            reward_overlay = {
-                "schema": "literesearcher_invalid_action_reward_v1",
-                "native_reward": native_reward,
-                "penalty": self.invalid_action_reward,
-                "total_reward": reward,
-                "terminal": bool(response["done"]),
-            }
+        if invalid_action:
+            reward, reward_overlay = self._invalid_action_reward_overlay(
+                native_reward=native_reward,
+                done=bool(response["done"]),
+                sample_excluded=bool(response_info.get("sample_excluded", False)),
+            )
         wrapper_evidence = {
             "event": "native_action",
             "server_wrapper_evidence": dict(server_wrapper_evidence),
@@ -344,6 +333,32 @@ class LiteResearcherEnvClient(BaseEnvClient):
             ),
         )
 
+    def _invalid_action_reward_overlay(
+        self,
+        *,
+        native_reward: float,
+        done: bool,
+        sample_excluded: bool,
+    ) -> tuple[float, dict[str, Any] | None]:
+        if self.invalid_action_reward == 0.0:
+            return native_reward, None
+        if sample_excluded:
+            raise RuntimeError(
+                "LiteResearcher invalid action cannot also be sample_excluded"
+            )
+        if native_reward != 0.0:
+            raise RuntimeError(
+                "LiteResearcher invalid-action overlay requires zero native reward"
+            )
+        reward = native_reward + self.invalid_action_reward
+        return reward, {
+            "schema": "literesearcher_invalid_action_reward_v1",
+            "native_reward": native_reward,
+            "penalty": self.invalid_action_reward,
+            "total_reward": reward,
+            "terminal": done,
+        }
+
     def _complete_context_compaction(self, action: str) -> StepOutput:
         framing = self._immutable_policy_context
         if framing is None:
@@ -361,9 +376,23 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 "answer, code fence, or standalone prose was executed. The earlier "
                 "context has not been removed."
             )
+            reward, reward_overlay = self._invalid_action_reward_overlay(
+                native_reward=0.0,
+                done=False,
+                sample_excluded=False,
+            )
+            wrapper_evidence = {
+                "event": "forced_checkpoint_rejected",
+                "workspace_continuity_id": self.env_id,
+                "checkpoint_rejection_reason": "workspace_action_required",
+                "endpoint_step_dispatched": False,
+                "native_environment_call_count": 0,
+            }
+            if reward_overlay is not None:
+                wrapper_evidence["reward_overlay"] = reward_overlay
             return StepOutput(
                 state=state,
-                reward=0.0,
+                reward=reward,
                 done=False,
                 info=build_task_neutral_transition_info(
                     env_info=self.info.get("info", {}),
@@ -384,15 +413,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
                     session_epoch_after=0,
                     policy_step_before=policy_before,
                     policy_step_after=self._policy_step_count,
-                    wrapper_evidence={
-                        "event": "forced_checkpoint_rejected",
-                        "workspace_continuity_id": self.env_id,
-                        "checkpoint_rejection_reason": (
-                            "workspace_action_required"
-                        ),
-                        "endpoint_step_dispatched": False,
-                        "native_environment_call_count": 0,
-                    },
+                    wrapper_evidence=wrapper_evidence,
                 ),
             )
         response = self._request(
@@ -436,6 +457,15 @@ class LiteResearcherEnvClient(BaseEnvClient):
         ):
             raise RuntimeError("LiteResearcher checkpoint workspace action changed reward")
         done = bool(response["done"])
+        sample_excluded = bool(response_info.get("sample_excluded", False))
+        reward = float(checkpoint_reward)
+        reward_overlay = None
+        if not checkpoint_valid and not sample_excluded:
+            reward, reward_overlay = self._invalid_action_reward_overlay(
+                native_reward=reward,
+                done=done,
+                sample_excluded=False,
+            )
         context_transition = None
         state = str(response["observation"])
         event = "forced_checkpoint_rejected"
@@ -464,9 +494,22 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 "context has not been removed."
             )
 
+        wrapper_evidence = {
+            "event": event,
+            "workspace_continuity_id": self.env_id,
+            "continuation_checkpoint": (
+                dict(receipt) if isinstance(receipt, Mapping) else None
+            ),
+            "checkpoint_rejection_reason": rejection_reason,
+            "server_wrapper_evidence": dict(server_evidence),
+            "endpoint_step_dispatched": True,
+            "native_environment_call_count": 0,
+        }
+        if reward_overlay is not None:
+            wrapper_evidence["reward_overlay"] = reward_overlay
         return StepOutput(
             state=state,
-            reward=0.0,
+            reward=reward,
             done=done,
             info=build_task_neutral_transition_info(
                 env_info=response_info,
@@ -482,17 +525,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 policy_step_before=policy_before,
                 policy_step_after=self._policy_step_count,
                 context_transition=context_transition,
-                wrapper_evidence={
-                    "event": event,
-                    "workspace_continuity_id": self.env_id,
-                    "continuation_checkpoint": (
-                        dict(receipt) if isinstance(receipt, Mapping) else None
-                    ),
-                    "checkpoint_rejection_reason": rejection_reason,
-                    "server_wrapper_evidence": dict(server_evidence),
-                    "endpoint_step_dispatched": True,
-                    "native_environment_call_count": 0,
-                },
+                wrapper_evidence=wrapper_evidence,
             ),
         )
 
