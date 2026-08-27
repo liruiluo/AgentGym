@@ -56,14 +56,17 @@ assets, while Mini-SWE-Agent supplies submission and horizon semantics.
 - Upstream `LimitsExceeded` returns an empty submission and does not grade the
   current workspace. The bounded-training contract maps this outcome once to
   reward `-0.01`, keeps `grade=None`, and makes no hidden-grader call.
-- Parser or executor rejection also terminates once with reward `-0.01`. A
-  recognized submission with no non-generated source change, or a valid but
-  unresolved official grade, terminates with reward `0`; a resolved official
-  submission receives reward `1`. A valid shell command that exits nonzero
-  (including a failing test) remains ordinary observable feedback and does not
-  terminate. Grader/backend failures are reward `0` and are separately marked
-  `sample_excluded` so infrastructure failures are resampled before PPO instead
-  of being attributed to the policy.
+- Parser or executor rejection returns a corrective observation, keeps the
+  episode open, and assigns `-0.01` to that rejected policy action. The existing
+  policy-turn limit bounds repeated failures. This preserves the upstream
+  recover-after-format-error behavior instead of terminating on the first
+  malformed action. A recognized submission with no non-generated source change,
+  or a valid but unresolved official grade, terminates with reward `0`; a
+  resolved official submission receives reward `1`. A valid shell command that
+  exits nonzero (including a failing test) remains ordinary observable feedback
+  and does not terminate. Grader/backend failures are reward `0` and are
+  separately marked `sample_excluded` so infrastructure failures are resampled
+  before PPO instead of being attributed to the policy.
 
 ## Interaction budget
 
