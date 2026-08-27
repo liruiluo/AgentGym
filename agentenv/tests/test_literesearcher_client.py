@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 import requests
 
+from agentenv.controller import complete_policy_turn, prepare_policy_turn
 from agentenv.controller.types import PolicyContextPressure
 from agentenv.envs.literesearcher import (
     LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
@@ -24,8 +25,11 @@ class LiteResearcherClientTests(unittest.TestCase):
         client.env_id = 7
         client.info = {"observation": "Which source answers this question?"}
         client.max_policy_steps = 40
-        client._policy_step_count = 0
         client.invalid_action_reward = -0.01
+        client._reset_policy_transition_state()
+        client._current_policy_context = [
+            {"role": "user", "content": "Which source answers this question?"}
+        ]
         return client
 
     def test_policy_framing_exposes_normalized_conversation_start(self) -> None:
@@ -84,9 +88,17 @@ class LiteResearcherClientTests(unittest.TestCase):
             {"role": "system", "content": "system framing"},
             {"role": "user", "content": "original question"},
         ]
+        client._current_policy_context = [
+            dict(message) for message in client._immutable_policy_context
+        ]
         client._policy_context_bound = True
         client._selected_policy_control = (
             "context_compaction" if selected else None
+        )
+        client._checkpoint_retry_context = (
+            [dict(message) for message in client._current_policy_context]
+            if selected
+            else None
         )
         return client
 
@@ -163,6 +175,64 @@ class LiteResearcherClientTests(unittest.TestCase):
             output.info["wrapper_evidence"]["continuation_checkpoint"]["valid"]
         )
 
+    def test_rejected_checkpoint_retries_restore_pre_attempt_context_without_growth(
+        self,
+    ) -> None:
+        client = self._bound_client(selected=False)
+        client.max_policy_steps = 40
+        client._request = Mock()
+        research_context = [
+            {"role": "system", "content": "system framing"},
+            {"role": "user", "content": "original question"},
+            {"role": "assistant", "content": "evidence " + ("x" * 16_800)},
+            {"role": "user", "content": "bounded visit result"},
+        ]
+        messages = [dict(message) for message in research_context]
+        prompt_sizes: list[int] = []
+        invalid_action = (
+            '<tool_call>{"name":"search","arguments":'
+            '{"query":["source"]}}</tool_call>'
+        )
+
+        def count_prompt_tokens(candidate: list[dict[str, str]]) -> int:
+            return sum(len(message["content"]) for message in candidate)
+
+        for attempt in range(30):
+            prepared = prepare_policy_turn(
+                client,
+                messages,
+                count_prompt_tokens=count_prompt_tokens,
+                max_prompt_tokens=30_720,
+                max_model_tokens=32_768,
+                max_response_tokens=2_048,
+                max_observation_tokens=(
+                    LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE
+                ),
+            )
+            self.assertEqual(
+                prepared.control_request,
+                LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+            )
+            prompt_sizes.append(prepared.prompt_token_count)
+            output, messages = complete_policy_turn(
+                client, prepared, invalid_action
+            )
+            self.assertEqual(output.reward, -0.01)
+            self.assertFalse(output.done)
+            self.assertEqual(messages, research_context)
+            self.assertEqual(
+                output.info["context_transition"]["operation"],
+                "replace_messages",
+            )
+            self.assertTrue(
+                output.info["wrapper_evidence"]["retry_context_restored"]
+            )
+            self.assertEqual(client._policy_step_count, attempt + 1)
+
+        self.assertEqual(len(set(prompt_sizes)), 1)
+        self.assertEqual(client._policy_step_count, 30)
+        client._request.assert_not_called()
+
     def test_forced_checkpoint_rejects_research_action_without_endpoint_dispatch(self) -> None:
         client = self._bound_client()
         client._request = Mock()
@@ -188,7 +258,14 @@ class LiteResearcherClientTests(unittest.TestCase):
         )
         self.assertEqual(
             output.info["context_transition"]["operation"],
-            "append_observation",
+            "replace_messages",
+        )
+        self.assertEqual(
+            output.info["context_transition"]["messages"],
+            client._immutable_policy_context,
+        )
+        self.assertTrue(
+            output.info["wrapper_evidence"]["retry_context_restored"]
         )
         self.assertEqual(output.info["native_call_count_after"], 0)
         self.assertEqual(output.info["policy_step_after"], 1)
@@ -204,7 +281,7 @@ class LiteResearcherClientTests(unittest.TestCase):
             "workspace_action_required",
         )
 
-    def test_valid_diff_from_failed_checkpoint_action_does_not_replace(self) -> None:
+    def test_valid_diff_from_failed_checkpoint_action_restores_retry_context(self) -> None:
         client = self._bound_client()
         response = self._checkpoint_response(valid=True)
         receipt = response["info"]["wrapper_evidence"][
@@ -221,7 +298,14 @@ class LiteResearcherClientTests(unittest.TestCase):
 
         self.assertEqual(
             output.info["context_transition"]["operation"],
-            "append_observation",
+            "replace_messages",
+        )
+        self.assertEqual(
+            output.info["context_transition"]["messages"],
+            client._immutable_policy_context,
+        )
+        self.assertTrue(
+            output.info["wrapper_evidence"]["retry_context_restored"]
         )
         self.assertEqual(output.info["context_epoch_after"], 0)
         self.assertEqual(
@@ -229,7 +313,7 @@ class LiteResearcherClientTests(unittest.TestCase):
             "action_execution_failed",
         )
 
-    def test_failed_checkpoint_write_does_not_replace_context(self) -> None:
+    def test_failed_checkpoint_write_restores_retry_context(self) -> None:
         client = self._bound_client()
         client._request = Mock(return_value=self._checkpoint_response(valid=False))
 
@@ -237,7 +321,14 @@ class LiteResearcherClientTests(unittest.TestCase):
 
         self.assertEqual(
             output.info["context_transition"]["operation"],
-            "append_observation",
+            "replace_messages",
+        )
+        self.assertEqual(
+            output.info["context_transition"]["messages"],
+            client._immutable_policy_context,
+        )
+        self.assertTrue(
+            output.info["wrapper_evidence"]["retry_context_restored"]
         )
         self.assertEqual(output.info["context_epoch_after"], 0)
         self.assertEqual(output.info["native_call_count_after"], 1)
@@ -271,7 +362,14 @@ class LiteResearcherClientTests(unittest.TestCase):
 
         self.assertEqual(
             output.info["context_transition"]["operation"],
-            "append_observation",
+            "replace_messages",
+        )
+        self.assertEqual(
+            output.info["context_transition"]["messages"],
+            client._immutable_policy_context,
+        )
+        self.assertTrue(
+            output.info["wrapper_evidence"]["retry_context_restored"]
         )
         self.assertEqual(output.info["context_epoch_after"], 0)
         self.assertEqual(
@@ -283,6 +381,39 @@ class LiteResearcherClientTests(unittest.TestCase):
             output.info["wrapper_evidence"]["reward_overlay"]["penalty"],
             -0.01,
         )
+
+    def test_checkpoint_rejection_fails_closed_when_write_read_answer_no_longer_fit(
+        self,
+    ) -> None:
+        client = self._bound_client()
+        client._policy_step_count = 37
+        client._request = Mock()
+
+        output = client.step(
+            '<tool_call>{"name":"search","arguments":'
+            '{"query":["source"]}}</tool_call>'
+        )
+
+        self.assertTrue(output.done)
+        self.assertEqual(output.reward, -0.01)
+        self.assertEqual(
+            output.info["env_info"]["status"],
+            "checkpoint_retry_budget_exhausted",
+        )
+        self.assertEqual(
+            output.info["wrapper_evidence"]["event"],
+            "forced_checkpoint_retry_budget_exhausted",
+        )
+        self.assertFalse(
+            output.info["wrapper_evidence"]["retry_context_restored"]
+        )
+        self.assertEqual(
+            output.info["wrapper_evidence"][
+                "checkpoint_retry_remaining_actions"
+            ],
+            2,
+        )
+        client._request.assert_not_called()
 
     def test_checkpoint_backend_fault_is_excluded_without_policy_penalty(self) -> None:
         client = self._bound_client()

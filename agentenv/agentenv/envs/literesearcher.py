@@ -183,6 +183,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
         self._context_epoch = 0
         self._immutable_policy_context: list[dict[str, str]] | None = None
         self._current_policy_context: list[dict[str, str]] | None = None
+        self._checkpoint_retry_context: list[dict[str, str]] | None = None
         self._policy_context_bound = False
         self._selected_policy_control: str | None = None
 
@@ -228,6 +229,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
         self, pressure: PolicyContextPressure | None
     ) -> str | None:
         self._selected_policy_control = None
+        self._checkpoint_retry_context = None
         if not self._policy_context_bound:
             return None
         if pressure is None:
@@ -264,6 +266,11 @@ class LiteResearcherEnvClient(BaseEnvClient):
             # creates an unavoidable checkpoint dead end. The current prompt is
             # still within capacity, so leave the final actions to the policy.
             return None
+        if self._current_policy_context is None:
+            raise RuntimeError(
+                "LiteResearcher compaction lost its pre-attempt policy context"
+            )
+        self._checkpoint_retry_context = deepcopy(self._current_policy_context)
         self._selected_policy_control = "context_compaction"
         return LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
 
@@ -359,6 +366,29 @@ class LiteResearcherEnvClient(BaseEnvClient):
             "terminal": done,
         }
 
+    def _checkpoint_rejection_lifecycle(
+        self,
+    ) -> tuple[bool, dict[str, Any] | None, bool, int]:
+        remaining_actions = self.max_policy_steps - self._policy_step_count
+        if remaining_actions < LITERESEARCHER_MIN_ACTIONS_FOR_CHECKPOINT_READ_ANSWER:
+            self._checkpoint_retry_context = None
+            return True, None, False, remaining_actions
+        retry_context = self._checkpoint_retry_context
+        if retry_context is None:
+            raise RuntimeError(
+                "LiteResearcher checkpoint retry lost its pre-attempt research context"
+            )
+        self._checkpoint_retry_context = None
+        return (
+            False,
+            build_task_neutral_context_transition(
+                CONTEXT_OPERATION_REPLACE,
+                messages=deepcopy(retry_context),
+            ),
+            True,
+            remaining_actions,
+        )
+
     def _complete_context_compaction(self, action: str) -> StepOutput:
         framing = self._immutable_policy_context
         if framing is None:
@@ -369,33 +399,61 @@ class LiteResearcherEnvClient(BaseEnvClient):
         if not _is_workspace_action_candidate(action):
             self._policy_step_count += 1
             self._selected_policy_control = None
+            (
+                done,
+                context_transition,
+                retry_context_restored,
+                remaining_actions,
+            ) = self._checkpoint_rejection_lifecycle()
             state = (
                 "Continuation checkpoint was not accepted (workspace action required). "
                 "Use exactly one canonical shell_command or apply_patch action to "
                 f"overwrite {LITERESEARCHER_CONTINUATION_PATH}; no search, visit, "
-                "answer, code fence, or standalone prose was executed. The earlier "
-                "context has not been removed."
+                "answer, code fence, or standalone prose was executed. "
             )
+            if done:
+                state += (
+                    "The episode ended because too few policy actions remain for a "
+                    "checkpoint write, required read, and answer."
+                )
+            else:
+                state += (
+                    "The failed attempt was removed from the policy context; the "
+                    "pre-attempt research context will be retried unchanged."
+                )
             reward, reward_overlay = self._invalid_action_reward_overlay(
                 native_reward=0.0,
-                done=False,
+                done=done,
                 sample_excluded=False,
             )
+            env_info = dict(self.info.get("info", {}))
+            event = "forced_checkpoint_rejected"
+            if done:
+                event = "forced_checkpoint_retry_budget_exhausted"
+                env_info.update(
+                    {
+                        "status": "checkpoint_retry_budget_exhausted",
+                        "episode_success": False,
+                        "sample_excluded": False,
+                    }
+                )
             wrapper_evidence = {
-                "event": "forced_checkpoint_rejected",
+                "event": event,
                 "workspace_continuity_id": self.env_id,
                 "checkpoint_rejection_reason": "workspace_action_required",
                 "endpoint_step_dispatched": False,
                 "native_environment_call_count": 0,
+                "retry_context_restored": retry_context_restored,
+                "checkpoint_retry_remaining_actions": remaining_actions,
             }
             if reward_overlay is not None:
                 wrapper_evidence["reward_overlay"] = reward_overlay
             return StepOutput(
                 state=state,
                 reward=reward,
-                done=False,
+                done=done,
                 info=build_task_neutral_transition_info(
-                    env_info=self.info.get("info", {}),
+                    env_info=env_info,
                     action_submission={
                         "raw_policy_output": str(action),
                         "submitted_action": None,
@@ -413,9 +471,11 @@ class LiteResearcherEnvClient(BaseEnvClient):
                     session_epoch_after=0,
                     policy_step_before=policy_before,
                     policy_step_after=self._policy_step_count,
+                    context_transition=context_transition,
                     wrapper_evidence=wrapper_evidence,
                 ),
             )
+
         response = self._request(
             "POST",
             "step",
@@ -427,6 +487,9 @@ class LiteResearcherEnvClient(BaseEnvClient):
         self._selected_policy_control = None
 
         response_info = response.get("info", {})
+        if not isinstance(response_info, Mapping):
+            raise RuntimeError("LiteResearcher endpoint returned non-object info")
+        response_info = dict(response_info)
         action_submission = response_info.get("action_submission")
         if not isinstance(action_submission, Mapping):
             action_submission = {"raw_policy_output": action}
@@ -458,18 +521,17 @@ class LiteResearcherEnvClient(BaseEnvClient):
             raise RuntimeError("LiteResearcher checkpoint workspace action changed reward")
         done = bool(response["done"])
         sample_excluded = bool(response_info.get("sample_excluded", False))
-        reward = float(checkpoint_reward)
-        reward_overlay = None
-        if not checkpoint_valid and not sample_excluded:
-            reward, reward_overlay = self._invalid_action_reward_overlay(
-                native_reward=reward,
-                done=done,
-                sample_excluded=False,
+        if sample_excluded and not done:
+            raise RuntimeError(
+                "LiteResearcher excluded checkpoint sample must be terminal"
             )
         context_transition = None
+        retry_context_restored = False
+        remaining_actions = self.max_policy_steps - self._policy_step_count
         state = str(response["observation"])
         event = "forced_checkpoint_rejected"
         if checkpoint_valid and not done:
+            self._checkpoint_retry_context = None
             replacement = deepcopy(framing)
             replacement.append(
                 {
@@ -484,16 +546,48 @@ class LiteResearcherEnvClient(BaseEnvClient):
             )
             event = "forced_checkpoint_write"
         elif done:
+            self._checkpoint_retry_context = None
             event = "forced_checkpoint_terminal"
         else:
+            (
+                done,
+                context_transition,
+                retry_context_restored,
+                remaining_actions,
+            ) = self._checkpoint_rejection_lifecycle()
             state = (
                 "Continuation checkpoint was not accepted "
                 f"({rejection_reason}). Use exactly one canonical shell_command "
                 f"or apply_patch action to overwrite {LITERESEARCHER_CONTINUATION_PATH} "
-                f"with 1-{LITERESEARCHER_CONTINUATION_MAX_BYTES} bytes; the earlier "
-                "context has not been removed."
+                f"with 1-{LITERESEARCHER_CONTINUATION_MAX_BYTES} bytes. "
             )
+            if done:
+                event = "forced_checkpoint_retry_budget_exhausted"
+                state += (
+                    "The episode ended because too few policy actions remain for a "
+                    "checkpoint write, required read, and answer."
+                )
+                response_info.update(
+                    {
+                        "status": "checkpoint_retry_budget_exhausted",
+                        "episode_success": False,
+                        "sample_excluded": False,
+                    }
+                )
+            else:
+                state += (
+                    "The failed attempt was removed from the policy context; the "
+                    "pre-attempt research context will be retried unchanged."
+                )
 
+        reward = float(checkpoint_reward)
+        reward_overlay = None
+        if not checkpoint_valid and not sample_excluded:
+            reward, reward_overlay = self._invalid_action_reward_overlay(
+                native_reward=reward,
+                done=done,
+                sample_excluded=False,
+            )
         wrapper_evidence = {
             "event": event,
             "workspace_continuity_id": self.env_id,
@@ -504,6 +598,8 @@ class LiteResearcherEnvClient(BaseEnvClient):
             "server_wrapper_evidence": dict(server_evidence),
             "endpoint_step_dispatched": True,
             "native_environment_call_count": 0,
+            "retry_context_restored": retry_context_restored,
+            "checkpoint_retry_remaining_actions": remaining_actions,
         }
         if reward_overlay is not None:
             wrapper_evidence["reward_overlay"] = reward_overlay
