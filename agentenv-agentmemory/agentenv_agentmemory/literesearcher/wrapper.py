@@ -25,6 +25,87 @@ _WORKSPACE_ACTION_MARKER_RE = re.compile(
     r"(?m)^(shell_command(?= \{)|apply_patch(?=\r?$))"
 )
 _MAX_WORKSPACE_REASONING_PREFIX_CHARS = 2048
+LITERESEARCHER_CONTINUATION_CHECKPOINT_PATH = ".agent_memory/CONTINUATION.md"
+LITERESEARCHER_CONTINUATION_CHECKPOINT_MAX_BYTES = 8192
+_CONTINUATION_CHECKPOINT_SCHEMA = "agentmemory_continuation_checkpoint_v1"
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _continuation_checkpoint_receipt(
+    workspace_diff: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Describe whether this action changed a valid bounded checkpoint file."""
+
+    target: Mapping[str, Any] | None = None
+    added = workspace_diff.get("added", ())
+    modified = workspace_diff.get("modified", ())
+    deleted = workspace_diff.get("deleted", ())
+    if not isinstance(added, list) or not isinstance(modified, list):
+        added = []
+        modified = []
+    if not isinstance(deleted, list):
+        deleted = []
+
+    for item in added:
+        if (
+            isinstance(item, Mapping)
+            and item.get("path") == LITERESEARCHER_CONTINUATION_CHECKPOINT_PATH
+        ):
+            target = item
+            break
+    if target is None:
+        for item in modified:
+            if not isinstance(item, Mapping):
+                continue
+            after = item.get("after")
+            if (
+                isinstance(after, Mapping)
+                and after.get("path") == LITERESEARCHER_CONTINUATION_CHECKPOINT_PATH
+            ):
+                target = after
+                break
+
+    deleted_target = any(
+        isinstance(item, Mapping)
+        and item.get("path") == LITERESEARCHER_CONTINUATION_CHECKPOINT_PATH
+        for item in deleted
+    )
+    changed = target is not None and not deleted_target
+    size = target.get("bytes") if target is not None else None
+    digest = target.get("sha256") if target is not None else None
+    metadata_valid = (
+        type(size) is int
+        and size >= 0
+        and isinstance(digest, str)
+        and _SHA256_RE.fullmatch(digest) is not None
+    )
+    nonempty = metadata_valid and size > 0
+    within_size_limit = (
+        metadata_valid
+        and size <= LITERESEARCHER_CONTINUATION_CHECKPOINT_MAX_BYTES
+    )
+    valid = changed and nonempty and within_size_limit
+    if not changed:
+        rejection_reason = "not_changed_in_action"
+    elif not metadata_valid:
+        rejection_reason = "invalid_file_metadata"
+    elif not nonempty:
+        rejection_reason = "empty"
+    elif not within_size_limit:
+        rejection_reason = "too_large"
+    else:
+        rejection_reason = None
+    return {
+        "schema": _CONTINUATION_CHECKPOINT_SCHEMA,
+        "path": LITERESEARCHER_CONTINUATION_CHECKPOINT_PATH,
+        "changed_in_action": changed,
+        "nonempty": nonempty,
+        "within_size_limit": within_size_limit,
+        "bytes": size if metadata_valid else None,
+        "sha256": digest if metadata_valid else None,
+        "valid": valid,
+        "rejection_reason": rejection_reason,
+    }
 
 
 class WorkspaceAdapter(Protocol):
@@ -154,9 +235,17 @@ class LiteResearcherWrapper:
                 "max_policy_steps": self.max_policy_steps,
                 "max_policy_steps_enforced_by": "shared_policy_runner",
                 "server_native_action_safety_cap": self.max_policy_steps,
-                "compaction_contract": "task_neutral_client_replace_messages_v1",
+                "compaction_contract": "task_neutral_filesystem_checkpoint_v1",
                 "compaction_counts_as_env_step": True,
+                "compaction_calls_endpoint_step": True,
+                "compaction_calls_research_backend": False,
                 "compaction_calls_backend": False,
+                "continuation_checkpoint_path": (
+                    LITERESEARCHER_CONTINUATION_CHECKPOINT_PATH
+                ),
+                "continuation_checkpoint_max_bytes": (
+                    LITERESEARCHER_CONTINUATION_CHECKPOINT_MAX_BYTES
+                ),
                 "reward_contract": self.reward_contract,
                 "judge": judge_metadata,
                 "judge_fallback": judge_metadata["fallback"],
@@ -444,6 +533,13 @@ class LiteResearcherWrapper:
         )
         message = str(getattr(result, "message", result))
         op = str(getattr(result, "op", "WORKSPACE")).upper()
+        raw_workspace_diff = getattr(result, "workspace_diff", {})
+        workspace_diff = (
+            deepcopy(dict(raw_workspace_diff))
+            if isinstance(raw_workspace_diff, Mapping)
+            else {}
+        )
+        continuation_checkpoint = _continuation_checkpoint_receipt(workspace_diff)
         workspace_action_sha256 = hashlib.sha256(
             workspace_action.encode("utf-8")
         ).hexdigest()
@@ -466,6 +562,8 @@ class LiteResearcherWrapper:
                 "workspace_reward": 0.0,
                 "workspace_reasoning_prefix_chars": reasoning_prefix_chars,
                 "executed_workspace_action_sha256": workspace_action_sha256,
+                "workspace_diff": workspace_diff,
+                "continuation_checkpoint": continuation_checkpoint,
                 "native_environment_call_count": 0,
             },
         )

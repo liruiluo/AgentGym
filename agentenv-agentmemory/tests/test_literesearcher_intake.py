@@ -28,6 +28,13 @@ class FakeWorkspace:
         self.reset_ids: list[str] = []
         self.actions: list[str] = []
         self.closed = False
+        self.next_workspace_diff = {
+            "added": [],
+            "modified": [],
+            "deleted": [],
+            "directories_added": [],
+            "directories_deleted": [],
+        }
 
     def reset_episode(self, episode_id: str, *, enabled: bool = True) -> None:
         assert enabled
@@ -47,6 +54,7 @@ class FakeWorkspace:
             {
                 "message": f"workspace step={env_step} phase={phase_index}",
                 "op": parsed.tool_name.upper(),
+                "workspace_diff": self.next_workspace_diff,
             },
         )()
 
@@ -674,9 +682,155 @@ class LiteResearcherIntakeTests(unittest.TestCase):
         self.assertEqual(result["info"]["native_environment_call_count"], 0)
         self.assertEqual(
             wrapper.metadata()["compaction_contract"],
-            "task_neutral_client_replace_messages_v1",
+            "task_neutral_filesystem_checkpoint_v1",
         )
         wrapper.close(env_id)
+
+    def test_metadata_advertises_bounded_filesystem_checkpoint(self) -> None:
+        wrapper = LiteResearcherWrapper(
+            self.coverage,
+            FrozenLiteResearchBackend(self.coverage),
+        )
+        metadata = wrapper.metadata()
+        self.assertEqual(
+            metadata["compaction_contract"],
+            "task_neutral_filesystem_checkpoint_v1",
+        )
+        self.assertEqual(
+            metadata["continuation_checkpoint_path"],
+            ".agent_memory/CONTINUATION.md",
+        )
+        self.assertEqual(metadata["continuation_checkpoint_max_bytes"], 8192)
+        self.assertTrue(metadata["compaction_calls_endpoint_step"])
+        self.assertFalse(metadata["compaction_calls_research_backend"])
+
+    def test_workspace_write_emits_valid_continuation_checkpoint_receipt(self) -> None:
+        workspaces: dict[int, FakeWorkspace] = {}
+
+        def factory(env_id: int) -> FakeWorkspace:
+            workspace = FakeWorkspace()
+            workspaces[env_id] = workspace
+            return workspace
+
+        wrapper = LiteResearcherWrapper(
+            self.coverage,
+            FrozenLiteResearchBackend(self.coverage),
+            workspace_factory=factory,
+        )
+        env_id = wrapper.create(data_idx=0)["id"]
+        workspaces[env_id].next_workspace_diff = {
+            "added": [
+                {
+                    "path": ".agent_memory/CONTINUATION.md",
+                    "bytes": 127,
+                    "sha256": "a" * 64,
+                }
+            ],
+            "modified": [],
+            "deleted": [],
+            "directories_added": [".agent_memory"],
+            "directories_deleted": [],
+        }
+        action = (
+            "apply_patch\n*** Begin Patch\n*** Add File: "
+            ".agent_memory/CONTINUATION.md\n+state\n*** End Patch"
+        )
+        result = wrapper.step(env_id, action)
+        receipt = result["info"]["wrapper_evidence"][
+            "continuation_checkpoint"
+        ]
+        self.assertEqual(
+            receipt,
+            {
+                "schema": "agentmemory_continuation_checkpoint_v1",
+                "path": ".agent_memory/CONTINUATION.md",
+                "changed_in_action": True,
+                "nonempty": True,
+                "within_size_limit": True,
+                "bytes": 127,
+                "sha256": "a" * 64,
+                "valid": True,
+                "rejection_reason": None,
+            },
+        )
+        wrapper.close(env_id)
+
+    def test_continuation_checkpoint_receipt_rejects_missing_unchanged_or_oversized(self) -> None:
+        workspaces: dict[int, FakeWorkspace] = {}
+
+        def factory(env_id: int) -> FakeWorkspace:
+            workspace = FakeWorkspace()
+            workspaces[env_id] = workspace
+            return workspace
+
+        wrapper = LiteResearcherWrapper(
+            self.coverage,
+            FrozenLiteResearchBackend(self.coverage),
+            workspace_factory=factory,
+        )
+        cases = (
+            (
+                {
+                    "added": [],
+                    "modified": [],
+                    "deleted": [],
+                    "directories_added": [],
+                    "directories_deleted": [],
+                },
+                "not_changed_in_action",
+            ),
+            (
+                {
+                    "added": [
+                        {
+                            "path": ".agent_memory/CONTINUATION.md",
+                            "bytes": 0,
+                            "sha256": "b" * 64,
+                        }
+                    ],
+                    "modified": [],
+                    "deleted": [],
+                    "directories_added": [],
+                    "directories_deleted": [],
+                },
+                "empty",
+            ),
+            (
+                {
+                    "added": [],
+                    "modified": [
+                        {
+                            "before": {
+                                "path": ".agent_memory/CONTINUATION.md",
+                                "bytes": 100,
+                                "sha256": "c" * 64,
+                            },
+                            "after": {
+                                "path": ".agent_memory/CONTINUATION.md",
+                                "bytes": 8193,
+                                "sha256": "d" * 64,
+                            },
+                        }
+                    ],
+                    "deleted": [],
+                    "directories_added": [],
+                    "directories_deleted": [],
+                },
+                "too_large",
+            ),
+        )
+        action = 'shell_command {"command":"true"}'
+        for workspace_diff, reason in cases:
+            with self.subTest(reason=reason):
+                env_id = wrapper.create(data_idx=0)["id"]
+                workspaces[env_id].next_workspace_diff = workspace_diff
+                result = wrapper.step(env_id, action)
+                receipt = result["info"]["wrapper_evidence"][
+                    "continuation_checkpoint"
+                ]
+                self.assertFalse(receipt["valid"])
+                self.assertEqual(receipt["rejection_reason"], reason)
+                wrapper.close(env_id)
 
     def test_nonterminal_action_at_turn_40_closes_without_a_hidden_41st_step(self) -> None:
         wrapper = LiteResearcherWrapper(
