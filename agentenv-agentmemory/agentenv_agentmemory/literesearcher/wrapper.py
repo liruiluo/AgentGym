@@ -27,7 +27,7 @@ _WORKSPACE_ACTION_MARKER_RE = re.compile(
 _MAX_WORKSPACE_REASONING_PREFIX_CHARS = 2048
 LITERESEARCHER_CONTINUATION_CHECKPOINT_PATH = ".agent_memory/CONTINUATION.md"
 LITERESEARCHER_CONTINUATION_CHECKPOINT_MAX_BYTES = 8192
-_CONTINUATION_CHECKPOINT_SCHEMA = "agentmemory_continuation_checkpoint_v1"
+_CONTINUATION_CHECKPOINT_SCHEMA = "agentmemory_continuation_checkpoint_v2"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
@@ -37,9 +37,11 @@ def _continuation_checkpoint_receipt(
     op: str,
     tool_op: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Describe whether this action changed a valid bounded checkpoint file."""
+    """Attest a successful, bounded content change to the checkpoint path."""
 
     target: Mapping[str, Any] | None = None
+    before: Mapping[str, Any] | None = None
+    change_kind: str | None = None
     added = workspace_diff.get("added", ())
     modified = workspace_diff.get("modified", ())
     deleted = workspace_diff.get("deleted", ())
@@ -55,17 +57,25 @@ def _continuation_checkpoint_receipt(
             and item.get("path") == LITERESEARCHER_CONTINUATION_CHECKPOINT_PATH
         ):
             target = item
+            change_kind = "added"
             break
     if target is None:
         for item in modified:
             if not isinstance(item, Mapping):
                 continue
-            after = item.get("after")
+            candidate_before = item.get("before")
+            candidate_after = item.get("after")
             if (
-                isinstance(after, Mapping)
-                and after.get("path") == LITERESEARCHER_CONTINUATION_CHECKPOINT_PATH
+                isinstance(candidate_before, Mapping)
+                and candidate_before.get("path")
+                == LITERESEARCHER_CONTINUATION_CHECKPOINT_PATH
+                and isinstance(candidate_after, Mapping)
+                and candidate_after.get("path")
+                == LITERESEARCHER_CONTINUATION_CHECKPOINT_PATH
             ):
-                target = after
+                before = candidate_before
+                target = candidate_after
+                change_kind = "modified"
                 break
 
     deleted_target = any(
@@ -73,7 +83,6 @@ def _continuation_checkpoint_receipt(
         and item.get("path") == LITERESEARCHER_CONTINUATION_CHECKPOINT_PATH
         for item in deleted
     )
-    changed = target is not None and not deleted_target
     normalized_op = str(op).upper()
     action_execution_succeeded = (
         tool_op.get("status") == "executed"
@@ -91,11 +100,34 @@ def _continuation_checkpoint_receipt(
     )
     size = target.get("bytes") if target is not None else None
     digest = target.get("sha256") if target is not None else None
-    metadata_valid = (
+    before_digest = before.get("sha256") if before is not None else None
+    after_metadata_valid = (
         type(size) is int
         and size >= 0
         and isinstance(digest, str)
         and _SHA256_RE.fullmatch(digest) is not None
+    )
+    before_metadata_valid = (
+        change_kind != "modified"
+        or (
+            isinstance(before_digest, str)
+            and _SHA256_RE.fullmatch(before_digest) is not None
+        )
+    )
+    metadata_valid = after_metadata_valid and before_metadata_valid
+    content_changed = (
+        change_kind == "added"
+        or (
+            change_kind == "modified"
+            and metadata_valid
+            and before_digest != digest
+        )
+    )
+    changed = (
+        target is not None
+        and change_kind in {"added", "modified"}
+        and content_changed
+        and not deleted_target
     )
     nonempty = metadata_valid and size > 0
     within_size_limit = (
@@ -105,10 +137,12 @@ def _continuation_checkpoint_receipt(
     valid = action_execution_succeeded and changed and nonempty and within_size_limit
     if not action_execution_succeeded:
         rejection_reason = "action_execution_failed"
-    elif not changed:
+    elif target is None or deleted_target:
         rejection_reason = "not_changed_in_action"
     elif not metadata_valid:
         rejection_reason = "invalid_file_metadata"
+    elif not content_changed:
+        rejection_reason = "not_changed_in_action"
     elif not nonempty:
         rejection_reason = "empty"
     elif not within_size_limit:
@@ -120,11 +154,14 @@ def _continuation_checkpoint_receipt(
         "path": LITERESEARCHER_CONTINUATION_CHECKPOINT_PATH,
         "action_kind": normalized_op,
         "action_execution_succeeded": action_execution_succeeded,
+        "change_kind": change_kind,
+        "before_sha256": before_digest,
+        "sha256": digest if after_metadata_valid else None,
+        "content_changed": content_changed,
         "changed_in_action": changed,
         "nonempty": nonempty,
         "within_size_limit": within_size_limit,
-        "bytes": size if metadata_valid else None,
-        "sha256": digest if metadata_valid else None,
+        "bytes": size if after_metadata_valid else None,
         "valid": valid,
         "rejection_reason": rejection_reason,
     }
@@ -187,9 +224,10 @@ class LiteResearcherWrapper:
     """HTTP-shaped wrapper for one continuous LiteResearcher episode.
 
     There are no hand-authored sessions. Search, visit, workspace actions, and
-    answers are ordinary native actions. Policy-authored compaction is owned by
-    the task-neutral client wrapper because only that layer sees exact tokenizer
-    pressure; it deliberately does not call this server.
+    answers are ordinary native actions. The task-neutral client decides when
+    tokenizer pressure requires compaction. Its policy-authored checkpoint is an
+    ordinary workspace action executed by this server without calling the
+    research backend; only the later context replacement remains client-owned.
     """
 
     def __init__(
@@ -257,7 +295,10 @@ class LiteResearcherWrapper:
                 "max_policy_steps": self.max_policy_steps,
                 "max_policy_steps_enforced_by": "shared_policy_runner",
                 "server_native_action_safety_cap": self.max_policy_steps,
-                "compaction_contract": "task_neutral_filesystem_checkpoint_v1",
+                "compaction_contract": "task_neutral_filesystem_checkpoint_v2",
+                "continuation_checkpoint_receipt_schema": (
+                    _CONTINUATION_CHECKPOINT_SCHEMA
+                ),
                 "compaction_counts_as_env_step": True,
                 "compaction_calls_endpoint_step": True,
                 "compaction_calls_research_backend": False,

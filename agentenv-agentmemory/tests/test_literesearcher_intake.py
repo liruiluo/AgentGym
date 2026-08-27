@@ -691,7 +691,7 @@ class LiteResearcherIntakeTests(unittest.TestCase):
         self.assertEqual(result["info"]["native_environment_call_count"], 0)
         self.assertEqual(
             wrapper.metadata()["compaction_contract"],
-            "task_neutral_filesystem_checkpoint_v1",
+            "task_neutral_filesystem_checkpoint_v2",
         )
         wrapper.close(env_id)
 
@@ -703,13 +703,18 @@ class LiteResearcherIntakeTests(unittest.TestCase):
         metadata = wrapper.metadata()
         self.assertEqual(
             metadata["compaction_contract"],
-            "task_neutral_filesystem_checkpoint_v1",
+            "task_neutral_filesystem_checkpoint_v2",
         )
         self.assertEqual(
             metadata["continuation_checkpoint_path"],
             ".agent_memory/CONTINUATION.md",
         )
         self.assertEqual(metadata["continuation_checkpoint_max_bytes"], 8192)
+        self.assertEqual(
+            metadata["continuation_checkpoint_receipt_schema"],
+            "agentmemory_continuation_checkpoint_v2",
+        )
+        self.assertEqual(metadata["workspace_memory_reward"], 0.0)
         self.assertTrue(metadata["compaction_calls_endpoint_step"])
         self.assertFalse(metadata["compaction_calls_research_backend"])
 
@@ -751,15 +756,18 @@ class LiteResearcherIntakeTests(unittest.TestCase):
         self.assertEqual(
             receipt,
             {
-                "schema": "agentmemory_continuation_checkpoint_v1",
+                "schema": "agentmemory_continuation_checkpoint_v2",
                 "path": ".agent_memory/CONTINUATION.md",
                 "action_kind": "APPLY_PATCH",
                 "action_execution_succeeded": True,
+                "change_kind": "added",
+                "before_sha256": None,
+                "sha256": "a" * 64,
+                "content_changed": True,
                 "changed_in_action": True,
                 "nonempty": True,
                 "within_size_limit": True,
                 "bytes": 127,
-                "sha256": "a" * 64,
                 "valid": True,
                 "rejection_reason": None,
             },
@@ -850,6 +858,29 @@ class LiteResearcherIntakeTests(unittest.TestCase):
                     "directories_deleted": [],
                 },
                 "empty",
+            ),
+            (
+                {
+                    "added": [],
+                    "modified": [
+                        {
+                            "before": {
+                                "path": ".agent_memory/CONTINUATION.md",
+                                "bytes": 100,
+                                "sha256": "c" * 64,
+                            },
+                            "after": {
+                                "path": ".agent_memory/CONTINUATION.md",
+                                "bytes": 100,
+                                "sha256": "c" * 64,
+                            },
+                        }
+                    ],
+                    "deleted": [],
+                    "directories_added": [],
+                    "directories_deleted": [],
+                },
+                "not_changed_in_action",
             ),
             (
                 {
