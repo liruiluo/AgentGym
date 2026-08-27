@@ -129,7 +129,7 @@ def _actor_credit(positive_eligible: bool, basis: str) -> dict[str, Any]:
 def _stable_json_sha256(value: Mapping[str, Any]) -> str:
     payload = json.dumps(
         value,
-        ensure_ascii=False,
+        ensure_ascii=True,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
