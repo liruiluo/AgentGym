@@ -11,8 +11,12 @@ from agentenv_agentmemory.literesearcher import (
     LiteResearcherWrapper,
     load_coverage_manifest,
 )
-from agentenv_agentmemory.persistent_workspace import parse_workspace_action
+from agentenv_agentmemory.persistent_workspace import (
+    PersistentWorkspace,
+    parse_workspace_action,
+)
 from agentenv_agentmemory.workspace_patch import parse_workspace_patch
+from tests.workspace_test_support import InProcessTestShellSandbox
 
 
 FIXTURE = (
@@ -818,6 +822,56 @@ class LiteResearcherIntakeTests(unittest.TestCase):
         self.assertTrue(receipt["changed_in_action"])
         self.assertEqual(receipt["rejection_reason"], "action_execution_failed")
         wrapper.close(env_id)
+
+    def test_real_identical_checkpoint_rewrite_is_not_a_current_turn_change(self) -> None:
+        with tempfile.TemporaryDirectory() as root_parent:
+            workspaces: dict[int, PersistentWorkspace] = {}
+
+            def factory(env_id: int) -> PersistentWorkspace:
+                workspace = PersistentWorkspace(
+                    f"lr-{env_id}",
+                    shell_sandbox=InProcessTestShellSandbox(),
+                    root_parent=Path(root_parent),
+                )
+                workspaces[env_id] = workspace
+                return workspace
+
+            wrapper = LiteResearcherWrapper(
+                self.coverage,
+                FrozenLiteResearchBackend(self.coverage),
+                workspace_factory=factory,
+            )
+            env_id = wrapper.create(data_idx=0)["id"]
+            action = (
+                'shell_command {"command":"mkdir -p .agent_memory && '
+                'printf %s stable-state > .agent_memory/CONTINUATION.md",'
+                '"workdir":".","timeout_ms":10000}'
+            )
+
+            first = wrapper.step(env_id, action)
+            second = wrapper.step(env_id, action)
+
+            first_receipt = first["info"]["wrapper_evidence"][
+                "continuation_checkpoint"
+            ]
+            second_receipt = second["info"]["wrapper_evidence"][
+                "continuation_checkpoint"
+            ]
+            self.assertTrue(first_receipt["valid"])
+            self.assertEqual(first_receipt["change_kind"], "added")
+            self.assertTrue(first_receipt["content_changed"])
+            self.assertFalse(second_receipt["valid"])
+            self.assertIsNone(second_receipt["change_kind"])
+            self.assertFalse(second_receipt["content_changed"])
+            self.assertEqual(
+                second_receipt["rejection_reason"],
+                "not_changed_in_action",
+            )
+            self.assertEqual(
+                workspaces[env_id].audit_events[1]["workspace_diff"]["modified"],
+                [],
+            )
+            wrapper.close(env_id)
 
     def test_continuation_checkpoint_receipt_rejects_missing_unchanged_or_oversized(self) -> None:
         workspaces: dict[int, FakeWorkspace] = {}
