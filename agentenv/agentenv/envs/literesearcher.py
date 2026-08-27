@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import math
 import re
 from copy import deepcopy
-import math
 from typing import Any, Mapping, Sequence
 
 import requests
@@ -11,7 +11,6 @@ from agentenv.controller import BaseEnvClient, BaseTask
 from agentenv.controller.types import (
     CONTEXT_OPERATION_REPLACE,
     ConversationMessage,
-    POLICY_CONTINUATION_MARKER,
     PolicyContextPressure,
     StepOutput,
     build_task_neutral_context_transition,
@@ -28,9 +27,9 @@ from agentenv.controller.types import (
 LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE = 12_288
 LITERESEARCHER_CONTINUATION_PATH = ".agent_memory/CONTINUATION.md"
 LITERESEARCHER_CONTINUATION_MAX_BYTES = 8192
-LITERESEARCHER_COMPACTION_CONTRACT = "task_neutral_filesystem_checkpoint_v1"
+LITERESEARCHER_COMPACTION_CONTRACT = "task_neutral_filesystem_checkpoint_v2"
 LITERESEARCHER_MIN_ACTIONS_FOR_CHECKPOINT_READ_ANSWER = 3
-_RECEIPT_SCHEMA = "agentmemory_continuation_checkpoint_v1"
+_RECEIPT_SCHEMA = "agentmemory_continuation_checkpoint_v2"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _WORKSPACE_ACTION_MARKER_RE = re.compile(
     r"(?m)^(shell_command(?= \{)|apply_patch(?=\r?$))"
@@ -98,9 +97,10 @@ class LiteResearcherEnvClient(BaseEnvClient):
                     "source URL, extracted evidence, and next step. Keep it current "
                     "during a long investigation, and read it with shell_command after "
                     "context compaction before continuing. "
-                    "Submit the final answer as <answer>...</answer>. Except when an "
-                    "explicit context-compaction request asks for continuation text, "
-                    "emit exactly one action per turn. "
+                    "Submit the final answer as <answer>...</answer>. Emit exactly one "
+                    "action per turn. At an explicit context-checkpoint request, that "
+                    "action must be the requested executable workspace write; it is not "
+                    "free-form continuation text. "
                     "The following complete examples are literal formats; keep "
                     "both closing braces before </tool_call>: "
                     "<tool_call>{\"name\":\"search\",\"arguments\":{\"query\":[\"climate policy\"]}}</tool_call> "
@@ -141,6 +141,15 @@ class LiteResearcherEnvClient(BaseEnvClient):
             raise RuntimeError("LiteResearcher endpoint reports the wrong domain")
         if metadata.get("compaction_contract") != LITERESEARCHER_COMPACTION_CONTRACT:
             raise RuntimeError("LiteResearcher endpoint reports the wrong compaction contract")
+        if metadata.get("continuation_checkpoint_receipt_schema") != _RECEIPT_SCHEMA:
+            raise RuntimeError("LiteResearcher endpoint reports the wrong checkpoint receipt schema")
+        workspace_memory_reward = metadata.get("workspace_memory_reward")
+        if (
+            isinstance(workspace_memory_reward, bool)
+            or not isinstance(workspace_memory_reward, (int, float))
+            or float(workspace_memory_reward) != 0.0
+        ):
+            raise RuntimeError("LiteResearcher endpoint changes workspace memory reward")
         if metadata.get("compaction_calls_endpoint_step") is not True:
             raise RuntimeError("LiteResearcher endpoint does not charge checkpoint writes")
         if metadata.get("compaction_calls_research_backend") is not False:
@@ -405,6 +414,23 @@ class LiteResearcherEnvClient(BaseEnvClient):
             server_evidence = {}
         receipt = server_evidence.get("continuation_checkpoint")
         checkpoint_valid, rejection_reason = _validate_checkpoint_receipt(receipt)
+        if checkpoint_valid and (
+            action_submission.get("kind") != "workspace"
+            or action_submission.get("op") != receipt.get("action_kind")
+        ):
+            checkpoint_valid = False
+            rejection_reason = "checkpoint_action_submission_mismatch"
+        if response_info.get("native_environment_call_count") != 0:
+            raise RuntimeError(
+                "LiteResearcher checkpoint workspace action called the research backend"
+            )
+        checkpoint_reward = response.get("reward")
+        if (
+            isinstance(checkpoint_reward, bool)
+            or not isinstance(checkpoint_reward, (int, float))
+            or float(checkpoint_reward) != 0.0
+        ):
+            raise RuntimeError("LiteResearcher checkpoint workspace action changed reward")
         done = bool(response["done"])
         context_transition = None
         state = str(response["observation"])
@@ -436,7 +462,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
 
         return StepOutput(
             state=state,
-            reward=float(response["reward"]),
+            reward=0.0,
             done=done,
             info=build_task_neutral_transition_info(
                 env_info=response_info,
@@ -564,16 +590,30 @@ def _validate_checkpoint_receipt(value: Any) -> tuple[bool, str | None]:
         return False, "wrong_checkpoint_action_kind"
     if value.get("action_execution_succeeded") is not True:
         return False, "checkpoint_action_failed"
+    change_kind = value.get("change_kind")
+    before_digest = value.get("before_sha256")
     size = value.get("bytes")
     digest = value.get("sha256")
+    if change_kind not in {"added", "modified"}:
+        return False, "invalid_change_kind"
+    if change_kind == "added":
+        before_valid = before_digest is None
+    else:
+        before_valid = (
+            isinstance(before_digest, str)
+            and _SHA256_RE.fullmatch(before_digest) is not None
+            and before_digest != digest
+        )
     if (
         value.get("changed_in_action") is not True
+        or value.get("content_changed") is not True
         or value.get("nonempty") is not True
         or value.get("within_size_limit") is not True
         or type(size) is not int
         or not 1 <= size <= LITERESEARCHER_CONTINUATION_MAX_BYTES
         or not isinstance(digest, str)
         or _SHA256_RE.fullmatch(digest) is None
+        or not before_valid
         or value.get("rejection_reason") is not None
     ):
         return False, "inconsistent_valid_receipt"

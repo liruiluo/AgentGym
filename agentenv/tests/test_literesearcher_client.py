@@ -55,7 +55,10 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn("source URL, extracted evidence, and next step", prompt)
         self.assertIn("read it with shell_command after", prompt)
         self.assertIn("context compaction before continuing", prompt)
-        self.assertIn("Except when an explicit context-compaction request", prompt)
+        self.assertIn("At an explicit context-checkpoint request", prompt)
+        self.assertIn("executable workspace write", prompt)
+        self.assertIn("not free-form continuation text", prompt)
+        self.assertNotIn("asks for continuation text", prompt)
 
 
     def test_compaction_request_requires_one_real_bounded_workspace_write(self) -> None:
@@ -89,10 +92,13 @@ class LiteResearcherClientTests(unittest.TestCase):
     @staticmethod
     def _checkpoint_response(*, valid: bool, done: bool = False) -> dict:
         receipt = {
-            "schema": "agentmemory_continuation_checkpoint_v1",
+            "schema": "agentmemory_continuation_checkpoint_v2",
             "path": ".agent_memory/CONTINUATION.md",
             "action_kind": "SHELL_COMMAND",
             "action_execution_succeeded": valid,
+            "change_kind": "added" if valid else None,
+            "before_sha256": None,
+            "content_changed": valid,
             "changed_in_action": valid,
             "nonempty": valid,
             "within_size_limit": valid,
@@ -107,6 +113,7 @@ class LiteResearcherClientTests(unittest.TestCase):
             "done": done,
             "info": {
                 "status": "active" if not done else "success",
+                "native_environment_call_count": 0,
                 "action_submission": {
                     "kind": "workspace",
                     "op": "SHELL_COMMAND",
@@ -229,6 +236,51 @@ class LiteResearcherClientTests(unittest.TestCase):
             output.info["wrapper_evidence"]["event"],
             "forced_checkpoint_rejected",
         )
+
+    def test_stale_modified_receipt_with_identical_digest_does_not_replace(self) -> None:
+        client = self._bound_client()
+        response = self._checkpoint_response(valid=True)
+        receipt = response["info"]["wrapper_evidence"]["continuation_checkpoint"]
+        receipt.update(
+            {
+                "change_kind": "modified",
+                "before_sha256": receipt["sha256"],
+                "content_changed": True,
+            }
+        )
+        client._request = Mock(return_value=response)
+
+        output = client.step('shell_command {"command":"rewrite-identically"}')
+
+        self.assertEqual(
+            output.info["context_transition"]["operation"],
+            "append_observation",
+        )
+        self.assertEqual(output.info["context_epoch_after"], 0)
+        self.assertEqual(
+            output.info["wrapper_evidence"]["checkpoint_rejection_reason"],
+            "inconsistent_valid_receipt",
+        )
+
+    def test_checkpoint_reward_or_backend_call_fails_closed(self) -> None:
+        for mutation, message in (
+            (("reward", 0.25), "changed reward"),
+            (("native_environment_call_count", 1), "research backend"),
+        ):
+            with self.subTest(mutation=mutation):
+                client = self._bound_client()
+                response = self._checkpoint_response(valid=True)
+                key, value = mutation
+                if key == "reward":
+                    response[key] = value
+                else:
+                    response["info"][key] = value
+                client._request = Mock(return_value=response)
+                with self.assertRaisesRegex(RuntimeError, message):
+                    client.step(
+                        'shell_command {"command":"printf state > '
+                        '.agent_memory/CONTINUATION.md","workdir":"."}'
+                    )
 
     def test_compaction_is_not_forced_when_fewer_than_three_actions_remain(self) -> None:
         pressure = PolicyContextPressure(
@@ -422,7 +474,16 @@ class LiteResearcherInvalidActionRewardTests(unittest.TestCase):
     def test_constructor_rejects_positive_nonfinite_or_boolean_penalty(self) -> None:
         metadata = {
             "domain_id": "literesearcher",
-            "compaction_contract": "task_neutral_client_replace_messages_v1",
+            "compaction_contract": "task_neutral_filesystem_checkpoint_v2",
+            "continuation_checkpoint_receipt_schema": (
+                "agentmemory_continuation_checkpoint_v2"
+            ),
+            "workspace_memory_reward": 0.0,
+            "compaction_calls_endpoint_step": True,
+            "compaction_calls_research_backend": False,
+            "continuation_checkpoint_path": ".agent_memory/CONTINUATION.md",
+            "continuation_checkpoint_max_bytes": 8192,
+            "max_policy_steps": 40,
             "task_count": 1,
         }
         created = {"id": 7, "observation": "question", "info": {}}
@@ -439,6 +500,48 @@ class LiteResearcherInvalidActionRewardTests(unittest.TestCase):
                     LiteResearcherEnvClient(
                         "http://literesearcher.example",
                         invalid_action_reward=value,
+                    )
+
+
+    def test_constructor_rejects_stale_or_rewarded_checkpoint_endpoint(self) -> None:
+        base_metadata = {
+            "domain_id": "literesearcher",
+            "compaction_contract": "task_neutral_filesystem_checkpoint_v2",
+            "continuation_checkpoint_receipt_schema": (
+                "agentmemory_continuation_checkpoint_v2"
+            ),
+            "workspace_memory_reward": 0.0,
+            "compaction_calls_endpoint_step": True,
+            "compaction_calls_research_backend": False,
+            "continuation_checkpoint_path": ".agent_memory/CONTINUATION.md",
+            "continuation_checkpoint_max_bytes": 8192,
+            "max_policy_steps": 40,
+            "task_count": 1,
+        }
+        cases = (
+            (
+                "continuation_checkpoint_receipt_schema",
+                "agentmemory_continuation_checkpoint_v1",
+                "receipt schema",
+            ),
+            ("workspace_memory_reward", 0.01, "changes workspace memory reward"),
+            ("workspace_memory_reward", False, "changes workspace memory reward"),
+        )
+        for field, value, message in cases:
+            with self.subTest(field=field, value=value):
+                metadata = dict(base_metadata)
+                metadata[field] = value
+                with (
+                    patch.object(
+                        LiteResearcherEnvClient,
+                        "_request",
+                        return_value=metadata,
+                    ),
+                    self.assertRaisesRegex(RuntimeError, message),
+                ):
+                    LiteResearcherEnvClient(
+                        "http://literesearcher.example",
+                        invalid_action_reward=-0.01,
                     )
 
 
