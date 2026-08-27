@@ -33,6 +33,9 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 def _continuation_checkpoint_receipt(
     workspace_diff: Mapping[str, Any],
+    *,
+    op: str,
+    tool_op: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Describe whether this action changed a valid bounded checkpoint file."""
 
@@ -71,6 +74,21 @@ def _continuation_checkpoint_receipt(
         for item in deleted
     )
     changed = target is not None and not deleted_target
+    normalized_op = str(op).upper()
+    action_execution_succeeded = (
+        tool_op.get("status") == "executed"
+        and (
+            (
+                normalized_op == "SHELL_COMMAND"
+                and tool_op.get("exit_code") == 0
+                and tool_op.get("timed_out") is False
+            )
+            or (
+                normalized_op == "APPLY_PATCH"
+                and tool_op.get("transactional") is True
+            )
+        )
+    )
     size = target.get("bytes") if target is not None else None
     digest = target.get("sha256") if target is not None else None
     metadata_valid = (
@@ -84,8 +102,10 @@ def _continuation_checkpoint_receipt(
         metadata_valid
         and size <= LITERESEARCHER_CONTINUATION_CHECKPOINT_MAX_BYTES
     )
-    valid = changed and nonempty and within_size_limit
-    if not changed:
+    valid = action_execution_succeeded and changed and nonempty and within_size_limit
+    if not action_execution_succeeded:
+        rejection_reason = "action_execution_failed"
+    elif not changed:
         rejection_reason = "not_changed_in_action"
     elif not metadata_valid:
         rejection_reason = "invalid_file_metadata"
@@ -98,6 +118,8 @@ def _continuation_checkpoint_receipt(
     return {
         "schema": _CONTINUATION_CHECKPOINT_SCHEMA,
         "path": LITERESEARCHER_CONTINUATION_CHECKPOINT_PATH,
+        "action_kind": normalized_op,
+        "action_execution_succeeded": action_execution_succeeded,
         "changed_in_action": changed,
         "nonempty": nonempty,
         "within_size_limit": within_size_limit,
@@ -539,7 +561,17 @@ class LiteResearcherWrapper:
             if isinstance(raw_workspace_diff, Mapping)
             else {}
         )
-        continuation_checkpoint = _continuation_checkpoint_receipt(workspace_diff)
+        raw_tool_op = getattr(result, "tool_op", {})
+        tool_op = (
+            deepcopy(dict(raw_tool_op))
+            if isinstance(raw_tool_op, Mapping)
+            else {}
+        )
+        continuation_checkpoint = _continuation_checkpoint_receipt(
+            workspace_diff,
+            op=op,
+            tool_op=tool_op,
+        )
         workspace_action_sha256 = hashlib.sha256(
             workspace_action.encode("utf-8")
         ).hexdigest()

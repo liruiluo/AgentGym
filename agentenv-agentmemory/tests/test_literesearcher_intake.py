@@ -35,6 +35,7 @@ class FakeWorkspace:
             "directories_added": [],
             "directories_deleted": [],
         }
+        self.next_tool_op = None
 
     def reset_episode(self, episode_id: str, *, enabled: bool = True) -> None:
         assert enabled
@@ -48,12 +49,20 @@ class FakeWorkspace:
         if parsed.tool_name == "apply_patch":
             parse_workspace_patch(parsed.tool_input)
         self.actions.append(action)
+        tool_op = self.next_tool_op
+        if tool_op is None:
+            tool_op = (
+                {"status": "executed", "exit_code": 0, "timed_out": False}
+                if parsed.tool_name == "shell_command"
+                else {"status": "executed", "transactional": True}
+            )
         return type(
             "WorkspaceResult",
             (),
             {
                 "message": f"workspace step={env_step} phase={phase_index}",
                 "op": parsed.tool_name.upper(),
+                "tool_op": tool_op,
                 "workspace_diff": self.next_workspace_diff,
             },
         )()
@@ -744,6 +753,8 @@ class LiteResearcherIntakeTests(unittest.TestCase):
             {
                 "schema": "agentmemory_continuation_checkpoint_v1",
                 "path": ".agent_memory/CONTINUATION.md",
+                "action_kind": "APPLY_PATCH",
+                "action_execution_succeeded": True,
                 "changed_in_action": True,
                 "nonempty": True,
                 "within_size_limit": True,
@@ -753,6 +764,51 @@ class LiteResearcherIntakeTests(unittest.TestCase):
                 "rejection_reason": None,
             },
         )
+        wrapper.close(env_id)
+
+    def test_failed_shell_with_partial_checkpoint_write_is_not_valid(self) -> None:
+        workspaces: dict[int, FakeWorkspace] = {}
+
+        def factory(env_id: int) -> FakeWorkspace:
+            workspace = FakeWorkspace()
+            workspaces[env_id] = workspace
+            return workspace
+
+        wrapper = LiteResearcherWrapper(
+            self.coverage,
+            FrozenLiteResearchBackend(self.coverage),
+            workspace_factory=factory,
+        )
+        env_id = wrapper.create(data_idx=0)["id"]
+        workspaces[env_id].next_workspace_diff = {
+            "added": [
+                {
+                    "path": ".agent_memory/CONTINUATION.md",
+                    "bytes": 64,
+                    "sha256": "e" * 64,
+                }
+            ],
+            "modified": [],
+            "deleted": [],
+            "directories_added": [".agent_memory"],
+            "directories_deleted": [],
+        }
+        workspaces[env_id].next_tool_op = {
+            "status": "executed",
+            "exit_code": 7,
+            "timed_out": False,
+        }
+        result = wrapper.step(
+            env_id,
+            'shell_command {"command":"write-then-fail"}',
+        )
+        receipt = result["info"]["wrapper_evidence"][
+            "continuation_checkpoint"
+        ]
+        self.assertFalse(receipt["valid"])
+        self.assertFalse(receipt["action_execution_succeeded"])
+        self.assertTrue(receipt["changed_in_action"])
+        self.assertEqual(receipt["rejection_reason"], "action_execution_failed")
         wrapper.close(env_id)
 
     def test_continuation_checkpoint_receipt_rejects_missing_unchanged_or_oversized(self) -> None:
