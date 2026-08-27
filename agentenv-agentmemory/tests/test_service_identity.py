@@ -104,7 +104,7 @@ class ServiceIdentityTest(unittest.TestCase):
             "task_count": 64,
             "data_revision": "a" * 40,
             "manifest_sha256": "b" * 64,
-            "compaction_contract": "task_neutral_client_replace_messages_v1",
+            "compaction_contract": "policy_filesystem_checkpoint_then_client_replace_v2",
             "workspace_runtime": {"sandbox": {"ripgrep_sha256": "c" * 64}},
             "backend": {
                 "backend_contract": "literesearcher_frozen_search_page_backend_v2",

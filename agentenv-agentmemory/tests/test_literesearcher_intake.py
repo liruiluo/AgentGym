@@ -4,12 +4,16 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 from agentenv_agentmemory.literesearcher import (
     FrozenLiteResearchBackend,
     LiteResearcherWrapper,
     load_coverage_manifest,
+)
+from agentenv_agentmemory.literesearcher.wrapper import (
+    _filesystem_checkpoint_receipt,
 )
 
 
@@ -25,23 +29,80 @@ class FakeWorkspace:
     def __init__(self) -> None:
         self.reset_ids: list[str] = []
         self.actions: list[str] = []
+        self.files: dict[str, bytes] = {}
         self.closed = False
 
     def reset_episode(self, episode_id: str, *, enabled: bool = True) -> None:
         assert enabled
         self.reset_ids.append(episode_id)
+        self.files.clear()
         self.closed = False
 
     def apply(self, action: str, *, env_step: int, phase_index: int):
         self.actions.append(action)
+        checkpoint_path = ".agent_memory/CONTINUATION.md"
+        before = self.files.get(checkpoint_path)
+        if "> .agent_memory/CONTINUATION.md" in action:
+            self.files[checkpoint_path] = b"objective: answer\nnext_action: search source\n"
+        after = self.files.get(checkpoint_path)
+        added = []
+        modified = []
+        if before is None and after is not None:
+            added.append(self._entry(checkpoint_path, after))
+        elif before is not None and after is not None and before != after:
+            modified.append(
+                {
+                    "before": self._entry(checkpoint_path, before),
+                    "after": self._entry(checkpoint_path, after),
+                }
+            )
+        stdout = (
+            after.decode("utf-8")
+            if "cat .agent_memory/CONTINUATION.md" in action and after is not None
+            else ""
+        )
+        if "PARTIAL_CHECKPOINT_READ" in action:
+            stdout = stdout[:5]
+        exit_code = 7 if "FAIL_AFTER_WRITE" in action else 0
+        timed_out = "TIMEOUT_AFTER_WRITE" in action
+        message = stdout or f"workspace step={env_step} phase={phase_index}"
         return type(
             "WorkspaceResult",
             (),
             {
-                "message": f"workspace step={env_step} phase={phase_index}",
+                "message": message,
                 "op": "SHELL_COMMAND",
+                "tool_op": {
+                    "status": "executed",
+                    "exit_code": exit_code,
+                    "timed_out": timed_out,
+                    "stdout": stdout,
+                    "stdout_truncated": False,
+                },
+                "workspace_diff": {
+                    "added": added,
+                    "modified": modified,
+                    "deleted": [],
+                },
             },
         )()
+
+    @staticmethod
+    def _entry(path: str, content: bytes) -> dict:
+        return {
+            "path": path,
+            "bytes": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "kind": "file",
+        }
+
+    def snapshot(self) -> dict:
+        return {
+            "files": [
+                self._entry(path, content)
+                for path, content in sorted(self.files.items())
+            ]
+        }
 
     def close(self) -> None:
         self.closed = True
@@ -562,9 +623,132 @@ class LiteResearcherIntakeTests(unittest.TestCase):
         self.assertEqual(result["info"]["native_environment_call_count"], 0)
         self.assertEqual(
             wrapper.metadata()["compaction_contract"],
-            "task_neutral_client_replace_messages_v1",
+            "policy_filesystem_checkpoint_then_client_replace_v2",
         )
         wrapper.close(env_id)
+
+    def test_workspace_checkpoint_receipt_attests_write_then_read(self) -> None:
+        workspaces: dict[int, FakeWorkspace] = {}
+
+        def factory(env_id: int) -> FakeWorkspace:
+            workspace = FakeWorkspace()
+            workspaces[env_id] = workspace
+            return workspace
+
+        wrapper = LiteResearcherWrapper(
+            self.coverage,
+            FrozenLiteResearchBackend(self.coverage),
+            workspace_factory=factory,
+        )
+        self.assertTrue(wrapper.metadata()["compaction_calls_backend"])
+        env_id = wrapper.create(data_idx=0)["id"]
+        action = (
+            'shell_command {"command":"mkdir -p .agent_memory && printf checkpoint '
+            '> .agent_memory/CONTINUATION.md","workdir":"."}'
+        )
+        written = wrapper.step(env_id, action)
+        receipt = written["info"]["wrapper_evidence"]["filesystem_checkpoint"]
+        self.assertEqual(receipt["schema"], "agentmemory_filesystem_checkpoint_receipt_v1")
+        self.assertEqual(receipt["path"], ".agent_memory/CONTINUATION.md")
+        self.assertTrue(receipt["action_completed"])
+        self.assertTrue(receipt["changed"])
+        self.assertGreater(receipt["size_bytes"], 0)
+
+        read = wrapper.step(
+            env_id,
+            'shell_command {"command":"cat .agent_memory/CONTINUATION.md",'
+            '"workdir":"."}',
+        )
+        self.assertIn("objective: answer", read["observation"])
+        read_receipt = read["info"]["wrapper_evidence"]["filesystem_checkpoint"]
+        self.assertFalse(read_receipt["changed"])
+        self.assertTrue(read_receipt["exists"])
+        exact_read = read["info"]["wrapper_evidence"]["filesystem_checkpoint_read"]
+        self.assertTrue(exact_read["observed"])
+        self.assertEqual(exact_read["sha256"], receipt["sha256"])
+        wrapper.close(env_id)
+
+    def test_failed_or_timed_out_shell_write_does_not_complete_checkpoint(self) -> None:
+        for marker in ("FAIL_AFTER_WRITE", "TIMEOUT_AFTER_WRITE"):
+            with self.subTest(marker=marker):
+                wrapper = LiteResearcherWrapper(
+                    self.coverage,
+                    FrozenLiteResearchBackend(self.coverage),
+                    workspace_factory=lambda _env_id: FakeWorkspace(),
+                )
+                env_id = wrapper.create(data_idx=0)["id"]
+                result = wrapper.step(
+                    env_id,
+                    'shell_command {"command":"mkdir -p .agent_memory && printf '
+                    "checkpoint > .agent_memory/CONTINUATION.md; "
+                    + marker
+                    + '","workdir":"."}'
+                )
+                receipt = result["info"]["wrapper_evidence"][
+                    "filesystem_checkpoint"
+                ]
+                self.assertTrue(receipt["changed"])
+                self.assertFalse(receipt["action_completed"])
+                wrapper.close(env_id)
+
+    def test_partial_checkpoint_stdout_is_not_attested_as_a_read(self) -> None:
+        wrapper = LiteResearcherWrapper(
+            self.coverage,
+            FrozenLiteResearchBackend(self.coverage),
+            workspace_factory=lambda _env_id: FakeWorkspace(),
+        )
+        env_id = wrapper.create(data_idx=0)["id"]
+        wrapper.step(
+            env_id,
+            'shell_command {"command":"mkdir -p .agent_memory && printf checkpoint '
+            '> .agent_memory/CONTINUATION.md","workdir":"."}'
+        )
+        read = wrapper.step(
+            env_id,
+            'shell_command {"command":"cat .agent_memory/CONTINUATION.md; '
+            'PARTIAL_CHECKPOINT_READ","workdir":"."}'
+        )
+        receipt = read["info"]["wrapper_evidence"]["filesystem_checkpoint_read"]
+        self.assertFalse(receipt["observed"])
+        wrapper.close(env_id)
+
+    def test_checkpoint_receipt_rejects_metadata_only_or_stale_snapshot(self) -> None:
+        path = ".agent_memory/CONTINUATION.md"
+        before = {"path": path, "bytes": 4, "sha256": "a" * 64, "kind": "file"}
+        after = {"path": path, "bytes": 4, "sha256": "b" * 64, "kind": "file"}
+        cases = (
+            (
+                "metadata-only",
+                {"added": [], "modified": [{"before": before, "after": before}], "deleted": []},
+                {"files": [before]},
+            ),
+            (
+                "stale-snapshot",
+                {"added": [], "modified": [{"before": before, "after": after}], "deleted": []},
+                {"files": [dict(after, sha256="c" * 64)]},
+            ),
+            (
+                "missing-kind",
+                {"added": [after], "modified": [], "deleted": []},
+                {"files": [{key: value for key, value in after.items() if key != "kind"}]},
+            ),
+        )
+        for label, diff, snapshot in cases:
+            with self.subTest(case=label):
+                result = SimpleNamespace(
+                    op="SHELL_COMMAND",
+                    tool_op={
+                        "status": "executed",
+                        "exit_code": 0,
+                        "timed_out": False,
+                    },
+                    workspace_diff=diff,
+                )
+                receipt = _filesystem_checkpoint_receipt(
+                    result=result,
+                    workspace_snapshot=snapshot,
+                )
+                self.assertFalse(receipt["changed"])
 
     def test_nonterminal_action_at_turn_40_closes_without_a_hidden_41st_step(self) -> None:
         wrapper = LiteResearcherWrapper(

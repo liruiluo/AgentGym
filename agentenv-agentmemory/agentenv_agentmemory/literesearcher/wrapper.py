@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from copy import deepcopy
@@ -28,6 +29,14 @@ _NATIVE_PARAMETER_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _ANSWER_RE = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.IGNORECASE | re.DOTALL)
+FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA = (
+    "agentmemory_filesystem_checkpoint_receipt_v1"
+)
+FILESYSTEM_CHECKPOINT_READ_RECEIPT_SCHEMA = (
+    "agentmemory_filesystem_checkpoint_read_receipt_v1"
+)
+FILESYSTEM_CHECKPOINT_PATH = ".agent_memory/CONTINUATION.md"
+FILESYSTEM_CHECKPOINT_MAX_BYTES = 8 * 1024
 
 
 class WorkspaceAdapter(Protocol):
@@ -35,6 +44,9 @@ class WorkspaceAdapter(Protocol):
         ...
 
     def apply(self, action: str, *, env_step: int, phase_index: int):
+        ...
+
+    def snapshot(self) -> Mapping[str, Any]:
         ...
 
     def close(self) -> None:
@@ -111,13 +123,176 @@ def _parse_native_string(raw: str, *, name: str) -> str:
     return decoded.strip()
 
 
+def _workspace_action_completed(result: Any) -> bool:
+    tool_op = getattr(result, "tool_op", None)
+    if not isinstance(tool_op, Mapping) or tool_op.get("status") != "executed":
+        return False
+    action_kind = str(getattr(result, "op", "")).lower()
+    if action_kind == "shell_command":
+        exit_code = tool_op.get("exit_code")
+        return bool(
+            isinstance(exit_code, int)
+            and not isinstance(exit_code, bool)
+            and exit_code == 0
+            and tool_op.get("timed_out") is False
+        )
+    return action_kind == "apply_patch"
+
+
+def _workspace_changed_paths(workspace_diff: Any) -> tuple[str, ...]:
+    if not isinstance(workspace_diff, Mapping):
+        return ()
+    paths: set[str] = set()
+    for item in workspace_diff.get("added", ()):
+        if isinstance(item, Mapping) and isinstance(item.get("path"), str):
+            paths.add(str(item["path"]))
+    for item in workspace_diff.get("modified", ()):
+        if not isinstance(item, Mapping):
+            continue
+        after = item.get("after")
+        path = after.get("path") if isinstance(after, Mapping) else item.get("path")
+        if isinstance(path, str):
+            paths.add(path)
+    for item in workspace_diff.get("deleted", ()):
+        if isinstance(item, Mapping) and isinstance(item.get("path"), str):
+            paths.add(str(item["path"]))
+    return tuple(sorted(paths))
+
+
+def _checkpoint_entry_size(entry: Any) -> int | None:
+    if not isinstance(entry, Mapping):
+        return None
+    value = entry.get("bytes", entry.get("size"))
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _explicit_regular_checkpoint_entry(entry: Any) -> bool:
+    if not isinstance(entry, Mapping) or entry.get("kind") != "file":
+        return False
+    size = _checkpoint_entry_size(entry)
+    digest = entry.get("sha256")
+    return bool(
+        size is not None
+        and isinstance(digest, str)
+        and len(digest) == 64
+        and all(char in "0123456789abcdef" for char in digest)
+    )
+
+
+def _filesystem_checkpoint_receipt(
+    *,
+    result: Any,
+    workspace_snapshot: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    if result is None:
+        return None
+    workspace_diff = getattr(result, "workspace_diff", None)
+    diff = workspace_diff if isinstance(workspace_diff, Mapping) else {}
+    changed_entry: Mapping[str, Any] | None = None
+    for item in diff.get("added", ()):
+        if (
+            isinstance(item, Mapping)
+            and item.get("path") == FILESYSTEM_CHECKPOINT_PATH
+            and _explicit_regular_checkpoint_entry(item)
+        ):
+            changed_entry = item
+            break
+    if changed_entry is None:
+        for item in diff.get("modified", ()):
+            if not isinstance(item, Mapping):
+                continue
+            before = item.get("before")
+            after = item.get("after")
+            if (
+                isinstance(before, Mapping)
+                and isinstance(after, Mapping)
+                and before.get("path") == FILESYSTEM_CHECKPOINT_PATH
+                and after.get("path") == FILESYSTEM_CHECKPOINT_PATH
+                and _explicit_regular_checkpoint_entry(before)
+                and _explicit_regular_checkpoint_entry(after)
+                and before.get("sha256") != after.get("sha256")
+            ):
+                changed_entry = after
+                break
+    snapshot_entry: Mapping[str, Any] | None = None
+    files = workspace_snapshot.get("files", ())
+    if isinstance(files, (list, tuple)):
+        for item in files:
+            if isinstance(item, Mapping) and item.get("path") == FILESYSTEM_CHECKPOINT_PATH:
+                snapshot_entry = item
+                break
+    size = _checkpoint_entry_size(snapshot_entry)
+    digest = (
+        snapshot_entry.get("sha256")
+        if isinstance(snapshot_entry, Mapping)
+        else None
+    )
+    regular_file = _explicit_regular_checkpoint_entry(snapshot_entry)
+    changed = bool(
+        changed_entry is not None
+        and regular_file
+        and _checkpoint_entry_size(changed_entry) == size
+        and changed_entry.get("sha256") == digest
+    )
+    return {
+        "schema": FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA,
+        "path": FILESYSTEM_CHECKPOINT_PATH,
+        "action_kind": str(getattr(result, "op", "")).lower(),
+        "action_completed": _workspace_action_completed(result),
+        "changed": changed,
+        "exists": snapshot_entry is not None,
+        "regular_file": regular_file,
+        "size_bytes": size if isinstance(size, int) and not isinstance(size, bool) else None,
+        "sha256": digest if isinstance(digest, str) else None,
+    }
+
+
+def _filesystem_checkpoint_read_receipt(
+    *,
+    result: Any,
+    checkpoint_receipt: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if result is None or not isinstance(checkpoint_receipt, Mapping):
+        return None
+    tool_op = getattr(result, "tool_op", None)
+    stdout = tool_op.get("stdout") if isinstance(tool_op, Mapping) else None
+    payload = stdout.encode("utf-8") if isinstance(stdout, str) else None
+    size = checkpoint_receipt.get("size_bytes")
+    digest = checkpoint_receipt.get("sha256")
+    observed = bool(
+        str(getattr(result, "op", "")).lower() == "shell_command"
+        and _workspace_action_completed(result)
+        and isinstance(tool_op, Mapping)
+        and tool_op.get("stdout_truncated") is False
+        and checkpoint_receipt.get("changed") is False
+        and checkpoint_receipt.get("exists") is True
+        and checkpoint_receipt.get("regular_file") is True
+        and isinstance(size, int)
+        and not isinstance(size, bool)
+        and 0 < size <= FILESYSTEM_CHECKPOINT_MAX_BYTES
+        and isinstance(digest, str)
+        and payload is not None
+        and len(payload) == size
+        and hashlib.sha256(payload).hexdigest() == digest
+    )
+    return {
+        "schema": FILESYSTEM_CHECKPOINT_READ_RECEIPT_SCHEMA,
+        "path": FILESYSTEM_CHECKPOINT_PATH,
+        "observed": observed,
+        "size_bytes": size if isinstance(size, int) and not isinstance(size, bool) else None,
+        "sha256": digest if isinstance(digest, str) else None,
+    }
+
+
 class LiteResearcherWrapper:
     """HTTP-shaped wrapper for one continuous LiteResearcher episode.
 
     There are no hand-authored sessions. Search, visit, workspace actions, and
-    answers are ordinary native actions. Policy-authored compaction is owned by
-    the task-neutral client wrapper because only that layer sees exact tokenizer
-    pressure; it deliberately does not call this server.
+    answers are ordinary native actions. The task-neutral client owns the exact
+    token-pressure decision; its checkpoint write still calls this server as a
+    normal workspace action before the client replaces old messages.
     """
 
     def __init__(
@@ -193,9 +368,11 @@ class LiteResearcherWrapper:
                 "max_policy_steps": self.max_policy_steps,
                 "max_policy_steps_enforced_by": "shared_policy_runner",
                 "server_native_action_safety_cap": self.max_policy_steps,
-                "compaction_contract": "task_neutral_client_replace_messages_v1",
+                "compaction_contract": (
+                    "policy_filesystem_checkpoint_then_client_replace_v2"
+                ),
                 "compaction_counts_as_env_step": True,
-                "compaction_calls_backend": False,
+                "compaction_calls_backend": True,
                 "reward_contract": self.reward_contract,
                 "judge": judge_metadata,
                 "judge_fallback": judge_metadata["fallback"],
@@ -463,6 +640,17 @@ class LiteResearcherWrapper:
         result = workspace.apply(raw_action, env_step=episode["step_count"], phase_index=0)
         message = str(getattr(result, "message", result))
         op = str(getattr(result, "op", "WORKSPACE")).upper()
+        checkpoint_receipt = _filesystem_checkpoint_receipt(
+            result=result,
+            workspace_snapshot=workspace.snapshot(),
+        )
+        checkpoint_read_receipt = _filesystem_checkpoint_read_receipt(
+            result=result,
+            checkpoint_receipt=checkpoint_receipt,
+        )
+        changed_paths = _workspace_changed_paths(
+            getattr(result, "workspace_diff", None)
+        )
         return self._ordinary_result(
             env_id,
             episode,
@@ -475,6 +663,10 @@ class LiteResearcherWrapper:
                 "workspace_op": op,
                 "workspace_reward": 0.0,
                 "native_environment_call_count": 0,
+                "workspace_action_completed": _workspace_action_completed(result),
+                "workspace_changed_paths": list(changed_paths),
+                "filesystem_checkpoint": checkpoint_receipt,
+                "filesystem_checkpoint_read": checkpoint_read_receipt,
             },
         )
 
