@@ -625,6 +625,71 @@ class LiteResearcherIntakeTests(unittest.TestCase):
             wrapper.metadata()["compaction_contract"],
             "policy_filesystem_checkpoint_then_client_replace_v2",
         )
+        self.assertEqual(
+            wrapper.metadata()["policy_workspace_tool_contract"],
+            "qwen3_xml_function_call_v1",
+        )
+        wrapper.close(env_id)
+
+    def test_qwen_xml_workspace_shell_executes_via_canonical_adapter(self) -> None:
+        workspaces: dict[int, FakeWorkspace] = {}
+
+        def factory(env_id: int) -> FakeWorkspace:
+            workspace = FakeWorkspace()
+            workspaces[env_id] = workspace
+            return workspace
+
+        wrapper = LiteResearcherWrapper(
+            self.coverage,
+            FrozenLiteResearchBackend(self.coverage),
+            workspace_factory=factory,
+        )
+        env_id = wrapper.create(data_idx=0)["id"]
+        raw_action = """<tool_call>
+<function=shell_command>
+<parameter=command>
+mkdir -p .agent_memory && printf checkpoint > .agent_memory/CONTINUATION.md
+</parameter>
+<parameter=workdir>
+.
+</parameter>
+<parameter=timeout_ms>
+10000
+</parameter>
+</function>
+</tool_call>"""
+        result = wrapper.step(env_id, raw_action)
+        self.assertEqual(result["info"]["action_submission"]["raw_policy_output"], raw_action)
+        self.assertEqual(
+            workspaces[env_id].actions,
+            [
+                'shell_command {"command":"mkdir -p .agent_memory && printf '
+                'checkpoint > .agent_memory/CONTINUATION.md",'
+                '"timeout_ms":10000,"workdir":"."}'
+            ],
+        )
+        evidence = result["info"]["wrapper_evidence"]
+        self.assertEqual(evidence["workspace_policy_format"], "qwen3_xml")
+        self.assertTrue(evidence["filesystem_checkpoint"]["action_completed"])
+        self.assertTrue(evidence["filesystem_checkpoint"]["changed"])
+        wrapper.close(env_id)
+
+    def test_qwen_xml_workspace_call_must_be_the_complete_output(self) -> None:
+        wrapper = LiteResearcherWrapper(
+            self.coverage,
+            FrozenLiteResearchBackend(self.coverage),
+            workspace_factory=lambda _env_id: FakeWorkspace(),
+            invalid_action_penalty=-0.01,
+        )
+        env_id = wrapper.create(data_idx=0)["id"]
+        result = wrapper.step(
+            env_id,
+            "prefix<tool_call><function=shell_command>"
+            "<parameter=command>pwd</parameter>"
+            "</function></tool_call>",
+        )
+        self.assertEqual(result["reward"], -0.01)
+        self.assertEqual(result["info"]["status"], "invalid_action")
         wrapper.close(env_id)
 
     def test_workspace_checkpoint_receipt_attests_write_then_read(self) -> None:

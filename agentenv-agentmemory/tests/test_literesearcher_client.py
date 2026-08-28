@@ -10,7 +10,10 @@ from agentenv.envs.literesearcher import (
     LITERESEARCHER_SYSTEM_PROMPT,
     LiteResearcherEnvClient,
 )
-from agentenv_agentmemory.literesearcher.wrapper import _parse_tool_call
+from agentenv_agentmemory.literesearcher.wrapper import (
+    _canonical_workspace_action,
+    _parse_tool_call,
+)
 
 
 class LiteResearcherClientTests(unittest.TestCase):
@@ -34,7 +37,7 @@ class LiteResearcherClientTests(unittest.TestCase):
             "<answer>your evidence-backed answer</answer>",
             LITERESEARCHER_SYSTEM_PROMPT,
         )
-        self.assertIn("Never write\n<function=answer>", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertNotIn("<function=answer>", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("On the first turn, call search", LITERESEARCHER_SYSTEM_PROMPT)
 
     def test_prompt_tool_examples_pass_the_production_parser(self) -> None:
@@ -43,7 +46,7 @@ class LiteResearcherClientTests(unittest.TestCase):
             LITERESEARCHER_SYSTEM_PROMPT,
             flags=re.DOTALL,
         )
-        self.assertEqual(len(examples), 2)
+        self.assertEqual(len(examples), 4)
         self.assertEqual(
             _parse_tool_call(examples[0]),
             ("search", {"query": ["first search query", "second search query"]}),
@@ -59,6 +62,82 @@ class LiteResearcherClientTests(unittest.TestCase):
                 },
             ),
         )
+        shell_name, shell_arguments = _parse_tool_call(examples[2])
+        self.assertEqual(shell_name, "shell_command")
+        self.assertEqual(
+            shell_arguments,
+            {
+                "command": "cat .agent_memory/research.md",
+                "workdir": ".",
+                "timeout_ms": 10000,
+            },
+        )
+        self.assertEqual(
+            _canonical_workspace_action(shell_name, shell_arguments),
+            'shell_command {"command":"cat .agent_memory/research.md",'
+            '"timeout_ms":10000,"workdir":"."}',
+        )
+        patch_name, patch_arguments = _parse_tool_call(examples[3])
+        self.assertEqual(patch_name, "apply_patch")
+        self.assertEqual(
+            _canonical_workspace_action(patch_name, patch_arguments),
+            "apply_patch\n*** Begin Patch\n*** Add File: "
+            ".agent_memory/research.md\n+Question, evidence, source URLs, and "
+            "next steps.\n*** End Patch",
+        )
+
+    def test_parser_accepts_observed_direct_patch_xml_without_broad_rewrite(self) -> None:
+        raw = """<tool_call>
+<function=apply_patch>
+*** Begin Patch
+*** Add File: .agent_memory/CONTINUATION.md
++objective: answer
++next: inspect source
+*** End Patch
+</function>
+</tool_call>"""
+        name, arguments = _parse_tool_call(raw)
+        self.assertEqual(name, "apply_patch")
+        self.assertEqual(
+            _canonical_workspace_action(name, arguments),
+            "apply_patch\n*** Begin Patch\n*** Add File: "
+            ".agent_memory/CONTINUATION.md\n+objective: answer\n"
+            "+next: inspect source\n*** End Patch",
+        )
+
+    def test_parser_normalizes_quoted_qwen_parameter_names(self) -> None:
+        raw = """<tool_call>
+<function=shell_command>
+<parameter="command">
+cat .agent_memory/CONTINUATION.md
+</parameter>
+<parameter="workdir">
+.
+</parameter>
+<parameter="timeout_ms">
+10000
+</parameter>
+</function>
+</tool_call>"""
+        name, arguments = _parse_tool_call(raw)
+        self.assertEqual(name, "shell_command")
+        self.assertEqual(
+            arguments,
+            {
+                "command": "cat .agent_memory/CONTINUATION.md",
+                "workdir": ".",
+                "timeout_ms": 10000,
+            },
+        )
+
+    def test_parser_rejects_incomplete_workspace_xml(self) -> None:
+        raw = """<tool_call>
+<function=apply_patch>
+*** Begin Patch
+*** Add File: .agent_memory/CONTINUATION.md
++unfinished
+*** End Patch"""
+        self.assertIsNone(_parse_tool_call(raw))
 
     def test_policy_framing_restores_the_system_role(self) -> None:
         client = self._client()
@@ -81,15 +160,15 @@ class LiteResearcherClientTests(unittest.TestCase):
             ],
         )
 
-    def test_prompt_exposes_exact_workspace_action_grammar(self) -> None:
+    def test_prompt_exposes_one_qwen_xml_grammar_for_all_tools(self) -> None:
+        self.assertIn('"name": "shell_command"', LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn('"name": "apply_patch"', LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("<function=shell_command>", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("<parameter=command>", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("<function=apply_patch>", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("<parameter=patch>", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn(
-            'shell_command {"command":"cat .agent_memory/research.md",'
-            '"workdir":".","timeout_ms":10000}',
-            LITERESEARCHER_SYSTEM_PROMPT,
-        )
-        self.assertIn(
-            "apply_patch\n*** Begin Patch\n*** Add File: "
-            ".agent_memory/research.md",
+            "never mix XML with a bare Codex-style action",
             LITERESEARCHER_SYSTEM_PROMPT,
         )
         self.assertIn(

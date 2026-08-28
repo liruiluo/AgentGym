@@ -7,6 +7,7 @@ from copy import deepcopy
 from typing import Any, Callable, Mapping, Protocol
 
 from .backend import LiteResearchBackendError
+from ..persistent_workspace import WORKSPACE_TOOL_NAMES
 from .judge import (
     LiteResearchJudge,
     NormalizedExactLiteResearchJudge,
@@ -53,16 +54,83 @@ class WorkspaceAdapter(Protocol):
         ...
 
 
+def _normalize_xml_parameter_name(raw: str) -> str:
+    name = raw.strip()
+    if len(name) >= 2 and name[0] == name[-1] and name[0] in {"'", '"'}:
+        name = name[1:-1].strip()
+    return name.lower()
+
+
+def _parse_xml_parameters(body: str) -> dict[str, str]:
+    parameters: dict[str, str] = {}
+    for key, value in _NATIVE_PARAMETER_RE.findall(body):
+        normalized_key = _normalize_xml_parameter_name(key)
+        if not normalized_key:
+            raise ValueError("tool_call parameter name must be non-empty")
+        if normalized_key in parameters:
+            raise ValueError(f"tool_call repeats parameter {normalized_key!r}")
+        parameters[normalized_key] = value.strip()
+    return parameters
+
+
+def _parse_workspace_xml_call(
+    *, name: str, body: str, parameters: Mapping[str, str]
+) -> dict[str, Any]:
+    if name == "apply_patch":
+        # Qwen may place a patch directly in the function body, while the
+        # schema-guided form uses <parameter=patch>.  Both map to the one
+        # existing canonical workspace adapter; the adapter remains the strict
+        # parser and transactional executor.
+        if body.lstrip().startswith("*** Begin Patch"):
+            patch = body.strip()
+        else:
+            if set(parameters) != {"patch"}:
+                raise ValueError("apply_patch requires exactly one patch parameter")
+            patch = parameters["patch"].strip()
+        if not patch:
+            raise ValueError("apply_patch patch must be non-empty")
+        return {"patch": patch}
+
+    if name != "shell_command":
+        raise ValueError(f"unsupported workspace tool {name!r}")
+    if body.lstrip().startswith("{"):
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise ValueError("shell_command body must be valid JSON") from exc
+        if not isinstance(payload, Mapping):
+            raise ValueError("shell_command body must be a JSON object")
+        return dict(payload)
+    allowed = {"command", "workdir", "timeout_ms"}
+    if "command" not in parameters or not set(parameters) <= allowed:
+        raise ValueError(
+            "shell_command requires command, with optional workdir and timeout_ms"
+        )
+    payload: dict[str, Any] = {
+        "command": _parse_native_string(parameters["command"], name="command")
+    }
+    if "workdir" in parameters:
+        payload["workdir"] = _parse_native_string(
+            parameters["workdir"], name="workdir"
+        )
+    if "timeout_ms" in parameters:
+        try:
+            payload["timeout_ms"] = int(parameters["timeout_ms"])
+        except ValueError as exc:
+            raise ValueError(
+                "shell_command timeout_ms must be a positive integer"
+            ) from exc
+        if payload["timeout_ms"] < 1:
+            raise ValueError("shell_command timeout_ms must be a positive integer")
+    return payload
+
+
 def _parse_tool_call(raw: str) -> tuple[str, dict[str, Any]] | None:
     native_match = _NATIVE_TOOL_CALL_RE.search(raw)
     if native_match is not None:
         name = native_match.group(1).strip().lower()
-        parameters: dict[str, str] = {}
-        for key, value in _NATIVE_PARAMETER_RE.findall(native_match.group(2)):
-            normalized_key = key.strip().lower()
-            if normalized_key in parameters:
-                raise ValueError(f"tool_call repeats parameter {normalized_key!r}")
-            parameters[normalized_key] = value.strip()
+        body = native_match.group(2).strip()
+        parameters = _parse_xml_parameters(body)
         if name == "search":
             if set(parameters) != {"query"}:
                 raise ValueError("search requires exactly one query parameter")
@@ -94,7 +162,16 @@ def _parse_tool_call(raw: str) -> tuple[str, dict[str, Any]] | None:
                     raise ValueError("visit page must be a positive integer")
                 arguments["page"] = page
             return name, arguments
-        raise ValueError("only search and visit are available in LiteResearcher")
+        if name in WORKSPACE_TOOL_NAMES:
+            if native_match.group(0).strip() != raw.strip():
+                raise ValueError("workspace tool_call must be the complete policy output")
+            return name, _parse_workspace_xml_call(
+                name=name, body=body, parameters=parameters
+            )
+        raise ValueError(
+            "only search, visit, shell_command, and apply_patch are available "
+            "in LiteResearcher"
+        )
 
     match = _TOOL_CALL_RE.search(raw)
     if match is None:
@@ -109,8 +186,28 @@ def _parse_tool_call(raw: str) -> tuple[str, dict[str, Any]] | None:
     arguments = payload.get("arguments")
     if not isinstance(name, str) or not name.strip() or not isinstance(arguments, Mapping):
         raise ValueError("tool_call requires a name and object arguments")
-    return name.strip().lower(), dict(arguments)
+    normalized_name = name.strip().lower()
+    if (
+        normalized_name in WORKSPACE_TOOL_NAMES
+        and match.group(0).strip() != raw.strip()
+    ):
+        raise ValueError("workspace tool_call must be the complete policy output")
+    return normalized_name, dict(arguments)
 
+
+def _canonical_workspace_action(
+    name: str, arguments: Mapping[str, Any]
+) -> str:
+    if name == "shell_command":
+        return "shell_command " + json.dumps(
+            dict(arguments), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+    if name == "apply_patch":
+        patch = arguments.get("patch")
+        if not isinstance(patch, str) or not patch.strip():
+            raise ValueError("apply_patch patch must be a non-empty string")
+        return "apply_patch\n" + patch.strip()
+    raise ValueError(f"unsupported workspace tool {name!r}")
 
 def _parse_native_string(raw: str, *, name: str) -> str:
     value: Any = raw.strip()
@@ -377,6 +474,7 @@ class LiteResearcherWrapper:
                 "judge": judge_metadata,
                 "judge_fallback": judge_metadata["fallback"],
                 "workspace_tool_contract": "codex_shell_command_apply_patch_v1",
+                "policy_workspace_tool_contract": "qwen3_xml_function_call_v1",
                 "workspace_memory_reward": 0.0,
                 "recoverable_invalid_action_reward": self.invalid_action_penalty,
                 "workspace_runtime": deepcopy(self._workspace_runtime_metadata),
@@ -443,6 +541,15 @@ class LiteResearcherWrapper:
             if parsed_tool is not None and answer_match is not None:
                 raise ValueError("one policy row cannot contain both tool_call and answer")
             if parsed_tool is not None:
+                name, arguments = parsed_tool
+                if name in WORKSPACE_TOOL_NAMES:
+                    return self._apply_workspace(
+                        env_id,
+                        episode,
+                        str(action),
+                        execution_action=_canonical_workspace_action(name, arguments),
+                        policy_format="qwen3_xml",
+                    )
                 return self._apply_domain_tool(env_id, episode, str(action), parsed_tool)
             if answer_match is not None:
                 return self._apply_answer(env_id, episode, str(action), answer_match.group(1))
@@ -632,12 +739,22 @@ class LiteResearcherWrapper:
         )
 
     def _apply_workspace(
-        self, env_id: int, episode: dict[str, Any], raw_action: str
+        self,
+        env_id: int,
+        episode: dict[str, Any],
+        raw_action: str,
+        *,
+        execution_action: str | None = None,
+        policy_format: str = "codex_canonical",
     ) -> dict[str, Any]:
         workspace = episode.get("workspace")
         if workspace is None:
             raise ValueError("workspace tools are unavailable in this intake instance")
-        result = workspace.apply(raw_action, env_step=episode["step_count"], phase_index=0)
+        result = workspace.apply(
+            raw_action if execution_action is None else execution_action,
+            env_step=episode["step_count"],
+            phase_index=0,
+        )
         message = str(getattr(result, "message", result))
         op = str(getattr(result, "op", "WORKSPACE")).upper()
         checkpoint_receipt = _filesystem_checkpoint_receipt(
@@ -661,6 +778,7 @@ class LiteResearcherWrapper:
             wrapper_evidence={
                 "step": episode["step_count"],
                 "workspace_op": op,
+                "workspace_policy_format": policy_format,
                 "workspace_reward": 0.0,
                 "native_environment_call_count": 0,
                 "workspace_action_completed": _workspace_action_completed(result),
