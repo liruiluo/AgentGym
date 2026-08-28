@@ -14,6 +14,7 @@ from unittest.mock import patch
 from agentenv_openmle_fast.actions import parse_policy_action
 from agentenv_openmle_fast.executor import (
     EXTERNAL_RUNNER_COMPLETION_GRACE_MS,
+    EXTERNAL_RUNNER_PROCESS_GRACE_MS,
     EXTERNAL_RUNNER_CONTRACT,
     FIT_HOOK_CONTRACT,
     BackendExecution,
@@ -223,11 +224,16 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
             )
         self.assertEqual(
             run.call_args.kwargs["timeout"],
-            (timeout_ms + EXTERNAL_RUNNER_COMPLETION_GRACE_MS) / 1_000.0,
+            (timeout_ms + EXTERNAL_RUNNER_PROCESS_GRACE_MS) / 1_000.0,
         )
         self.assertFalse(result.timed_out)
         self.assertTrue(result.infrastructure_fault)
         self.assertEqual(result.failure_class, "runner_protocol_fault")
+
+        self.assertGreater(
+            EXTERNAL_RUNNER_PROCESS_GRACE_MS,
+            EXTERNAL_RUNNER_COMPLETION_GRACE_MS,
+        )
 
     def test_external_runner_treats_too_short_timeout_as_policy_timeout(self) -> None:
         backend = object.__new__(ExternalSandboxRunnerBackend)

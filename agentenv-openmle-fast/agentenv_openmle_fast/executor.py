@@ -30,7 +30,10 @@ from .runtime_attestation import exact_runtime_identity_is_attested
 EXECUTOR_CONTRACT = "openmle_fast_executor_v1"
 EXTERNAL_RUNNER_CONTRACT = "openmle_fast_linux_cgroup_namespace_runner_v1"
 FIT_HOOK_CONTRACT = "openmle_fast_fit_hook_v1"
+# Keep the existing policy-time reserve stable, but give the host-side exact
+# runner longer to drain pipes and reap cgroup-v1 state under fully-async fanout.
 EXTERNAL_RUNNER_COMPLETION_GRACE_MS = 3_000
+EXTERNAL_RUNNER_PROCESS_GRACE_MS = 8_000
 
 
 def _external_runner_environment() -> dict[str, str]:
@@ -612,7 +615,7 @@ class ExternalSandboxRunnerBackend:
                 ).encode(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
-                timeout=(timeout_ms + EXTERNAL_RUNNER_COMPLETION_GRACE_MS) / 1000.0,
+                timeout=(timeout_ms + EXTERNAL_RUNNER_PROCESS_GRACE_MS) / 1000.0,
                 check=False,
                 env=_external_runner_environment(),
             )
