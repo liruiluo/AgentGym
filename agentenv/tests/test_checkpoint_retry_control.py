@@ -201,7 +201,70 @@ class BoundedCheckpointRetryTests(unittest.TestCase):
         self.assertTrue(output.info["wrapper_evidence"]["retry_feedback_preserved"])
         self.assertFalse(output.info["wrapper_evidence"]["retry_context_restored"])
         self.assertFalse(output.info["wrapper_evidence"]["context_replaced"])
+        self.assertEqual(
+            output.info["wrapper_evidence"]["actor_credit"],
+            {
+                "schema": "task_neutral_actor_credit_v1",
+                "positive_eligible": False,
+                "basis": "checkpoint_contract_unsatisfied",
+            },
+        )
         self.assertEqual(client._context_epoch, 0)
+
+    def test_terminal_submission_during_checkpoint_keeps_positive_credit(self) -> None:
+        client = object.__new__(SwesmithEnvClient)
+        client.env_id = 202
+        client._selected_policy_control = "context_compaction"
+        client._checkpoint_retry_pending = False
+        client._checkpoint_attempt_count = 0
+        client._checkpoint_retry_exhausted = False
+        client._policy_step_count = 0
+        client._native_call_count = 0
+        client._session_epoch = 0
+        client.metadata = {"configured_max_policy_turns": 30, "max_steps": 30}
+        client._context_epoch = 0
+        client._immutable_policy_context = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "task"},
+        ]
+        failed_receipt = build_filesystem_checkpoint_receipt(
+            action_kind="shell_command",
+            action_completed=True,
+            workspace_diff={"added": [], "modified": [], "deleted": []},
+            workspace_snapshot={"files": []},
+        )
+        native_output = StepOutput(
+            state="task resolved",
+            reward=1.0,
+            done=True,
+            info=build_task_neutral_transition_info(
+                env_info={"filesystem_checkpoint": failed_receipt},
+                action_submission={"kind": "shell_command"},
+                wrapper_evidence={
+                    "actor_credit": {
+                        "schema": "task_neutral_actor_credit_v1",
+                        "positive_eligible": True,
+                        "basis": "terminal_submission",
+                    }
+                },
+            ),
+        )
+        client._step_native_policy_action = Mock(return_value=native_output)
+
+        output = client._complete_context_compaction(
+            'shell_command {"command":"echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT","workdir":"."}'
+        )
+
+        self.assertTrue(output.done)
+        self.assertEqual(output.reward, 1.0)
+        self.assertEqual(
+            output.info["wrapper_evidence"]["actor_credit"],
+            {
+                "schema": "task_neutral_actor_credit_v1",
+                "positive_eligible": True,
+                "basis": "terminal_submission",
+            },
+        )
 
     def test_swesmith_replaces_only_after_attested_bounded_write(self) -> None:
         client = object.__new__(SwesmithEnvClient)
@@ -275,6 +338,14 @@ class BoundedCheckpointRetryTests(unittest.TestCase):
         )
         self.assertFalse(output.info["wrapper_evidence"]["retry_pending"])
         self.assertTrue(output.info["wrapper_evidence"]["context_replaced"])
+        self.assertEqual(
+            output.info["wrapper_evidence"]["actor_credit"],
+            {
+                "schema": "task_neutral_actor_credit_v1",
+                "positive_eligible": True,
+                "basis": "workspace_changed",
+            },
+        )
         self.assertEqual(client._context_epoch, 1)
 
 

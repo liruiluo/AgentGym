@@ -55,6 +55,7 @@ _INELIGIBLE_ACTOR_CREDIT_BASES = {
     "executor_rejected",
     "no_workspace_change",
     "zero_progress_repeat",
+    "checkpoint_contract_unsatisfied",
 }
 
 
@@ -599,6 +600,26 @@ class SwesmithEnvClient(BaseEnvClient):
             if isinstance(native_wrapper, Mapping)
             else None
         )
+        # A nonterminal checkpoint control row has one policy objective: persist
+        # the bounded continuation file.  The underlying shell/patch action may
+        # still be executed and its observation retained, but it must not receive
+        # positive actor credit merely because a later task action succeeds.
+        # Already-ineligible parser/executor/repeat receipts keep their precise
+        # basis, and terminal submissions remain eligible so task completion is
+        # never masked just because it coincides with a control turn.
+        if (
+            not persisted
+            and not native_output.done
+            and isinstance(actor_credit, Mapping)
+            and actor_credit.get("positive_eligible") is True
+        ):
+            actor_credit = _validate_actor_credit_receipt(
+                {
+                    "schema": ACTOR_CREDIT_SCHEMA,
+                    "positive_eligible": False,
+                    "basis": "checkpoint_contract_unsatisfied",
+                }
+            )
         return StepOutput(
             state=native_output.state,
             reward=native_output.reward,
