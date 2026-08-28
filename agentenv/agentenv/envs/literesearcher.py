@@ -45,6 +45,7 @@ _QWEN35_PARAMETER_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _MAX_WORKSPACE_REASONING_PREFIX_CHARS = 2048
+_MARKDOWN_CODE_FENCE_RE = re.compile(r"(?:`{3,}|~{3,})")
 LITERESEARCHER_TOOL_SERIALIZATION_CONTRACT = {
     "contract": "literesearcher_tool_serialization_v1",
     "primary": "qwen35_native_xml",
@@ -87,7 +88,7 @@ def _single_tool_envelope_match(
     prefix = value[: match.start()]
     suffix = value[match.end() :]
     if (
-        "```" in prefix
+        _MARKDOWN_CODE_FENCE_RE.search(prefix) is not None
         or len(prefix) > _MAX_WORKSPACE_REASONING_PREFIX_CHARS
         or suffix.strip()
     ):

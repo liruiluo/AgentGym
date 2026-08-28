@@ -174,7 +174,12 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertTrue(_is_workspace_action_candidate(prefix + action))
         self.assertIsNone(_parse_qwen35_tool_call(action + " trailing prose"))
         self.assertFalse(_is_workspace_action_candidate(action + " trailing prose"))
-        self.assertIsNone(_parse_qwen35_tool_call("```analysis```\n" + action))
+        for fenced_prefix in ("```analysis```\n", "~~~xml\n"):
+            with self.subTest(fenced_prefix=fenced_prefix):
+                self.assertIsNone(_parse_qwen35_tool_call(fenced_prefix + action))
+                self.assertFalse(
+                    _is_workspace_action_candidate(fenced_prefix + action)
+                )
         self.assertIsNone(_parse_qwen35_tool_call(("x" * 2049) + action))
 
     def test_legacy_tool_parser_rejects_duplicate_keys(self) -> None:
