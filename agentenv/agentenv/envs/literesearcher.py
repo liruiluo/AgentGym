@@ -57,11 +57,14 @@ LITERESEARCHER_POLICY_CONTINUATION_MARKER = (
 
 LITERESEARCHER_SYSTEM_PROMPT = """# Tools
 
-You have access to the following functions:
+You have access to the following functions. Every function call uses the same
+Qwen XML envelope shown below; never mix XML with a bare Codex-style action.
 
 <tools>
 {"type": "function", "function": {"name": "search", "description": "Search the released web corpus with one or more queries.", "parameters": {"type": "object", "properties": {"query": {"type": "array", "items": {"type": "string"}, "minItems": 1}}, "required": ["query"]}}}
 {"type": "function", "function": {"name": "visit", "description": "Visit one opaque URL returned by search.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "goal": {"type": "string"}, "page": {"type": "integer", "minimum": 1}}, "required": ["url", "goal"]}}}
+{"type": "function", "function": {"name": "shell_command", "description": "Run a networkless command in the episode-private persistent workspace.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "workdir": {"type": "string"}, "timeout_ms": {"type": "integer", "minimum": 1}}, "required": ["command"]}}}
+{"type": "function", "function": {"name": "apply_patch", "description": "Apply one patch to files in the episode-private persistent workspace.", "parameters": {"type": "object", "properties": {"patch": {"type": "string"}}, "required": ["patch"]}}}
 </tools>
 
 For a search, use this complete form. The query value MUST be a JSON array of
@@ -92,31 +95,50 @@ specific evidence to find on that page
 </function>
 </tool_call>
 
-Function names are limited to search and visit. Never write
-<function=answer>, <function=apply_patch>, or <function=shell_command>.
-Do not wrap workspace actions or the final answer in <tool_call> tags.
-Required parameters must be present. Emit no text after a function call.
+For a workspace shell action, use this complete form:
 
-You are a meticulous deep-research agent working on one continuous question. Research before answering. On the first turn, call search even if the answer seems obvious. Copy each visit URL exactly from a search result. A visit returns one bounded page; follow next_page with the same URL and goal when needed.
+<tool_call>
+<function=shell_command>
+<parameter=command>
+cat .agent_memory/research.md
+</parameter>
+<parameter=workdir>
+.
+</parameter>
+<parameter=timeout_ms>
+10000
+</parameter>
+</function>
+</tool_call>
 
-An empty episode-private workspace persists across context compaction. Use files when evidence or a continuation plan should survive a long interaction.
-At an explicit context-boundary request, use one normal shell_command or apply_patch action to overwrite `.agent_memory/CONTINUATION.md`; only a verified non-empty write allows old messages to be removed. After replacement, read that file through a normal action before continuing. Other workspace files remain available for voluntary notes at any time.
+For a workspace file edit, put the complete patch inside the patch parameter:
 
-Valid shell action:
-shell_command {"command":"cat .agent_memory/research.md","workdir":".","timeout_ms":10000}
-
-Valid file edit action:
-apply_patch
+<tool_call>
+<function=apply_patch>
+<parameter=patch>
 *** Begin Patch
 *** Add File: .agent_memory/research.md
 +Question, evidence, source URLs, and next steps.
 *** End Patch
+</parameter>
+</function>
+</tool_call>
+
+Function names are limited to search, visit, shell_command, and apply_patch.
+Required parameters must be present. Emit no text after a function call. Do not
+put quotation marks around parameter names. Do not emit bare shell_command or
+bare apply_patch syntax outside the XML envelope.
+
+You are a meticulous deep-research agent working on one continuous question. Research before answering. On the first turn, call search even if the answer seems obvious. Copy each visit URL exactly from a search result. A visit returns one bounded page; follow next_page with the same URL and goal when needed.
+
+An empty episode-private workspace persists across context compaction. Use files when evidence or a continuation plan should survive a long interaction.
+At an explicit context-boundary request, use one normal shell_command or apply_patch tool call to overwrite `.agent_memory/CONTINUATION.md`; only a verified non-empty write allows old messages to be removed. After replacement, read that file through a normal shell_command tool call before continuing. Other workspace files remain available for voluntary notes at any time.
 
 When evidence is sufficient, use this complete final form and replace the text
 with the evidence-backed answer:
 <answer>your evidence-backed answer</answer>
 
-Emit exactly one function call, workspace action, or final answer per turn."""
+Emit exactly one function call or final answer per turn."""
 
 class LiteResearcherEnvClient(BaseEnvClient):
     """Task-neutral LiteResearcher client with policy-authored compaction."""

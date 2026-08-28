@@ -54,14 +54,14 @@ class LiteResearcherClientTests(unittest.TestCase):
             '<answer>your evidence-backed answer</answer>',
             LITERESEARCHER_SYSTEM_PROMPT,
         )
+        self.assertIn('"name": "shell_command"', LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn('"name": "apply_patch"', LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("<function=shell_command>", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("<parameter=command>", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("<function=apply_patch>", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("<parameter=patch>", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn(
-            'shell_command {"command":"cat .agent_memory/research.md",'
-            '"workdir":".","timeout_ms":10000}',
-            LITERESEARCHER_SYSTEM_PROMPT,
-        )
-        self.assertIn(
-            "apply_patch\n*** Begin Patch\n*** Add File: "
-            ".agent_memory/research.md",
+            "never mix XML with a bare Codex-style action",
             LITERESEARCHER_SYSTEM_PROMPT,
         )
         self.assertIn("persists across context compaction", LITERESEARCHER_SYSTEM_PROMPT)
