@@ -262,6 +262,14 @@ FILESYSTEM_ASK_ACTION_RE = re.compile(
     flags=re.DOTALL,
 )
 FILESYSTEM_APPLY_PATCH_PREFIX = "apply_patch\n"
+QWEN_WORKSPACE_TOOL_CALL_RE = re.compile(
+    r"\A<tool_call>\s*<function=([^>\s]+)>\s*(.*?)\s*</function>\s*</tool_call>\Z",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+QWEN_WORKSPACE_PARAMETER_RE = re.compile(
+    r"<parameter=([^>\s]+)>\s*(.*?)\s*</parameter>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
 
 
 def _optional_transition_int(value: Any) -> int | None:
@@ -1358,9 +1366,16 @@ def build_filesystem_conversation_start(
         "value]; click[Buy Now] commits the current product. A failed purchase ends "
         "the episode without revealing the expected answer. The workspace persists "
         "across shopping sessions within this episode and is reset between episodes. "
-        "Use shell_command with one JSON object containing command and optional workdir "
-        "and timeout_ms to inspect or manipulate files. Use apply_patch followed by a "
-        "multiline *** Begin Patch ... *** End Patch payload for precise file edits. "
+        "Native shopping actions remain bare search[...] or click[...] actions. Use "
+        "shell_command through one complete Qwen XML tool-call envelope with command plus "
+        "optional workdir and timeout_ms parameters. Use apply_patch through the same XML "
+        "envelope with one multiline patch parameter. The accepted legacy bare shell_command JSON and "
+        "apply_patch newline forms remain available for compatibility. "
+        "For a workspace shell action use <tool_call><function=shell_command> with a "
+        "<parameter=command> block; for a file edit use <function=apply_patch> with a "
+        "<parameter=patch> block. At a required continuation checkpoint, begin the shell "
+        "command with `mkdir -p .agent_memory` before overwriting "
+        "`.agent_memory/CONTINUATION.md`. "
         "The shell is networkless and resource-bounded; paths stay inside the workspace. "
         "Workspace actions have zero task reward and are optional outside a context "
         "boundary. At each shopping-session boundary, use one normal shell_command "
@@ -1428,8 +1443,8 @@ def build_filesystem_conversation_start(
         prompt = (
             interface
             + " Reply in exactly this format:\n\nThought:\nbrief reasoning\n\n"
-            "Action:\n<exactly one native bracket action, shell_command JSON action, "
-            "or apply_patch newline action>"
+            "Action:\n<exactly one native bracket action or one complete Qwen XML "
+            "workspace tool call; legacy bare workspace syntax is also accepted>"
         )
         if surface == INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE:
             prompt = prompt.replace(
@@ -1783,6 +1798,96 @@ class AgentMemoryAdapter(BaseAdapter):
         return f"```python\n# {action_with_thought.thought}\n{function_name}(**{repr(arguments)})\n```"
 
 
+def _normalize_qwen_workspace_parameter_name(raw: str) -> str:
+    name = raw.strip()
+    if len(name) >= 2 and name[0] == name[-1] and name[0] in {"'", '"'}:
+        name = name[1:-1].strip()
+    return name.lower()
+
+
+def _parse_qwen_workspace_string(raw: str, *, name: str) -> str:
+    value: Any = raw.strip()
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError:
+        decoded = value
+    if not isinstance(decoded, str) or not decoded.strip():
+        raise ValueError(f"workspace {name} must be a non-empty string")
+    return decoded.strip()
+
+
+def parse_qwen_workspace_action(
+    action: str,
+) -> tuple[str, dict[str, Any]] | None:
+    """Parse one complete Qwen XML workspace call into the canonical adapter form."""
+
+    match = QWEN_WORKSPACE_TOOL_CALL_RE.fullmatch(action.strip())
+    if match is None:
+        return None
+    action_name = match.group(1).strip().lower()
+    if action_name not in FILESYSTEM_ACTION_NAMES:
+        raise ValueError(
+            "Qwen XML is available only for shell_command or apply_patch; "
+            "native WebShop actions remain bare bracket actions."
+        )
+    body = match.group(2).strip()
+    arguments: dict[str, str] = {}
+    for raw_key, raw_value in QWEN_WORKSPACE_PARAMETER_RE.findall(body):
+        key = _normalize_qwen_workspace_parameter_name(raw_key)
+        if not key:
+            raise ValueError("workspace tool_call parameter name must be non-empty")
+        if key in arguments:
+            raise ValueError(f"workspace tool_call repeats parameter {key!r}")
+        arguments[key] = raw_value.strip()
+
+    if action_name == "apply_patch":
+        if body.lstrip().startswith("*** Begin Patch"):
+            patch = body.strip()
+        else:
+            if set(arguments) != {"patch"}:
+                raise ValueError("apply_patch requires exactly one patch parameter")
+            patch = arguments["patch"].strip()
+        if not patch:
+            raise ValueError("apply_patch patch must be non-empty")
+        return action_name, {"patch": patch}
+
+    if body.lstrip().startswith("{"):
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise ValueError("shell_command body must be valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("shell_command body must be a JSON object")
+        return action_name, payload
+
+    allowed = {"command", "workdir", "timeout_ms"}
+    if "command" not in arguments or not set(arguments) <= allowed:
+        raise ValueError(
+            "shell_command requires command, with optional workdir and timeout_ms"
+        )
+    payload: dict[str, Any] = {
+        "command": _parse_qwen_workspace_string(
+            arguments["command"], name="command"
+        )
+    }
+    if "workdir" in arguments:
+        payload["workdir"] = _parse_qwen_workspace_string(
+            arguments["workdir"], name="workdir"
+        )
+    if "timeout_ms" in arguments:
+        try:
+            payload["timeout_ms"] = int(arguments["timeout_ms"])
+        except ValueError as exc:
+            raise ValueError(
+                "shell_command timeout_ms must be a positive integer"
+            ) from exc
+        if payload["timeout_ms"] < 1:
+            raise ValueError(
+                "shell_command timeout_ms must be a positive integer"
+            )
+    return action_name, payload
+
+
 def format_filesystem_action(action_name: str, arguments: dict[str, Any]) -> str:
     if action_name == "search":
         return f"search[{_require_function_text(arguments, 'keywords')}]"
@@ -1820,6 +1925,9 @@ def parse_filesystem_env_action(
         argument = native_match.group(2).strip()
         key = "keywords" if native_match.group(1) == "search" else "item"
         return native_match.group(1), {key: argument}
+    qwen_workspace_action = parse_qwen_workspace_action(cleaned)
+    if qwen_workspace_action is not None:
+        return qwen_workspace_action
     json_match = FILESYSTEM_JSON_ACTION_RE.fullmatch(cleaned)
     if json_match is not None:
         payload = json.loads(json_match.group(1))
