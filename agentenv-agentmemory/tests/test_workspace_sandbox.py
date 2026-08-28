@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from agentenv_agentmemory.workspace_sandbox import (
     LinuxNamespaceShellSandbox,
@@ -15,6 +16,7 @@ from agentenv_agentmemory.workspace_sandbox import (
     _lease_ephemeral_model_uid,
     _collect_bounded_output,
     _normalize_sha256,
+    _terminate_process_group,
     _validate_staged_workspace,
     assert_executable_fingerprint,
     executable_fingerprint,
@@ -110,6 +112,23 @@ class BoundedOutputTests(unittest.TestCase):
         self.assertFalse(stdout_truncated)
         self.assertFalse(stderr_truncated)
         self.assertFalse(timed_out)
+
+    def test_unreaped_killed_launcher_raises_typed_sandbox_error(self) -> None:
+        process = Mock()
+        process.pid = 424242
+        process.poll.return_value = None
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="sandbox-launcher", timeout=0.5),
+            subprocess.TimeoutExpired(cmd="sandbox-launcher", timeout=2.0),
+        ]
+        with (
+            patch("agentenv_agentmemory.workspace_sandbox.os.killpg"),
+            self.assertRaisesRegex(
+                ShellSandboxError,
+                "did not terminate after SIGKILL",
+            ),
+        ):
+            _terminate_process_group(process)
 
 
 class StagedWorkspaceValidationTests(unittest.TestCase):

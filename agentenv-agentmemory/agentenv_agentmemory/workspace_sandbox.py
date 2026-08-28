@@ -773,7 +773,12 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
     except ProcessLookupError:
         return
     if process.poll() is None:
-        process.wait(timeout=2.0)
+        try:
+            process.wait(timeout=2.0)
+        except subprocess.TimeoutExpired as exc:
+            raise ShellSandboxError(
+                "shell sandbox launcher did not terminate after SIGKILL"
+            ) from exc
 
 
 def _collect_bounded_output(

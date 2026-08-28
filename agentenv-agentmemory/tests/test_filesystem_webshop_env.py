@@ -24,6 +24,7 @@ from agentenv_agentmemory.filesystem_wrapper import (
 )
 from agentenv_agentmemory.memoryarena_webshop_env import MemoryArenaWebShopEnv
 from agentenv_agentmemory.persistent_workspace import WORKSPACE_TOOL_OPS, WorkspaceLimits
+from agentenv_agentmemory.workspace_sandbox import ShellSandboxError
 from agentenv_agentmemory.procedural_wrapper import ProceduralAgentMemoryWrapper
 from agentenv_agentmemory.reward_hierarchy import (
     INVALID_ACTION_PENALTY,
@@ -301,6 +302,22 @@ class PersistentWorkspaceWebShopEnvTests(unittest.TestCase):
         self.assertFalse(done)
         self.assertEqual(info["workspace_snapshot"]["file_count"], 0)
         self.assertEqual(info["workspace_audit_event_count"], 0)
+
+    def test_shell_sandbox_cleanup_failure_is_recoverable(self) -> None:
+        with patch.object(
+            self.env.workspace.shell_sandbox,
+            "run",
+            side_effect=ShellSandboxError(
+                "shell sandbox launcher did not terminate after SIGKILL"
+            ),
+        ):
+            observation, reward, done, _, info = self.env.step(
+                shell_action("cat session1_note.txt")
+            )
+        self.assertEqual(reward, INVALID_ACTION_PENALTY)
+        self.assertFalse(done)
+        self.assertIn("did not terminate after SIGKILL", observation)
+        self.assertEqual(info["reward_components"][0]["name"], "invalid_action")
 
     def test_bare_json_gets_workspace_specific_format_feedback(self) -> None:
         observation, reward, done, _, info = self.env.step(
