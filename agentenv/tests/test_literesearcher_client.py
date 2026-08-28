@@ -18,6 +18,9 @@ from agentenv.envs.literesearcher import (
     LITERESEARCHER_CONTINUATION_READ_ACTION,
     LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
     LITERESEARCHER_POLICY_CONTINUATION_MARKER,
+    LITERESEARCHER_RESEARCH_NOTE_PATH,
+    LITERESEARCHER_RESEARCH_NOTE_READ_ACTION,
+    LITERESEARCHER_RESEARCH_NOTE_WRITE_EXAMPLE,
     LiteResearcherEnvClient,
 )
 
@@ -48,28 +51,45 @@ class LiteResearcherClientTests(unittest.TestCase):
             framing[1], {"role": "assistant", "content": "Understood."}
         )
 
-    def test_policy_framing_exposes_literal_workspace_actions(self) -> None:
+    def test_policy_framing_exposes_selective_literal_workspace_actions(self) -> None:
         prompt = self._client().policy_framing()[0]["content"]
-        self.assertIn(
-            'shell_command {"command":"cat .agent_memory/research.md",'
-            '"workdir":".","timeout_ms":10000}',
-            prompt,
-        )
-        self.assertIn(
-            "apply_patch\n*** Begin Patch\n*** Add File: "
-            ".agent_memory/research.md\n+question: ...\n+evidence: ...\n"
-            "+next_step: ...\n*** End Patch",
-            prompt,
-        )
-        self.assertIn("not <tool_call> objects", prompt)
-        self.assertIn("After the first useful Visit", prompt)
-        self.assertIn("source URL, extracted evidence, and next step", prompt)
-        self.assertIn("read it with shell_command after", prompt)
-        self.assertIn("context compaction before continuing", prompt)
+        self.assertIn(LITERESEARCHER_RESEARCH_NOTE_WRITE_EXAMPLE, prompt)
+        self.assertIn(LITERESEARCHER_RESEARCH_NOTE_READ_ACTION, prompt)
+        self.assertIn(f"{LITERESEARCHER_RESEARCH_NOTE_PATH} is optional", prompt)
+        self.assertIn("Do not write it after every useful Visit", prompt)
+        self.assertIn("answer directly instead of staging", prompt)
+        self.assertIn("never wrap them in <tool_call>", prompt)
+        self.assertIn("create or replace the note", prompt)
+        self.assertIn("distinct from the optional research note", prompt)
         self.assertIn("At an explicit context-checkpoint request", prompt)
-        self.assertIn("executable workspace write", prompt)
+        self.assertIn("executable write", prompt)
         self.assertIn("not free-form continuation text", prompt)
-        self.assertNotIn("asks for continuation text", prompt)
+        self.assertNotIn("After the first useful Visit", prompt)
+
+    def test_research_note_write_example_is_parseable_and_idempotent(self) -> None:
+        prefix = "shell_command "
+        self.assertTrue(LITERESEARCHER_RESEARCH_NOTE_WRITE_EXAMPLE.startswith(prefix))
+        payload = json.loads(
+            LITERESEARCHER_RESEARCH_NOTE_WRITE_EXAMPLE[len(prefix):]
+        )
+        with tempfile.TemporaryDirectory() as td:
+            note = Path(td) / LITERESEARCHER_RESEARCH_NOTE_PATH
+            for stale in (None, "stale content\n"):
+                if stale is not None:
+                    note.parent.mkdir(parents=True, exist_ok=True)
+                    note.write_text(stale, encoding="utf-8")
+                result = subprocess.run(
+                    ["bash", "-lc", payload["command"]],
+                    cwd=td,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                content = note.read_text(encoding="utf-8")
+                self.assertIn("question: ...", content)
+                self.assertIn("evidence_with_urls: ...", content)
+                self.assertNotIn("stale content", content)
 
 
     def test_compaction_request_requires_one_real_bounded_workspace_write(self) -> None:

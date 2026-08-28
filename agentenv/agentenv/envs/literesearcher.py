@@ -27,6 +27,20 @@ from agentenv.controller.types import (
 LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE = 12_288
 LITERESEARCHER_CONTINUATION_PATH = ".agent_memory/CONTINUATION.md"
 LITERESEARCHER_CONTINUATION_MAX_BYTES = 8192
+LITERESEARCHER_RESEARCH_NOTE_PATH = ".agent_memory/research.md"
+LITERESEARCHER_RESEARCH_NOTE_WRITE_EXAMPLE = (
+    'shell_command {"command":"mkdir -p .agent_memory && cat > '
+    ".agent_memory/research.md <<'AMG_RESEARCH'\\n"
+    "question: ...\\n"
+    "evidence_with_urls: ...\\n"
+    "failed_attempts: ...\\n"
+    "next_step: ...\\n"
+    'AMG_RESEARCH\\n","workdir":".","timeout_ms":10000}'
+)
+LITERESEARCHER_RESEARCH_NOTE_READ_ACTION = (
+    f'shell_command {{"command":"cat {LITERESEARCHER_RESEARCH_NOTE_PATH}",'
+    '"workdir":".","timeout_ms":10000}'
+)
 LITERESEARCHER_COMPACTION_CONTRACT = "task_neutral_filesystem_checkpoint_v2"
 LITERESEARCHER_MIN_ACTIONS_FOR_CHECKPOINT_READ_ANSWER = 3
 _RECEIPT_SCHEMA = "agentmemory_continuation_checkpoint_v2"
@@ -108,35 +122,36 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 "from": "human",
                 "loss": None,
                 "value": (
-                    "You are a deep-research agent working on one continuous "
-                    "question with an empty private workspace that persists for "
-                    "the episode. Search with <tool_call>{\"name\":\"search\","
-                    "\"arguments\":{\"query\":[\"...\"]}}</tool_call>; visit an "
-                    "opaque result URL with <tool_call>{\"name\":\"visit\","
-                    "\"arguments\":{\"url\":\"...\",\"goal\":\"...\","
-                    "\"page\":1}}</tool_call>. A visit returns one bounded page; "
-                    "follow next_page with the same URL and goal when more evidence "
-                    "is needed. Workspace actions use raw Codex-style syntax and are "
-                    "not <tool_call> objects. To read a note, emit exactly one line: "
-                    "shell_command {\"command\":\"cat .agent_memory/research.md\","
-                    "\"workdir\":\".\",\"timeout_ms\":10000}. To create a "
-                    "note, emit exactly:\napply_patch\n*** Begin Patch\n*** Add File: "
-                    ".agent_memory/research.md\n+question: ...\n+evidence: ...\n"
-                    "+next_step: ...\n*** End Patch\nThe workspace shell is "
-                    "networkless; use Search and Visit for external evidence. After the "
-                    "first useful Visit, create or update the note with the question, "
-                    "source URL, extracted evidence, and next step. Keep it current "
-                    "during a long investigation, and read it with shell_command after "
-                    "context compaction before continuing. "
-                    "Submit the final answer as <answer>...</answer>. Emit exactly one "
-                    "action per turn. At an explicit context-checkpoint request, that "
-                    "action must be the requested executable workspace write; it is not "
-                    "free-form continuation text. "
-                    "The following complete examples are literal formats; keep "
-                    "both closing braces before </tool_call>: "
-                    "<tool_call>{\"name\":\"search\",\"arguments\":{\"query\":[\"climate policy\"]}}</tool_call> "
-                    "and <tool_call>{\"name\":\"visit\",\"arguments\":{\"url\":\"https://literesearcher.local/page/00001\",\"goal\":\"extract evidence\",\"page\":1}}</tool_call>. "
-                    "Never omit the outer arguments brace."
+                    "You are a deep-research agent answering one continuous question. "
+                    "Your empty private workspace persists for the episode. Search and "
+                    "Visit are the only <tool_call> actions; use exactly one action per "
+                    "turn. Literal forms: <tool_call>{\"name\":\"search\","
+                    "\"arguments\":{\"query\":[\"climate policy\"]}}</tool_call> "
+                    "or <tool_call>{\"name\":\"visit\",\"arguments\":{"
+                    "\"url\":\"https://literesearcher.local/page/00001\","
+                    "\"goal\":\"extract evidence\",\"page\":1}}</tool_call>. "
+                    "Keep both closing braces. A Visit returns one bounded page; follow "
+                    "next_page with the same URL and goal when needed. Workspace actions "
+                    "use raw Codex syntax; never wrap them in <tool_call>. A workspace "
+                    "turn is exactly "
+                    "one shell_command or multiline apply_patch, with no prose, Markdown "
+                    "fence, or research tool. "
+                    f"{LITERESEARCHER_RESEARCH_NOTE_PATH} is optional. Write or refresh "
+                    "it only when evidence with source URLs, failed attempts, or a plan "
+                    "must survive several later actions or a future context checkpoint. "
+                    "Do not write it after every useful Visit. If the evidence already "
+                    "supports the final answer, answer directly instead of staging that "
+                    "answer in a file. To create or replace the note, copy this action "
+                    "and replace only the field values:\n"
+                    f"{LITERESEARCHER_RESEARCH_NOTE_WRITE_EXAMPLE}\n"
+                    "To read it, emit only:\n"
+                    f"{LITERESEARCHER_RESEARCH_NOTE_READ_ACTION}\n"
+                    "The workspace shell is networkless; use Search and Visit for "
+                    "external evidence. Submit the final answer as <answer>...</answer>. "
+                    "At an explicit context-checkpoint request, follow its separate "
+                    f"executable write to {LITERESEARCHER_CONTINUATION_PATH} exactly. "
+                    "That required checkpoint is distinct from the optional research "
+                    "note and is not free-form continuation text."
                 ),
             }
         ),
