@@ -158,6 +158,99 @@ class SwesmithWorkspaceTests(unittest.TestCase):
             )
         self.assertEqual(list(self.episodes.iterdir()), [])
 
+    def test_materializer_retries_one_failed_archive_from_an_empty_workspace(self) -> None:
+        shim_dir, count_path = self._archive_failure_shim("once")
+        environment = {
+            "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+            "SWESMITH_REAL_GIT": str(shutil.which("git")),
+            "SWESMITH_ARCHIVE_FAILURE_MODE": "once",
+            "SWESMITH_ARCHIVE_ATTEMPT_FILE": str(count_path),
+        }
+        with mock.patch.dict(os.environ, environment), self.assertLogs(
+            "agentenv_swesmith.workspace", level="WARNING"
+        ) as captured:
+            workspace = self.materializer.materialize(
+                self.instance,
+                test_paths=["tests/test_fix.py", "tests/test_keep.py"],
+            )
+        try:
+            self.assertEqual(count_path.read_text(encoding="ascii"), "2")
+            self.assertFalse(
+                (workspace.policy_root / ".partial-from-first-attempt").exists()
+            )
+            self.assertEqual(
+                (workspace.policy_root / "src/value.py").read_text(encoding="utf-8"),
+                "VALUE = 'bug'\n",
+            )
+            warning = "\n".join(captured.output)
+            self.assertIn("attempt=1/2", warning)
+            self.assertIn("returncode=73", warning)
+            self.assertIn("stderr='<empty>'", warning)
+            self.assertIn(self.instance_id, warning)
+        finally:
+            self.materializer.close(workspace)
+
+    def test_materializer_fails_closed_after_one_archive_retry(self) -> None:
+        shim_dir, count_path = self._archive_failure_shim("always")
+        environment = {
+            "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+            "SWESMITH_REAL_GIT": str(shutil.which("git")),
+            "SWESMITH_ARCHIVE_FAILURE_MODE": "always",
+            "SWESMITH_ARCHIVE_ATTEMPT_FILE": str(count_path),
+        }
+        with mock.patch.dict(os.environ, environment), self.assertRaisesRegex(
+            SwesmithWorkspaceError,
+            rf"attempt=2/2.*returncode=74.*{self.instance_id}.*synthetic archive failure",
+        ):
+            self.materializer.materialize(
+                self.instance,
+                test_paths=["tests/test_fix.py", "tests/test_keep.py"],
+            )
+        self.assertEqual(count_path.read_text(encoding="ascii"), "2")
+        self.assertEqual(list(self.episodes.iterdir()), [])
+
+    def _archive_failure_shim(self, mode: str) -> tuple[Path, Path]:
+        shim_dir = self.root / f"git-archive-shim-{mode}"
+        shim_dir.mkdir()
+        count_path = shim_dir / "archive-attempts"
+        shim = shim_dir / "git"
+        shim.write_text(
+            r'''#!/usr/bin/env python3
+import io
+import os
+import sys
+import tarfile
+
+arguments = sys.argv[1:]
+if "archive" in arguments:
+    count_path = os.environ["SWESMITH_ARCHIVE_ATTEMPT_FILE"]
+    try:
+        with open(count_path, "r", encoding="ascii") as handle:
+            attempt = int(handle.read()) + 1
+    except FileNotFoundError:
+        attempt = 1
+    with open(count_path, "w", encoding="ascii") as handle:
+        handle.write(str(attempt))
+    mode = os.environ["SWESMITH_ARCHIVE_FAILURE_MODE"]
+    if mode == "always":
+        sys.stderr.write("synthetic archive failure\n")
+        raise SystemExit(74)
+    if mode == "once" and attempt == 1:
+        payload = b"must not survive retry\n"
+        member = tarfile.TarInfo(".partial-from-first-attempt")
+        member.size = len(payload)
+        member.mode = 0o600
+        with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
+            archive.addfile(member, io.BytesIO(payload))
+        raise SystemExit(73)
+real_git = os.environ["SWESMITH_REAL_GIT"]
+os.execv(real_git, [real_git, *arguments])
+''',
+            encoding="utf-8",
+        )
+        shim.chmod(0o755)
+        return shim_dir, count_path
+
     def test_materializer_scopes_every_git_call_to_the_exact_mirror(self) -> None:
         real_git = shutil.which("git")
         self.assertIsNotNone(real_git)

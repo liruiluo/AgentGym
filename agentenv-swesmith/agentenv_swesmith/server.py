@@ -77,7 +77,11 @@ def reset(body: ResetRequest) -> dict[str, Any]:
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        logging.exception("SWE-smith reset failed")
+        logging.exception(
+            "SWE-smith reset failed (slot_id=%s data_idx=%s)",
+            body.id,
+            body.data_idx,
+        )
         raise HTTPException(
             status_code=500,
             detail="SWE-smith reset failed closed; inspect server logs",

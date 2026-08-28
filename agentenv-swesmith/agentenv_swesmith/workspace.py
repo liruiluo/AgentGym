@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import logging
 import os
 import re
 import shutil
@@ -20,6 +21,8 @@ _INSTANCE_ID_RE = re.compile(r"\A[A-Za-z0-9_.-]+\Z")
 _EPISODE_CLEANUP_TIMEOUT_SECONDS = 2.0
 _EPISODE_CLEANUP_RETRY_SECONDS = 0.05
 _TRANSIENT_EPISODE_CLEANUP_ERRNOS = {errno.EBUSY, errno.ENOENT, errno.ENOTEMPTY}
+_GIT_ARCHIVE_MAX_ATTEMPTS = 2
+_LOGGER = logging.getLogger(__name__)
 
 
 class SwesmithWorkspaceError(RuntimeError):
@@ -93,7 +96,12 @@ class SwesmithWorkspaceMaterializer:
         policy_root.mkdir(mode=0o700)
         hidden_tests_root.mkdir(mode=0o700, parents=True)
         try:
-            _export_git_tree(mirror_root, bug_commit, policy_root)
+            _export_git_tree(
+                mirror_root,
+                bug_commit,
+                policy_root,
+                instance_id=instance_id,
+            )
             if (policy_root / ".git").exists() or (policy_root / ".git").is_symlink():
                 raise SwesmithWorkspaceError("policy workspace unexpectedly contains .git")
             checkpoint_parent = policy_root / ".agent_memory"
@@ -254,7 +262,42 @@ def _resolve_instance_commit(mirror_root: Path, instance_id: str) -> str:
     return found[0]
 
 
-def _export_git_tree(mirror_root: Path, commit: str, destination: Path) -> None:
+class _GitArchiveProcessFailure(RuntimeError):
+    def __init__(self, *, return_code: int, stderr: bytes):
+        self.return_code = return_code
+        self.stderr = stderr
+        super().__init__(f"git archive exited with code {return_code}")
+
+
+def _export_git_tree(
+    mirror_root: Path,
+    commit: str,
+    destination: Path,
+    *,
+    instance_id: str,
+) -> None:
+    for attempt in range(1, _GIT_ARCHIVE_MAX_ATTEMPTS + 1):
+        try:
+            _export_git_tree_once(mirror_root, commit, destination)
+            return
+        except _GitArchiveProcessFailure as exc:
+            stderr = exc.stderr.decode("utf-8", errors="replace")[-1000:] or "<empty>"
+            detail = (
+                f"attempt={attempt}/{_GIT_ARCHIVE_MAX_ATTEMPTS} "
+                f"returncode={exc.return_code} instance_id={instance_id!r} "
+                f"mirror={str(mirror_root)!r} commit={commit!r} stderr={stderr!r}"
+            )
+            if attempt == _GIT_ARCHIVE_MAX_ATTEMPTS:
+                raise SwesmithWorkspaceError(
+                    "git archive failed after bounded retry: " + detail
+                ) from exc
+            _LOGGER.warning("git archive failed; retrying once: %s", detail)
+            _reset_export_destination(destination)
+
+
+def _export_git_tree_once(
+    mirror_root: Path, commit: str, destination: Path
+) -> None:
     process = subprocess.Popen(
         _git_command(mirror_root, ["archive", "--format=tar", commit]),
         stdout=subprocess.PIPE,
@@ -262,27 +305,48 @@ def _export_git_tree(mirror_root: Path, commit: str, destination: Path) -> None:
     )
     assert process.stdout is not None
     assert process.stderr is not None
+    extraction_error: Exception | None = None
+    return_code: int | None = None
+    process_exited_before_cleanup = False
+    stderr = b""
     try:
         try:
             with process.stdout, tarfile.open(fileobj=process.stdout, mode="r|") as archive:
                 for member in archive:
                     _extract_archive_member(archive, member, destination)
-        except Exception:
-            process.kill()
-            process.wait()
-            raise
+        except Exception as exc:
+            extraction_error = exc
+            observed_return_code = process.poll()
+            process_exited_before_cleanup = observed_return_code is not None
+            if observed_return_code is None:
+                process.kill()
+            return_code = process.wait()
         stderr = process.stderr.read()
-        return_code = process.wait()
+        if return_code is None:
+            return_code = process.wait()
     finally:
         process.stdout.close()
         process.stderr.close()
         if process.poll() is None:
             process.kill()
             process.wait()
+    if extraction_error is not None:
+        if process_exited_before_cleanup and return_code != 0:
+            raise _GitArchiveProcessFailure(
+                return_code=return_code, stderr=stderr
+            ) from extraction_error
+        raise extraction_error
     if return_code != 0:
+        raise _GitArchiveProcessFailure(return_code=return_code, stderr=stderr)
+
+
+def _reset_export_destination(destination: Path) -> None:
+    if destination.is_symlink() or not destination.is_dir():
         raise SwesmithWorkspaceError(
-            "git archive failed: " + stderr.decode("utf-8", errors="replace")[-1000:]
+            f"refusing to reset invalid policy workspace: {destination}"
         )
+    shutil.rmtree(destination)
+    destination.mkdir(mode=0o700)
 
 
 def _extract_archive_member(
