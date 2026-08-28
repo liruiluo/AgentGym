@@ -45,7 +45,7 @@ LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE = (
     "failed_attempts: ...\\n"
     "other_files: ...\\n"
     "next_action: ...\\n"
-    'AMG_CHECKPOINT\\n","workdir":"."}'
+    'AMG_CHECKPOINT\\n","workdir":".","timeout_ms":10000}'
 )
 
 
@@ -72,7 +72,8 @@ LITERESEARCHER_POLICY_CONTINUATION_MARKER = (
     f"`{LITERESEARCHER_CONTINUATION_PATH}`. Before any search, visit, or answer, "
     "read it with exactly this normal action: "
     f'`shell_command {{"command":"cat {LITERESEARCHER_CONTINUATION_PATH}",'
-    '"workdir":"."}`. Continue from the file output; do not reconstruct omitted '
+    '"workdir":".","timeout_ms":10000}`. Continue from the file output; do not '
+    'reconstruct omitted '
     "history from this marker."
 )
 
@@ -680,6 +681,11 @@ class LiteResearcherEnvClient(BaseEnvClient):
         return response
 
     def finalize_policy_horizon(self) -> StepOutput:
+        # Horizon finalization is terminal. Clear pending control state so a
+        # controller audit cannot mistake a rejected checkpoint for a live retry.
+        self._checkpoint_retry_context = None
+        self._checkpoint_retry_reason = None
+        self._selected_policy_control = None
         return StepOutput(
             state="LiteResearcher policy-turn budget exhausted without an accepted answer.",
             reward=0.0,

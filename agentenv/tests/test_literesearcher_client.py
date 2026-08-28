@@ -103,6 +103,20 @@ class LiteResearcherClientTests(unittest.TestCase):
             checkpoint = Path(td) / LITERESEARCHER_CONTINUATION_PATH
             self.assertTrue(checkpoint.is_file())
             self.assertGreater(checkpoint.stat().st_size, 0)
+        self.assertEqual(payload["workdir"], ".")
+        self.assertEqual(payload["timeout_ms"], 10_000)
+        read_payload_text = LITERESEARCHER_POLICY_CONTINUATION_MARKER.split(
+            "`shell_command ", 1
+        )[1].split("`. Continue", 1)[0]
+        read_payload = json.loads(read_payload_text)
+        self.assertEqual(
+            read_payload,
+            {
+                "command": "cat .agent_memory/CONTINUATION.md",
+                "workdir": ".",
+                "timeout_ms": 10_000,
+            },
+        )
 
     @staticmethod
     def _bound_client(*, selected: bool = True) -> LiteResearcherEnvClient:
@@ -533,6 +547,24 @@ class LiteResearcherClientTests(unittest.TestCase):
         )
         client._request.assert_not_called()
 
+    def test_horizon_finalization_clears_pending_checkpoint_retry(self) -> None:
+        client = self._bound_client()
+        client._checkpoint_retry_reason = "workspace_action_required"
+
+        output = client.finalize_policy_horizon()
+
+        self.assertTrue(output.done)
+        self.assertEqual(
+            output.info["env_info"]["status"], "max_policy_steps_exhausted"
+        )
+        self.assertIsNone(client._checkpoint_retry_context)
+        self.assertIsNone(client._checkpoint_retry_reason)
+        self.assertIsNone(client._selected_policy_control)
+        self.assertEqual(
+            client.policy_turn_candidate(),
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
+
     def test_checkpoint_backend_fault_is_excluded_without_policy_penalty(self) -> None:
         client = self._bound_client()
         client._request = Mock(
@@ -622,6 +654,24 @@ class LiteResearcherClientTests(unittest.TestCase):
             client.prepare_policy_turn(pressure),
             LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
         )
+
+    def test_candidate_exactly_at_capacity_still_selects_checkpoint(self) -> None:
+        client = self._bound_client(selected=False)
+        pressure = PolicyContextPressure(
+            action_prompt_tokens=18_432,
+            candidate_prompt_tokens=30_720,
+            max_prompt_tokens=30_720,
+            max_model_tokens=32_768,
+            max_response_tokens=2_048,
+            max_observation_tokens=LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
+            action_observation_envelope_tokens=12_288,
+        )
+
+        self.assertEqual(
+            client.prepare_policy_turn(pressure),
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
+        self.assertEqual(client._selected_policy_control, "context_compaction")
 
     def test_shorter_rendered_candidate_does_not_fail_without_pressure(self) -> None:
         client = self._client()
