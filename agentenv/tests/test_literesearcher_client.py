@@ -68,6 +68,24 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn(".agent_memory/CONTINUATION.md", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("Other workspace files remain available", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("not a replacement for task artifacts", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
+        self.assertIn(
+            "For this context-boundary write, use shell_command rather than "
+            "apply_patch",
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
+        self.assertIn(
+            "mkdir -p .agent_memory && cat > "
+            ".agent_memory/CONTINUATION.md <<'EOF'",
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
+        self.assertIn(
+            "<function=shell_command>",
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
+        self.assertNotIn(
+            "*** Add File: .agent_memory/CONTINUATION.md",
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
 
     def test_policy_framing_restores_system_role_and_question(self) -> None:
         client = self._client()

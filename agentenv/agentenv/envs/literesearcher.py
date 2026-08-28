@@ -43,16 +43,43 @@ from .filesystem_checkpoint import (
 LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE = 12_288
 
 
+LITERESEARCHER_QWEN_XML_CHECKPOINT_GUIDANCE = """
+
+For this context-boundary write, use shell_command rather than apply_patch.
+Follow this exact Qwen XML shape, replacing the placeholder lines with the
+current research state:
+
+<tool_call>
+<function=shell_command>
+<parameter=command>
+mkdir -p .agent_memory && cat > .agent_memory/CONTINUATION.md <<'EOF'
+Objective: ...
+Evidence and source URLs: ...
+Uncertainty: ...
+Next action: ...
+EOF
+</parameter>
+<parameter=workdir>
+.
+</parameter>
+<parameter=timeout_ms>
+10000
+</parameter>
+</function>
+</tool_call>
+"""
+
 LITERESEARCHER_CONTEXT_COMPACTION_REQUEST = (
     FILESYSTEM_CHECKPOINT_REQUEST
+    + LITERESEARCHER_QWEN_XML_CHECKPOINT_GUIDANCE
     + " For this research task, preserve the unresolved question, decisive "
     "evidence with source URLs, conflicts or uncertainty, and the next search "
     "or visit action."
 )
+
 LITERESEARCHER_POLICY_CONTINUATION_MARKER = (
     FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER
 )
-
 
 
 LITERESEARCHER_SYSTEM_PROMPT = """# Tools
