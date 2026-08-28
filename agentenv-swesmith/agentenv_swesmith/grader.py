@@ -96,36 +96,18 @@ class SwesmithHiddenGrader:
         workspace: SwesmithWorkspace,
         sandbox: LinuxNamespaceEpisodeSandbox,
     ) -> SwesmithGradeResult:
+        """Grade with the one full official command used by SWE-smith.
+
+        ``profile.full_command`` already contains both FAIL_TO_PASS and
+        PASS_TO_PASS selections.  Running an F2P command first and then the full
+        command duplicates the failing tests and can make one terminal ``/step``
+        exceed the client timeout even though each trusted grader phase remains
+        within its own limit.
+        """
+
         restored: list[str] = []
-        f2p_run: TestRunEvidence | None = None
         full_run: TestRunEvidence | None = None
         try:
-            restored.extend(restore_hidden_tests(workspace))
-            sandbox.refresh_after_host_mutation()
-            f2p_run = self._run_tests(
-                role="F2P",
-                command=profile.f2p_command,
-                profile=profile,
-                instance=instance,
-                sandbox=sandbox,
-            )
-            gold = _gold_results(instance)
-            if not _healthy(f2p_run) or not _declared_f2p_passed(
-                f2p_run.status_map, gold, profile
-            ):
-                report = _eval_report(profile, f2p_run.status_map, gold)
-                return SwesmithGradeResult(
-                    reward=0.0,
-                    resolution_status=_resolution(profile, report),
-                    report=report,
-                    restored_test_paths=tuple(restored),
-                    f2p_run=f2p_run,
-                    full_run=None,
-                )
-
-            # Restore again immediately before the second phase.  This keeps
-            # test files pristine even when the first test command generated or
-            # modified test-side artifacts.
             restored.extend(restore_hidden_tests(workspace))
             sandbox.refresh_after_host_mutation()
             full_run = self._run_tests(
@@ -135,6 +117,7 @@ class SwesmithHiddenGrader:
                 instance=instance,
                 sandbox=sandbox,
             )
+            gold = _gold_results(instance)
             report = _eval_report(profile, full_run.status_map, gold)
             status = _resolution(profile, report)
             reward = (
@@ -147,7 +130,7 @@ class SwesmithHiddenGrader:
                 resolution_status=status,
                 report=report,
                 restored_test_paths=tuple(restored),
-                f2p_run=f2p_run,
+                f2p_run=None,
                 full_run=full_run,
             )
         except Exception as exc:
@@ -156,7 +139,7 @@ class SwesmithHiddenGrader:
                 resolution_status=None,
                 report={},
                 restored_test_paths=tuple(restored),
-                f2p_run=f2p_run,
+                f2p_run=None,
                 full_run=full_run,
                 error=f"{type(exc).__name__}: {exc}",
             )

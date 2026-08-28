@@ -54,7 +54,15 @@ FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA = (
 FILESYSTEM_CHECKPOINT_PATH = ".agent_memory/CONTINUATION.md"
 FILESYSTEM_CHECKPOINT_MAX_BYTES = 8 * 1024
 GENERATED_PATH_PARTS = frozenset(
-    {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox"}
+    {
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".nox",
+        ".agent_memory",
+    }
 )
 GENERATED_FILE_NAMES = frozenset({".coverage", "coverage.xml"})
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
@@ -451,7 +459,7 @@ class SwesmithEpisodeManager:
             "reward_contract": REWARD_CONTRACT,
             "context_contract": "one_native_issue_continuous_episode_v1",
             "memory_contract": (
-                "policy_filesystem_checkpoint_then_client_replace_v2"
+                "policy_filesystem_checkpoint_then_client_replace_v3"
             ),
             "submission_contract": SUBMISSION_CONTRACT,
             "horizon_contract": HORIZON_CONTRACT,
@@ -473,6 +481,9 @@ class SwesmithEpisodeManager:
             ],
             "valid_shell_nonzero_exit_is_terminal": False,
             "grader_infrastructure_failure": "sample_excluded",
+            "grader_execution_contract": "single_full_official_command_v1",
+            "grader_phase_count": 1,
+            "grader_timeout_ms": self.grader.timeout_ms,
             "active_slot_count": slot_count,
             "active_environment_count": active_count,
             "active_workspace_count": active_count,

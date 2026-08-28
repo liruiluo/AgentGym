@@ -88,6 +88,10 @@ class SwesmithWorkspaceTests(unittest.TestCase):
             self.assertFalse((workspace.policy_root / "tests/test_fix.py").exists())
             self.assertTrue((workspace.policy_root / "tests/test_keep.py").exists())
             self.assertFalse((workspace.policy_root / ".git").exists())
+            checkpoint_parent = workspace.policy_root / ".agent_memory"
+            self.assertTrue(checkpoint_parent.is_dir())
+            self.assertFalse(checkpoint_parent.is_symlink())
+            self.assertEqual(list(checkpoint_parent.iterdir()), [])
             self.assertTrue((workspace.hidden_tests_root / "tests/test_fix.py").is_file())
 
             (workspace.policy_root / "tests/test_keep.py").write_text(
