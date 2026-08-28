@@ -43,6 +43,7 @@ def client(*, policy_steps: int = 0) -> SwesmithEnvClient:
     value._checkpoint_retry_pending = False
     value._checkpoint_attempt_count = 0
     value._checkpoint_retry_exhausted = False
+    value.checkpoint_contract_penalty = 0.0
     value._policy_step_count = policy_steps
     value._native_call_count = policy_steps
     value._context_epoch = 0

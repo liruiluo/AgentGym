@@ -225,6 +225,7 @@ class SwesmithEnvClient(BaseEnvClient):
         *args,
         timeout: int = 900,
         invalid_action_reward: float = 0.0,
+        checkpoint_contract_penalty: float = 0.0,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -237,9 +238,20 @@ class SwesmithEnvClient(BaseEnvClient):
             raise ValueError(
                 "SWE-smith invalid_action_reward must be finite and non-positive"
             )
+        if (
+            isinstance(checkpoint_contract_penalty, bool)
+            or not isinstance(checkpoint_contract_penalty, (int, float))
+            or not math.isfinite(float(checkpoint_contract_penalty))
+            or float(checkpoint_contract_penalty) > 0.0
+        ):
+            raise ValueError(
+                "SWE-smith checkpoint_contract_penalty must be finite and "
+                "non-positive"
+            )
         self.env_server_base = env_server_base.rstrip("/")
         self.timeout = timeout
         self.invalid_action_reward = float(invalid_action_reward)
+        self.checkpoint_contract_penalty = float(checkpoint_contract_penalty)
         metadata = self._request("GET", "metadata")
         memory_contract = metadata.get("memory_contract")
         if memory_contract != SWE_MEMORY_CONTRACT:
@@ -599,9 +611,61 @@ class SwesmithEnvClient(BaseEnvClient):
             if isinstance(native_wrapper, Mapping)
             else None
         )
+        reward = float(native_output.reward)
+        checkpoint_reward_overlay = None
+        if (
+            not persisted
+            and not native_output.done
+            and self.checkpoint_contract_penalty != 0.0
+        ):
+            # The contract violation is an ordinary environment transition.
+            # Apply the configured negative reward as a ceiling so an existing
+            # parser/executor penalty for the same action is never added twice.
+            reward_before = reward
+            reward = min(reward_before, self.checkpoint_contract_penalty)
+            applied_delta = reward - reward_before
+            checkpoint_reward_overlay = {
+                "schema": "swesmith_checkpoint_contract_reward_v1",
+                "basis": "checkpoint_contract_unsatisfied",
+                "reward_before": reward_before,
+                "configured_penalty": self.checkpoint_contract_penalty,
+                "applied_delta": applied_delta,
+                "final_reward": reward,
+                "deduplicated": applied_delta == 0.0,
+            }
+        wrapper_evidence = {
+            "event": "context_compaction",
+            "workspace_continuity_id": self.env_id,
+            "native_environment_call_count": 1,
+            "actor_credit": actor_credit,
+            "continuation_path": FILESYSTEM_CHECKPOINT_PATH,
+            "continuation_max_bytes": FILESYSTEM_CHECKPOINT_MAX_BYTES,
+            "continuation_persisted": persisted,
+            "checkpoint_receipt": checkpoint_receipt,
+            "checkpoint_failure_reason": (
+                filesystem_checkpoint_failure_reason(checkpoint_receipt)
+            ),
+            "context_replaced": bool(persisted and not native_output.done),
+            "checkpoint_attempt_count": checkpoint_attempt_number,
+            "checkpoint_max_attempts": SWE_CHECKPOINT_MAX_ATTEMPTS,
+            "remaining_policy_turns": self._remaining_policy_turns(),
+            "retry_pending": self._checkpoint_retry_pending,
+            "retry_exhausted": self._checkpoint_retry_exhausted,
+            "retry_context_restored": False,
+            "retry_feedback_preserved": retry_feedback_preserved,
+            "sampled_policy_output_preserved_in_ledger": True,
+            "native_observation_preserved_in_ledger": True,
+            "replacement_contains_policy_output": False,
+            "replacement_contains_native_observation": False,
+            "native_wrapper_evidence": (
+                dict(native_wrapper) if isinstance(native_wrapper, Mapping) else {}
+            ),
+        }
+        if checkpoint_reward_overlay is not None:
+            wrapper_evidence["reward_overlay"] = checkpoint_reward_overlay
         return StepOutput(
             state=native_output.state,
-            reward=native_output.reward,
+            reward=reward,
             done=native_output.done,
             info=build_task_neutral_transition_info(
                 env_info=env_info if isinstance(env_info, Mapping) else {},
@@ -619,36 +683,7 @@ class SwesmithEnvClient(BaseEnvClient):
                 policy_step_before=info.get("policy_step_before"),
                 policy_step_after=info.get("policy_step_after"),
                 context_transition=context_transition,
-                wrapper_evidence={
-                    "event": "context_compaction",
-                    "workspace_continuity_id": self.env_id,
-                    "native_environment_call_count": 1,
-                    "actor_credit": actor_credit,
-                    "continuation_path": FILESYSTEM_CHECKPOINT_PATH,
-                    "continuation_max_bytes": FILESYSTEM_CHECKPOINT_MAX_BYTES,
-                    "continuation_persisted": persisted,
-                    "checkpoint_receipt": checkpoint_receipt,
-                    "checkpoint_failure_reason": (
-                        filesystem_checkpoint_failure_reason(checkpoint_receipt)
-                    ),
-                    "context_replaced": bool(persisted and not native_output.done),
-                    "checkpoint_attempt_count": checkpoint_attempt_number,
-                    "checkpoint_max_attempts": SWE_CHECKPOINT_MAX_ATTEMPTS,
-                    "remaining_policy_turns": self._remaining_policy_turns(),
-                    "retry_pending": self._checkpoint_retry_pending,
-                    "retry_exhausted": self._checkpoint_retry_exhausted,
-                    "retry_context_restored": False,
-                    "retry_feedback_preserved": retry_feedback_preserved,
-                    "sampled_policy_output_preserved_in_ledger": True,
-                    "native_observation_preserved_in_ledger": True,
-                    "replacement_contains_policy_output": False,
-                    "replacement_contains_native_observation": False,
-                    "native_wrapper_evidence": (
-                        dict(native_wrapper)
-                        if isinstance(native_wrapper, Mapping)
-                        else {}
-                    ),
-                },
+                wrapper_evidence=wrapper_evidence,
             ),
         )
 
