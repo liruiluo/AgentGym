@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import re
 from copy import deepcopy
@@ -28,18 +29,37 @@ LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE = 12_288
 LITERESEARCHER_CONTINUATION_PATH = ".agent_memory/CONTINUATION.md"
 LITERESEARCHER_CONTINUATION_MAX_BYTES = 8192
 LITERESEARCHER_RESEARCH_NOTE_PATH = ".agent_memory/research.md"
-LITERESEARCHER_RESEARCH_NOTE_WRITE_EXAMPLE = (
-    'shell_command {"command":"mkdir -p .agent_memory && cat > '
-    ".agent_memory/research.md <<'AMG_RESEARCH'\\n"
-    "question: ...\\n"
-    "evidence_with_urls: ...\\n"
-    "failed_attempts: ...\\n"
-    "next_step: ...\\n"
-    'AMG_RESEARCH\\n","workdir":".","timeout_ms":10000}'
+LITERESEARCHER_WORKSPACE_ACTION_ENVELOPE_CONTRACT = (
+    "literesearcher_tool_call_workspace_v1"
 )
-LITERESEARCHER_RESEARCH_NOTE_READ_ACTION = (
-    f'shell_command {{"command":"cat {LITERESEARCHER_RESEARCH_NOTE_PATH}",'
-    '"workdir":".","timeout_ms":10000}'
+
+
+def _render_workspace_tool_call(command: str) -> str:
+    return "<tool_call>" + json.dumps(
+        {
+            "name": "shell_command",
+            "arguments": {
+                "command": command,
+                "workdir": ".",
+                "timeout_ms": 10000,
+            },
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ) + "</tool_call>"
+
+
+LITERESEARCHER_RESEARCH_NOTE_WRITE_EXAMPLE = _render_workspace_tool_call(
+    "mkdir -p .agent_memory && cat > "
+    ".agent_memory/research.md <<'AMG_RESEARCH'\n"
+    "question: ...\n"
+    "evidence_with_urls: ...\n"
+    "failed_attempts: ...\n"
+    "next_step: ...\n"
+    "AMG_RESEARCH\n"
+)
+LITERESEARCHER_RESEARCH_NOTE_READ_ACTION = _render_workspace_tool_call(
+    f"cat {LITERESEARCHER_RESEARCH_NOTE_PATH}"
 )
 LITERESEARCHER_COMPACTION_CONTRACT = "task_neutral_filesystem_checkpoint_v2"
 LITERESEARCHER_MIN_ACTIONS_FOR_CHECKPOINT_READ_ANSWER = 3
@@ -51,15 +71,15 @@ _WORKSPACE_ACTION_MARKER_RE = re.compile(
 _MAX_WORKSPACE_REASONING_PREFIX_CHARS = 2048
 
 
-LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE = (
-    'shell_command {"command":"mkdir -p .agent_memory && cat > '
-    ".agent_memory/CONTINUATION.md <<'AMG_CHECKPOINT'\\n"
-    "question: ...\\n"
-    "evidence: ...\\n"
-    "failed_attempts: ...\\n"
-    "other_files: ...\\n"
-    "next_action: ...\\n"
-    'AMG_CHECKPOINT\\n","workdir":".","timeout_ms":10000}'
+LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE = _render_workspace_tool_call(
+    "mkdir -p .agent_memory && cat > "
+    ".agent_memory/CONTINUATION.md <<'AMG_CHECKPOINT'\n"
+    "question: ...\n"
+    "evidence: ...\n"
+    "failed_attempts: ...\n"
+    "other_files: ...\n"
+    "next_action: ...\n"
+    "AMG_CHECKPOINT\n"
 )
 
 
@@ -74,17 +94,17 @@ LITERESEARCHER_CONTEXT_COMPACTION_REQUEST = (
     "paths, and the next action. Keep the mkdir -p .agent_memory && prefix so the "
     "write also works in an otherwise empty workspace. This is a write-only phase. "
     f"Do not read {LITERESEARCHER_CONTINUATION_PATH} or .agent_memory/research.md; "
-    "do not Search, Visit, or answer. Your response must start with shell_command "
-    "and end immediately after the final JSON closing brace. Do not add Markdown "
-    "backticks, a code fence, a <tool_call> tag, or prose. Copy the complete "
-    "executable action below, replacing only the checkpoint field values:\n"
+    "do not Search, Visit, or answer. Your response must be one complete "
+    "<tool_call> JSON envelope whose name is shell_command. Do not emit raw "
+    "shell_command syntax, Markdown backticks, a code fence, or prose. Copy the "
+    "complete executable action below, replacing only the checkpoint field "
+    "values:\n"
     f"{LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE}"
 )
 
 
-LITERESEARCHER_CONTINUATION_READ_ACTION = (
-    f'shell_command {{"command":"cat {LITERESEARCHER_CONTINUATION_PATH}",'
-    '"workdir":".","timeout_ms":10000}'
+LITERESEARCHER_CONTINUATION_READ_ACTION = _render_workspace_tool_call(
+    f"cat {LITERESEARCHER_CONTINUATION_PATH}"
 )
 
 
@@ -92,9 +112,9 @@ LITERESEARCHER_POLICY_CONTINUATION_MARKER = (
     "CHECKPOINT READ PHASE (after context reset). The earlier interaction was "
     "removed after a verified policy-authored checkpoint was written to "
     f"{LITERESEARCHER_CONTINUATION_PATH}. Before any search, visit, or answer, "
-    "read it with one normal raw shell_command action. Your response must start "
-    "with shell_command and end immediately after the final JSON closing brace. "
-    "Do not add Markdown backticks, a code fence, a <tool_call> tag, or prose. "
+    "read it with one normal shell_command inside the same <tool_call> JSON "
+    "envelope used by Search and Visit. Do not emit raw shell_command syntax, "
+    "Markdown backticks, a code fence, or prose. "
     "Continue from the file output instead of reconstructing omitted history. "
     "The complete executable action is the final line below:\n"
     f"{LITERESEARCHER_CONTINUATION_READ_ACTION}"
@@ -124,18 +144,18 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 "value": (
                     "You are a deep-research agent answering one continuous question. "
                     "Your empty private workspace persists for the episode. Search and "
-                    "Visit are the only <tool_call> actions; use exactly one action per "
-                    "turn. Literal forms: <tool_call>{\"name\":\"search\","
+                    "Visit, and shell_command all use one <tool_call> JSON envelope; "
+                    "use exactly one action per turn. Literal forms: "
+                    "<tool_call>{\"name\":\"search\","
                     "\"arguments\":{\"query\":[\"climate policy\"]}}</tool_call> "
                     "or <tool_call>{\"name\":\"visit\",\"arguments\":{"
                     "\"url\":\"https://literesearcher.local/page/00001\","
                     "\"goal\":\"extract evidence\",\"page\":1}}</tool_call>. "
                     "Keep both closing braces. A Visit returns one bounded page; follow "
-                    "next_page with the same URL and goal when needed. Workspace actions "
-                    "use raw Codex syntax; never wrap them in <tool_call>. A workspace "
-                    "turn is exactly "
-                    "one shell_command or multiline apply_patch, with no prose, Markdown "
-                    "fence, or research tool. "
+                    "next_page with the same URL and goal when needed. A workspace "
+                    "turn uses name shell_command and the arguments object "
+                    "{command, workdir, timeout_ms} inside that same envelope, with no "
+                    "prose, Markdown fence, or second tool. "
                     f"{LITERESEARCHER_RESEARCH_NOTE_PATH} is optional. Write or refresh "
                     "it only when evidence with source URLs, failed attempts, or a plan "
                     "must survive several later actions or a future context checkpoint. "
@@ -189,6 +209,21 @@ class LiteResearcherEnvClient(BaseEnvClient):
             raise RuntimeError("LiteResearcher endpoint reports the wrong compaction contract")
         if metadata.get("continuation_checkpoint_receipt_schema") != _RECEIPT_SCHEMA:
             raise RuntimeError("LiteResearcher endpoint reports the wrong checkpoint receipt schema")
+        if (
+            metadata.get("workspace_action_envelope_contract")
+            != LITERESEARCHER_WORKSPACE_ACTION_ENVELOPE_CONTRACT
+        ):
+            raise RuntimeError(
+                "LiteResearcher endpoint reports the wrong workspace action envelope"
+            )
+        if metadata.get("workspace_action_envelope_tools") != ["shell_command"]:
+            raise RuntimeError(
+                "LiteResearcher endpoint reports the wrong enveloped workspace tools"
+            )
+        if metadata.get("raw_workspace_action_compatibility") is not True:
+            raise RuntimeError(
+                "LiteResearcher endpoint removed raw workspace action compatibility"
+            )
         workspace_memory_reward = metadata.get("workspace_memory_reward")
         if (
             isinstance(workspace_memory_reward, bool)
@@ -474,11 +509,11 @@ class LiteResearcherEnvClient(BaseEnvClient):
             )
             state = (
                 "Continuation checkpoint was not accepted (workspace action required). "
-                "Use exactly one raw shell_command action, beginning with "
-                "shell_command and ending after its JSON object, to overwrite "
+                "Use exactly one <tool_call> JSON envelope whose name is "
+                "shell_command to overwrite "
                 f"{LITERESEARCHER_CONTINUATION_PATH}; keep mkdir -p .agent_memory && "
                 "and add no search, visit, answer, Markdown backtick, code fence, "
-                "tool-call tag, or standalone prose. "
+                "raw shell_command, or standalone prose. "
             )
             if done:
                 state += (
@@ -631,12 +666,12 @@ class LiteResearcherEnvClient(BaseEnvClient):
             )
             state = (
                 "Continuation checkpoint was not accepted "
-                f"({rejection_reason}). Use exactly one raw shell_command action, "
-                "beginning with shell_command and ending after its JSON object, to "
+                f"({rejection_reason}). Use exactly one <tool_call> JSON envelope "
+                "whose name is shell_command to "
                 f"overwrite {LITERESEARCHER_CONTINUATION_PATH} with "
                 f"1-{LITERESEARCHER_CONTINUATION_MAX_BYTES} bytes; keep "
-                "mkdir -p .agent_memory && and add no Markdown backtick or tool-call "
-                "tag. "
+                "mkdir -p .agent_memory && and add no raw shell_command, Markdown "
+                "backtick, or standalone prose. "
             )
             if done:
                 event = "forced_checkpoint_retry_budget_exhausted"
@@ -782,12 +817,30 @@ def _is_workspace_action_candidate(value: Any) -> bool:
     if value.startswith("shell_command") or value.startswith("apply_patch\n"):
         return True
     match = _WORKSPACE_ACTION_MARKER_RE.search(value)
-    if match is None:
+    if match is not None:
+        prefix = value[: match.start(1)]
+        return (
+            "```" not in prefix
+            and len(prefix) <= _MAX_WORKSPACE_REASONING_PREFIX_CHARS
+        )
+    envelope = re.fullmatch(
+        r"\s*<tool_call>\s*(.*?)\s*</tool_call>\s*",
+        value,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if envelope is None:
         return False
-    prefix = value[: match.start(1)]
+    try:
+        payload = json.loads(envelope.group(1))
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, Mapping) or set(payload) != {"name", "arguments"}:
+        return False
+    arguments = payload.get("arguments")
     return (
-        "```" not in prefix
-        and len(prefix) <= _MAX_WORKSPACE_REASONING_PREFIX_CHARS
+        payload.get("name") == "shell_command"
+        and isinstance(arguments, Mapping)
+        and isinstance(arguments.get("command"), str)
     )
 
 

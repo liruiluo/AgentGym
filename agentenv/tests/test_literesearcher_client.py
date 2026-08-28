@@ -41,6 +41,20 @@ class LiteResearcherClientTests(unittest.TestCase):
         ]
         return client
 
+    @staticmethod
+    def _workspace_envelope_arguments(action: str) -> dict:
+        prefix = "<tool_call>"
+        suffix = "</tool_call>"
+        if not action.startswith(prefix) or not action.endswith(suffix):
+            raise AssertionError("workspace action is not one complete tool_call")
+        payload = json.loads(action[len(prefix) : -len(suffix)])
+        if payload.get("name") != "shell_command":
+            raise AssertionError("workspace envelope is not shell_command")
+        arguments = payload.get("arguments")
+        if not isinstance(arguments, dict):
+            raise AssertionError("workspace envelope arguments must be an object")
+        return arguments
+
     def test_policy_framing_exposes_normalized_conversation_start(self) -> None:
         framing = self._client().policy_framing()
         self.assertEqual(
@@ -58,7 +72,9 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn(f"{LITERESEARCHER_RESEARCH_NOTE_PATH} is optional", prompt)
         self.assertIn("Do not write it after every useful Visit", prompt)
         self.assertIn("answer directly instead of staging", prompt)
-        self.assertIn("never wrap them in <tool_call>", prompt)
+        self.assertIn("all use one <tool_call> JSON envelope", prompt)
+        self.assertIn("uses name shell_command", prompt)
+        self.assertNotIn("use raw Codex syntax", prompt)
         self.assertIn("create or replace the note", prompt)
         self.assertIn("distinct from the optional research note", prompt)
         self.assertIn("At an explicit context-checkpoint request", prompt)
@@ -67,10 +83,8 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertNotIn("After the first useful Visit", prompt)
 
     def test_research_note_write_example_is_parseable_and_idempotent(self) -> None:
-        prefix = "shell_command "
-        self.assertTrue(LITERESEARCHER_RESEARCH_NOTE_WRITE_EXAMPLE.startswith(prefix))
-        payload = json.loads(
-            LITERESEARCHER_RESEARCH_NOTE_WRITE_EXAMPLE[len(prefix):]
+        payload = self._workspace_envelope_arguments(
+            LITERESEARCHER_RESEARCH_NOTE_WRITE_EXAMPLE
         )
         with tempfile.TemporaryDirectory() as td:
             note = Path(td) / LITERESEARCHER_RESEARCH_NOTE_PATH
@@ -99,8 +113,8 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn("overwrite", request.lower())
         self.assertIn("write-only phase", request)
         self.assertIn("mkdir -p .agent_memory &&", request)
-        self.assertIn("Do not add Markdown backticks", request)
-        self.assertIn("a <tool_call> tag", request)
+        self.assertIn("one complete <tool_call> JSON envelope", request)
+        self.assertIn("Do not emit raw shell_command syntax", request)
         self.assertIn("cat > .agent_memory/CONTINUATION.md <<'AMG_CHECKPOINT'", request)
         self.assertIn("8192", request)
         self.assertNotIn("`", request)
@@ -115,10 +129,8 @@ class LiteResearcherClientTests(unittest.TestCase):
         )
 
     def test_compaction_example_is_json_parseable_and_shell_executable(self) -> None:
-        prefix = "shell_command "
-        self.assertTrue(LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE.startswith(prefix))
-        payload = json.loads(
-            LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE[len(prefix):]
+        payload = self._workspace_envelope_arguments(
+            LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE
         )
         with tempfile.TemporaryDirectory() as td:
             result = subprocess.run(
@@ -134,9 +146,8 @@ class LiteResearcherClientTests(unittest.TestCase):
             self.assertGreater(checkpoint.stat().st_size, 0)
         self.assertEqual(payload["workdir"], ".")
         self.assertEqual(payload["timeout_ms"], 10_000)
-        self.assertTrue(LITERESEARCHER_CONTINUATION_READ_ACTION.startswith(prefix))
-        read_payload = json.loads(
-            LITERESEARCHER_CONTINUATION_READ_ACTION[len(prefix):]
+        read_payload = self._workspace_envelope_arguments(
+            LITERESEARCHER_CONTINUATION_READ_ACTION
         )
         self.assertEqual(
             read_payload,
@@ -222,8 +233,10 @@ class LiteResearcherClientTests(unittest.TestCase):
         client._request = Mock(return_value=self._checkpoint_response(valid=True))
         client._checkpoint_retry_reason = "previous_rejection"
         raw_action = (
-            'shell_command {"command":"printf secret-evidence > '
-            '.agent_memory/CONTINUATION.md","workdir":"."}'
+            '<tool_call>{"name":"shell_command","arguments":'
+            '{"command":"printf secret-evidence > '
+            '.agent_memory/CONTINUATION.md","workdir":".","timeout_ms":10000}}'
+            '</tool_call>'
         )
 
         output = client.step(raw_action)
@@ -885,6 +898,11 @@ class LiteResearcherInvalidActionRewardTests(unittest.TestCase):
             "continuation_checkpoint_receipt_schema": (
                 "agentmemory_continuation_checkpoint_v2"
             ),
+            "workspace_action_envelope_contract": (
+                "literesearcher_tool_call_workspace_v1"
+            ),
+            "workspace_action_envelope_tools": ["shell_command"],
+            "raw_workspace_action_compatibility": True,
             "workspace_memory_reward": 0.0,
             "compaction_calls_endpoint_step": True,
             "compaction_calls_research_backend": False,
@@ -917,6 +935,11 @@ class LiteResearcherInvalidActionRewardTests(unittest.TestCase):
             "continuation_checkpoint_receipt_schema": (
                 "agentmemory_continuation_checkpoint_v2"
             ),
+            "workspace_action_envelope_contract": (
+                "literesearcher_tool_call_workspace_v1"
+            ),
+            "workspace_action_envelope_tools": ["shell_command"],
+            "raw_workspace_action_compatibility": True,
             "workspace_memory_reward": 0.0,
             "compaction_calls_endpoint_step": True,
             "compaction_calls_research_backend": False,
@@ -930,6 +953,21 @@ class LiteResearcherInvalidActionRewardTests(unittest.TestCase):
                 "continuation_checkpoint_receipt_schema",
                 "agentmemory_continuation_checkpoint_v1",
                 "receipt schema",
+            ),
+            (
+                "workspace_action_envelope_contract",
+                "literesearcher_raw_workspace_v0",
+                "workspace action envelope",
+            ),
+            (
+                "workspace_action_envelope_tools",
+                ["search"],
+                "enveloped workspace tools",
+            ),
+            (
+                "raw_workspace_action_compatibility",
+                False,
+                "removed raw workspace action compatibility",
             ),
             ("workspace_memory_reward", 0.01, "changes workspace memory reward"),
             ("workspace_memory_reward", False, "changes workspace memory reward"),
