@@ -995,7 +995,7 @@ def _is_workspace_action_candidate(value: Any) -> bool:
     if match is not None:
         prefix = value[: match.start(1)]
         return (
-            "```" not in prefix
+            _MARKDOWN_CODE_FENCE_RE.search(prefix) is None
             and len(prefix) <= _MAX_WORKSPACE_REASONING_PREFIX_CHARS
         )
     parsed = _parse_qwen35_tool_call(value)

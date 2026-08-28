@@ -174,11 +174,17 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertTrue(_is_workspace_action_candidate(prefix + action))
         self.assertIsNone(_parse_qwen35_tool_call(action + " trailing prose"))
         self.assertFalse(_is_workspace_action_candidate(action + " trailing prose"))
+        raw_workspace_action = 'shell_command {"command":"pwd"}'
         for fenced_prefix in ("```analysis```\n", "~~~xml\n"):
             with self.subTest(fenced_prefix=fenced_prefix):
                 self.assertIsNone(_parse_qwen35_tool_call(fenced_prefix + action))
                 self.assertFalse(
                     _is_workspace_action_candidate(fenced_prefix + action)
+                )
+                self.assertFalse(
+                    _is_workspace_action_candidate(
+                        fenced_prefix + raw_workspace_action
+                    )
                 )
         self.assertIsNone(_parse_qwen35_tool_call(("x" * 2049) + action))
 
