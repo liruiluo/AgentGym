@@ -159,10 +159,18 @@ class HiddenGraderTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def test_f2p_failure_stops_before_p2p_and_restores_hidden_test(self) -> None:
+    def test_one_full_run_reports_f2p_failure_and_restores_hidden_test(self) -> None:
         sandbox = FakeSandbox(
             self.policy,
-            [{"stdout": "tests/test_fix.py::test_fix FAILED\n"}],
+            [
+                {
+                    "stdout": (
+                        "tests/test_fix.py::test_fix FAILED\n"
+                        "tests/test_keep.py::test_keep PASSED\n"
+                    ),
+                    "exit_code": 1,
+                }
+            ],
         )
         result = self.grader.grade(
             instance=self.instance,
@@ -172,24 +180,24 @@ class HiddenGraderTests(unittest.TestCase):
         )
         self.assertEqual(result.reward, 0.0)
         self.assertEqual(result.resolution_status, "PARTIAL")
-        self.assertIsNone(result.full_run)
+        self.assertIsNone(result.f2p_run)
+        self.assertIsNotNone(result.full_run)
+        self.assertEqual(result.full_run.role, "P2P/full")
         self.assertEqual(sandbox.refresh_count, 1)
         self.assertEqual(sandbox.test_contents, [self.pristine])
+        self.assertEqual(sandbox.outputs, [])
 
-    def test_full_reward_requires_healthy_f2p_and_full_runs(self) -> None:
+    def test_full_reward_requires_one_healthy_official_full_run(self) -> None:
         sandbox = FakeSandbox(
             self.policy,
             [
                 {
-                    "stdout": "tests/test_fix.py::test_fix PASSED\n",
-                    "mutate_test": True,
-                },
-                {
                     "stdout": (
                         "tests/test_fix.py::test_fix PASSED\n"
                         "tests/test_keep.py::test_keep PASSED\n"
-                    )
-                },
+                    ),
+                    "mutate_test": True,
+                }
             ],
         )
         result = self.grader.grade(
@@ -200,16 +208,16 @@ class HiddenGraderTests(unittest.TestCase):
         )
         self.assertEqual(result.reward, 1.0)
         self.assertTrue(result.resolved)
-        self.assertEqual(sandbox.refresh_count, 2)
-        self.assertEqual(sandbox.test_contents, [self.pristine, self.pristine])
-        self.assertEqual(
-            result.restored_test_paths,
-            ("tests/test_fix.py", "tests/test_fix.py"),
-        )
+        self.assertIsNone(result.f2p_run)
+        self.assertEqual(result.full_run.command, self.profile.full_command)
+        self.assertEqual(sandbox.refresh_count, 1)
+        self.assertEqual(sandbox.test_contents, [self.pristine])
+        self.assertEqual(result.restored_test_paths, ("tests/test_fix.py",))
         self.assertEqual(
             sandbox.output_limits,
-            [(4 * 1024 * 1024, 4 * 1024 * 1024)] * 2,
+            [(4 * 1024 * 1024, 4 * 1024 * 1024)],
         )
+        self.assertEqual(sandbox.outputs, [])
 
     def test_unrelated_failures_do_not_override_declared_test_statuses(self) -> None:
         sandbox = FakeSandbox(
@@ -219,17 +227,10 @@ class HiddenGraderTests(unittest.TestCase):
                     "stdout": (
                         "tests/test_unrelated.py::test_other FAILED\n"
                         "tests/test_fix.py::test_fix PASSED\n"
-                    ),
-                    "exit_code": 1,
-                },
-                {
-                    "stdout": (
-                        "tests/test_unrelated.py::test_other FAILED\n"
-                        "tests/test_fix.py::test_fix PASSED\n"
                         "tests/test_keep.py::test_keep PASSED\n"
                     ),
                     "exit_code": 1,
-                },
+                }
             ],
         )
         result = self.grader.grade(
@@ -240,8 +241,9 @@ class HiddenGraderTests(unittest.TestCase):
         )
         self.assertEqual(result.reward, 1.0)
         self.assertEqual(result.resolution_status, "FULL")
-        self.assertEqual(result.f2p_run.status_source, "profile_log_parser")
+        self.assertIsNone(result.f2p_run)
         self.assertEqual(result.full_run.status_source, "profile_log_parser")
+        self.assertEqual(sandbox.outputs, [])
 
     def test_truncated_exit_zero_uses_declared_test_receipt(self) -> None:
         sandbox = FakeSandbox(
@@ -250,11 +252,7 @@ class HiddenGraderTests(unittest.TestCase):
                 {
                     "stdout": "pytest output omitted\n",
                     "stdout_truncated": True,
-                },
-                {
-                    "stdout": "pytest output omitted\n",
-                    "stdout_truncated": True,
-                },
+                }
             ],
         )
         result = self.grader.grade(
@@ -264,12 +262,8 @@ class HiddenGraderTests(unittest.TestCase):
             sandbox=sandbox,
         )
         self.assertEqual(result.reward, 1.0)
-        self.assertEqual(result.f2p_run.status_source, "exit_zero_declared_tests")
+        self.assertIsNone(result.f2p_run)
         self.assertEqual(result.full_run.status_source, "exit_zero_declared_tests")
-        self.assertEqual(
-            result.f2p_run.status_map,
-            {"tests/test_fix.py::test_fix": "PASSED"},
-        )
         self.assertEqual(
             result.full_run.status_map,
             {
@@ -277,6 +271,7 @@ class HiddenGraderTests(unittest.TestCase):
                 "tests/test_keep.py::test_keep": "PASSED",
             },
         )
+        self.assertEqual(sandbox.outputs, [])
 
     def test_incomplete_full_run_fails_closed(self) -> None:
         for override in (
@@ -294,13 +289,7 @@ class HiddenGraderTests(unittest.TestCase):
                     ),
                     **override,
                 }
-                sandbox = FakeSandbox(
-                    self.policy,
-                    [
-                        {"stdout": "tests/test_fix.py::test_fix PASSED\n"},
-                        full,
-                    ],
-                )
+                sandbox = FakeSandbox(self.policy, [full])
                 result = self.grader.grade(
                     instance=self.instance,
                     profile=self.profile,
@@ -308,19 +297,49 @@ class HiddenGraderTests(unittest.TestCase):
                     sandbox=sandbox,
                 )
                 self.assertEqual(result.reward, 0.0)
+                self.assertIsNone(result.f2p_run)
+                self.assertIsNotNone(result.full_run)
+                self.assertEqual(sandbox.outputs, [])
 
-    def test_grader_uses_separate_trusted_timeout_above_policy_cap(self) -> None:
+    def test_observed_slow_sqlfluff_grade_fits_client_budget_as_one_phase(self) -> None:
+        # The crashed formal case took 515,746 ms for the official full command.
+        # The removed F2P pre-pass took another 515,550 ms and pushed the same
+        # terminal /step beyond the client's 900 second request timeout.
+        sandbox = FakeSandbox(
+            self.policy,
+            [
+                {
+                    "stdout": (
+                        "tests/test_fix.py::test_fix PASSED\n"
+                        "tests/test_keep.py::test_keep PASSED\n"
+                    ),
+                    "elapsed_ms": 515_746,
+                }
+            ],
+        )
+        result = self.grader.grade(
+            instance=self.instance,
+            profile=self.profile,
+            workspace=self.workspace,
+            sandbox=sandbox,
+        )
+        self.assertEqual(result.reward, 1.0)
+        self.assertIsNone(result.f2p_run)
+        self.assertEqual(result.full_run.elapsed_ms, 515_746)
+        self.assertLess(result.full_run.elapsed_ms, 900_000)
+        self.assertEqual(sandbox.outputs, [])
+
+    def test_grader_uses_one_trusted_full_run_above_policy_cap(self) -> None:
         grader = SwesmithHiddenGrader(timeout_ms=600_000)
         sandbox = PolicyCappedFakeSandbox(
             self.policy,
             [
-                {"stdout": "tests/test_fix.py::test_fix PASSED\n"},
                 {
                     "stdout": (
                         "tests/test_fix.py::test_fix PASSED\n"
                         "tests/test_keep.py::test_keep PASSED\n"
                     )
-                },
+                }
             ],
         )
         result = grader.grade(
@@ -332,7 +351,8 @@ class HiddenGraderTests(unittest.TestCase):
         self.assertEqual(result.reward, 1.0)
         self.assertIsNone(result.error)
         self.assertEqual(sandbox.policy_timeouts, [])
-        self.assertEqual(sandbox.trusted_timeouts, [600_000, 600_000])
+        self.assertEqual(sandbox.trusted_timeouts, [600_000])
+        self.assertEqual(sandbox.outputs, [])
 
 
 if __name__ == "__main__":

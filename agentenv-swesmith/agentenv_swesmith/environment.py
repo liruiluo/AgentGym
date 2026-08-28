@@ -500,7 +500,7 @@ class SwesmithEpisodeManager:
             "reward_contract": REWARD_CONTRACT,
             "context_contract": "one_native_issue_continuous_episode_v1",
             "memory_contract": (
-                "policy_filesystem_checkpoint_then_client_replace_v2"
+                "policy_filesystem_checkpoint_then_client_replace_v3"
             ),
             "submission_contract": SUBMISSION_CONTRACT,
             "horizon_contract": HORIZON_CONTRACT,
@@ -522,6 +522,9 @@ class SwesmithEpisodeManager:
             ],
             "valid_shell_nonzero_exit_is_terminal": False,
             "grader_infrastructure_failure": "sample_excluded",
+            "grader_execution_contract": "single_full_official_command_v1",
+            "grader_phase_count": 1,
+            "grader_timeout_ms": self.grader.timeout_ms,
             "active_slot_count": slot_count,
             "active_environment_count": active_count,
             "active_workspace_count": active_count,

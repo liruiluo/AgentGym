@@ -148,6 +148,8 @@ class Resolver:
 
 
 class Grader:
+    timeout_ms = 10_000
+
     def __init__(self) -> None:
         self.calls = 0
 
@@ -165,6 +167,8 @@ class Grader:
 
 
 class InfrastructureFailingGrader:
+    timeout_ms = 10_000
+
     def __init__(self) -> None:
         self.calls = 0
 
@@ -301,7 +305,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.manager.metadata()["max_observation_bytes"], 6144)
         self.assertEqual(
             self.manager.metadata()["memory_contract"],
-            "policy_filesystem_checkpoint_then_client_replace_v2",
+            "policy_filesystem_checkpoint_then_client_replace_v3",
         )
         self.assertEqual(self.manager.metadata()["training_max_policy_turns"], 75)
         self.assertEqual(
@@ -365,6 +369,12 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             self.manager.metadata()["grader_infrastructure_failure"],
             "sample_excluded",
         )
+        self.assertEqual(
+            self.manager.metadata()["grader_execution_contract"],
+            "single_full_official_command_v1",
+        )
+        self.assertEqual(self.manager.metadata()["grader_phase_count"], 1)
+        self.assertEqual(self.manager.metadata()["grader_timeout_ms"], 10_000)
         self.assertNotIn("SECRET_GOLD_PATCH", reset.observation)
         self.assertNotIn(self.instance_id, reset.observation)
 
@@ -480,7 +490,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.manager.reset(slot, 0)
         checkpoint = self.manager.step(
             slot,
-            'shell_command {"command":"mkdir -p .agent_memory && printf state > '
+            'shell_command {"command":"printf checkpoint > 
             '.agent_memory/CONTINUATION.md","workdir":"."}',
         )
         self.assertFalse(checkpoint.done)

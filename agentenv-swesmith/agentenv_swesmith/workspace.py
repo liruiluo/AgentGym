@@ -96,6 +96,12 @@ class SwesmithWorkspaceMaterializer:
             _export_git_tree(mirror_root, bug_commit, policy_root)
             if (policy_root / ".git").exists() or (policy_root / ".git").is_symlink():
                 raise SwesmithWorkspaceError("policy workspace unexpectedly contains .git")
+            checkpoint_parent = policy_root / ".agent_memory"
+            if checkpoint_parent.exists() or checkpoint_parent.is_symlink():
+                raise SwesmithWorkspaceError(
+                    "policy workspace collides with reserved .agent_memory path"
+                )
+            checkpoint_parent.mkdir(mode=0o700)
             normalized_test_paths = _normalize_test_paths(test_paths)
             hidden_tests = _capture_hidden_tests(
                 mirror_root,
