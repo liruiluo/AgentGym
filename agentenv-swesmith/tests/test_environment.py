@@ -490,7 +490,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.manager.reset(slot, 0)
         checkpoint = self.manager.step(
             slot,
-            'shell_command {"command":"printf checkpoint > 
+            'shell_command {"command":"printf checkpoint > '
             '.agent_memory/CONTINUATION.md","workdir":"."}',
         )
         self.assertFalse(checkpoint.done)

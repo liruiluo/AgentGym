@@ -61,7 +61,7 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
     def test_contract_has_a_distinct_joint_memory_identity(self) -> None:
         self.assertEqual(
             self.memory_contract,
-            "policy_filesystem_checkpoint_then_client_replace_v2",
+            "policy_filesystem_checkpoint_then_client_replace_v3",
         )
 
     def test_prompt_exposes_optional_durable_debugging_notes(self) -> None:
@@ -121,6 +121,7 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
             "at most 8192 bytes",
             "executed normally and consumes one policy-action step",
             "removed only after the environment verifies this exact file write",
+            "reserved `.agent_memory` parent directory already exists",
             "not a replacement for task artifacts or longer-lived evidence notes",
         ):
             self.assertIn(fragment, self.compaction)

@@ -37,6 +37,9 @@ from .filesystem_checkpoint import (
 
 SWE_CONTEXT_COMPACTION_REQUEST = (
     FILESYSTEM_CHECKPOINT_REQUEST
+    + " The reserved `.agent_memory` parent directory already exists; write "
+    "the fixed file directly without creating, removing, or replacing that "
+    "directory."
     + " For this coding task, preserve the issue objective, decisive inspection "
     "and test evidence, changed source paths, unresolved failure, and the next "
     "concrete edit or test."
@@ -46,7 +49,7 @@ SWE_POLICY_CONTINUATION_MARKER = FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER
 
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
 ACTION_PROGRESS_SCHEMA = "swesmith_action_progress_v1"
-SWE_MEMORY_CONTRACT = "policy_filesystem_checkpoint_then_client_replace_v2"
+SWE_MEMORY_CONTRACT = "policy_filesystem_checkpoint_then_client_replace_v3"
 _POSITIVE_ACTOR_CREDIT_BASES = {
     "shell_executed",
     "workspace_changed",
@@ -185,8 +188,8 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "Illustrative pattern only (do not copy its content as a task answer): one turn may "
     "append a concise entry to a relative debugging file, a later turn may search or "
     "read that file, and a subsequent patch may use the recovered evidence. For example, "
-    "a first action could be `shell_command {\"command\":\"mkdir -p .agent_memory && "
-    "printf '%s\\n' 'hypothesis: parser state is stale' 'evidence: test output ...' "
+    "a first action could be `shell_command {\"command\":\"printf '%s\\n' "
+    "'hypothesis: parser state is stale' 'evidence: test output ...' "
     ">> .agent_memory/debugging.md\",\"workdir\":\".\"}`, followed in a later "
     "action by `shell_command {\"command\":\"rg -n 'hypothesis|evidence|next check' "
     ".agent_memory\",\"workdir\":\".\"}`. This is only a syntax illustration: "
