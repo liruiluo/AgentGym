@@ -139,11 +139,17 @@ class BoundedCheckpointRetryTests(unittest.TestCase):
         ):
             complete_policy_turn(client, prepared, "ordinary action")
 
-    def test_swesmith_retries_failed_write_without_growing_policy_context(self) -> None:
+    def test_swesmith_failed_write_preserves_feedback_for_bounded_retry(self) -> None:
         client = object.__new__(SwesmithEnvClient)
         client.env_id = 202
         client._selected_policy_control = "context_compaction"
         client._checkpoint_retry_pending = False
+        client._checkpoint_attempt_count = 0
+        client._checkpoint_retry_exhausted = False
+        client._policy_step_count = 0
+        client._native_call_count = 0
+        client._session_epoch = 0
+        client.metadata = {"configured_max_policy_turns": 30, "max_steps": 30}
         client._context_epoch = 0
         client._immutable_policy_context = [
             {"role": "system", "content": "system"},
@@ -189,9 +195,11 @@ class BoundedCheckpointRetryTests(unittest.TestCase):
 
         self.assertEqual(
             output.info["context_transition"]["operation"],
-            CONTEXT_OPERATION_RETRY_CONTROL,
+            "append_observation",
         )
         self.assertTrue(output.info["wrapper_evidence"]["retry_pending"])
+        self.assertTrue(output.info["wrapper_evidence"]["retry_feedback_preserved"])
+        self.assertFalse(output.info["wrapper_evidence"]["retry_context_restored"])
         self.assertFalse(output.info["wrapper_evidence"]["context_replaced"])
         self.assertEqual(client._context_epoch, 0)
 
@@ -200,6 +208,12 @@ class BoundedCheckpointRetryTests(unittest.TestCase):
         client.env_id = 202
         client._selected_policy_control = "context_compaction"
         client._checkpoint_retry_pending = True
+        client._checkpoint_attempt_count = 1
+        client._checkpoint_retry_exhausted = False
+        client._policy_step_count = 1
+        client._native_call_count = 1
+        client._session_epoch = 0
+        client.metadata = {"configured_max_policy_turns": 30, "max_steps": 30}
         client._context_epoch = 0
         client._zero_progress_shell_receipts = set()
         client._immutable_policy_context = [

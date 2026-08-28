@@ -51,7 +51,7 @@ def _maximum_policy_turn_growth(pressure: Any) -> int:
 
 
 def checkpoint_retry_trigger_tokens(pressure: Any) -> int:
-    """Legacy projection that reserves room for a growing failed retry."""
+    """Reserve room for a feedback-preserving checkpoint retry."""
 
     return (
         int(pressure.action_prompt_tokens)
