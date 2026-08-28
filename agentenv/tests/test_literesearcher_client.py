@@ -12,8 +12,10 @@ import requests
 from agentenv.controller import complete_policy_turn, prepare_policy_turn
 from agentenv.controller.types import PolicyContextPressure
 from agentenv.envs.literesearcher import (
+    LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE,
     LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
     LITERESEARCHER_CONTINUATION_PATH,
+    LITERESEARCHER_CONTINUATION_READ_ACTION,
     LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
     LITERESEARCHER_POLICY_CONTINUATION_MARKER,
     LiteResearcherEnvClient,
@@ -71,26 +73,33 @@ class LiteResearcherClientTests(unittest.TestCase):
 
 
     def test_compaction_request_requires_one_real_bounded_workspace_write(self) -> None:
-        self.assertIn("CHECKPOINT WRITE PHASE", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
-        self.assertIn("shell_command", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
-        self.assertIn(
-            LITERESEARCHER_CONTINUATION_PATH,
-            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
-        )
-        self.assertIn("overwrite", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST.lower())
-        self.assertIn("Do not read", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
-        self.assertIn("Do not wrap shell_command in <tool_call>", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
-        self.assertIn("cat > .agent_memory/CONTINUATION.md <<'AMG_CHECKPOINT'", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
-        self.assertIn("8192", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
-        self.assertNotIn("will not call", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
+        request = LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
+        self.assertIn("CHECKPOINT WRITE PHASE", request)
+        self.assertIn(LITERESEARCHER_CONTINUATION_PATH, request)
+        self.assertIn("overwrite", request.lower())
+        self.assertIn("write-only phase", request)
+        self.assertIn("mkdir -p .agent_memory &&", request)
+        self.assertIn("Do not add Markdown backticks", request)
+        self.assertIn("a <tool_call> tag", request)
+        self.assertIn("cat > .agent_memory/CONTINUATION.md <<'AMG_CHECKPOINT'", request)
+        self.assertIn("8192", request)
+        self.assertNotIn("`", request)
+        self.assertNotIn("will not call", request)
+        self.assertTrue(request.endswith(LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE))
         self.assertIn("CHECKPOINT READ PHASE", LITERESEARCHER_POLICY_CONTINUATION_MARKER)
+        self.assertNotIn("`", LITERESEARCHER_POLICY_CONTINUATION_MARKER)
+        self.assertTrue(
+            LITERESEARCHER_POLICY_CONTINUATION_MARKER.endswith(
+                LITERESEARCHER_CONTINUATION_READ_ACTION
+            )
+        )
 
     def test_compaction_example_is_json_parseable_and_shell_executable(self) -> None:
         prefix = "shell_command "
-        start = LITERESEARCHER_CONTEXT_COMPACTION_REQUEST.index(prefix)
-        payload_text = LITERESEARCHER_CONTEXT_COMPACTION_REQUEST[start + len(prefix):]
-        payload_text = payload_text.split("`. This", 1)[0].rstrip("`")
-        payload = json.loads(payload_text)
+        self.assertTrue(LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE.startswith(prefix))
+        payload = json.loads(
+            LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE[len(prefix):]
+        )
         with tempfile.TemporaryDirectory() as td:
             result = subprocess.run(
                 ["bash", "-lc", payload["command"]],
@@ -105,10 +114,10 @@ class LiteResearcherClientTests(unittest.TestCase):
             self.assertGreater(checkpoint.stat().st_size, 0)
         self.assertEqual(payload["workdir"], ".")
         self.assertEqual(payload["timeout_ms"], 10_000)
-        read_payload_text = LITERESEARCHER_POLICY_CONTINUATION_MARKER.split(
-            "`shell_command ", 1
-        )[1].split("`. Continue", 1)[0]
-        read_payload = json.loads(read_payload_text)
+        self.assertTrue(LITERESEARCHER_CONTINUATION_READ_ACTION.startswith(prefix))
+        read_payload = json.loads(
+            LITERESEARCHER_CONTINUATION_READ_ACTION[len(prefix):]
+        )
         self.assertEqual(
             read_payload,
             {
@@ -117,6 +126,14 @@ class LiteResearcherClientTests(unittest.TestCase):
                 "timeout_ms": 10_000,
             },
         )
+
+    def test_checkpoint_retry_keeps_unquoted_example_as_final_text(self) -> None:
+        client = self._bound_client()
+        client._checkpoint_retry_reason = "missing_receipt"
+        retry = client.policy_turn_candidate()
+        self.assertIsNotNone(retry)
+        self.assertNotIn("`", retry)
+        self.assertTrue(retry.endswith(LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE))
 
     @staticmethod
     def _bound_client(*, selected: bool = True) -> LiteResearcherEnvClient:

@@ -51,31 +51,41 @@ LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE = (
 
 LITERESEARCHER_CONTEXT_COMPACTION_REQUEST = (
     "CHECKPOINT WRITE PHASE (before context reset). The research conversation "
-    "is nearing its context limit. Emit exactly one normal executable workspace "
+    "is nearing its context limit. Emit exactly one normal executable shell_command "
     "action that overwrites "
-    f"`{LITERESEARCHER_CONTINUATION_PATH}` with a concise continuation "
-    "checkpoint. Use the canonical workspace-action syntax shown below; emit no "
-    "research tool, answer, code fence, or prose outside the action. The resulting "
-    f"file must be nonempty and at most {LITERESEARCHER_CONTINUATION_MAX_BYTES} "
-    "bytes. Preserve the unresolved question, evidence with exact source URLs, "
-    "failed attempts, other useful file paths, and the next action. Example: `"
-    f"{LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE}`. This is a write-only phase. "
-    f"Do not read `{LITERESEARCHER_CONTINUATION_PATH}` or "
-    "`.agent_memory/research.md`; do not Search, Visit, or answer. Do not wrap "
-    "shell_command in <tool_call>."
+    f"{LITERESEARCHER_CONTINUATION_PATH} with a concise continuation checkpoint. "
+    "The resulting file must be nonempty and at most "
+    f"{LITERESEARCHER_CONTINUATION_MAX_BYTES} bytes. Preserve the unresolved "
+    "question, evidence with exact source URLs, failed attempts, other useful file "
+    "paths, and the next action. Keep the mkdir -p .agent_memory && prefix so the "
+    "write also works in an otherwise empty workspace. This is a write-only phase. "
+    f"Do not read {LITERESEARCHER_CONTINUATION_PATH} or .agent_memory/research.md; "
+    "do not Search, Visit, or answer. Your response must start with shell_command "
+    "and end immediately after the final JSON closing brace. Do not add Markdown "
+    "backticks, a code fence, a <tool_call> tag, or prose. Copy the complete "
+    "executable action below, replacing only the checkpoint field values:\n"
+    f"{LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE}"
+)
+
+
+LITERESEARCHER_CONTINUATION_READ_ACTION = (
+    f'shell_command {{"command":"cat {LITERESEARCHER_CONTINUATION_PATH}",'
+    '"workdir":".","timeout_ms":10000}'
 )
 
 
 LITERESEARCHER_POLICY_CONTINUATION_MARKER = (
     "CHECKPOINT READ PHASE (after context reset). The earlier interaction was "
     "removed after a verified policy-authored checkpoint was written to "
-    f"`{LITERESEARCHER_CONTINUATION_PATH}`. Before any search, visit, or answer, "
-    "read it with exactly this normal action: "
-    f'`shell_command {{"command":"cat {LITERESEARCHER_CONTINUATION_PATH}",'
-    '"workdir":".","timeout_ms":10000}`. Continue from the file output; do not '
-    'reconstruct omitted '
-    "history from this marker."
+    f"{LITERESEARCHER_CONTINUATION_PATH}. Before any search, visit, or answer, "
+    "read it with one normal raw shell_command action. Your response must start "
+    "with shell_command and end immediately after the final JSON closing brace. "
+    "Do not add Markdown backticks, a code fence, a <tool_call> tag, or prose. "
+    "Continue from the file output instead of reconstructing omitted history. "
+    "The complete executable action is the final line below:\n"
+    f"{LITERESEARCHER_CONTINUATION_READ_ACTION}"
 )
+
 
 
 def _checkpoint_write_retry_request(rejection_reason: str) -> str:
@@ -83,7 +93,7 @@ def _checkpoint_write_retry_request(rejection_reason: str) -> str:
         rejection_reason = "checkpoint_rejected"
     return (
         "CHECKPOINT WRITE RETRY (before context reset). The previous checkpoint "
-        f"action was rejected with reason `{rejection_reason}`. Correct that "
+        f"action was rejected with reason {rejection_reason}. Correct that "
         "specific error; the rejected action itself was removed. "
         f"{LITERESEARCHER_CONTEXT_COMPACTION_REQUEST}"
     )
@@ -449,9 +459,11 @@ class LiteResearcherEnvClient(BaseEnvClient):
             )
             state = (
                 "Continuation checkpoint was not accepted (workspace action required). "
-                "Use exactly one canonical shell_command or apply_patch action to "
-                f"overwrite {LITERESEARCHER_CONTINUATION_PATH}; no search, visit, "
-                "answer, code fence, or standalone prose was executed. "
+                "Use exactly one raw shell_command action, beginning with "
+                "shell_command and ending after its JSON object, to overwrite "
+                f"{LITERESEARCHER_CONTINUATION_PATH}; keep mkdir -p .agent_memory && "
+                "and add no search, visit, answer, Markdown backtick, code fence, "
+                "tool-call tag, or standalone prose. "
             )
             if done:
                 state += (
@@ -604,9 +616,12 @@ class LiteResearcherEnvClient(BaseEnvClient):
             )
             state = (
                 "Continuation checkpoint was not accepted "
-                f"({rejection_reason}). Use exactly one canonical shell_command "
-                f"or apply_patch action to overwrite {LITERESEARCHER_CONTINUATION_PATH} "
-                f"with 1-{LITERESEARCHER_CONTINUATION_MAX_BYTES} bytes. "
+                f"({rejection_reason}). Use exactly one raw shell_command action, "
+                "beginning with shell_command and ending after its JSON object, to "
+                f"overwrite {LITERESEARCHER_CONTINUATION_PATH} with "
+                f"1-{LITERESEARCHER_CONTINUATION_MAX_BYTES} bytes; keep "
+                "mkdir -p .agent_memory && and add no Markdown backtick or tool-call "
+                "tag. "
             )
             if done:
                 event = "forced_checkpoint_retry_budget_exhausted"
