@@ -8,11 +8,13 @@ from unittest.mock import Mock, patch
 try:
     from fastapi import HTTPException
     from agentenv_agentmemory.model import (
+        FilesystemCheckpointCommitRequestBody,
         WorkspaceExportRequestBody,
         WorkspaceInterventionRequestBody,
     )
 except ModuleNotFoundError:  # Mac's lightweight unit-test environment.
     HTTPException = None
+    FilesystemCheckpointCommitRequestBody = None
     WorkspaceExportRequestBody = None
     WorkspaceInterventionRequestBody = None
 
@@ -79,6 +81,32 @@ class WorkspaceInterventionEndpointTest(unittest.TestCase):
         export.assert_called_once_with(7, token="secret-token")
         route_paths = {route.path for route in module.app.routes}
         self.assertIn("/workspace-export", route_paths)
+
+    def test_checkpoint_commit_endpoint_forwards_exact_identity(self) -> None:
+        commit = Mock(return_value={"id": 7, "reward": 0.0, "done": False})
+        module = load_server_module(
+            type("FakeServer", (), {"filesystem_checkpoint_commit": commit})()
+        )
+        body = FilesystemCheckpointCommitRequestBody(
+            id=7,
+            session_index=2,
+            step_count=11,
+            size_bytes=123,
+            sha256="a" * 64,
+        )
+
+        result = module.filesystem_checkpoint_commit(body)
+
+        self.assertEqual(result["id"], 7)
+        commit.assert_called_once_with(
+            7,
+            session_index=2,
+            step_count=11,
+            size_bytes=123,
+            sha256="a" * 64,
+        )
+        route_paths = {route.path for route in module.app.routes}
+        self.assertIn("/filesystem-checkpoint-commit", route_paths)
 
     def test_endpoint_maps_auth_and_contract_failures(self) -> None:
         cases = (

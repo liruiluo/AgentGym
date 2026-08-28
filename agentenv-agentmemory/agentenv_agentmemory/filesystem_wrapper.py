@@ -204,6 +204,35 @@ class FilesystemAgentMemoryWrapperMixin:
             "positive_task_reward_scale": self.positive_task_reward_scale,
         }
 
+    def filesystem_checkpoint_commit(
+        self,
+        env_id: int,
+        *,
+        session_index: int,
+        step_count: int,
+        size_bytes: int,
+        sha256: str,
+    ) -> dict[str, Any]:
+        """Commit a verified WebShop checkpoint without consuming a policy step."""
+
+        environment = self.require_env(env_id)
+        with self.require_lock(env_id):
+            observation, info = environment.commit_filesystem_checkpoint(
+                expected_session_index=session_index,
+                expected_step_count=step_count,
+                expected_size_bytes=size_bytes,
+                expected_sha256=sha256,
+            )
+            payload = {
+                "id": env_id,
+                "observation": observation,
+                "reward": 0.0,
+                "done": False,
+                "info": info,
+            }
+            self.info[env_id] = payload
+            return payload
+
     def workspace_intervention(
         self,
         env_id: int,

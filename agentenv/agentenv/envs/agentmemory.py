@@ -41,6 +41,7 @@ from .filesystem_checkpoint import (
     build_post_checkpoint_context,
     build_post_checkpoint_read_retry_context,
     checkpoint_retry_ceiling_tokens,
+    checkpoint_retry_trigger_tokens,
     filesystem_checkpoint_action_completed,
     filesystem_checkpoint_failure_reason,
     filesystem_checkpoint_framing_sha256,
@@ -49,7 +50,10 @@ from .filesystem_checkpoint import (
     filesystem_workspace_action_request_sha256,
     filesystem_checkpoint_write_succeeded,
 )
-from .webshop_handoff import WEBSHOP_SESSION_HANDOFF_REQUEST
+from .webshop_handoff import (
+    WEBSHOP_CONTEXT_COMPACTION_REQUEST,
+    WEBSHOP_SESSION_HANDOFF_REQUEST,
+)
 
 AGENTMEMORY_FUNCTION_DESCRIPTION = [
     {
@@ -2285,6 +2289,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self._current_policy_context: list[dict[str, str]] | None = None
         self._policy_context_bound = False
         self._pending_session_handoff: dict[str, Any] | None = None
+        self._pending_context_checkpoint: dict[str, Any] | None = None
         self._checkpoint_write_retry_framing: list[dict[str, str]] | None = None
         self._pending_checkpoint_read: dict[str, Any] | None = None
         self._pending_checkpoint_read_framing: list[dict[str, str]] | None = None
@@ -2316,39 +2321,73 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self._current_policy_context = normalized
 
     def policy_turn_candidate(self) -> str | None:
-        if self._pending_checkpoint_read is not None:
+        if (
+            not self.is_filesystem
+            or not self._policy_context_bound
+            or self._pending_checkpoint_read is not None
+        ):
             return None
-        if self._pending_session_handoff is None:
-            return None
-        return WEBSHOP_SESSION_HANDOFF_REQUEST
+        if self._pending_session_handoff is not None:
+            return WEBSHOP_SESSION_HANDOFF_REQUEST
+        return WEBSHOP_CONTEXT_COMPACTION_REQUEST
 
     def prepare_policy_turn(
         self, pressure: PolicyContextPressure | None
     ) -> str | None:
         self._selected_policy_control = None
+        if not self.is_filesystem or not self._policy_context_bound:
+            return None
         if self._pending_checkpoint_read is not None:
             return None
-        if self._pending_session_handoff is None:
-            return None
-        if not self._policy_context_bound or self._current_policy_context is None:
-            raise RuntimeError(
-                "WebShop session handoff requires a bound policy context"
-            )
         if pressure is None:
             raise RuntimeError(
-                "WebShop session handoff requires task-neutral token pressure"
+                "WebShop filesystem checkpoint requires task-neutral token pressure"
             )
-        if pressure.candidate_prompt_tokens > pressure.effective_prompt_capacity:
+        capacity = pressure.effective_prompt_capacity
+        if (
+            pressure.action_prompt_tokens > capacity
+            or pressure.candidate_prompt_tokens > capacity
+        ):
             raise RuntimeError(
-                "WebShop session handoff request exceeds the policy prompt capacity"
+                "WebShop context reached the prompt cap before a trainable "
+                "filesystem checkpoint could be sampled"
             )
+
+        if self._pending_session_handoff is not None:
+            request = WEBSHOP_SESSION_HANDOFF_REQUEST
+            selected = "webshop_session_handoff"
+            checkpoint_due = True
+        else:
+            request = WEBSHOP_CONTEXT_COMPACTION_REQUEST
+            selected = "webshop_context_compaction"
+            checkpoint_due = self._pending_context_checkpoint is not None
+            if not checkpoint_due:
+                checkpoint_due = (
+                    checkpoint_retry_trigger_tokens(
+                        pressure, control_request=request
+                    )
+                    >= capacity
+                )
+                if checkpoint_due:
+                    self._pending_context_checkpoint = {
+                        "session_before": self._session_epoch,
+                        "session_after": self._session_epoch,
+                        "native_call_count": self._native_call_count,
+                    }
+        if not checkpoint_due:
+            return None
         if checkpoint_retry_ceiling_tokens(
             pressure,
-            control_request=WEBSHOP_SESSION_HANDOFF_REQUEST,
-        ) > pressure.effective_prompt_capacity:
+            control_request=request,
+        ) > capacity:
+            if selected == "webshop_session_handoff":
+                raise RuntimeError(
+                    "WebShop session handoff does not leave room for one bounded "
+                    "failed checkpoint attempt and retry"
+                )
             raise RuntimeError(
-                "WebShop session handoff does not leave room for one bounded "
-                "failed checkpoint attempt and retry"
+                "WebShop context checkpoint does not leave room for one bounded "
+                "failed write and retry"
             )
         if self._checkpoint_write_retry_framing is None:
             if self._current_policy_context is None:
@@ -2358,8 +2397,8 @@ class AgentMemoryEnvClient(BaseEnvClient):
             self._checkpoint_write_retry_framing = deepcopy(
                 self._current_policy_context
             )
-        self._selected_policy_control = "webshop_session_handoff"
-        return WEBSHOP_SESSION_HANDOFF_REQUEST
+        self._selected_policy_control = selected
+        return request
 
     def __len__(self):
         return self.data_len
@@ -2389,15 +2428,21 @@ class AgentMemoryEnvClient(BaseEnvClient):
             self._reset_policy_transition_state({})
         if not hasattr(self, "is_filesystem"):
             self.is_filesystem = False
-        if self._selected_policy_control == "webshop_session_handoff":
-            return self._complete_session_handoff(action)
+        if self._selected_policy_control in {
+            "webshop_session_handoff",
+            "webshop_context_compaction",
+        }:
+            return self._complete_filesystem_checkpoint(action)
         if (
-            self._pending_session_handoff is not None
+            (
+                self._pending_session_handoff is not None
+                or self._pending_context_checkpoint is not None
+            )
             and self._pending_checkpoint_read is None
         ):
             raise RuntimeError(
-                "WebShop session handoff is pending; prepare the wrapper control "
-                "turn before submitting another native action"
+                "WebShop filesystem checkpoint is pending; prepare the wrapper "
+                "control turn before submitting another native action"
             )
         return self._step_native_policy_action(action)
 
@@ -2572,8 +2617,11 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 "native_call_count": self._native_call_count,
             }
         if self._policy_context_bound and not bool(response["done"]):
-            if self._selected_policy_control == "webshop_session_handoff":
-                # The ordinary filesystem action used for a pending handoff must
+            if self._selected_policy_control in {
+                "webshop_session_handoff",
+                "webshop_context_compaction",
+            }:
+                # The ordinary filesystem action used for a pending checkpoint must
                 # not clear history before its receipt is checked below.
                 context_transition = build_task_neutral_context_transition(
                     CONTEXT_OPERATION_PRESERVE
@@ -2633,13 +2681,22 @@ class AgentMemoryEnvClient(BaseEnvClient):
             ),
         )
 
-    def _complete_session_handoff(self, action: str) -> StepOutput:
-        pending = self._pending_session_handoff
+    def _complete_filesystem_checkpoint(self, action: str) -> StepOutput:
+        selected = self._selected_policy_control
+        if selected == "webshop_session_handoff":
+            pending = self._pending_session_handoff
+            event = "webshop_session_handoff"
+        elif selected == "webshop_context_compaction":
+            pending = self._pending_context_checkpoint
+            event = "webshop_context_compaction"
+        else:
+            pending = None
+            event = "webshop_filesystem_checkpoint"
         write_retry_framing_before = self._checkpoint_write_retry_framing
         if pending is None:
-            raise RuntimeError("WebShop session handoff was selected without a boundary")
+            raise RuntimeError("WebShop checkpoint was selected without a boundary")
         if self._immutable_policy_context is None:
-            raise RuntimeError("WebShop session handoff lost its immutable framing")
+            raise RuntimeError("WebShop checkpoint lost its immutable framing")
 
         native_output = self._step_native_policy_action(action)
         self._selected_policy_control = None
@@ -2676,14 +2733,60 @@ class AgentMemoryEnvClient(BaseEnvClient):
             )
         persisted = filesystem_checkpoint_write_succeeded(checkpoint_receipt)
         session_stable = self._session_epoch == int(pending["session_after"])
+        if selected == "webshop_context_compaction" and not session_stable:
+            # A policy can ignore the checkpoint request and execute a valid BUY.
+            # The resulting session handoff supersedes the stale pressure boundary;
+            # retain only that new boundary so a later successful handoff write does
+            # not trigger a second checkpoint for the old session.
+            self._pending_context_checkpoint = None
         checkpoint_failure_reason = (
             filesystem_checkpoint_failure_reason(checkpoint_receipt)
             if session_stable
             else "unexpected_session_advance"
         )
         replace_context = bool(persisted and session_stable and not native_output.done)
+        server_trace_commit = None
+        fresh_observation = pending.get("fresh_observation")
+        if replace_context and selected == "webshop_context_compaction":
+            server_trace_commit = self.post(
+                "filesystem-checkpoint-commit",
+                {
+                    "session_index": self._session_epoch,
+                    "step_count": self._native_call_count,
+                    "size_bytes": checkpoint_receipt["size_bytes"],
+                    "sha256": checkpoint_receipt["sha256"],
+                },
+            )
+            commit_info = server_trace_commit.get("info", {})
+            commit_receipt = commit_info.get(
+                "filesystem_checkpoint_trace_commit"
+            )
+            expected_commit = {
+                "schema": "agentmemory_webshop_trace_checkpoint_commit_v1",
+                "session_index": self._session_epoch,
+                "step_count": self._native_call_count,
+                "size_bytes": checkpoint_receipt["size_bytes"],
+                "sha256": checkpoint_receipt["sha256"],
+            }
+            if (
+                not isinstance(commit_receipt, Mapping)
+                or any(
+                    commit_receipt.get(key) != value
+                    for key, value in expected_commit.items()
+                )
+                or commit_info.get("session_trace") != []
+                or bool(server_trace_commit.get("done"))
+                or not isinstance(server_trace_commit.get("observation"), str)
+            ):
+                raise RuntimeError(
+                    "WebShop server did not attest the exact context checkpoint commit"
+                )
+            fresh_observation = str(server_trace_commit["observation"])
         retry_pending = bool(
-            self._pending_session_handoff is not None
+            (
+                self._pending_session_handoff is not None
+                or self._pending_context_checkpoint is not None
+            )
             and not replace_context
             and not native_output.done
         )
@@ -2698,13 +2801,18 @@ class AgentMemoryEnvClient(BaseEnvClient):
         context_transition = None
         checkpoint_framing_sha256 = None
         if replace_context:
-            framing = self._fresh_policy_context(str(pending["fresh_observation"]))
+            if not isinstance(fresh_observation, str):
+                raise RuntimeError("WebShop checkpoint has no fresh successor observation")
+            framing = self._fresh_policy_context(fresh_observation)
             checkpoint_framing_sha256 = filesystem_checkpoint_framing_sha256(
                 framing
             )
             replacement = build_post_checkpoint_context(framing, checkpoint_receipt)
             self._context_epoch += 1
-            self._pending_session_handoff = None
+            if selected == "webshop_session_handoff":
+                self._pending_session_handoff = None
+            else:
+                self._pending_context_checkpoint = None
             self._pending_checkpoint_read = dict(checkpoint_receipt)
             self._pending_checkpoint_read_framing = deepcopy(framing)
             self._checkpoint_write_retry_framing = None
@@ -2714,6 +2822,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
             )
         elif native_output.done:
             self._pending_session_handoff = None
+            self._pending_context_checkpoint = None
             self._checkpoint_write_retry_framing = None
             self._pending_checkpoint_read = None
             self._pending_checkpoint_read_framing = None
@@ -2751,7 +2860,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 policy_step_after=info.get("policy_step_after"),
                 context_transition=context_transition,
                 wrapper_evidence={
-                    "event": "webshop_session_handoff",
+                    "event": event,
                     "session_before": pending["session_before"],
                     "session_after": pending["session_after"],
                     "native_call_count_before": info.get(
@@ -2781,6 +2890,14 @@ class AgentMemoryEnvClient(BaseEnvClient):
                     "checkpoint_content_in_successor_context": False,
                     "checkpoint_framing_sha256": checkpoint_framing_sha256,
                     "checkpoint_read_required_after": replace_context,
+                    "server_session_trace_cleared": bool(server_trace_commit),
+                    "server_trace_commit": (
+                        None
+                        if not isinstance(server_trace_commit, Mapping)
+                        else server_trace_commit.get("info", {}).get(
+                            "filesystem_checkpoint_trace_commit"
+                        )
+                    ),
                     "native_wrapper_evidence": (
                         dict(info.get("wrapper_evidence", {}))
                         if isinstance(info.get("wrapper_evidence"), Mapping)

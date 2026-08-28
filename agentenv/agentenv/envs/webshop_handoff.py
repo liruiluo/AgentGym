@@ -17,3 +17,12 @@ WEBSHOP_SESSION_HANDOFF_REQUEST = (
     "the next shopping action. Overwrite the checkpoint even if you also keep "
     "other voluntary notes."
 )
+
+
+WEBSHOP_CONTEXT_COMPACTION_REQUEST = (
+    FILESYSTEM_CHECKPOINT_REQUEST
+    + " For this shopping task, preserve the current session requirement, "
+    "decisive product evidence and selections, completed purchases, remaining "
+    "budget, and the next shopping action. Overwrite the checkpoint even if "
+    "you also keep other voluntary notes."
+)

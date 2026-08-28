@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import threading
@@ -113,6 +114,52 @@ class PersistentWorkspaceWebShopEnvTests(unittest.TestCase):
         self.assertEqual(shell_info["tool_ops"][0]["op"], "SHELL_COMMAND")
         self.assertEqual(shell_info["workspace_audit_event_count"], 2)
         self.assertEqual(shell_info["workspace_latest_event"]["phase_index"], 1)
+
+    def test_verified_context_checkpoint_clears_only_current_session_trace(self) -> None:
+        self.env.step("search[black cleanser]")
+        payload = b"objective: finish bundle\nnext: inspect current results\n"
+        _, _, done, _, write_info = self.env.step(
+            shell_action(
+                "mkdir -p .agent_memory && printf "
+                "'objective: finish bundle\\nnext: inspect current results\\n' "
+                "> .agent_memory/CONTINUATION.md"
+            )
+        )
+        self.assertFalse(done)
+        self.assertGreater(len(self.env.session_trace), 0)
+        entry = next(
+            item
+            for item in write_info["workspace_snapshot"]["files"]
+            if item["path"] == ".agent_memory/CONTINUATION.md"
+        )
+        self.assertEqual(entry["bytes"], len(payload))
+        self.assertEqual(entry["sha256"], hashlib.sha256(payload).hexdigest())
+
+        with self.assertRaisesRegex(ValueError, "identity"):
+            self.env.commit_filesystem_checkpoint(
+                expected_session_index=0,
+                expected_step_count=2,
+                expected_size_bytes=entry["bytes"],
+                expected_sha256="0" * 64,
+            )
+        self.assertGreater(len(self.env.session_trace), 0)
+
+        observation, info = self.env.commit_filesystem_checkpoint(
+            expected_session_index=0,
+            expected_step_count=2,
+            expected_size_bytes=entry["bytes"],
+            expected_sha256=entry["sha256"],
+        )
+
+        self.assertEqual(self.env.session_trace, [])
+        self.assertEqual(info["session_trace"], [])
+        self.assertIn("Current-session action trace:\n<empty>", observation)
+        commit = info["filesystem_checkpoint_trace_commit"]
+        self.assertEqual(commit["session_index"], 0)
+        self.assertEqual(commit["step_count"], 2)
+        self.assertGreaterEqual(commit["cleared_trace_entries"], 2)
+        self.assertEqual(commit["size_bytes"], entry["bytes"])
+        self.assertEqual(commit["sha256"], entry["sha256"])
 
     def test_repeated_workspace_action_has_no_dedicated_shaping(self) -> None:
         action = shell_action("printf same")
@@ -562,6 +609,53 @@ class ProceduralFilesystemWrapperTests(unittest.TestCase):
         self.assertEqual(configuration["workspace_root_parent"], Path("/tmp/workspaces"))
         self.assertEqual(configuration["workspace_limits"], wrapper.workspace_limits)
         self.assertIs(configuration["shell_sandbox"], sandbox)
+
+    def test_wrapper_commits_verified_context_checkpoint_under_env_lock(self) -> None:
+        wrapper, sandbox = self._construct()
+        environment = PersistentWorkspaceWebShopEnv(
+            bundles=[make_bundle()],
+            backend=FakeNativeBackend(),
+            env_uid="checkpoint-commit",
+            shell_sandbox=sandbox,
+        )
+        try:
+            observation, info = environment.reset(data_idx=0)
+            environment.step("search[black cleanser]")
+            _, _, _, _, write_info = environment.step(
+                shell_action(
+                    "mkdir -p .agent_memory && printf checkpoint "
+                    "> .agent_memory/CONTINUATION.md"
+                )
+            )
+            entry = next(
+                item
+                for item in write_info["workspace_snapshot"]["files"]
+                if item["path"] == ".agent_memory/CONTINUATION.md"
+            )
+            wrapper.envs = {0: environment}
+            wrapper.info = {
+                0: {
+                    "id": 0,
+                    "observation": observation,
+                    "reward": 0.0,
+                    "done": False,
+                    "info": info,
+                }
+            }
+            wrapper.env_locks = {0: threading.RLock()}
+
+            result = wrapper.filesystem_checkpoint_commit(
+                0,
+                session_index=0,
+                step_count=2,
+                size_bytes=entry["bytes"],
+                sha256=entry["sha256"],
+            )
+
+            self.assertEqual(result["info"]["session_trace"], [])
+            self.assertEqual(wrapper.info[0], result)
+        finally:
+            environment.close()
 
     def test_authenticated_control_copies_only_paired_policy_workspace(self) -> None:
         wrapper, sandbox = self._construct(intervention=True)

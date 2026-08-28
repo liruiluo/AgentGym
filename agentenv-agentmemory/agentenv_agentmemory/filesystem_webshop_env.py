@@ -30,6 +30,11 @@ PROCEDURAL_FILESYSTEM_SURFACE = (
 RAW_INTERMEDIATE_BUY_REWARD = 1.0
 RAW_FINAL_BUY_REWARD = 2.0
 RAW_MAXIMUM_POSITIVE_TRAJECTORY_REWARD = 7.0
+FILESYSTEM_CHECKPOINT_PATH = ".agent_memory/CONTINUATION.md"
+FILESYSTEM_CHECKPOINT_MAX_BYTES = 8 * 1024
+FILESYSTEM_CHECKPOINT_TRACE_COMMIT_SCHEMA = (
+    "agentmemory_webshop_trace_checkpoint_commit_v1"
+)
 
 
 def validate_positive_task_reward_scale(value: Any) -> float:
@@ -108,6 +113,104 @@ class PersistentWorkspaceWebShopEnv(MemoryArenaWebShopEnv):
             limits=workspace_limits or WorkspaceLimits(),
         )
         self._workspace_enabled = True
+
+    def commit_filesystem_checkpoint(
+        self,
+        *,
+        expected_session_index: int,
+        expected_step_count: int,
+        expected_size_bytes: int,
+        expected_sha256: str,
+    ) -> tuple[str, dict[str, Any]]:
+        """Clear only the rendered current-session trace after an exact write.
+
+        The policy action has already executed through ``step``. This internal
+        commit validates the latest endpoint-owned workspace event and immutable
+        file identity before removing any server-held trace. It does not consume
+        another policy step or alter the WebShop page/session state.
+        """
+
+        if self.done or self.status != "active":
+            raise RuntimeError("filesystem checkpoint requires an active episode")
+        for name, value in (
+            ("expected_session_index", expected_session_index),
+            ("expected_step_count", expected_step_count),
+            ("expected_size_bytes", expected_size_bytes),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if not isinstance(expected_sha256, str) or (
+            len(expected_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in expected_sha256)
+        ):
+            raise ValueError("expected_sha256 must be a lowercase SHA-256 digest")
+        if expected_size_bytes <= 0 or expected_size_bytes > FILESYSTEM_CHECKPOINT_MAX_BYTES:
+            raise ValueError("filesystem checkpoint size is outside the allowed range")
+        if self.current_session_index != expected_session_index:
+            raise ValueError("filesystem checkpoint session identity changed")
+        if self.step_count != expected_step_count:
+            raise ValueError("filesystem checkpoint step identity changed")
+
+        snapshot = self.workspace.snapshot()
+        checkpoint_entry = next(
+            (
+                item
+                for item in snapshot.get("files", ())
+                if item.get("path") == FILESYSTEM_CHECKPOINT_PATH
+            ),
+            None,
+        )
+        if not isinstance(checkpoint_entry, dict) or (
+            checkpoint_entry.get("kind") != "file"
+            or checkpoint_entry.get("bytes") != expected_size_bytes
+            or checkpoint_entry.get("sha256") != expected_sha256
+        ):
+            raise ValueError("filesystem checkpoint file identity does not match")
+
+        latest_event = self.last_tool_ops[0] if len(self.last_tool_ops) == 1 else None
+        if not isinstance(latest_event, dict):
+            raise ValueError("filesystem checkpoint latest action identity is missing")
+        tool_name = str(
+            latest_event.get("tool_name", latest_event.get("op", ""))
+        ).lower()
+        completed = tool_name == "apply_patch" or (
+            tool_name == "shell_command"
+            and latest_event.get("exit_code") == 0
+            and latest_event.get("timed_out") is False
+        )
+        if not completed or latest_event.get("step") != expected_step_count:
+            raise ValueError("filesystem checkpoint latest action identity does not match")
+        changed_entries = list(
+            latest_event.get("workspace_diff", {}).get("added", ())
+        )
+        changed_entries.extend(
+            item.get("after", {})
+            for item in latest_event.get("workspace_diff", {}).get("modified", ())
+            if isinstance(item, dict)
+        )
+        if not any(
+            isinstance(item, dict)
+            and item.get("path") == FILESYSTEM_CHECKPOINT_PATH
+            and item.get("kind") == "file"
+            and item.get("bytes") == expected_size_bytes
+            and item.get("sha256") == expected_sha256
+            for item in changed_entries
+        ):
+            raise ValueError("filesystem checkpoint latest write identity does not match")
+
+        cleared_trace_entries = len(self.session_trace)
+        self.session_trace = []
+        observation = self.render_observation()
+        info = self.build_info()
+        info["filesystem_checkpoint_trace_commit"] = {
+            "schema": FILESYSTEM_CHECKPOINT_TRACE_COMMIT_SCHEMA,
+            "session_index": self.current_session_index,
+            "step_count": self.step_count,
+            "cleared_trace_entries": cleared_trace_entries,
+            "size_bytes": expected_size_bytes,
+            "sha256": expected_sha256,
+        }
+        return observation, info
 
     def set_workspace_enabled(self, enabled: bool) -> None:
         if type(enabled) is not bool:

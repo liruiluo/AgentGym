@@ -2,6 +2,7 @@ from fastapi import FastAPI, Header, HTTPException
 
 from .model import (
     CloseRequestBody,
+    FilesystemCheckpointCommitRequestBody,
     ResetRequestBody,
     StepRequestBody,
     WorkspaceExportRequestBody,
@@ -54,6 +55,26 @@ def detail(id: int):
 @app.post("/close")
 def close(body: CloseRequestBody):
     return server.close(body.id)
+
+
+@app.post("/filesystem-checkpoint-commit")
+def filesystem_checkpoint_commit(body: FilesystemCheckpointCommitRequestBody):
+    control = getattr(server, "filesystem_checkpoint_commit", None)
+    if control is None:
+        raise HTTPException(
+            status_code=404,
+            detail="filesystem checkpoint commit is unavailable on this surface",
+        )
+    try:
+        return control(
+            body.id,
+            session_index=body.session_index,
+            step_count=body.step_count,
+            size_bytes=body.size_bytes,
+            sha256=body.sha256,
+        )
+    except (KeyError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/workspace-intervention")
