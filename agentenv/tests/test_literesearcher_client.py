@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import subprocess
 import tempfile
 import unittest
@@ -21,7 +20,12 @@ from agentenv.envs.literesearcher import (
     LITERESEARCHER_RESEARCH_NOTE_PATH,
     LITERESEARCHER_RESEARCH_NOTE_READ_ACTION,
     LITERESEARCHER_RESEARCH_NOTE_WRITE_EXAMPLE,
+    LITERESEARCHER_TOOL_SERIALIZATION_CONTRACT,
     LiteResearcherEnvClient,
+    _is_workspace_action_candidate,
+    _parse_legacy_tool_call,
+    _parse_qwen35_tool_call,
+    _render_qwen35_tool_call,
 )
 
 
@@ -43,16 +47,12 @@ class LiteResearcherClientTests(unittest.TestCase):
 
     @staticmethod
     def _workspace_envelope_arguments(action: str) -> dict:
-        prefix = "<tool_call>"
-        suffix = "</tool_call>"
-        if not action.startswith(prefix) or not action.endswith(suffix):
-            raise AssertionError("workspace action is not one complete tool_call")
-        payload = json.loads(action[len(prefix) : -len(suffix)])
-        if payload.get("name") != "shell_command":
+        parsed = _parse_qwen35_tool_call(action)
+        if parsed is None:
+            raise AssertionError("workspace action is not one native tool_call")
+        name, arguments, _prefix_chars = parsed
+        if name != "shell_command":
             raise AssertionError("workspace envelope is not shell_command")
-        arguments = payload.get("arguments")
-        if not isinstance(arguments, dict):
-            raise AssertionError("workspace envelope arguments must be an object")
         return arguments
 
     def test_policy_framing_exposes_normalized_conversation_start(self) -> None:
@@ -72,8 +72,8 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn(f"{LITERESEARCHER_RESEARCH_NOTE_PATH} is optional", prompt)
         self.assertIn("Do not write it after every useful Visit", prompt)
         self.assertIn("answer directly instead of staging", prompt)
-        self.assertIn("all use one <tool_call> JSON envelope", prompt)
-        self.assertIn("uses name shell_command", prompt)
+        self.assertIn("use the Qwen3.5 native tool-call format", prompt)
+        self.assertIn("uses function shell_command", prompt)
         self.assertNotIn("use raw Codex syntax", prompt)
         self.assertIn("create or replace the note", prompt)
         self.assertIn("distinct from the optional research note", prompt)
@@ -105,6 +105,92 @@ class LiteResearcherClientTests(unittest.TestCase):
                 self.assertIn("evidence_with_urls: ...", content)
                 self.assertNotIn("stale content", content)
 
+    def test_native_tool_parser_is_strict_about_structure_and_parameters(self) -> None:
+        action = _render_qwen35_tool_call(
+            "visit",
+            url="https://literesearcher.local/page/00001",
+            goal="extract evidence",
+            page=2,
+        )
+        self.assertEqual(
+            _parse_qwen35_tool_call(action),
+            (
+                "visit",
+                {
+                    "url": "https://literesearcher.local/page/00001",
+                    "goal": "extract evidence",
+                    "page": 2,
+                },
+                0,
+            ),
+        )
+        self.assertIsNone(
+            _parse_qwen35_tool_call(
+                "<tool_call><function=visit>"
+                "<parameter=page>one</parameter>"
+                "</function></tool_call>"
+            )
+        )
+        self.assertIsNone(
+            _parse_qwen35_tool_call(
+                "<tool_call><function=search>"
+                "<parameter=query>first</parameter>"
+                "<parameter=query>second</parameter>"
+                "</function></tool_call>"
+            )
+        )
+        self.assertIsNone(
+            _parse_qwen35_tool_call(
+                "<tool_call><function=search>"
+                "<parameter=query>incomplete"
+                "</function></tool_call>"
+            )
+        )
+
+    def test_valid_legacy_checkpoint_envelope_remains_compatible_without_repair(self) -> None:
+        valid = (
+            '<tool_call>{"name":"shell_command","arguments":'
+            '{"command":"cat .agent_memory/CONTINUATION.md",'
+            '"workdir":".","timeout_ms":10000}}</tool_call>'
+        )
+        malformed = valid.replace("}}</tool_call>", "}</tool_call>")
+
+        self.assertEqual(_parse_legacy_tool_call(valid)[0], "shell_command")
+        self.assertTrue(_is_workspace_action_candidate(valid))
+        self.assertIsNone(_parse_legacy_tool_call(malformed))
+        self.assertFalse(_is_workspace_action_candidate(malformed))
+
+    def test_tool_parser_allows_one_bounded_prefix_and_rejects_suffix(self) -> None:
+        action = _render_qwen35_tool_call(
+            "shell_command",
+            command="cat .agent_memory/CONTINUATION.md",
+            workdir=".",
+            timeout_ms=10000,
+        )
+        prefix = "I will recover the verified checkpoint now.\n"
+        parsed = _parse_qwen35_tool_call(prefix + action)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed[2], len(prefix))
+        self.assertTrue(_is_workspace_action_candidate(prefix + action))
+        self.assertIsNone(_parse_qwen35_tool_call(action + " trailing prose"))
+        self.assertFalse(_is_workspace_action_candidate(action + " trailing prose"))
+        self.assertIsNone(_parse_qwen35_tool_call("```analysis```\n" + action))
+        self.assertIsNone(_parse_qwen35_tool_call(("x" * 2049) + action))
+
+    def test_legacy_tool_parser_rejects_duplicate_keys(self) -> None:
+        duplicate_top = (
+            '<tool_call>{"name":"shell_command","name":"search",'
+            '"arguments":{"command":"true"}}</tool_call>'
+        )
+        duplicate_argument = (
+            '<tool_call>{"name":"shell_command","arguments":'
+            '{"command":"true","command":"false"}}</tool_call>'
+        )
+        self.assertIsNone(_parse_legacy_tool_call(duplicate_top))
+        self.assertIsNone(_parse_legacy_tool_call(duplicate_argument))
+        self.assertFalse(_is_workspace_action_candidate(duplicate_top))
+        self.assertFalse(_is_workspace_action_candidate(duplicate_argument))
+
 
     def test_compaction_request_requires_one_real_bounded_workspace_write(self) -> None:
         request = LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
@@ -113,7 +199,7 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn("overwrite", request.lower())
         self.assertIn("write-only phase", request)
         self.assertIn("mkdir -p .agent_memory &&", request)
-        self.assertIn("one complete <tool_call> JSON envelope", request)
+        self.assertIn("Qwen3.5-native <tool_call>/<function=shell_command>", request)
         self.assertIn("Do not emit raw shell_command syntax", request)
         self.assertIn("cat > .agent_memory/CONTINUATION.md <<'AMG_CHECKPOINT'", request)
         self.assertIn("8192", request)
@@ -128,7 +214,7 @@ class LiteResearcherClientTests(unittest.TestCase):
             )
         )
 
-    def test_compaction_example_is_json_parseable_and_shell_executable(self) -> None:
+    def test_compaction_example_is_native_parseable_and_shell_executable(self) -> None:
         payload = self._workspace_envelope_arguments(
             LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE
         )
@@ -232,11 +318,11 @@ class LiteResearcherClientTests(unittest.TestCase):
         client = self._bound_client()
         client._request = Mock(return_value=self._checkpoint_response(valid=True))
         client._checkpoint_retry_reason = "previous_rejection"
-        raw_action = (
-            '<tool_call>{"name":"shell_command","arguments":'
-            '{"command":"printf secret-evidence > '
-            '.agent_memory/CONTINUATION.md","workdir":".","timeout_ms":10000}}'
-            '</tool_call>'
+        raw_action = _render_qwen35_tool_call(
+            "shell_command",
+            command="printf secret-evidence > .agent_memory/CONTINUATION.md",
+            workdir=".",
+            timeout_ms=10000,
         )
 
         output = client.step(raw_action)
@@ -283,10 +369,7 @@ class LiteResearcherClientTests(unittest.TestCase):
         ]
         messages = [dict(message) for message in research_context]
         prompt_sizes: list[int] = []
-        invalid_action = (
-            '<tool_call>{"name":"search","arguments":'
-            '{"query":["source"]}}</tool_call>'
-        )
+        invalid_action = _render_qwen35_tool_call("search", query=["source"])
 
         def count_prompt_tokens(candidate: list[dict[str, str]]) -> int:
             return sum(len(message["content"]) for message in candidate)
@@ -360,8 +443,7 @@ class LiteResearcherClientTests(unittest.TestCase):
             LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
         )
         output = client.step(
-            '<tool_call>{"name":"search","arguments":'
-            '{"query":["source"]}}</tool_call>'
+            _render_qwen35_tool_call("search", query=["source"])
         )
         self.assertFalse(output.done)
         self.assertTrue(
@@ -391,10 +473,7 @@ class LiteResearcherClientTests(unittest.TestCase):
     def test_forced_checkpoint_rejects_research_action_without_endpoint_dispatch(self) -> None:
         client = self._bound_client()
         client._request = Mock()
-        search_action = (
-            '<tool_call>{"name":"search","arguments":'
-            '{"query":["source"]}}</tool_call>'
-        )
+        search_action = _render_qwen35_tool_call("search", query=["source"])
 
         output = client.step(search_action)
 
@@ -572,8 +651,7 @@ class LiteResearcherClientTests(unittest.TestCase):
         client._request = Mock()
 
         output = client.step(
-            '<tool_call>{"name":"search","arguments":'
-            '{"query":["source"]}}</tool_call>'
+            _render_qwen35_tool_call("search", query=["source"])
         )
 
         self.assertTrue(output.done)
@@ -899,9 +977,10 @@ class LiteResearcherInvalidActionRewardTests(unittest.TestCase):
                 "agentmemory_continuation_checkpoint_v2"
             ),
             "workspace_action_envelope_contract": (
-                "literesearcher_tool_call_workspace_v1"
+                "literesearcher_qwen35_native_xml_v1"
             ),
             "workspace_action_envelope_tools": ["shell_command"],
+            "tool_serialization": LITERESEARCHER_TOOL_SERIALIZATION_CONTRACT,
             "raw_workspace_action_compatibility": True,
             "workspace_memory_reward": 0.0,
             "compaction_calls_endpoint_step": True,
@@ -936,9 +1015,10 @@ class LiteResearcherInvalidActionRewardTests(unittest.TestCase):
                 "agentmemory_continuation_checkpoint_v2"
             ),
             "workspace_action_envelope_contract": (
-                "literesearcher_tool_call_workspace_v1"
+                "literesearcher_qwen35_native_xml_v1"
             ),
             "workspace_action_envelope_tools": ["shell_command"],
+            "tool_serialization": LITERESEARCHER_TOOL_SERIALIZATION_CONTRACT,
             "raw_workspace_action_compatibility": True,
             "workspace_memory_reward": 0.0,
             "compaction_calls_endpoint_step": True,
@@ -963,6 +1043,11 @@ class LiteResearcherInvalidActionRewardTests(unittest.TestCase):
                 "workspace_action_envelope_tools",
                 ["search"],
                 "enveloped workspace tools",
+            ),
+            (
+                "tool_serialization",
+                {"contract": "stale"},
+                "tool serialization contract",
             ),
             (
                 "raw_workspace_action_compatibility",

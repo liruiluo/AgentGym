@@ -30,23 +30,186 @@ LITERESEARCHER_CONTINUATION_PATH = ".agent_memory/CONTINUATION.md"
 LITERESEARCHER_CONTINUATION_MAX_BYTES = 8192
 LITERESEARCHER_RESEARCH_NOTE_PATH = ".agent_memory/research.md"
 LITERESEARCHER_WORKSPACE_ACTION_ENVELOPE_CONTRACT = (
-    "literesearcher_tool_call_workspace_v1"
+    "literesearcher_qwen35_native_xml_v1"
 )
+_QWEN35_TOOL_CALL_RE = re.compile(
+    r"<tool_call>\s*(.*?)\s*</tool_call>",
+    re.IGNORECASE | re.DOTALL,
+)
+_QWEN35_FUNCTION_RE = re.compile(
+    r"\s*<function=([A-Za-z_][A-Za-z0-9_.-]*)>\s*(.*?)\s*</function>\s*",
+    re.IGNORECASE | re.DOTALL,
+)
+_QWEN35_PARAMETER_RE = re.compile(
+    r"<parameter=([A-Za-z_][A-Za-z0-9_.-]*)>\s*(.*?)\s*</parameter>",
+    re.IGNORECASE | re.DOTALL,
+)
+_MAX_WORKSPACE_REASONING_PREFIX_CHARS = 2048
+LITERESEARCHER_TOOL_SERIALIZATION_CONTRACT = {
+    "contract": "literesearcher_tool_serialization_v1",
+    "primary": "qwen35_native_xml",
+    "accepted": ["qwen35_native_xml", "legacy_json"],
+    "legacy_json_repair": False,
+    "visible_prefix": {
+        "allowed": True,
+        "max_chars": _MAX_WORKSPACE_REASONING_PREFIX_CHARS,
+        "code_fence_allowed": False,
+    },
+    "suffix": "whitespace_only",
+}
+
+
+def _strict_json_loads(value: str) -> Any:
+    """Decode JSON while rejecting duplicate keys at every object depth."""
+
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = item
+        return result
+
+    try:
+        return json.loads(value, object_pairs_hook=reject_duplicate_keys)
+    except json.JSONDecodeError as exc:
+        raise ValueError("invalid JSON") from exc
+
+
+def _single_tool_envelope_match(
+    value: str,
+) -> tuple[re.Match[str], int] | None:
+    matches = list(_QWEN35_TOOL_CALL_RE.finditer(value))
+    markers = re.findall(r"<\s*/?\s*tool_call\b", value, re.IGNORECASE)
+    if len(matches) != 1 or len(markers) != 2:
+        return None
+    match = matches[0]
+    prefix = value[: match.start()]
+    suffix = value[match.end() :]
+    if (
+        "```" in prefix
+        or len(prefix) > _MAX_WORKSPACE_REASONING_PREFIX_CHARS
+        or suffix.strip()
+    ):
+        return None
+    return match, len(prefix)
+
+
+def _serialization_attempt(value: Any) -> dict[str, Any]:
+    if not isinstance(value, str):
+        return {"kind": "none", "prefix_chars": None}
+    marker = re.search(r"<\s*tool_call\s*>", value, re.IGNORECASE)
+    if marker is not None:
+        payload = value[marker.end() :].lstrip()
+        if payload.startswith("{"):
+            kind = "legacy_json"
+        elif re.match(r"<\s*function=", payload, re.IGNORECASE):
+            kind = "qwen35_native_xml"
+        else:
+            kind = "unknown_tool_call"
+        return {"kind": kind, "prefix_chars": marker.start()}
+    workspace_marker = _WORKSPACE_ACTION_MARKER_RE.search(value)
+    if workspace_marker is not None:
+        return {
+            "kind": "raw_codex",
+            "prefix_chars": workspace_marker.start(1),
+        }
+    return {"kind": "none", "prefix_chars": None}
+
+
+def _render_qwen35_tool_call(name: str, **parameters: object) -> str:
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", name) is None:
+        raise ValueError(f"invalid Qwen3.5 tool name: {name!r}")
+    lines = ["<tool_call>", f"<function={name}>"]
+    for parameter_name, value in parameters.items():
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", parameter_name) is None:
+            raise ValueError(
+                f"invalid Qwen3.5 tool parameter name: {parameter_name!r}"
+            )
+        text = (
+            json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            if isinstance(value, (list, dict))
+            else str(value)
+        )
+        if "</parameter>" in text:
+            raise ValueError("Qwen3.5 tool parameter cannot contain </parameter>")
+        lines.extend(
+            [f"<parameter={parameter_name}>", text, "</parameter>"]
+        )
+    lines.extend(["</function>", "</tool_call>"])
+    return "\n".join(lines)
 
 
 def _render_workspace_tool_call(command: str) -> str:
-    return "<tool_call>" + json.dumps(
-        {
-            "name": "shell_command",
-            "arguments": {
-                "command": command,
-                "workdir": ".",
-                "timeout_ms": 10000,
-            },
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ) + "</tool_call>"
+    return _render_qwen35_tool_call(
+        "shell_command", command=command, workdir=".", timeout_ms=10000
+    )
+
+
+def _parse_qwen35_tool_call(
+    value: str,
+) -> tuple[str, dict[str, Any], int] | None:
+    envelope = _single_tool_envelope_match(value)
+    if envelope is None:
+        return None
+    match, prefix_chars = envelope
+    function = _QWEN35_FUNCTION_RE.fullmatch(match.group(1))
+    if function is None:
+        return None
+    parameters_text = function.group(2)
+    matches = list(_QWEN35_PARAMETER_RE.finditer(parameters_text))
+    cursor = 0
+    parameters: dict[str, Any] = {}
+    for match in matches:
+        if parameters_text[cursor : match.start()].strip():
+            return None
+        parameter_name = match.group(1).lower()
+        if parameter_name in parameters:
+            return None
+        parameter_value: Any = match.group(2).strip()
+        if parameter_name == "query":
+            try:
+                parameter_value = _strict_json_loads(parameter_value)
+            except ValueError:
+                return None
+        elif parameter_name in {"page", "timeout_ms"}:
+            if re.fullmatch(r"[0-9]+", parameter_value) is None:
+                return None
+            parameter_value = int(parameter_value)
+        parameters[parameter_name] = parameter_value
+        cursor = match.end()
+    if parameters_text[cursor:].strip():
+        return None
+    return function.group(1).lower(), parameters, prefix_chars
+
+
+def _parse_legacy_tool_call(
+    value: str,
+) -> tuple[str, dict[str, Any], int] | None:
+    """Accept one already-valid legacy JSON envelope without repairing it."""
+
+    envelope = _single_tool_envelope_match(value)
+    if envelope is None:
+        return None
+    match, prefix_chars = envelope
+    payload_text = match.group(1).strip()
+    if not payload_text.startswith("{"):
+        return None
+    try:
+        payload = _strict_json_loads(payload_text)
+    except ValueError:
+        return None
+    if not isinstance(payload, Mapping) or set(payload) != {"name", "arguments"}:
+        return None
+    name = payload.get("name")
+    arguments = payload.get("arguments")
+    if (
+        not isinstance(name, str)
+        or not name.strip()
+        or not isinstance(arguments, Mapping)
+    ):
+        return None
+    return name.strip().lower(), dict(arguments), prefix_chars
 
 
 LITERESEARCHER_RESEARCH_NOTE_WRITE_EXAMPLE = _render_workspace_tool_call(
@@ -68,7 +231,6 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _WORKSPACE_ACTION_MARKER_RE = re.compile(
     r"(?m)^(shell_command(?= \{)|apply_patch(?=\r?$))"
 )
-_MAX_WORKSPACE_REASONING_PREFIX_CHARS = 2048
 
 
 LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE = _render_workspace_tool_call(
@@ -95,7 +257,7 @@ LITERESEARCHER_CONTEXT_COMPACTION_REQUEST = (
     "write also works in an otherwise empty workspace. This is a write-only phase. "
     f"Do not read {LITERESEARCHER_CONTINUATION_PATH} or .agent_memory/research.md; "
     "do not Search, Visit, or answer. Your response must be one complete "
-    "<tool_call> JSON envelope whose name is shell_command. Do not emit raw "
+    "Qwen3.5-native <tool_call>/<function=shell_command> envelope. Do not emit raw "
     "shell_command syntax, Markdown backticks, a code fence, or prose. Copy the "
     "complete executable action below, replacing only the checkpoint field "
     "values:\n"
@@ -112,8 +274,8 @@ LITERESEARCHER_POLICY_CONTINUATION_MARKER = (
     "CHECKPOINT READ PHASE (after context reset). The earlier interaction was "
     "removed after a verified policy-authored checkpoint was written to "
     f"{LITERESEARCHER_CONTINUATION_PATH}. Before any search, visit, or answer, "
-    "read it with one normal shell_command inside the same <tool_call> JSON "
-    "envelope used by Search and Visit. Do not emit raw shell_command syntax, "
+    "read it with one normal shell_command in the same Qwen3.5-native tool "
+    "format used by Search and Visit. Do not emit raw shell_command syntax, "
     "Markdown backticks, a code fence, or prose. "
     "Continue from the file output instead of reconstructing omitted history. "
     "The complete executable action is the final line below:\n"
@@ -143,19 +305,23 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 "loss": None,
                 "value": (
                     "You are a deep-research agent answering one continuous question. "
-                    "Your empty private workspace persists for the episode. Search and "
-                    "Visit, and shell_command all use one <tool_call> JSON envelope; "
-                    "use exactly one action per turn. Literal forms: "
-                    "<tool_call>{\"name\":\"search\","
-                    "\"arguments\":{\"query\":[\"climate policy\"]}}</tool_call> "
-                    "or <tool_call>{\"name\":\"visit\",\"arguments\":{"
-                    "\"url\":\"https://literesearcher.local/page/00001\","
-                    "\"goal\":\"extract evidence\",\"page\":1}}</tool_call>. "
-                    "Keep both closing braces. A Visit returns one bounded page; follow "
-                    "next_page with the same URL and goal when needed. A workspace "
-                    "turn uses name shell_command and the arguments object "
-                    "{command, workdir, timeout_ms} inside that same envelope, with no "
-                    "prose, Markdown fence, or second tool. "
+                    "Your empty private workspace persists for the episode. Search, "
+                    "Visit, and shell_command use the Qwen3.5 native tool-call format; "
+                    "use exactly one action per turn and no prose around a tool call. "
+                    "Use these literal forms:\n"
+                    + _render_qwen35_tool_call("search", query=["climate policy"])
+                    + "\nor\n"
+                    + _render_qwen35_tool_call(
+                        "visit",
+                        url="https://literesearcher.local/page/00001",
+                        goal="extract evidence",
+                        page=1,
+                    )
+                    + "\nA Visit returns one bounded page; follow next_page with the "
+                    "same URL and goal when needed. A workspace turn uses function "
+                    "shell_command with command, workdir, and timeout_ms parameters in "
+                    "that same native format, with no prose, Markdown fence, or second "
+                    "tool. "
                     f"{LITERESEARCHER_RESEARCH_NOTE_PATH} is optional. Write or refresh "
                     "it only when evidence with source URLs, failed attempts, or a plan "
                     "must survive several later actions or a future context checkpoint. "
@@ -219,6 +385,13 @@ class LiteResearcherEnvClient(BaseEnvClient):
         if metadata.get("workspace_action_envelope_tools") != ["shell_command"]:
             raise RuntimeError(
                 "LiteResearcher endpoint reports the wrong enveloped workspace tools"
+            )
+        if (
+            metadata.get("tool_serialization")
+            != LITERESEARCHER_TOOL_SERIALIZATION_CONTRACT
+        ):
+            raise RuntimeError(
+                "LiteResearcher endpoint reports the wrong tool serialization contract"
             )
         if metadata.get("raw_workspace_action_compatibility") is not True:
             raise RuntimeError(
@@ -509,8 +682,8 @@ class LiteResearcherEnvClient(BaseEnvClient):
             )
             state = (
                 "Continuation checkpoint was not accepted (workspace action required). "
-                "Use exactly one <tool_call> JSON envelope whose name is "
-                "shell_command to overwrite "
+                "Use exactly one Qwen3.5-native <tool_call>/<function=shell_command> "
+                "envelope to overwrite "
                 f"{LITERESEARCHER_CONTINUATION_PATH}; keep mkdir -p .agent_memory && "
                 "and add no search, visit, answer, Markdown backtick, code fence, "
                 "raw shell_command, or standalone prose. "
@@ -561,6 +734,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
                     action_submission={
                         "raw_policy_output": str(action),
                         "submitted_action": None,
+                        "serialization_attempt": _serialization_attempt(action),
                         "parser_status": (
                             "forced_checkpoint_requires_workspace_action"
                         ),
@@ -666,8 +840,8 @@ class LiteResearcherEnvClient(BaseEnvClient):
             )
             state = (
                 "Continuation checkpoint was not accepted "
-                f"({rejection_reason}). Use exactly one <tool_call> JSON envelope "
-                "whose name is shell_command to "
+                f"({rejection_reason}). Use exactly one Qwen3.5-native "
+                "<tool_call>/<function=shell_command> envelope to "
                 f"overwrite {LITERESEARCHER_CONTINUATION_PATH} with "
                 f"1-{LITERESEARCHER_CONTINUATION_MAX_BYTES} bytes; keep "
                 "mkdir -p .agent_memory && and add no raw shell_command, Markdown "
@@ -823,25 +997,14 @@ def _is_workspace_action_candidate(value: Any) -> bool:
             "```" not in prefix
             and len(prefix) <= _MAX_WORKSPACE_REASONING_PREFIX_CHARS
         )
-    envelope = re.fullmatch(
-        r"\s*<tool_call>\s*(.*?)\s*</tool_call>\s*",
-        value,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if envelope is None:
+    parsed = _parse_qwen35_tool_call(value)
+    if parsed is None:
+        parsed = _parse_legacy_tool_call(value)
+    if parsed is None:
         return False
-    try:
-        payload = json.loads(envelope.group(1))
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(payload, Mapping) or set(payload) != {"name", "arguments"}:
-        return False
-    arguments = payload.get("arguments")
-    return (
-        payload.get("name") == "shell_command"
-        and isinstance(arguments, Mapping)
-        and isinstance(arguments.get("command"), str)
-    )
+    name, parameters, _prefix_chars = parsed
+    command = parameters.get("command")
+    return name == "shell_command" and isinstance(command, str) and bool(command)
 
 
 def _validate_checkpoint_receipt(value: Any) -> tuple[bool, str | None]:
