@@ -205,7 +205,7 @@ class UpstreamCompatibleLLMJudge:
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.0,
                 "max_tokens": LITERESEARCHER_FORMAL_JUDGE_MAX_TOKENS,
-                "chat_template_kwargs": {"enable_thinking": False},
+                "chat_template_kwargs": {"thinking": False},
             }
         ).encode("utf-8")
         headers = {"Content-Type": "application/json"}

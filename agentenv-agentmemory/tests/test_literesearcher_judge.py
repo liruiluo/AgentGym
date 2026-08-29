@@ -66,7 +66,7 @@ class LiteResearcherJudgeTests(unittest.TestCase):
         self.assertEqual(sent["model"], "qwen")
         self.assertEqual(
             sent["chat_template_kwargs"],
-            {"enable_thinking": False},
+            {"thinking": False},
         )
         self.assertEqual(sent["max_tokens"], 8192)
         self.assertIn("PSX (digital video recorder)", sent["messages"][0]["content"])
