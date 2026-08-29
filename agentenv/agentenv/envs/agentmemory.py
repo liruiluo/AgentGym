@@ -1367,14 +1367,12 @@ def build_filesystem_conversation_start(
         "the episode without revealing the expected answer. The workspace persists "
         "across shopping sessions within this episode and is reset between episodes. "
         "Native shopping actions remain bare search[...] or click[...] actions. Use "
-        "shell_command through one complete Qwen XML tool-call envelope with command plus "
-        "optional workdir and timeout_ms parameters. Use apply_patch through the same XML "
-        "envelope with one multiline patch parameter. The accepted legacy bare shell_command JSON and "
-        "apply_patch newline forms remain available for compatibility. "
-        "For a workspace shell action use <tool_call><function=shell_command> with a "
-        "<parameter=command> block; for a file edit use <function=apply_patch> with a "
-        "<parameter=patch> block. At a required continuation checkpoint, begin the shell "
-        "command with `mkdir -p .agent_memory` before overwriting "
+        "shell_command with one JSON object containing command and optional workdir and "
+        'timeout_ms, for example shell_command {"command":"rg -n pattern .",'
+        '"workdir":".","timeout_ms":10000}. Use '
+        "apply_patch followed by a multiline *** Begin Patch ... *** End Patch payload for "
+        "precise file edits. At a required continuation checkpoint, begin the shell command "
+        "with `mkdir -p .agent_memory` before overwriting "
         "`.agent_memory/CONTINUATION.md`. "
         "The shell is networkless and resource-bounded; paths stay inside the workspace. "
         "Workspace actions have zero task reward and are optional outside a context "
@@ -1443,8 +1441,8 @@ def build_filesystem_conversation_start(
         prompt = (
             interface
             + " Reply in exactly this format:\n\nThought:\nbrief reasoning\n\n"
-            "Action:\n<exactly one native bracket action or one complete Qwen XML "
-            "workspace tool call; legacy bare workspace syntax is also accepted>"
+            "Action:\n<exactly one native bracket action, canonical shell_command JSON "
+            "action, or multiline apply_patch action>"
         )
         if surface == INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE:
             prompt = prompt.replace(

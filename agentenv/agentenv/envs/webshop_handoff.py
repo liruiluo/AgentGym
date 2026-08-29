@@ -10,8 +10,8 @@ from __future__ import annotations
 from .filesystem_checkpoint import FILESYSTEM_CHECKPOINT_REQUEST
 
 
-WEBSHOP_QWEN_XML_CHECKPOINT_GUIDANCE = (
-    " Use the system prompt's Qwen XML shell_command form; run "
+WEBSHOP_BARE_CHECKPOINT_GUIDANCE = (
+    " Use the system prompt's canonical bare shell_command JSON form; run "
     "`mkdir -p .agent_memory` before overwriting "
     "`.agent_memory/CONTINUATION.md`."
 )
@@ -19,7 +19,7 @@ WEBSHOP_QWEN_XML_CHECKPOINT_GUIDANCE = (
 
 WEBSHOP_SESSION_HANDOFF_REQUEST = (
     FILESYSTEM_CHECKPOINT_REQUEST
-    + WEBSHOP_QWEN_XML_CHECKPOINT_GUIDANCE
+    + WEBSHOP_BARE_CHECKPOINT_GUIDANCE
     + " For this shopping task, preserve completed purchases and their visible "
     "compatibility-relevant attributes, the current customer requirement, and "
     "the next shopping action. Overwrite the checkpoint even if you also keep "
@@ -29,7 +29,7 @@ WEBSHOP_SESSION_HANDOFF_REQUEST = (
 
 WEBSHOP_CONTEXT_COMPACTION_REQUEST = (
     FILESYSTEM_CHECKPOINT_REQUEST
-    + WEBSHOP_QWEN_XML_CHECKPOINT_GUIDANCE
+    + WEBSHOP_BARE_CHECKPOINT_GUIDANCE
     + " For this shopping task, preserve the current session requirement, "
     "decisive product evidence and selections, completed purchases, remaining "
     "budget, and the next shopping action. Overwrite the checkpoint even if "
