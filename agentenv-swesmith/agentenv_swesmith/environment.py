@@ -643,11 +643,21 @@ def _utc_now() -> str:
 def _initial_observation(problem_statement: str) -> str:
     return (
         "Repair the persistent repository in /testbed for this issue. Use exactly one "
-        "action per turn. Use shell_command for inspection, editing, and tests. Its exact "
-        "form is one line such as shell_command "
-        '{"command":"ls","workdir":"."}. Start at byte zero and output only the '
-        "action, without XML, prose, Markdown, or a <think> tag. apply_patch is optional "
-        "and starts with the literal line apply_patch followed by one complete "
+        "action per turn. Use shell_command for inspection, editing, and tests through "
+        "one native tool block in this exact shape:\n"
+        "<tool_call>\n"
+        "<function=shell_command>\n"
+        "<parameter=command>\n"
+        "ls\n"
+        "</parameter>\n"
+        "<parameter=workdir>\n"
+        ".\n"
+        "</parameter>\n"
+        "</function>\n"
+        "</tool_call>\n"
+        "Start at byte zero with <tool_call> and output only that block, without prose, "
+        "Markdown, or a <think> tag. For apply_patch, use the same outer block with "
+        "<function=apply_patch> and one <parameter=patch> containing one complete "
         "*** Begin Patch ... *** End Patch payload. Keep edits localized: never paste or "
         "rewrite an entire existing file in one action. Use a small patch around the "
         "changed lines or a bounded shell command, and stay below the response limit. "
@@ -655,19 +665,29 @@ def _initial_observation(problem_statement: str) -> str:
         "submit plain text until a source path changed and the relevant tests ran.\n\n"
         "Issue:\n"
         + problem_statement.strip()
-        + "\n\nBegin with a real shell action in the exact one-line form above."
+        + "\n\nBegin with a real shell_command native tool block in the exact form above."
     )
 
 
 def _parser_error_observation(action: ParsedPolicyAction) -> str:
     return (
         f"Invalid action syntax: {action.error}. Start at byte zero and retry exactly "
-        'like shell_command {"command":"pwd","workdir":"."} on one line. '
-        "For a patch, start with the literal line apply_patch, then one complete "
-        "*** Begin Patch ... *** End Patch payload. Output only one action, with no XML "
-        "tags, reasoning, Markdown, second action, or surrounding text. Keep the edit "
-        "localized instead of pasting or rewriting an entire existing file. Submit "
-        "plain text only after editing and testing."
+        "with one native tool block:\n"
+        "<tool_call>\n"
+        "<function=shell_command>\n"
+        "<parameter=command>\n"
+        "pwd\n"
+        "</parameter>\n"
+        "<parameter=workdir>\n"
+        ".\n"
+        "</parameter>\n"
+        "</function>\n"
+        "</tool_call>\n"
+        "For a patch, use <function=apply_patch> with one <parameter=patch> containing "
+        "one complete *** Begin Patch ... *** End Patch payload. Output only one native "
+        "tool block, with no reasoning, Markdown, second action, or surrounding text. "
+        "Keep the edit localized instead of pasting or rewriting an entire existing file. "
+        "Submit plain text only after editing and testing."
     )
 
 
