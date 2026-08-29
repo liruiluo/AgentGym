@@ -13,6 +13,7 @@ from unittest import mock
 from agentenv_swesmith.workspace import (
     SwesmithWorkspaceError,
     SwesmithWorkspaceMaterializer,
+    _export_git_tree_once,
     _remove_episode_tree,
     restore_hidden_tests,
 )
@@ -208,6 +209,42 @@ class SwesmithWorkspaceTests(unittest.TestCase):
             )
         self.assertEqual(count_path.read_text(encoding="ascii"), "2")
         self.assertEqual(list(self.episodes.iterdir()), [])
+
+    def test_export_drains_trailing_archive_padding_before_closing_pipe(self) -> None:
+        shim_dir = self.root / "git-archive-trailing-padding-shim"
+        shim_dir.mkdir()
+        shim = shim_dir / "git"
+        shim.write_text(
+            r'''#!/usr/bin/env python3
+import io
+import os
+import signal
+import sys
+import tarfile
+
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+payload = b"complete archive payload\n"
+member = tarfile.TarInfo("complete.txt")
+member.size = len(payload)
+member.mode = 0o644
+with tarfile.open(fileobj=sys.stdout.buffer, mode="w|") as archive:
+    archive.addfile(member, io.BytesIO(payload))
+padding = b"\0" * (1024 * 1024)
+for _ in range(64):
+    os.write(sys.stdout.fileno(), padding)
+''',
+            encoding="utf-8",
+        )
+        shim.chmod(0o755)
+        destination = self.root / "trailing-padding-export"
+        destination.mkdir()
+        environment = {"PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}"}
+        with mock.patch.dict(os.environ, environment):
+            _export_git_tree_once(self.mirror, self.bug_commit, destination)
+        self.assertEqual(
+            (destination / "complete.txt").read_text(encoding="utf-8"),
+            "complete archive payload\n",
+        )
 
     def _archive_failure_shim(self, mode: str) -> tuple[Path, Path]:
         shim_dir = self.root / f"git-archive-shim-{mode}"
