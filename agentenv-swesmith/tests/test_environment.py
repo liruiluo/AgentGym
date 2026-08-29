@@ -334,10 +334,15 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.manager.metadata()["active_environment_count"], 1)
         self.assertIn("Fix the public value", reset.observation)
         self.assertIn("Use shell_command", reset.observation)
-        self.assertIn('shell_command {"command":"ls","workdir":"."}', reset.observation)
-        self.assertIn("without XML", reset.observation)
-        self.assertIn("literal line apply_patch", reset.observation)
+        self.assertIn("<tool_call>", reset.observation)
+        self.assertIn("<function=shell_command>", reset.observation)
+        self.assertIn("<parameter=command>", reset.observation)
+        self.assertIn("<function=apply_patch>", reset.observation)
+        self.assertIn("<parameter=patch>", reset.observation)
         self.assertIn("*** Begin Patch ... *** End Patch", reset.observation)
+        self.assertIn("native parameter delimiter lines remain reserved", reset.observation)
+        self.assertNotIn('shell_command {"command":"ls"', reset.observation)
+        self.assertNotIn("without XML", reset.observation)
         self.assertIn("Keep edits localized", reset.observation)
         self.assertIn("never paste or rewrite an entire existing file", reset.observation)
         self.assertIn("stay below the response limit", reset.observation)
@@ -700,11 +705,15 @@ class SwesmithEnvironmentTests(unittest.TestCase):
                 "basis": "parser_rejected",
             },
         )
-        self.assertIn('shell_command {"command":"pwd","workdir":"."}', result.observation)
-        self.assertIn("literal line apply_patch", result.observation)
+        self.assertIn("<tool_call>", result.observation)
+        self.assertIn("<function=shell_command>", result.observation)
+        self.assertIn("<parameter=command>", result.observation)
+        self.assertIn("<function=apply_patch>", result.observation)
         self.assertIn("one complete *** Begin Patch", result.observation)
-        self.assertIn("no XML tags", result.observation)
+        self.assertIn("native parameter delimiter lines remain reserved", result.observation)
         self.assertIn("surrounding text", result.observation)
+        self.assertNotIn('shell_command {"command":"pwd"', result.observation)
+        self.assertNotIn("no XML tags", result.observation)
         recovered = self.manager.step(
             slot, 'shell_command {"command":"pwd","workdir":"."}'
         )
@@ -915,6 +924,28 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         )
         self.assertTrue(patched.info["actor_credit"]["positive_eligible"])
         self.assertIn("apply_patch succeeded", patched.observation)
+
+        submitted = self.manager.step(
+            slot,
+            "<tool_call>\n"
+            "<function=shell_command>\n"
+            "<parameter=command>\n"
+            "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n"
+            "</parameter>\n"
+            "<parameter=workdir>\n"
+            ".\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>",
+        )
+        self.assertTrue(submitted.done)
+        self.assertEqual(submitted.reward, 1.0)
+        self.assertTrue(submitted.info["episode_success"])
+        self.assertEqual(submitted.info["action_kind"], "final")
+        self.assertEqual(
+            submitted.info["actor_credit"]["basis"], "terminal_submission"
+        )
+        self.assertEqual(self.grader.calls, 1)
         self.manager.close(slot)
 
     def test_shell_progress_fingerprint_ignores_runtime_and_tracks_mutation(self) -> None:
