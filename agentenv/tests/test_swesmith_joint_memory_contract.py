@@ -122,6 +122,22 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
         self.assertIn("followed in a later action", self.prompt)
         self.assertIn("only a syntax illustration", self.prompt)
 
+    def test_prompt_prefers_native_tool_serialization_without_json_escaping(self) -> None:
+        for fragment in (
+            "<tool_call>\n<function=shell_command>\n<parameter=command>\n",
+            "find . -name \"*.py\" | head -80",
+            "<function=apply_patch>\n<parameter=patch>\n",
+            "Start at byte zero with <tool_call>",
+            "Do not use the shell_command JSON form",
+        ):
+            self.assertIn(fragment, self.prompt)
+        for forbidden in (
+            'shell_command {"command"',
+            "Start at byte zero with shell_command or apply_patch",
+            "no XML tags",
+        ):
+            self.assertNotIn(forbidden, self.prompt)
+
     def test_compaction_is_an_executed_checkpoint_write_then_later_read(self) -> None:
         for fragment in (
             "exactly one normal executable shell_command or apply_patch action",
