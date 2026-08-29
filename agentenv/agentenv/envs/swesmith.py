@@ -44,7 +44,9 @@ SWE_POLICY_CONTINUATION_MARKER = FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
 ACTION_PROGRESS_SCHEMA = "swesmith_action_progress_v1"
 SWE_MEMORY_CONTRACT = "policy_filesystem_checkpoint_then_client_replace_v3"
+SWE_HORIZON_CONTRACT = "unified_policy_step_terminal_failure_minus0p01_v3"
 SWE_CHECKPOINT_MAX_ATTEMPTS = 2
+SWE_CHECKPOINT_MAX_CYCLES_PER_CONTEXT = 2
 SWE_CHECKPOINT_MIN_POST_READ_TASK_TURNS = 4
 _POSITIVE_ACTOR_CREDIT_BASES = {
     "shell_executed",
@@ -261,6 +263,12 @@ class SwesmithEnvClient(BaseEnvClient):
                 "SWE-smith endpoint memory contract mismatch: "
                 f"expected {SWE_MEMORY_CONTRACT!r}, got {memory_contract!r}"
             )
+        horizon_contract = metadata.get("horizon_contract")
+        if horizon_contract != SWE_HORIZON_CONTRACT:
+            raise RuntimeError(
+                "SWE-smith endpoint horizon contract mismatch: "
+                f"expected {SWE_HORIZON_CONTRACT!r}, got {horizon_contract!r}"
+            )
         task_count = int(metadata["task_count"])
         if data_len is not None and int(data_len) > task_count:
             raise ValueError(
@@ -285,6 +293,14 @@ class SwesmithEnvClient(BaseEnvClient):
         self._checkpoint_retry_pending = False
         self._checkpoint_attempt_count = 0
         self._checkpoint_retry_exhausted = False
+        self._checkpoint_cycle_index = 0
+        self._checkpoint_cycle_attempt_limit = SWE_CHECKPOINT_MAX_ATTEMPTS
+        self._checkpoint_total_attempt_count = 0
+        self._checkpoint_ordinary_turn_required = False
+        self._checkpoint_capacity_terminal_after_ordinary = False
+        self._checkpoint_capacity_terminal_reason: str | None = None
+        self._selected_checkpoint_terminal_on_failure = False
+        self._selected_checkpoint_terminal_on_executed_failure = False
         self._zero_progress_shell_receipts: set[tuple[str, str]] = set()
 
     def _classify_shell_actor_credit(
@@ -362,7 +378,9 @@ class SwesmithEnvClient(BaseEnvClient):
         return max(0, self._configured_max_policy_turns() - self._policy_step_count)
 
     def _checkpoint_turns_required_before_attempt(self) -> int:
-        attempts_left = SWE_CHECKPOINT_MAX_ATTEMPTS - self._checkpoint_attempt_count
+        attempts_left = (
+            self._checkpoint_cycle_attempt_limit - self._checkpoint_attempt_count
+        )
         return (
             attempts_left
             + 1  # one explicit checkpoint read after replacement
@@ -372,59 +390,89 @@ class SwesmithEnvClient(BaseEnvClient):
     def _checkpoint_action_budget_available(self) -> bool:
         return (
             not self._checkpoint_retry_exhausted
-            and self._checkpoint_attempt_count < SWE_CHECKPOINT_MAX_ATTEMPTS
+            and not self._checkpoint_ordinary_turn_required
+            and self._checkpoint_attempt_count
+            < self._checkpoint_cycle_attempt_limit
             and self._remaining_policy_turns()
             >= self._checkpoint_turns_required_before_attempt()
         )
 
-    def _fresh_checkpoint_cycle_turns_required(self) -> int:
+    def _fresh_checkpoint_cycle_turns_required(
+        self, *, attempt_limit: int = SWE_CHECKPOINT_MAX_ATTEMPTS
+    ) -> int:
         return (
-            SWE_CHECKPOINT_MAX_ATTEMPTS
+            attempt_limit
             + 1  # one explicit checkpoint read after replacement
             + SWE_CHECKPOINT_MIN_POST_READ_TASK_TURNS
         )
 
-    def _fresh_checkpoint_cycle_budget_available(self) -> bool:
-        return (
-            self._remaining_policy_turns()
-            >= self._fresh_checkpoint_cycle_turns_required()
-        )
+    def _planned_fresh_checkpoint_attempt_limit(self) -> int:
+        remaining = self._remaining_policy_turns()
+        if remaining >= self._fresh_checkpoint_cycle_turns_required():
+            return SWE_CHECKPOINT_MAX_ATTEMPTS
+        if remaining >= self._fresh_checkpoint_cycle_turns_required(
+            attempt_limit=1
+        ):
+            return 1
+        return 0
 
-    def _rearm_checkpoint_cycle(self) -> None:
+    def _start_checkpoint_cycle(self, *, attempt_limit: int) -> None:
+        if attempt_limit not in {1, SWE_CHECKPOINT_MAX_ATTEMPTS}:
+            raise RuntimeError("SWE-smith checkpoint attempt limit is invalid")
+        if self._checkpoint_ordinary_turn_required:
+            raise RuntimeError(
+                "SWE-smith checkpoint cycle rearmed before an ordinary task turn"
+            )
+        if self._checkpoint_cycle_index >= SWE_CHECKPOINT_MAX_CYCLES_PER_CONTEXT:
+            raise RuntimeError(
+                "SWE-smith checkpoint cycle exceeded its per-context bound"
+            )
+        self._checkpoint_cycle_index += 1
+        self._checkpoint_cycle_attempt_limit = attempt_limit
         self._checkpoint_attempt_count = 0
         self._checkpoint_retry_exhausted = False
-        self._checkpoint_retry_pending = True
+        self._checkpoint_retry_pending = False
 
-    def _checkpoint_request(self, *, attempt: int | None = None) -> str:
+    def _checkpoint_request(
+        self,
+        *,
+        attempt: int | None = None,
+        attempt_limit: int | None = None,
+    ) -> str:
         if attempt is None:
             attempt = self._checkpoint_attempt_count + 1
+        if attempt_limit is None:
+            attempt_limit = self._checkpoint_cycle_attempt_limit
         remaining_after_success = self._remaining_policy_turns() - 1
         return (
             SWE_CONTEXT_COMPACTION_REQUEST
-            + f" This is checkpoint attempt {attempt}/{SWE_CHECKPOINT_MAX_ATTEMPTS}."
+            + f" This is checkpoint attempt {attempt}/{attempt_limit}."
             + f" If it succeeds, exactly {remaining_after_success} policy actions "
             "will remain, beginning with the required checkpoint read."
         )
 
     def policy_turn_candidate(self) -> str | None:
-        if not self._policy_context_bound:
+        if not self._policy_context_bound or self._remaining_policy_turns() <= 0:
             return None
-        if self._checkpoint_retry_exhausted:
-            if not self._fresh_checkpoint_cycle_budget_available():
-                return None
-            # Expose a fresh-cycle candidate so task-neutral pressure accounting
-            # can decide whether one ordinary action still fits.  State is not
-            # mutated until prepare_policy_turn selects the control or an
-            # ordinary action actually completes.
-            return self._checkpoint_request(attempt=1)
-        if not self._checkpoint_action_budget_available():
-            return None
-        return self._checkpoint_request()
+        if self._checkpoint_retry_pending:
+            return self._checkpoint_request()
+        attempt_limit = self._planned_fresh_checkpoint_attempt_limit() or 1
+        return self._checkpoint_request(
+            attempt=1, attempt_limit=attempt_limit
+        )
+
+    def _arm_capacity_terminal_after_ordinary(self, reason: str) -> None:
+        self._checkpoint_capacity_terminal_after_ordinary = True
+        self._checkpoint_capacity_terminal_reason = reason
 
     def prepare_policy_turn(
         self, pressure: PolicyContextPressure | None
     ) -> str | None:
         self._selected_policy_control = None
+        self._selected_checkpoint_terminal_on_failure = False
+        self._selected_checkpoint_terminal_on_executed_failure = False
+        self._checkpoint_capacity_terminal_after_ordinary = False
+        self._checkpoint_capacity_terminal_reason = None
         candidate = self.policy_turn_candidate()
         if candidate is None:
             return None
@@ -433,31 +481,68 @@ class SwesmithEnvClient(BaseEnvClient):
                 "SWE-smith context compaction requires task-neutral token pressure"
             )
         capacity = pressure.effective_prompt_capacity
-        if (
-            pressure.action_prompt_tokens > capacity
-            or pressure.candidate_prompt_tokens > capacity
-        ):
+        if pressure.action_prompt_tokens > capacity:
             raise RuntimeError(
                 "SWE-smith context reached the prompt cap before a trainable "
                 "compaction could be sampled"
             )
-        # A completed two-attempt cycle gets at most one ordinary action before
-        # a fresh bounded cycle.  If that ordinary action could cross the prompt
-        # cap, re-arm immediately instead.  This prevents both an infinite
-        # control-only retry loop and permanent compaction disablement.
-        if self._checkpoint_retry_exhausted:
-            if checkpoint_bounded_retry_trigger_tokens(pressure) < capacity:
-                return None
-            self._rearm_checkpoint_cycle()
-        # Keep enough prompt room to expose one failed action and its native
-        # observation before the final bounded retry.  Unlike retry_control, this
-        # preserves the policy-visible result whenever the workspace has changed.
-        if (
-            not self._checkpoint_retry_pending
-            and checkpoint_retry_trigger_tokens(pressure) < capacity
-        ):
+        if pressure.candidate_prompt_tokens > capacity:
+            self._arm_capacity_terminal_after_ordinary(
+                "checkpoint_request_does_not_fit"
+            )
             return None
+
+        one_growth = checkpoint_bounded_retry_trigger_tokens(pressure)
+        two_growth = checkpoint_retry_trigger_tokens(pressure)
+
+        if self._checkpoint_retry_pending:
+            self._selected_policy_control = "context_compaction"
+            self._selected_checkpoint_terminal_on_executed_failure = bool(
+                one_growth > capacity
+            )
+            return candidate
+
+        if self._checkpoint_ordinary_turn_required:
+            if pressure.projected_next_prompt_tokens_without_control > capacity:
+                self._arm_capacity_terminal_after_ordinary(
+                    "ordinary_progress_would_exceed_prompt_capacity"
+                )
+            return None
+
+        if self._checkpoint_cycle_index >= SWE_CHECKPOINT_MAX_CYCLES_PER_CONTEXT:
+            if pressure.projected_next_prompt_tokens_without_control > capacity:
+                self._arm_capacity_terminal_after_ordinary(
+                    "checkpoint_cycle_limit_exhausted"
+                )
+            return None
+
+        attempt_limit = self._planned_fresh_checkpoint_attempt_limit()
+        if attempt_limit == 0:
+            if pressure.projected_next_prompt_tokens_without_control <= capacity:
+                return None
+            # A checkpoint write is useful only if at least one later sampled
+            # action can read it after replacement. On the final policy turn,
+            # preserve the normal task/submission action instead and let the
+            # native horizon close that real transition.
+            if self._remaining_policy_turns() <= 1:
+                self._arm_capacity_terminal_after_ordinary(
+                    "checkpoint_read_turn_unavailable"
+                )
+                return None
+            self._start_checkpoint_cycle(attempt_limit=1)
+            self._selected_policy_control = "context_compaction"
+            self._selected_checkpoint_terminal_on_failure = True
+            return candidate
+
+        if two_growth < capacity:
+            return None
+
+        self._start_checkpoint_cycle(attempt_limit=attempt_limit)
         self._selected_policy_control = "context_compaction"
+        if attempt_limit == 1:
+            self._selected_checkpoint_terminal_on_failure = True
+        elif two_growth > capacity:
+            self._selected_checkpoint_terminal_on_executed_failure = True
         return candidate
 
     def __len__(self) -> int:
@@ -479,13 +564,46 @@ class SwesmithEnvClient(BaseEnvClient):
     def step(self, action: str) -> StepOutput:
         if self._selected_policy_control == "context_compaction":
             return self._complete_context_compaction(action)
+        capacity_terminal = self._checkpoint_capacity_terminal_after_ordinary
+        capacity_reason = self._checkpoint_capacity_terminal_reason
+        self._checkpoint_capacity_terminal_after_ordinary = False
+        self._checkpoint_capacity_terminal_reason = None
         output = self._step_native_policy_action(action)
-        if (
-            self._checkpoint_retry_exhausted
-            and not output.done
-            and self._fresh_checkpoint_cycle_budget_available()
-        ):
-            self._rearm_checkpoint_cycle()
+        if output.done:
+            return output
+        if capacity_terminal:
+            return self._finalize_checkpoint_capacity(
+                output,
+                reason=capacity_reason or "checkpoint_capacity_exhausted",
+            )
+        if self._checkpoint_ordinary_turn_required:
+            info = output.info if isinstance(output.info, Mapping) else {}
+            native_env_info = info.get("env_info", {})
+            native_actor_credit = (
+                native_env_info.get("actor_credit", {})
+                if isinstance(native_env_info, Mapping)
+                else {}
+            )
+            if not isinstance(native_actor_credit, Mapping) or not (
+                native_actor_credit.get("basis")
+            ):
+                wrapper_evidence = info.get("wrapper_evidence", {})
+                native_actor_credit = (
+                    wrapper_evidence.get("actor_credit", {})
+                    if isinstance(wrapper_evidence, Mapping)
+                    else {}
+                )
+            executed_ordinary_action = bool(
+                isinstance(native_actor_credit, Mapping)
+                and native_actor_credit.get("basis")
+                in {"shell_executed", "workspace_changed", "no_workspace_change"}
+            )
+            if executed_ordinary_action:
+                self._checkpoint_ordinary_turn_required = False
+                self._checkpoint_retry_exhausted = False
+                self._checkpoint_retry_pending = False
+                self._checkpoint_attempt_count = 0
+                self._checkpoint_cycle_attempt_limit = SWE_CHECKPOINT_MAX_ATTEMPTS
         return output
 
     def _step_native_policy_action(self, action: str) -> StepOutput:
@@ -581,12 +699,130 @@ class SwesmithEnvClient(BaseEnvClient):
             ),
         )
 
+    def _finalize_checkpoint_capacity(
+        self,
+        native_output: StepOutput,
+        *,
+        reason: str,
+        wrapper_evidence: Mapping[str, Any] | None = None,
+    ) -> StepOutput:
+        """Close an unsafe continuation through the native failure endpoint.
+
+        The sampled action and its native receipt stay in the PPO ledger. The
+        attested horizon contract supplies a terminal failure without grading;
+        no advantage or return is edited by the wrapper.
+        """
+
+        response = self._request("POST", "horizon", json={"id": self.env_id})
+        self.info = response
+        if not bool(response.get("done")):
+            raise RuntimeError(
+                "SWE-smith checkpoint-capacity finalization was not terminal"
+            )
+        horizon_info = response.get("info", {})
+        if not isinstance(horizon_info, Mapping):
+            raise RuntimeError(
+                "SWE-smith checkpoint-capacity finalization info is invalid"
+            )
+        sample_excluded = horizon_info.get("sample_excluded", False)
+        if type(sample_excluded) is not bool:
+            raise RuntimeError(
+                "SWE-smith checkpoint-capacity sample_excluded must be boolean"
+            )
+        horizon_reward = float(response["reward"])
+        # This terminal receipt belongs to the sampled action that immediately
+        # preceded it. Preserve any negative reward already assigned to that
+        # action, then apply the endpoint's natural horizon failure. In
+        # particular, do not charge the checkpoint-contract penalty to an
+        # ordinary task action merely because no further prompt would fit.
+        native_action_reward = float(native_output.reward)
+        reward = min(native_action_reward, horizon_reward)
+
+        native_info = dict(native_output.info)
+        native_wrapper = native_info.get("wrapper_evidence", {})
+        # The horizon endpoint is a wrapper-owned terminal transition for the
+        # immediately preceding sampled action. Preserve that action's standard
+        # top-level credit/progress receipts instead of hiding them only under
+        # native_wrapper_evidence. A richer control wrapper may override those
+        # fields, while the capacity-terminal fields below remain authoritative.
+        evidence = (
+            dict(native_wrapper) if isinstance(native_wrapper, Mapping) else {}
+        )
+        evidence.update(dict(wrapper_evidence or {}))
+        evidence.update(
+            {
+                "event": "checkpoint_capacity_termination",
+                "workspace_continuity_id": self.env_id,
+                "capacity_termination_reason": reason,
+                "checkpoint_cycle_index": self._checkpoint_cycle_index,
+                "checkpoint_max_cycles_per_context": (
+                    SWE_CHECKPOINT_MAX_CYCLES_PER_CONTEXT
+                ),
+                "checkpoint_total_attempt_count": (
+                    self._checkpoint_total_attempt_count
+                ),
+                "native_action_reward": float(native_output.reward),
+                "native_action_done": bool(native_output.done),
+                "native_action_state": str(native_output.state),
+                "native_wrapper_evidence": (
+                    dict(native_wrapper)
+                    if isinstance(native_wrapper, Mapping)
+                    else {}
+                ),
+                "horizon_reward": horizon_reward,
+                "final_reward": reward,
+                "reward_source": "native_horizon_failure_transition",
+                "advantage_modified": False,
+            }
+        )
+        if reward != horizon_reward:
+            evidence["native_action_reward_preserved"] = True
+        self._checkpoint_capacity_terminal_after_ordinary = False
+        self._checkpoint_capacity_terminal_reason = None
+        self._checkpoint_retry_pending = False
+        self._checkpoint_retry_exhausted = True
+        self._checkpoint_ordinary_turn_required = False
+        self._selected_checkpoint_terminal_on_failure = False
+        self._selected_checkpoint_terminal_on_executed_failure = False
+        return StepOutput(
+            state=str(response["observation"]),
+            reward=reward,
+            done=True,
+            info=build_task_neutral_transition_info(
+                env_info=dict(horizon_info),
+                action_submission=native_info.get(
+                    "action_submission", {"raw_policy_output": None}
+                ),
+                native_step_before=native_info.get("native_step_before"),
+                native_step_after=native_info.get("native_step_after"),
+                native_call_count_before=native_info.get(
+                    "native_call_count_before"
+                ),
+                native_call_count_after=native_info.get(
+                    "native_call_count_after"
+                ),
+                context_epoch_before=native_info.get("context_epoch_before"),
+                context_epoch_after=self._context_epoch,
+                session_epoch_before=native_info.get("session_epoch_before"),
+                session_epoch_after=self._session_epoch,
+                policy_step_before=native_info.get("policy_step_before"),
+                policy_step_after=native_info.get("policy_step_after"),
+                wrapper_evidence=evidence,
+            ),
+        )
+
     def _complete_context_compaction(self, action: str) -> StepOutput:
         # The checkpoint is an ordinary sampled policy action. Execute it first;
         # only an attested, bounded write to the exact continuation path may
         # authorize the wrapper-owned context replacement.
+        terminal_on_failure = self._selected_checkpoint_terminal_on_failure
+        terminal_on_executed_failure = (
+            self._selected_checkpoint_terminal_on_executed_failure
+        )
         native_output = self._step_native_policy_action(action)
         self._selected_policy_control = None
+        self._selected_checkpoint_terminal_on_failure = False
+        self._selected_checkpoint_terminal_on_executed_failure = False
         info = dict(native_output.info)
         env_info = info.get("env_info", {})
         receipt_value = (
@@ -598,6 +834,13 @@ class SwesmithEnvClient(BaseEnvClient):
         persisted = filesystem_checkpoint_write_succeeded(checkpoint_receipt)
         checkpoint_attempt_number = self._checkpoint_attempt_count + 1
         self._checkpoint_attempt_count = checkpoint_attempt_number
+        self._checkpoint_total_attempt_count += 1
+        if self._checkpoint_cycle_index == 0:
+            # Direct test/debug dispatches may bypass prepare_policy_turn. Keep
+            # their receipts well-formed without weakening production guards.
+            self._checkpoint_cycle_index = 1
+        checkpoint_cycle_index = self._checkpoint_cycle_index
+        checkpoint_attempt_limit = self._checkpoint_cycle_attempt_limit
 
         native_wrapper = info.get("wrapper_evidence", {})
         actor_credit = (
@@ -618,6 +861,7 @@ class SwesmithEnvClient(BaseEnvClient):
         context_transition = None
         retry_feedback_preserved = False
         retry_context_restored = False
+        capacity_termination_reason = None
         if persisted and not native_output.done:
             framing = self._immutable_policy_context
             if framing is None:
@@ -645,44 +889,91 @@ class SwesmithEnvClient(BaseEnvClient):
             self._checkpoint_retry_pending = False
             self._checkpoint_attempt_count = 0
             self._checkpoint_retry_exhausted = False
+            self._checkpoint_cycle_index = 0
+            self._checkpoint_cycle_attempt_limit = SWE_CHECKPOINT_MAX_ATTEMPTS
+            self._checkpoint_ordinary_turn_required = False
             context_transition = build_task_neutral_context_transition(
                 CONTEXT_OPERATION_REPLACE,
                 messages=replacement,
             )
         elif not native_output.done:
-            # A rejected, unexecuted control action has no state transition to
-            # preserve. Restore the exact pre-control task context so malformed
-            # output cannot consume the remaining prompt budget; its sampled
-            # tokens, reward, and native receipt remain in the rollout ledger.
-            # Executed actions still append their observation because arbitrary
-            # workspace side effects cannot be rolled back safely.
-            if safe_retry_context_restore:
-                retry_context_restored = True
-                context_transition = build_task_neutral_context_transition(
-                    CONTEXT_OPERATION_RETRY_CONTROL
+            if terminal_on_failure:
+                capacity_termination_reason = (
+                    "checkpoint_failure_would_exceed_prompt_capacity"
+                )
+            elif terminal_on_executed_failure and not safe_retry_context_restore:
+                capacity_termination_reason = (
+                    "checkpoint_failure_would_exceed_prompt_capacity"
                 )
             else:
-                retry_feedback_preserved = True
-            self._checkpoint_retry_pending = bool(
-                self._checkpoint_attempt_count < SWE_CHECKPOINT_MAX_ATTEMPTS
-                and self._remaining_policy_turns()
-                >= self._checkpoint_turns_required_before_attempt()
-            )
-            self._checkpoint_retry_exhausted = not self._checkpoint_retry_pending
+                # A rejected, unexecuted control action has no state transition
+                # to preserve. Restore the exact pre-control task context so its
+                # malformed output cannot consume the remaining prompt budget.
+                # Executed actions append feedback because arbitrary workspace
+                # side effects cannot be rolled back safely.
+                if safe_retry_context_restore:
+                    retry_context_restored = True
+                    context_transition = build_task_neutral_context_transition(
+                        CONTEXT_OPERATION_RETRY_CONTROL
+                    )
+                else:
+                    retry_feedback_preserved = True
+                self._checkpoint_retry_pending = bool(
+                    self._checkpoint_attempt_count < checkpoint_attempt_limit
+                    and self._remaining_policy_turns()
+                    >= self._checkpoint_turns_required_before_attempt()
+                )
+                self._checkpoint_retry_exhausted = not (
+                    self._checkpoint_retry_pending
+                )
+                self._checkpoint_ordinary_turn_required = (
+                    self._checkpoint_retry_exhausted
+                )
         else:
             self._checkpoint_retry_pending = False
             self._checkpoint_retry_exhausted = True
+            self._checkpoint_ordinary_turn_required = False
+
+        native_sample_excluded = (
+            env_info.get("sample_excluded", False)
+            if isinstance(env_info, Mapping)
+            else False
+        )
+        if type(native_sample_excluded) is not bool:
+            raise RuntimeError("SWE-smith checkpoint sample_excluded must be boolean")
+        native_episode_success = (
+            env_info.get("episode_success", False)
+            if isinstance(env_info, Mapping)
+            else False
+        )
+        if type(native_episode_success) is not bool:
+            raise RuntimeError("SWE-smith checkpoint episode_success must be boolean")
+        native_step = env_info.get("step") if isinstance(env_info, Mapping) else None
+        native_max_steps_terminal = bool(
+            not persisted
+            and native_output.done
+            and not native_sample_excluded
+            and not native_episode_success
+            and isinstance(actor_credit, Mapping)
+            and actor_credit.get("basis") != "terminal_submission"
+            and isinstance(native_step, int)
+            and not isinstance(native_step, bool)
+            and native_step >= self._configured_max_policy_turns()
+        )
 
         reward = float(native_output.reward)
         checkpoint_reward_overlay = None
         if (
             not persisted
-            and not native_output.done
+            and (not native_output.done or native_max_steps_terminal)
             and self.checkpoint_contract_penalty != 0.0
         ):
             # The contract violation is an ordinary environment transition.
             # Apply the configured negative reward as a ceiling so an existing
             # parser/executor penalty for the same action is never added twice.
+            # A checkpoint failure coincident with the native max-step terminal
+            # is still the same failed sampled action; successful submissions
+            # and infrastructure-excluded samples retain their native reward.
             reward_before = reward
             reward = min(reward_before, self.checkpoint_contract_penalty)
             applied_delta = reward - reward_before
@@ -709,12 +1000,22 @@ class SwesmithEnvClient(BaseEnvClient):
             ),
             "context_replaced": bool(persisted and not native_output.done),
             "checkpoint_attempt_count": checkpoint_attempt_number,
+            "checkpoint_cycle_attempt_limit": checkpoint_attempt_limit,
             "checkpoint_max_attempts": SWE_CHECKPOINT_MAX_ATTEMPTS,
+            "checkpoint_cycle_index": checkpoint_cycle_index,
+            "checkpoint_max_cycles_per_context": (
+                SWE_CHECKPOINT_MAX_CYCLES_PER_CONTEXT
+            ),
+            "checkpoint_total_attempt_count": self._checkpoint_total_attempt_count,
             "remaining_policy_turns": self._remaining_policy_turns(),
             "retry_pending": self._checkpoint_retry_pending,
             "retry_exhausted": self._checkpoint_retry_exhausted,
+            "ordinary_turn_required": self._checkpoint_ordinary_turn_required,
             "retry_context_restored": retry_context_restored,
             "retry_feedback_preserved": retry_feedback_preserved,
+            "terminal_on_failure": terminal_on_failure,
+            "terminal_on_executed_failure": terminal_on_executed_failure,
+            "native_max_steps_terminal": native_max_steps_terminal,
             "sampled_policy_output_preserved_in_ledger": True,
             "native_observation_preserved_in_ledger": True,
             "replacement_contains_policy_output": False,
@@ -725,6 +1026,42 @@ class SwesmithEnvClient(BaseEnvClient):
         }
         if checkpoint_reward_overlay is not None:
             wrapper_evidence["reward_overlay"] = checkpoint_reward_overlay
+        if capacity_termination_reason is not None:
+            wrapper_evidence[
+                "capacity_termination_reason"
+            ] = capacity_termination_reason
+            return self._finalize_checkpoint_capacity(
+                StepOutput(
+                    state=native_output.state,
+                    reward=reward,
+                    done=False,
+                    info=build_task_neutral_transition_info(
+                        env_info=(
+                            env_info if isinstance(env_info, Mapping) else {}
+                        ),
+                        action_submission=info.get(
+                            "action_submission", {"raw_policy_output": action}
+                        ),
+                        native_step_before=info.get("native_step_before"),
+                        native_step_after=info.get("native_step_after"),
+                        native_call_count_before=info.get(
+                            "native_call_count_before"
+                        ),
+                        native_call_count_after=info.get(
+                            "native_call_count_after"
+                        ),
+                        context_epoch_before=info.get("context_epoch_before"),
+                        context_epoch_after=self._context_epoch,
+                        session_epoch_before=info.get("session_epoch_before"),
+                        session_epoch_after=info.get("session_epoch_after"),
+                        policy_step_before=info.get("policy_step_before"),
+                        policy_step_after=info.get("policy_step_after"),
+                        wrapper_evidence=wrapper_evidence,
+                    ),
+                ),
+                reason=capacity_termination_reason,
+                wrapper_evidence=wrapper_evidence,
+            )
         return StepOutput(
             state=native_output.state,
             reward=reward,
@@ -793,6 +1130,43 @@ class SwesmithEnvClient(BaseEnvClient):
                     "workspace_continuity_id": self.env_id,
                 },
             ),
+        )
+
+    def finalize_policy_prompt_capacity(
+        self, pressure: PolicyContextPressure
+    ) -> StepOutput:
+        """Terminate an already-over-cap prompt through the native horizon path."""
+
+        capacity = pressure.effective_prompt_capacity
+        if pressure.action_prompt_tokens <= capacity:
+            raise ValueError(
+                "SWE-smith prompt-capacity finalization requires an over-cap prompt"
+            )
+        output = self.finalize_horizon()
+        info = dict(output.info)
+        wrapper_evidence = info.get("wrapper_evidence", {})
+        evidence = (
+            dict(wrapper_evidence)
+            if isinstance(wrapper_evidence, Mapping)
+            else {}
+        )
+        evidence.update(
+            {
+                "event": "prompt_capacity_finalization",
+                "workspace_continuity_id": self.env_id,
+                "capacity_termination_reason": "action_prompt_exceeds_capacity",
+                "action_prompt_tokens": pressure.action_prompt_tokens,
+                "effective_prompt_capacity": capacity,
+                "grader_called": False,
+                "advantage_modified": False,
+            }
+        )
+        info["wrapper_evidence"] = evidence
+        return StepOutput(
+            state=output.state,
+            reward=output.reward,
+            done=output.done,
+            info=info,
         )
 
     def finalize_policy_horizon(self) -> StepOutput:

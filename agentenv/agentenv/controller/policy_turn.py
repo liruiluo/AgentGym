@@ -24,6 +24,7 @@ class PreparedPolicyTurn:
     messages: tuple[PolicyMessage, ...]
     prompt_token_count: int
     control_request: str | None
+    pre_sampling_terminal: StepOutput | None = None
 
 
 def bind_initial_policy_context(
@@ -52,6 +53,56 @@ def prepare_policy_turn(
     action_messages = _normalize_messages(messages)
     client.bind_policy_context(deepcopy(action_messages), initial=False)
     action_prompt_tokens = int(count_prompt_tokens(action_messages))
+    effective_prompt_capacity = min(
+        int(max_prompt_tokens), int(max_model_tokens) - int(max_response_tokens)
+    )
+    if effective_prompt_capacity <= 0:
+        raise ValueError("effective prompt capacity must be positive")
+    if action_prompt_tokens > effective_prompt_capacity:
+        if max_observation_tokens is None:
+            raise RuntimeError(
+                "prompt-capacity finalization requires an explicit "
+                "observation-token budget"
+            )
+        pressure = PolicyContextPressure(
+            action_prompt_tokens=action_prompt_tokens,
+            candidate_prompt_tokens=action_prompt_tokens,
+            max_prompt_tokens=int(max_prompt_tokens),
+            max_model_tokens=int(max_model_tokens),
+            max_response_tokens=int(max_response_tokens),
+            max_observation_tokens=int(max_observation_tokens),
+            action_observation_envelope_tokens=int(
+                action_observation_envelope_tokens
+            ),
+        )
+        capacity_finalizer = getattr(
+            client, "finalize_policy_prompt_capacity", None
+        )
+        if callable(capacity_finalizer):
+            terminal = capacity_finalizer(pressure)
+        else:
+            horizon_finalizer = getattr(client, "finalize_policy_horizon", None)
+            terminal = horizon_finalizer() if callable(horizon_finalizer) else None
+        if terminal is None:
+            raise RuntimeError(
+                "policy prompt exceeded capacity and the wrapper did not provide "
+                "a terminal finalization"
+            )
+        if not isinstance(terminal, StepOutput):
+            raise TypeError(
+                "prompt-capacity finalization must return StepOutput or None"
+            )
+        if not terminal.done:
+            raise RuntimeError(
+                "prompt-capacity finalization must terminate the episode"
+            )
+        return PreparedPolicyTurn(
+            messages=tuple(action_messages),
+            prompt_token_count=action_prompt_tokens,
+            control_request=None,
+            pre_sampling_terminal=terminal,
+        )
+
     candidate = client.policy_turn_candidate()
     if candidate is None:
         return PreparedPolicyTurn(
@@ -100,6 +151,10 @@ def complete_policy_turn(
 ) -> tuple[StepOutput, list[PolicyMessage]]:
     """Dispatch every sampled output through ``env.step`` and apply its receipt."""
 
+    if prepared.pre_sampling_terminal is not None:
+        raise ValueError(
+            "a pre-sampling terminal turn cannot dispatch a policy output"
+        )
     if not isinstance(policy_output, str):
         raise TypeError("policy output must be text")
     step_output = client.step(policy_output)

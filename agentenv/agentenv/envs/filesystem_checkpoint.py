@@ -51,21 +51,26 @@ def _maximum_policy_turn_growth(pressure: Any) -> int:
 
 
 def checkpoint_retry_trigger_tokens(pressure: Any) -> int:
-    """Reserve room for a feedback-preserving checkpoint retry."""
+    """Reserve two full policy-turn growth envelopes before continuing.
 
-    return (
-        int(pressure.action_prompt_tokens)
-        + 2 * _maximum_policy_turn_growth(pressure)
+    This is the fresh-cycle trigger used before sampling another ordinary task
+    action.  The exact candidate prompt is checked independently, and an
+    executed checkpoint failure is terminated when its next safe state cannot
+    fit.  Keeping the trigger anchored to the ordinary action prompt preserves
+    the frozen AF/AG trigger boundary while still reserving two worst-case
+    response-plus-observation envelopes.
+    """
+
+    return int(pressure.action_prompt_tokens) + 2 * _maximum_policy_turn_growth(
+        pressure
     )
 
 
 def checkpoint_bounded_retry_trigger_tokens(pressure: Any) -> int:
-    """Project one ordinary turn before a bounded control retry is required.
+    """Reserve one full turn for a path that cannot continue after failure.
 
-    A failed control turn is restored to its exact pre-control context, so it
-    does not need another response-plus-observation reserve.  Taking the larger
-    of the ordinary and candidate render remains conservative when a chat
-    template shortens generation-only history while appending the control.
+    This projection is safe only when the selected control must either replace
+    context, restore the exact pre-control prompt, or terminate the episode.
     """
 
     return max(

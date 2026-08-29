@@ -84,6 +84,19 @@ class BaseEnvClient(metaclass=ABCMeta):
         del pressure
         return None
 
+    def finalize_policy_prompt_capacity(
+        self, pressure: PolicyContextPressure
+    ) -> StepOutput | None:
+        """Optionally terminate when the next prompt cannot be sampled safely.
+
+        This wrapper-owned lifecycle hook consumes no policy row. The shared
+        runner applies its terminal reward and receipt to the latest sampled
+        row, just as it does for ordinary horizon finalization.
+        """
+
+        del pressure
+        return self.finalize_policy_horizon()
+
     def finalize_policy_horizon(self) -> StepOutput | None:
         """Optionally grade a workspace when the shared policy budget expires.
 

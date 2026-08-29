@@ -58,11 +58,18 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
         self.compaction = values["SWE_CONTEXT_COMPACTION_REQUEST"]
         self.continuation_marker = values["SWE_POLICY_CONTINUATION_MARKER"]
         self.memory_contract = values["SWE_MEMORY_CONTRACT"]
+        self.horizon_contract = values["SWE_HORIZON_CONTRACT"]
 
     def test_contract_has_a_distinct_joint_memory_identity(self) -> None:
         self.assertEqual(
             self.memory_contract,
             "policy_filesystem_checkpoint_then_client_replace_v3",
+        )
+
+    def test_capacity_terminal_requires_the_no_grade_horizon_contract(self) -> None:
+        self.assertEqual(
+            self.horizon_contract,
+            "unified_policy_step_terminal_failure_minus0p01_v3",
         )
 
     def test_prompt_exposes_optional_durable_debugging_notes(self) -> None:
