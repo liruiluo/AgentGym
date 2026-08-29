@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+import signal
 import socket
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from agentenv_agentmemory.workspace_sandbox import (
     LinuxNamespaceShellSandbox,
@@ -14,6 +16,7 @@ from agentenv_agentmemory.workspace_sandbox import (
     _lease_ephemeral_model_uid,
     _collect_bounded_output,
     _normalize_sha256,
+    _terminate_process_group,
     _validate_staged_workspace,
     assert_executable_fingerprint,
     executable_fingerprint,
@@ -73,6 +76,59 @@ class BoundedOutputTests(unittest.TestCase):
         self.assertEqual(stderr, b"y" * 193)
         self.assertTrue(stdout_truncated)
         self.assertTrue(stderr_truncated)
+
+    def test_exited_group_leader_cleans_up_pipe_holding_descendant(self) -> None:
+        process = subprocess.Popen(
+            [
+                "/bin/bash",
+                "--noprofile",
+                "--norc",
+                "-c",
+                "trap '' TERM; sleep 30 & printf done",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr, stdout_truncated, stderr_truncated, timed_out = (
+                _collect_bounded_output(
+                    process,
+                    stdout_limit=257,
+                    stderr_limit=193,
+                    timeout_ms=2000,
+                )
+            )
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(stdout, b"done")
+        self.assertEqual(stderr, b"")
+        self.assertFalse(stdout_truncated)
+        self.assertFalse(stderr_truncated)
+        self.assertFalse(timed_out)
+
+    def test_unreaped_killed_launcher_raises_typed_sandbox_error(self) -> None:
+        process = Mock()
+        process.pid = 424242
+        process.poll.return_value = None
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="sandbox-launcher", timeout=0.5),
+            subprocess.TimeoutExpired(cmd="sandbox-launcher", timeout=2.0),
+        ]
+        with (
+            patch("agentenv_agentmemory.workspace_sandbox.os.killpg"),
+            self.assertRaisesRegex(
+                ShellSandboxError,
+                "did not terminate after SIGKILL",
+            ),
+        ):
+            _terminate_process_group(process)
 
 
 class StagedWorkspaceValidationTests(unittest.TestCase):
