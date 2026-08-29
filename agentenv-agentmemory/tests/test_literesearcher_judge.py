@@ -67,6 +67,7 @@ class LiteResearcherJudgeTests(unittest.TestCase):
             sent["chat_template_kwargs"],
             {"enable_thinking": False},
         )
+        self.assertEqual(sent["max_tokens"], 4096)
         self.assertIn("PSX (digital video recorder)", sent["messages"][0]["content"])
 
     def test_upstream_judge_parses_incorrect_without_correct_substring_bug(self) -> None:
@@ -118,6 +119,7 @@ class LiteResearcherJudgeTests(unittest.TestCase):
         self.assertNotIn("secret", serialized)
         self.assertEqual(metadata["fallback"], "upstream_em_v1")
         self.assertEqual(metadata["fallback_after_primary_failures"], 3)
+        self.assertEqual(metadata["max_tokens"], 4096)
         self.assertTrue(metadata["fallback_reason_recorded"])
 
     def test_upstream_em_matches_released_normalization_order(self) -> None:

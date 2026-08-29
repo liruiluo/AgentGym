@@ -20,6 +20,7 @@ LITERESEARCHER_FORMAL_JUDGE_MODELS = frozenset(
     {"kimi-k2.6", "qwen3-8b-judge"}
 )
 LITERESEARCHER_FORMAL_JUDGE_MODEL = "kimi-k2.6"
+LITERESEARCHER_FORMAL_JUDGE_MAX_TOKENS = 4096
 
 _EVALUATION_PROMPT = """You are an evaluation assistant. Please determine if the predicted answer is semantically equivalent to the labeled answer.
 
@@ -183,7 +184,7 @@ class UpstreamCompatibleLLMJudge:
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.0,
-                "max_tokens": 512,
+                "max_tokens": LITERESEARCHER_FORMAL_JUDGE_MAX_TOKENS,
                 "chat_template_kwargs": {"enable_thinking": False},
             }
         ).encode("utf-8")
@@ -273,7 +274,7 @@ class UpstreamCompatibleLLMJudge:
             "model": self.model,
             "endpoint_sha256": endpoint_digest,
             "temperature": 0.0,
-            "max_tokens": 512,
+            "max_tokens": LITERESEARCHER_FORMAL_JUDGE_MAX_TOKENS,
             "timeout_seconds": self.timeout_seconds,
             "max_retries": self.max_retries,
             "fallback_after_primary_failures": self.max_retries,
