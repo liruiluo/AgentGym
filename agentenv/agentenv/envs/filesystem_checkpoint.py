@@ -290,6 +290,8 @@ def filesystem_checkpoint_action_completed(
 def build_post_checkpoint_context(
     messages: Sequence[Mapping[str, str]],
     receipt_value: Any,
+    *,
+    continuation_marker: str = FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER,
 ) -> list[dict[str, str]]:
     """Return a fresh context that names, but never injects, the checkpoint.
 
@@ -302,10 +304,12 @@ def build_post_checkpoint_context(
     receipt = normalize_filesystem_checkpoint_receipt(receipt_value)
     if not filesystem_checkpoint_write_succeeded(receipt):
         raise ValueError("post-checkpoint context requires a successful receipt")
+    if not isinstance(continuation_marker, str) or not continuation_marker.strip():
+        raise ValueError("post-checkpoint continuation marker must be nonempty")
     normalized = _normalize_checkpoint_framing(messages)
 
     marker = (
-        f"{FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER} "
+        f"{continuation_marker.strip()} "
         f"Verified receipt: size_bytes={receipt['size_bytes']}, "
         f"sha256={receipt['sha256']}."
     )
@@ -322,6 +326,8 @@ def build_post_checkpoint_read_retry_context(
     messages: Sequence[Mapping[str, str]],
     receipt_value: Any,
     reason: str,
+    *,
+    continuation_marker: str = FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER,
 ) -> list[dict[str, str]]:
     """Rebuild the bounded post-checkpoint prompt after a failed required read.
 
@@ -331,7 +337,11 @@ def build_post_checkpoint_read_retry_context(
     reads constant-size while still requiring a later ordinary filesystem read.
     """
 
-    replacement = build_post_checkpoint_context(messages, receipt_value)
+    replacement = build_post_checkpoint_context(
+        messages,
+        receipt_value,
+        continuation_marker=continuation_marker,
+    )
     retry = build_filesystem_checkpoint_read_retry_observation(reason)
     if replacement[-1]["role"] == "user":
         replacement[-1]["content"] = (

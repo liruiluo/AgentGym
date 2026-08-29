@@ -94,11 +94,20 @@ OPENMLE_CONTEXT_COMPACTION_REQUEST = (
     "`validation: not measured yet` and the exact blocker. Do not inspect data, "
     "run code, or submit instead."
 )
+OPENMLE_EXACT_CHECKPOINT_READ_ACTION = (
+    'shell_command {"command":"cat .agent_memory/CONTINUATION.md",'
+    '"workdir":".","timeout_ms":20000}'
+)
 OPENMLE_POLICY_CONTINUATION_MARKER = (
     FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER
-    + " If the budget line says only one action remains and submission.csv exists, "
-    "submit now. Otherwise, after reading the checkpoint, immediately execute its "
-    "`next_action`: modify `train.py` once before running it again. Do not inspect "
+    + " On the next turn, output exactly this one physical line and nothing else: `"
+    + OPENMLE_EXACT_CHECKPOINT_READ_ACTION
+    + "`. Do not overwrite `.agent_memory/CONTINUATION.md`, inspect another file, "
+    "run `train.py`, or submit on that mandatory read turn."
+    + " After that exact read returns, if the latest budget line says only one "
+    "action remains and submission.csv exists, submit now. Otherwise, immediately "
+    "execute its `next_action`: modify `train.py` once before running "
+    "it again. Do not inspect "
     "the task or schema again. If that rerun produces a finite validation metric "
     "and submission.csv exists, submit next; do not start a third iteration."
 )
@@ -582,6 +591,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                         checkpoint_read_framing_before,
                         checkpoint_read_pending_before,
                         read_failure_reason or "checkpoint_read_not_observed",
+                        continuation_marker=OPENMLE_POLICY_CONTINUATION_MARKER,
                     ),
                 )
         if context_control_selected:
@@ -628,7 +638,9 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                     framing
                 )
                 replacement = build_post_checkpoint_context(
-                    framing, checkpoint_receipt
+                    framing,
+                    checkpoint_receipt,
+                    continuation_marker=OPENMLE_POLICY_CONTINUATION_MARKER,
                 )
                 self._context_epoch += 1
                 self._pending_checkpoint_read = dict(checkpoint_receipt)

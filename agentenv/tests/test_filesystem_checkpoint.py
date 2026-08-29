@@ -5,6 +5,7 @@ import unittest
 
 from agentenv.controller.types import PolicyContextPressure
 from agentenv.envs.filesystem_checkpoint import (
+    FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER,
     FILESYSTEM_CHECKPOINT_MAX_BYTES,
     FILESYSTEM_CHECKPOINT_PATH,
     FILESYSTEM_CHECKPOINT_REQUEST_TOKEN_SLACK,
@@ -347,6 +348,39 @@ class FilesystemCheckpointContractTest(unittest.TestCase):
         self.assertIn(f"size_bytes={receipt['size_bytes']}", replacement[-1]["content"])
         self.assertNotIn(secret_body, str(replacement))
         self.assertNotIn("apply_patch", str(replacement))
+
+    def test_post_checkpoint_context_accepts_route_specific_marker(self) -> None:
+        body = b"checkpoint state"
+        receipt = {
+            "schema": "agentmemory_filesystem_checkpoint_receipt_v1",
+            "path": FILESYSTEM_CHECKPOINT_PATH,
+            "action_kind": "shell_command",
+            "action_completed": True,
+            "changed": True,
+            "exists": True,
+            "regular_file": True,
+            "size_bytes": len(body),
+            "sha256": hashlib.sha256(body).hexdigest(),
+        }
+        marker = "Route-specific mandatory read marker."
+        replacement = build_post_checkpoint_context(
+            [{"role": "user", "content": "task framing"}],
+            receipt,
+            continuation_marker=marker,
+        )
+        self.assertIn(marker, replacement[-1]["content"])
+        self.assertNotIn(
+            FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER,
+            replacement[-1]["content"],
+        )
+        retry = build_post_checkpoint_read_retry_context(
+            [{"role": "user", "content": "task framing"}],
+            receipt,
+            "checkpoint_read_not_observed",
+            continuation_marker=marker,
+        )
+        self.assertIn(marker, retry[-1]["content"])
+        self.assertIn("Checkpoint read failed", retry[-1]["content"])
 
     def test_post_checkpoint_context_rejects_unverified_receipt(self) -> None:
         with self.assertRaisesRegex(ValueError, "successful receipt"):

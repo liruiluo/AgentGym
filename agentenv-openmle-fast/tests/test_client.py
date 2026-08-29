@@ -655,6 +655,14 @@ class OpenMLEFastClientTest(unittest.TestCase):
         self.assertTrue(replacement[-1]["content"].startswith(initial[-1]["content"]))
         self.assertIn(".agent_memory/CONTINUATION.md", replacement[-1]["content"])
         self.assertIn(receipt["sha256"], replacement[-1]["content"])
+        self.assertIn(
+            _CLIENT_MODULE.OPENMLE_EXACT_CHECKPOINT_READ_ACTION,
+            replacement[-1]["content"],
+        )
+        self.assertIn(
+            "Do not overwrite `.agent_memory/CONTINUATION.md`",
+            replacement[-1]["content"],
+        )
         self.assertNotIn(secret_body, str(replacement))
         self.assertNotIn(action, str(replacement))
         self.assertNotIn("action_status=completed", str(replacement))
