@@ -9,6 +9,7 @@ import requests
 from agentenv.controller import BaseEnvClient, BaseTask
 from agentenv.controller.types import (
     CONTEXT_OPERATION_REPLACE,
+    CONTEXT_OPERATION_RETRY_CONTROL,
     ConversationMessage,
     PolicyContextPressure,
     StepOutput,
@@ -20,6 +21,7 @@ from .filesystem_checkpoint import (
     FILESYSTEM_CHECKPOINT_MAX_BYTES,
     FILESYSTEM_CHECKPOINT_PATH,
     FILESYSTEM_CHECKPOINT_REQUEST,
+    checkpoint_bounded_retry_trigger_tokens,
     checkpoint_retry_trigger_tokens,
     filesystem_checkpoint_failure_reason,
     filesystem_checkpoint_write_succeeded,
@@ -375,8 +377,27 @@ class SwesmithEnvClient(BaseEnvClient):
             >= self._checkpoint_turns_required_before_attempt()
         )
 
-    def _checkpoint_request(self) -> str:
-        attempt = self._checkpoint_attempt_count + 1
+    def _fresh_checkpoint_cycle_turns_required(self) -> int:
+        return (
+            SWE_CHECKPOINT_MAX_ATTEMPTS
+            + 1  # one explicit checkpoint read after replacement
+            + SWE_CHECKPOINT_MIN_POST_READ_TASK_TURNS
+        )
+
+    def _fresh_checkpoint_cycle_budget_available(self) -> bool:
+        return (
+            self._remaining_policy_turns()
+            >= self._fresh_checkpoint_cycle_turns_required()
+        )
+
+    def _rearm_checkpoint_cycle(self) -> None:
+        self._checkpoint_attempt_count = 0
+        self._checkpoint_retry_exhausted = False
+        self._checkpoint_retry_pending = True
+
+    def _checkpoint_request(self, *, attempt: int | None = None) -> str:
+        if attempt is None:
+            attempt = self._checkpoint_attempt_count + 1
         remaining_after_success = self._remaining_policy_turns() - 1
         return (
             SWE_CONTEXT_COMPACTION_REQUEST
@@ -386,10 +407,17 @@ class SwesmithEnvClient(BaseEnvClient):
         )
 
     def policy_turn_candidate(self) -> str | None:
-        if (
-            not self._policy_context_bound
-            or not self._checkpoint_action_budget_available()
-        ):
+        if not self._policy_context_bound:
+            return None
+        if self._checkpoint_retry_exhausted:
+            if not self._fresh_checkpoint_cycle_budget_available():
+                return None
+            # Expose a fresh-cycle candidate so task-neutral pressure accounting
+            # can decide whether one ordinary action still fits.  State is not
+            # mutated until prepare_policy_turn selects the control or an
+            # ordinary action actually completes.
+            return self._checkpoint_request(attempt=1)
+        if not self._checkpoint_action_budget_available():
             return None
         return self._checkpoint_request()
 
@@ -413,6 +441,14 @@ class SwesmithEnvClient(BaseEnvClient):
                 "SWE-smith context reached the prompt cap before a trainable "
                 "compaction could be sampled"
             )
+        # A completed two-attempt cycle gets at most one ordinary action before
+        # a fresh bounded cycle.  If that ordinary action could cross the prompt
+        # cap, re-arm immediately instead.  This prevents both an infinite
+        # control-only retry loop and permanent compaction disablement.
+        if self._checkpoint_retry_exhausted:
+            if checkpoint_bounded_retry_trigger_tokens(pressure) < capacity:
+                return None
+            self._rearm_checkpoint_cycle()
         # Keep enough prompt room to expose one failed action and its native
         # observation before the final bounded retry.  Unlike retry_control, this
         # preserves the policy-visible result whenever the workspace has changed.
@@ -443,7 +479,14 @@ class SwesmithEnvClient(BaseEnvClient):
     def step(self, action: str) -> StepOutput:
         if self._selected_policy_control == "context_compaction":
             return self._complete_context_compaction(action)
-        return self._step_native_policy_action(action)
+        output = self._step_native_policy_action(action)
+        if (
+            self._checkpoint_retry_exhausted
+            and not output.done
+            and self._fresh_checkpoint_cycle_budget_available()
+        ):
+            self._rearm_checkpoint_cycle()
+        return output
 
     def _step_native_policy_action(self, action: str) -> StepOutput:
         native_before = self._native_call_count
@@ -556,8 +599,25 @@ class SwesmithEnvClient(BaseEnvClient):
         checkpoint_attempt_number = self._checkpoint_attempt_count + 1
         self._checkpoint_attempt_count = checkpoint_attempt_number
 
+        native_wrapper = info.get("wrapper_evidence", {})
+        actor_credit = (
+            native_wrapper.get("actor_credit")
+            if isinstance(native_wrapper, Mapping)
+            else None
+        )
+        safe_retry_context_restore = bool(
+            not persisted
+            and not native_output.done
+            and isinstance(actor_credit, Mapping)
+            and actor_credit.get("basis") in {"parser_rejected", "executor_rejected"}
+            and checkpoint_receipt is not None
+            and not checkpoint_receipt["action_completed"]
+            and not checkpoint_receipt["changed"]
+        )
+
         context_transition = None
         retry_feedback_preserved = False
+        retry_context_restored = False
         if persisted and not native_output.done:
             framing = self._immutable_policy_context
             if framing is None:
@@ -590,11 +650,19 @@ class SwesmithEnvClient(BaseEnvClient):
                 messages=replacement,
             )
         elif not native_output.done:
-            # A failed control action is still an ordinary environment action.
-            # Keep both its sampled output and native observation visible; the
-            # workspace cannot be rolled back safely after arbitrary shell/patch
-            # side effects. At most one further checkpoint attempt is allowed.
-            retry_feedback_preserved = True
+            # A rejected, unexecuted control action has no state transition to
+            # preserve. Restore the exact pre-control task context so malformed
+            # output cannot consume the remaining prompt budget; its sampled
+            # tokens, reward, and native receipt remain in the rollout ledger.
+            # Executed actions still append their observation because arbitrary
+            # workspace side effects cannot be rolled back safely.
+            if safe_retry_context_restore:
+                retry_context_restored = True
+                context_transition = build_task_neutral_context_transition(
+                    CONTEXT_OPERATION_RETRY_CONTROL
+                )
+            else:
+                retry_feedback_preserved = True
             self._checkpoint_retry_pending = bool(
                 self._checkpoint_attempt_count < SWE_CHECKPOINT_MAX_ATTEMPTS
                 and self._remaining_policy_turns()
@@ -605,12 +673,6 @@ class SwesmithEnvClient(BaseEnvClient):
             self._checkpoint_retry_pending = False
             self._checkpoint_retry_exhausted = True
 
-        native_wrapper = info.get("wrapper_evidence", {})
-        actor_credit = (
-            native_wrapper.get("actor_credit")
-            if isinstance(native_wrapper, Mapping)
-            else None
-        )
         reward = float(native_output.reward)
         checkpoint_reward_overlay = None
         if (
@@ -651,7 +713,7 @@ class SwesmithEnvClient(BaseEnvClient):
             "remaining_policy_turns": self._remaining_policy_turns(),
             "retry_pending": self._checkpoint_retry_pending,
             "retry_exhausted": self._checkpoint_retry_exhausted,
-            "retry_context_restored": False,
+            "retry_context_restored": retry_context_restored,
             "retry_feedback_preserved": retry_feedback_preserved,
             "sampled_policy_output_preserved_in_ledger": True,
             "native_observation_preserved_in_ledger": True,

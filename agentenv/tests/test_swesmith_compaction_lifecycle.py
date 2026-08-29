@@ -218,8 +218,68 @@ class SwesmithCompactionLifecycleTests(unittest.TestCase):
             )
 
         self.assertTrue(value._checkpoint_retry_exhausted)
-        self.assertIsNone(value.policy_turn_candidate())
+        candidate = value.policy_turn_candidate()
+        self.assertIsNotNone(candidate)
+        self.assertIn(
+            f"checkpoint attempt 1/{SWE_CHECKPOINT_MAX_ATTEMPTS}",
+            candidate,
+        )
+        # A completed retry cycle must not immediately become an unbounded
+        # third control turn while one ordinary turn still fits.
         self.assertIsNone(value.prepare_policy_turn(pressure()))
+
+    def test_exhausted_cycle_rearms_after_one_safe_ordinary_action(self) -> None:
+        value = client(policy_steps=14)
+        value._checkpoint_attempt_count = SWE_CHECKPOINT_MAX_ATTEMPTS
+        value._checkpoint_retry_exhausted = True
+
+        self.assertIsNone(value.prepare_policy_turn(pressure()))
+
+        def execute(_action: str) -> StepOutput:
+            value._policy_step_count += 1
+            value._native_call_count += 1
+            return failed_output(workspace_changed=True, state="ordinary progress")
+
+        value._step_native_policy_action = Mock(side_effect=execute)
+        output = value.step(
+            'shell_command {"command":"pwd","workdir":"."}'
+        )
+
+        self.assertFalse(output.done)
+        self.assertEqual(value._checkpoint_attempt_count, 0)
+        self.assertFalse(value._checkpoint_retry_exhausted)
+        self.assertTrue(value._checkpoint_retry_pending)
+        candidate = value.prepare_policy_turn(pressure())
+        self.assertIsNotNone(candidate)
+        self.assertIn(
+            f"checkpoint attempt 1/{SWE_CHECKPOINT_MAX_ATTEMPTS}",
+            candidate,
+        )
+
+    def test_exhausted_cycle_rearms_before_one_more_action_would_overflow(self) -> None:
+        value = client(policy_steps=14)
+        value._checkpoint_attempt_count = SWE_CHECKPOINT_MAX_ATTEMPTS
+        value._checkpoint_retry_exhausted = True
+
+        candidate = value.prepare_policy_turn(pressure(action_tokens=19_300))
+
+        self.assertIsNotNone(candidate)
+        self.assertIn(
+            f"checkpoint attempt 1/{SWE_CHECKPOINT_MAX_ATTEMPTS}",
+            candidate,
+        )
+        self.assertEqual(value._checkpoint_attempt_count, 0)
+        self.assertFalse(value._checkpoint_retry_exhausted)
+        self.assertTrue(value._checkpoint_retry_pending)
+
+    def test_exhausted_cycle_stays_closed_without_fresh_cycle_budget(self) -> None:
+        value = client(policy_steps=39)
+        value.metadata = {"configured_max_policy_turns": 45, "max_steps": 45}
+        value._checkpoint_attempt_count = SWE_CHECKPOINT_MAX_ATTEMPTS
+        value._checkpoint_retry_exhausted = True
+
+        self.assertIsNone(value.policy_turn_candidate())
+        self.assertIsNone(value.prepare_policy_turn(pressure(action_tokens=19_300)))
 
     def test_late_checkpoint_is_not_requested_without_recovery_budget(self) -> None:
         # Six turns remain. A fresh checkpoint cycle needs two possible writes,

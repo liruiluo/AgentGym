@@ -295,6 +295,14 @@ class BoundedCheckpointRetryTests(unittest.TestCase):
         self.assertTrue(
             output.info["wrapper_evidence"]["reward_overlay"]["deduplicated"]
         )
+        self.assertEqual(
+            output.info["context_transition"]["operation"],
+            CONTEXT_OPERATION_RETRY_CONTROL,
+        )
+        self.assertTrue(output.info["wrapper_evidence"]["retry_context_restored"])
+        self.assertFalse(
+            output.info["wrapper_evidence"]["retry_feedback_preserved"]
+        )
 
     def test_swesmith_terminal_submission_keeps_native_reward(self) -> None:
         client = object.__new__(SwesmithEnvClient)
