@@ -1363,6 +1363,7 @@ set +e
     --reuid="$model_uid" --regid="$model_uid" \
     --clear-groups --bounding-set=-all --inh-caps=-all --ambient-caps=-all \
     "$prlimit_binary" \
+    --core=0 \
     --cpu="$cpu_seconds" \
     --as="$address_space_bytes" \
     --nproc="$max_processes" \

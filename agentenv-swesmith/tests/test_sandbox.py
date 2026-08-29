@@ -134,6 +134,11 @@ class SandboxPreflightTests(unittest.TestCase):
         self.assertNotIn("route add", _DIRECT_BIND_NAMESPACE_SETUP)
         self.assertNotIn("default via", _DIRECT_BIND_NAMESPACE_SETUP)
 
+    def test_policy_command_disables_core_dumps(self) -> None:
+        core_limit = _DIRECT_BIND_NAMESPACE_SETUP.index("--core=0")
+        cpu_limit = _DIRECT_BIND_NAMESPACE_SETUP.index("--cpu=", core_limit)
+        self.assertLess(core_limit, cpu_limit)
+
     def test_network_namespace_injects_read_only_localhost_hosts_file(self) -> None:
         sandbox = _FakeEpisodeSandbox()
         with tempfile.TemporaryDirectory() as raw:

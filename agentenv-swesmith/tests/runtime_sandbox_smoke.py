@@ -155,6 +155,20 @@ def _run_main_contract(args: argparse.Namespace, parent: Path) -> dict[str, obje
         assert timed_out.result.termination_reason == "wall_timeout"
         _assert_process_gone(root / "timeout-host-pid", "timed-out descendant")
 
+        core_limit = sandbox.run(
+            command=(
+                "rm -f core core.*; "
+                "(ulimit -c unlimited 2>/dev/null || true; "
+                "/bin/bash -c 'kill -SEGV $$') >/dev/null 2>&1 || true; "
+                "test -z \"$(find . -maxdepth 1 -type f -name 'core*' -print -quit)\" && "
+                "printf CORE_DUMP_DISABLED_OK"
+            ),
+            workdir=".",
+            timeout_ms=10_000,
+        )
+        assert core_limit.result.exit_code == 0, core_limit.result
+        assert core_limit.result.stdout == b"CORE_DUMP_DISABLED_OK"
+
         tmp_limit = sandbox.run(
             command=(
                 "if dd if=/dev/zero of=/tmp/too-large bs=262144 count=8 "
@@ -177,6 +191,7 @@ def _run_main_contract(args: argparse.Namespace, parent: Path) -> dict[str, obje
             "network_routes": 0,
             "cap_eff": 0,
             "system_root_read_only": True,
+            "core_dump_disabled": True,
             "tmp_limit": True,
         }
     finally:
