@@ -20,7 +20,7 @@ LITERESEARCHER_FORMAL_JUDGE_MODELS = frozenset(
     {"kimi-k2.6", "qwen3-8b-judge"}
 )
 LITERESEARCHER_FORMAL_JUDGE_MODEL = "kimi-k2.6"
-LITERESEARCHER_FORMAL_JUDGE_MAX_TOKENS = 4096
+LITERESEARCHER_FORMAL_JUDGE_MAX_TOKENS = 8192
 
 _EVALUATION_PROMPT = """You are an evaluation assistant. Please determine if the predicted answer is semantically equivalent to the labeled answer.
 
