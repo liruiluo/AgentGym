@@ -71,8 +71,23 @@ If an observation reports a parser error, respond next with only a corrected act
 OPENMLE_FAST_POLICY_PROMPT_SHA256 = hashlib.sha256(
     OPENMLE_FAST_POLICY_SYSTEM_PROMPT.encode("utf-8")
 ).hexdigest()
+OPENMLE_BARE_CHECKPOINT_GUIDANCE = (
+    " Use one physical output line exactly shaped like "
+    "`shell_command {\"command\":\"mkdir -p .agent_memory && printf "
+    "'%s\\n' 'objective: ...' 'measured_validation_or_failure: ...' "
+    "'conclusion: ...' 'code_path: train.py' 'next_action: ...' > "
+    ".agent_memory/CONTINUATION.md\",\"workdir\":\".\","
+    "\"timeout_ms\":20000}`. Replace the placeholders with the current "
+    "state. Keep the shell_command JSON and every snapshot field on that same "
+    "physical line; do not put a raw newline inside the JSON string. On this "
+    "turn, do not create, overwrite, edit, or run `train.py`; only overwrite "
+    "the continuation checkpoint."
+)
+
+
 OPENMLE_CONTEXT_COMPACTION_REQUEST = (
     FILESYSTEM_CHECKPOINT_REQUEST
+    + OPENMLE_BARE_CHECKPOINT_GUIDANCE
     + " For this ML task, include the last measured validation metric or exact "
     "failure, `code_path: train.py`, and one concrete `next_action` that changes "
     "`train.py` before rerunning. If validation has not completed, write "
