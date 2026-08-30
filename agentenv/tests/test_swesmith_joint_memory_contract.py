@@ -95,13 +95,18 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
             "response channel is an action parser, not a chat channel",
             "starting at byte zero",
             "Never prefix an action with narration",
-            "workdir is relative to /testbed",
-            "never `/testbed` or `./testbed`",
+            "literal shell_command header",
+            "raw shell command executed from /testbed",
+            "There is no JSON, XML",
             "Never submit a plain-text final response",
             "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",
         ):
             self.assertIn(fragment, self.prompt)
         self.assertNotIn("a plain final response may summarize", self.prompt)
+        self.assertIn("shell_command\nfind . -maxdepth 2", self.prompt)
+        self.assertIn("shell_command\necho COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT", self.prompt)
+        self.assertNotIn('shell_command {"command":', self.prompt)
+        self.assertNotIn("<tool_call>", self.prompt)
 
     def test_prompt_uses_only_codex_general_tools_for_memory(self) -> None:
         self.assertIn("shell_command", self.prompt)
@@ -119,7 +124,7 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
     def test_prompt_includes_a_separate_turn_write_then_read_example(self) -> None:
         self.assertIn(">> .agent_memory/debugging.md", self.prompt)
         self.assertIn("rg -n 'hypothesis|evidence|next check' .agent_memory", self.prompt)
-        self.assertIn("followed in a later action", self.prompt)
+        self.assertIn("a later shell action", self.prompt)
         self.assertIn("only a syntax illustration", self.prompt)
 
     def test_compaction_is_an_executed_checkpoint_write_then_later_read(self) -> None:
