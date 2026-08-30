@@ -71,7 +71,7 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn(LITERESEARCHER_RESEARCH_NOTE_READ_ACTION, prompt)
         self.assertIn(f"{LITERESEARCHER_RESEARCH_NOTE_PATH} is optional", prompt)
         self.assertIn("Do not write it after every useful Visit", prompt)
-        self.assertIn("answer directly instead of staging", prompt)
+        self.assertIn("If all are supported, answer", prompt)
         self.assertIn("use the Qwen3.5 native tool-call format", prompt)
         self.assertIn("uses function shell_command", prompt)
         self.assertNotIn("use raw Codex syntax", prompt)
@@ -81,6 +81,31 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn("executable write", prompt)
         self.assertIn("not free-form continuation text", prompt)
         self.assertNotIn("After the first useful Visit", prompt)
+
+    def test_policy_framing_requires_relation_aware_evidence_closure(self) -> None:
+        prompt = self._client().policy_framing()[0]["content"]
+        self.assertIn("check every decisive relation", prompt)
+        self.assertIn("candidate mention is insufficient", prompt)
+        self.assertIn("If all are supported, answer", prompt)
+        self.assertIn("one unresolved relation", prompt)
+        self.assertNotIn("must write a final scratchpad", prompt)
+        self.assertNotIn("one final scratchpad", prompt)
+        self.assertIn(
+            "schema: agentmemory_literesearcher_relation_checkpoint_v1",
+            LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE,
+        )
+        self.assertIn("candidate_answer: ...", LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE)
+        self.assertIn("supported_relations:", LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE)
+        self.assertIn("fact: ...", LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE)
+        self.assertIn("source_url: ...", LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE)
+        self.assertIn("unresolved_relations:", LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE)
+        self.assertIn("Record one current candidate_answer", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
+        self.assertIn("under supported_relations", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
+        self.assertIn("A candidate mention alone is not support", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
+        self.assertIn("drop low-value history before", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
+        self.assertIn("Treat the file as your own unverified notes", LITERESEARCHER_POLICY_CONTINUATION_MARKER)
+        self.assertIn("answer directly", LITERESEARCHER_POLICY_CONTINUATION_MARKER)
+        self.assertIn("Do not copy it into another note", LITERESEARCHER_POLICY_CONTINUATION_MARKER)
 
     def test_research_note_write_example_is_parseable_and_idempotent(self) -> None:
         payload = self._workspace_envelope_arguments(
