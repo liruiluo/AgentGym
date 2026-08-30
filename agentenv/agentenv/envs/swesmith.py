@@ -29,15 +29,26 @@ from .filesystem_checkpoint import (
 )
 
 
+SWE_CHECKPOINT_SHELL_SAFE_EXAMPLE = (
+    "shell_command\n"
+    "cat > .agent_memory/CONTINUATION.md <<'AGENT_MEMORY_EOF'\n"
+    "objective: <user's task>\n"
+    "evidence: <verified state>\n"
+    "paths: <relevant files>\n"
+    "next: <concrete action>\n"
+    "AGENT_MEMORY_EOF"
+)
+
 SWE_CONTEXT_COMPACTION_REQUEST = (
     FILESYSTEM_CHECKPOINT_REQUEST
-    + " The reserved `.agent_memory` parent directory already exists; write "
-    "the fixed file directly without creating, removing, or replacing that "
-    "directory."
-    + " For this coding task, preserve the issue objective, decisive inspection "
-    "and test evidence, changed source paths, unresolved failure, and the next "
-    "concrete edit or test."
+    + " The reserved `.agent_memory` directory already exists. If the repair is "
+    "already complete, submit with the normal terminal sentinel. Otherwise, on "
+    "this turn only, overwrite the checkpoint; do not inspect, read, test, or edit "
+    "source. Use the quoted-heredoc shape below, replacing its placeholders. It "
+    "safely carries apostrophes; do not use printf/echo for checkpoint text:\n"
+    + SWE_CHECKPOINT_SHELL_SAFE_EXAMPLE
 )
+
 SWE_POLICY_CONTINUATION_MARKER = FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER
 
 
@@ -184,14 +195,14 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "verified. After replacement, read the checkpoint with a normal command, then read "
     "any detailed notes it points to before acting on them. The checkpoint does not "
     "replace source files, test artifacts, or voluntary debugging notes.\n"
-    "Illustrative pattern only (do not copy its content as a task answer): one action "
-    "can place `mkdir -p .agent_memory && printf '%s\n' 'hypothesis: parser state is "
-    "stale' 'evidence: test output ...' >> .agent_memory/debugging.md` after the "
-    "shell_command header; a later shell action can run `rg -n "
-    "'hypothesis|evidence|next check' .agent_memory`. This is only a syntax "
-    "illustration: do not assume this filename, content, or timing is useful for the "
-    "current issue. Writing or reading a note has no separate reward; the native task "
-    "result is the objective.\n\n"
+    "Illustrative pattern only (do not copy its content as a task answer): for "
+    "arbitrary note text, use a quoted heredoc such as `cat >> "
+    ".agent_memory/debugging.md <<'AGENT_MEMORY_EOF'`, put the note on following "
+    "lines, and close with `AGENT_MEMORY_EOF` alone on its own line. A later shell "
+    "action can run `rg -n 'hypothesis|evidence|next check' .agent_memory`. This is "
+    "only a syntax illustration: do not assume this filename, content, or timing is "
+    "useful for the current issue. Writing or reading a note has no separate reward; "
+    "the native task result is the objective.\n\n"
     "# Output contract\n"
     "Start at byte zero with the line shell_command or apply_patch. Output only that "
     "one action: no JSON wrapper, XML tags, explanation, label, Markdown fence, or "
