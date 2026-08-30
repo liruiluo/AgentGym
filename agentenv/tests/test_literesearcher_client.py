@@ -71,7 +71,7 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn(LITERESEARCHER_RESEARCH_NOTE_READ_ACTION, prompt)
         self.assertIn(f"{LITERESEARCHER_RESEARCH_NOTE_PATH} is optional", prompt)
         self.assertIn("Do not write it after every useful Visit", prompt)
-        self.assertIn("If all are supported, answer", prompt)
+        self.assertNotIn("If all are supported, answer", prompt)
         self.assertIn("use the Qwen3.5 native tool-call format", prompt)
         self.assertIn("uses function shell_command", prompt)
         self.assertNotIn("use raw Codex syntax", prompt)
@@ -88,15 +88,13 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn("enough action budget remains", prompt)
         self.assertIn("It is never required or rewarded", prompt)
         self.assertIn("direct answering remains valid", prompt)
-        self.assertIn("and answer next", prompt)
+        self.assertNotIn("and answer next", prompt)
         self.assertNotIn("must write a final scratchpad", prompt)
 
-    def test_policy_framing_requires_relation_aware_evidence_closure(self) -> None:
+    def test_checkpoint_contract_requires_relation_evidence_without_global_loop(self) -> None:
         prompt = self._client().policy_framing()[0]["content"]
-        self.assertIn("check every decisive relation", prompt)
-        self.assertIn("candidate mention is insufficient", prompt)
-        self.assertIn("If all are supported, answer", prompt)
-        self.assertIn("one unresolved relation", prompt)
+        self.assertNotIn("After each Search or Visit, check every decisive relation", prompt)
+        self.assertNotIn("otherwise investigate one unresolved relation", prompt)
         self.assertNotIn("must write a final scratchpad", prompt)
         self.assertNotIn("one final scratchpad", prompt)
         self.assertIn(
@@ -114,6 +112,7 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn("drop low-value history before", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
         self.assertIn("Treat the file as your own unverified notes", LITERESEARCHER_POLICY_CONTINUATION_MARKER)
         self.assertIn("answer directly", LITERESEARCHER_POLICY_CONTINUATION_MARKER)
+        self.assertIn("one listed unresolved relation", LITERESEARCHER_POLICY_CONTINUATION_MARKER)
         self.assertIn("Do not copy it into another note", LITERESEARCHER_POLICY_CONTINUATION_MARKER)
 
     def test_research_note_write_example_is_parseable_and_idempotent(self) -> None:
