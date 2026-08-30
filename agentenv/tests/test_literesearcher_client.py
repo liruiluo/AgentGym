@@ -90,6 +90,8 @@ class LiteResearcherClientTests(unittest.TestCase):
             prompt,
         )
         self.assertIn("If no suitable URL is visible, Search instead", prompt)
+        self.assertIn("rejected as outside the released corpus", prompt)
+        self.assertIn("never retry that URL or a modified variant", prompt)
 
     def test_policy_framing_keeps_optional_terminal_synthesis_available(self) -> None:
         prompt = self._client().policy_framing()[0]["content"]
