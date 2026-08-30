@@ -61,6 +61,29 @@ class OpenMLEFastActionsTest(unittest.TestCase):
             "parser_error",
         )
 
+    def test_qwen3_xml_reuses_frozen_action_validation(self) -> None:
+        for raw in (
+            """<tool_call>
+<function=shell_command>
+<parameter=command>pwd</parameter>
+<parameter=workdir>/tmp</parameter>
+</function>
+</tool_call>""",
+            """<tool_call>
+<function=shell_command>
+<parameter=command>pwd</parameter>
+<parameter=timeout_ms>20001</parameter>
+</function>
+</tool_call>""",
+            """<tool_call>
+<function=apply_patch>
+<parameter=patch>not a patch</parameter>
+</function>
+</tool_call>""",
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(parse_policy_action(raw).kind, "parser_error")
+
     def test_patch_outputs_are_accessible_to_fresh_sandbox_uid(self) -> None:
         with tempfile.TemporaryDirectory(prefix="openmle-patch-mode-test-") as raw:
             workspace = Path(raw)
@@ -103,6 +126,98 @@ class OpenMLEFastActionsTest(unittest.TestCase):
                 ):
                     apply_workspace_patch(workspace, patch)
 
+
+    def test_accepts_qwen3_xml_action_envelope(self) -> None:
+        shell = parse_policy_action(
+            """<tool_call>
+<function=shell_command>
+<parameter=command>
+cat .agent_memory/CONTINUATION.md
+</parameter>
+<parameter=workdir>
+.
+</parameter>
+<parameter=timeout_ms>
+20000
+</parameter>
+</function>
+</tool_call>"""
+        )
+        self.assertEqual(shell.kind, "shell_command")
+        self.assertEqual(
+            shell.arguments,
+            {
+                "command": "cat .agent_memory/CONTINUATION.md",
+                "timeout_ms": 20000,
+            },
+        )
+
+        patch = parse_policy_action(
+            """<tool_call>
+<function=apply_patch>
+<parameter=patch>
+*** Begin Patch
+*** Add File: train.py
++print(1)
+*** End Patch
+</parameter>
+</function>
+</tool_call>"""
+        )
+        self.assertEqual(patch.kind, "apply_patch")
+        self.assertIn("*** Add File: train.py", patch.patch)
+
+        submit = parse_policy_action(
+            """<tool_call>
+<function=submit>
+</function>
+</tool_call>"""
+        )
+        self.assertEqual(submit.kind, "submit")
+
+    def test_qwen3_xml_action_remains_exactly_one_strict_call(self) -> None:
+        malformed = (
+            "<tool_call><function=shell_command>"
+            "<parameter=command>pwd</parameter>"
+            "<parameter=timeout_ms>20000</parameter>"
+            "<parameter=timeout_ms>20000</parameter>"
+            "</function></tool_call>"
+        )
+        self.assertEqual(parse_policy_action(malformed).kind, "parser_error")
+        self.assertEqual(
+            parse_policy_action(
+                "<tool_call><function=submit></function></tool_call> trailing"
+            ).kind,
+            "parser_error",
+        )
+        self.assertEqual(
+            parse_policy_action(
+                "<tool_call><function=submit>"
+                "<parameter=unexpected>x</parameter>"
+                "</function></tool_call>"
+            ).kind,
+            "parser_error",
+        )
+
+
+    def test_qwen3_xml_rejects_endpoint_only_name_aliases(self) -> None:
+        for alias in (
+            "<tool_call><function=SUBMIT></function></tool_call>",
+            "<tool_call><function=shell_command><parameter=Command>pwd</parameter></function></tool_call>",
+            "<tool_call><function=shell_command><parameter='command'>pwd</parameter></function></tool_call>",
+        ):
+            with self.subTest(alias=alias):
+                self.assertEqual(parse_policy_action(alias).kind, "parser_error")
+
+    def test_qwen3_xml_preserves_native_parameter_edge_whitespace(self) -> None:
+        parsed = parse_policy_action(
+            "<tool_call><function=shell_command>"
+            "<parameter=command>\n  printf x  \n</parameter>"
+            "<parameter=workdir>\n.\n</parameter>"
+            "</function></tool_call>"
+        )
+        self.assertEqual(parsed.kind, "shell_command")
+        self.assertEqual(parsed.arguments["command"], "  printf x  ")
 
 if __name__ == "__main__":
     unittest.main()

@@ -211,6 +211,30 @@ class OpenMLEFastEnvironmentTest(unittest.TestCase):
             self.limits.observation_bytes,
         )
 
+    def test_qwen3_xml_shell_runs_through_the_normal_executor(self) -> None:
+        manager, slot, _ = self.reset()
+        result = manager.step(
+            slot,
+            """<tool_call>
+<function=shell_command>
+<parameter=command>
+printf native-xml > native.txt
+</parameter>
+<parameter=workdir>
+.
+</parameter>
+<parameter=timeout_ms>
+20000
+</parameter>
+</function>
+</tool_call>""",
+        )
+        self.assertFalse(result.done)
+        self.assertEqual(result.reward, 0.0)
+        self.assertEqual(result.info["action_kind"], "shell_command")
+        workspace = manager._testing_policy_root(slot)
+        self.assertEqual((workspace / "native.txt").read_text(), "native-xml")
+
     def test_checkpoint_receipt_attests_current_action_write_only(self) -> None:
         manager, slot, _ = self.reset()
         payload = "objective: improve model\nnext_action: edit train.py\n"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import tempfile
 import unicodedata
@@ -14,6 +15,14 @@ ActionKind = Literal["shell_command", "apply_patch", "submit", "parser_error"]
 MAX_COMMAND_BYTES = 32 * 1024
 MAX_PATCH_BYTES = 256 * 1024
 MAX_SHELL_TIMEOUT_MS = 20_000
+QWEN_TOOL_CALL_RE = re.compile(
+    r"\A<tool_call>\s*<function=([^>\s]+)>(.*?)</function>\s*</tool_call>\Z",
+    flags=re.DOTALL,
+)
+QWEN_PARAMETER_RE = re.compile(
+    r"<parameter=([^>\s]+)>(.*?)</parameter>",
+    flags=re.DOTALL,
+)
 
 
 class OpenMLEFastActionError(RuntimeError):
@@ -54,6 +63,9 @@ def parse_policy_action(raw_output: str) -> ParsedPolicyAction:
     if not isinstance(raw_output, str):
         raise TypeError("OpenMLE-fast policy output must be text")
     text = raw_output.strip()
+    qwen_action = _parse_qwen_action(raw_output, text)
+    if qwen_action is not None:
+        return qwen_action
     if text in {"submit", "submit {}"}:
         return ParsedPolicyAction(kind="submit", raw_output=raw_output)
     if text.startswith("shell_command "):
@@ -65,11 +77,75 @@ def parse_policy_action(raw_output: str) -> ParsedPolicyAction:
     )
 
 
+def _parse_qwen_action(
+    raw_output: str, text: str
+) -> ParsedPolicyAction | None:
+    match = QWEN_TOOL_CALL_RE.fullmatch(text)
+    if match is None:
+        return None
+    action_name = match.group(1)
+    if action_name not in {"shell_command", "apply_patch", "submit"}:
+        return _parser_error(raw_output, f"unsupported Qwen tool {action_name!r}")
+
+    body = match.group(2)
+    matches = list(QWEN_PARAMETER_RE.finditer(body))
+    if QWEN_PARAMETER_RE.sub("", body).strip():
+        return _parser_error(raw_output, "Qwen tool body contains non-parameter text")
+
+    arguments: dict[str, str] = {}
+    for parameter in matches:
+        key = parameter.group(1)
+        if not key or key in arguments:
+            return _parser_error(raw_output, f"invalid or duplicate Qwen parameter {key!r}")
+        value = parameter.group(2)
+        # Match veRL's Qwen3XMLToolParser: remove at most the formatting newline
+        # immediately inside each parameter tag, while preserving intentional
+        # spaces and additional newlines in command or patch payloads.
+        if value.startswith("\n"):
+            value = value[1:]
+        if value.endswith("\n"):
+            value = value[:-1]
+        arguments[key] = value
+
+    if action_name == "submit":
+        if arguments or body.strip():
+            return _parser_error(raw_output, "submit accepts no parameters")
+        return ParsedPolicyAction(kind="submit", raw_output=raw_output)
+    if action_name == "apply_patch":
+        if set(arguments) != {"patch"}:
+            return _parser_error(raw_output, "apply_patch requires exactly one patch parameter")
+        return _parse_patch(raw_output, arguments["patch"])
+    if "command" not in arguments or set(arguments) - {
+        "command",
+        "timeout_ms",
+        "workdir",
+    }:
+        return _parser_error(
+            raw_output,
+            "shell_command requires command, with optional timeout_ms and workdir",
+        )
+    payload: dict[str, Any] = {"command": arguments["command"]}
+    if "workdir" in arguments:
+        payload["workdir"] = arguments["workdir"]
+    if "timeout_ms" in arguments:
+        try:
+            payload["timeout_ms"] = int(arguments["timeout_ms"])
+        except ValueError:
+            return _parser_error(raw_output, "shell_command timeout_ms must be an integer")
+    return _validate_shell_payload(raw_output, payload)
+
+
 def _parse_shell(raw_output: str, payload_text: str) -> ParsedPolicyAction:
     try:
         payload = json.loads(payload_text, object_pairs_hook=_unique_object)
     except (json.JSONDecodeError, _DuplicateKey) as exc:
         return _parser_error(raw_output, f"shell_command payload is invalid: {exc}")
+    return _validate_shell_payload(raw_output, payload)
+
+
+def _validate_shell_payload(
+    raw_output: str, payload: Any
+) -> ParsedPolicyAction:
     if not isinstance(payload, dict) or set(payload) - {
         "command",
         "timeout_ms",

@@ -39,70 +39,134 @@ from .filesystem_checkpoint import (
 )
 
 OPENMLE_FAST_POLICY_SYSTEM_PROMPT = """You are solving one OpenMLE-fast task in an isolated /workspace with exactly 30 total policy actions.
-This interface is a plain-text action protocol, not a native tool-calling API. Start every response at byte zero with exactly one action. Output no reasoning, explanation, Markdown fence, XML/tool_call tag, native tool wrapper, action-number prefix, or bare JSON before or after it. Put reflection that must survive context replacement into a workspace file through a valid action.
+Use exactly one Qwen XML function call per response. Output no reasoning, explanation, Markdown fence, action-number prefix, bare JSON, or text before or after the function call. Put reflection that must survive context replacement into a workspace file through a valid action.
 
-The only valid action forms are:
-shell_command {"command":"cat TASK.md","workdir":".","timeout_ms":20000}
-apply_patch
+<tools>
+{"type": "function", "function": {"name": "shell_command", "description": "Run one networkless shell command in the episode-private persistent workspace.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "workdir": {"type": "string"}, "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 20000}}, "required": ["command"]}}}
+{"type": "function", "function": {"name": "apply_patch", "description": "Apply one patch to files in the episode-private persistent workspace.", "parameters": {"type": "object", "properties": {"patch": {"type": "string"}}, "required": ["patch"]}}}
+{"type": "function", "function": {"name": "submit", "description": "Submit workspace-relative submission.csv once to the protected private grader and terminate the episode.", "parameters": {"type": "object", "properties": {}, "required": []}}}
+</tools>
+
+For a shell action, use this complete form:
+
+<tool_call>
+<function=shell_command>
+<parameter=command>
+cat TASK.md
+</parameter>
+<parameter=workdir>
+.
+</parameter>
+<parameter=timeout_ms>
+20000
+</parameter>
+</function>
+</tool_call>
+
+For creating or replacing `train.py`, prefer one shell_command with `printf`; put each Python source line in one shell-quoted `printf` argument and redirect only that bounded command to `train.py`. Do not use `python -c`, `python3 -c`, a heredoc, or `bash -c`.
+
+For a workspace file edit, put the complete patch inside the patch parameter:
+
+<tool_call>
+<function=apply_patch>
+<parameter=patch>
 *** Begin Patch
-*** Add File: script.py
+*** Add File: train.py
 +print("ok")
 *** End Patch
-submit
+</parameter>
+</function>
+</tool_call>
 
-For shell_command, emit the literal prefix `shell_command ` followed by one valid JSON object on one line. `command` must be a non-empty JSON string, optional `workdir` must be exactly ".", and optional integer `timeout_ms` must be between 1 and 20000. The command already runs from /workspace; use workspace-relative paths.
-For creating or replacing `train.py`, prefer one shell_command with `printf`: `shell_command {"command":"printf '%s\\n' 'print(1)' > train.py","workdir":".","timeout_ms":20000}`. Keep its JSON on one line; do not place a heredoc or raw multiline program inside it. Never use `python -c`, `python3 -c`, a heredoc, or `bash -c`.
-For apply_patch, use only workspace-relative paths. Never use `/workspace/` in an apply_patch file path. Use the raw form above with `*** Begin Patch`, `*** Add File:` or `*** Update File:`, and `*** End Patch`; never wrap it in JSON or use `Create File`. Every added file line starts with `+`.
-Never emit two actions or prose with an action. A parser error still consumes an action; after one, emit only one corrected valid action.
+For final submission, use this complete form:
+
+<tool_call>
+<function=submit>
+</function>
+</tool_call>
+
+Function names are limited to shell_command, apply_patch, and submit. For shell_command, command must be non-empty, optional workdir must be exactly `.`, and optional timeout_ms must be an integer from 1 through 20000. The command already runs from /workspace; use workspace-relative paths. For apply_patch, use only workspace-relative paths. Never use `/workspace/` in an apply_patch file path. Use `*** Begin Patch`, `*** Add File:` or `*** Update File:`, and `*** End Patch`. Every added file line starts with `+`. Never emit two function calls or prose with a call. A parser error still consumes an action; after one, emit only one corrected complete function call.
 
 Dependencies are already installed. No network access is available. Never run `pip`, `pip3`, `conda`, `apt`, `ssh`, `curl`, `wget`, or `chmod`, and do not inspect package versions. For shell work prefer `cat`, `head`, `tail`, `ls`, `grep`, `cut`, `sort`, `wc`, `mkdir`, `printf`, and `python train.py`.
 
-Use the first turns efficiently. A useful first response is exactly this one line:
-shell_command {"command":"cat TASK.md; head -3 data/train.csv; head -3 data/test.csv; head -3 data/sample_submission.csv","workdir":".","timeout_ms":20000}
-On a later turn, create workspace-relative `train.py` with one shell_command and `printf`; put each Python source line in one shell-quoted `printf` argument and redirect only that bounded command to `train.py`. The script must load public labelled training data, use only public labelled training data to make one deterministic local validation split (a holdout or small cross-validation), print one explicit measured metric line in the form `validation_<metric>=<finite_value>`, fit a bounded candidate with deterministic seeds and `n_jobs=1` where supported, and write workspace-relative `submission.csv` in the required schema. On the following turn, run `python train.py` with one shell_command. Do not spend separate early turns on more row previews, dataset summaries, package checks, or training-set-only metrics.
+Use the first turns efficiently. A useful first response is exactly:
+<tool_call>
+<function=shell_command>
+<parameter=command>
+cat TASK.md; head -3 data/train.csv; head -3 data/test.csv; head -3 data/sample_submission.csv
+</parameter>
+<parameter=workdir>
+.
+</parameter>
+<parameter=timeout_ms>
+20000
+</parameter>
+</function>
+</tool_call>
+On a later turn, create workspace-relative `train.py` with one shell_command and `printf`. The script must load public labelled training data, use only public labelled training data to make one deterministic local validation split (a holdout or small cross-validation), print one explicit measured metric line in the form `validation_<metric>=<finite_value>`, fit a bounded candidate with deterministic seeds and `n_jobs=1` where supported, and write workspace-relative `submission.csv` in the required schema. On the following turn, run `python train.py` with one shell_command. Do not spend separate early turns on more row previews, dataset summaries, package checks, or training-set-only metrics.
 
 Work as an iterative ML engineer. Training-set metrics do not count as local validation. The printed validation value must come from executed code, not a placeholder. Keep each run within the managed 15000 ms runtime; do not use broad sweeps, nested parallelism, or large grid searches. After a traceback or measured validation result, modify `train.py` and run it again. The environment exposes no repeatable private score or free validation oracle.
 
-Do not write the continuation note before the first measured validation unless an explicit context-compaction request requires it. At that request, write `.agent_memory/CONTINUATION.md` exactly once: `shell_command {"command":"mkdir -p .agent_memory && printf '%s\\n' 'objective: ...' 'measured_validation_or_failure: ...' 'conclusion: ...' 'code_path: train.py' 'next_action: ...' > .agent_memory/CONTINUATION.md","workdir":".","timeout_ms":20000}`. Fill the fields with the last metric or exact failure and a `next_action` that changes `train.py` before rerunning; `python train.py` alone is not enough. When compaction finishes, after a continuation marker, read it exactly once and perform that edit; do not re-inspect the task or repeat the note without new evidence.
+Do not write the continuation note before the first measured validation unless an explicit context-compaction request requires it. At that request, use one shell_command function call to overwrite `.agent_memory/CONTINUATION.md`. Include the last measured validation metric or exact failure, `code_path: train.py`, and a `next_action` that changes `train.py` before rerunning; `python train.py` alone is not enough. When compaction finishes, after a continuation marker, read it exactly once and perform that edit; do not re-inspect the task or repeat the note without new evidence.
 
 Reading, editing, running, writing or reading memory, compaction, and submit all consume the same 30-action budget. Every observation reports completed and remaining actions. TASK.md and data are read-only. When a measured local validation and `submission.csv` exist, iterate only while enough actions remain and submit no later than action 27. `submit` grades against the protected private data exactly once; the first submit is terminal, and there is no automatic submission at the action limit; action 30 ends in failure if it is not submit.
-If an observation reports a parser error, respond next with only a corrected action in one of the exact forms above. Never describe the correction.
+If an observation reports a parser error, respond next with only one corrected complete Qwen XML function call. Never describe the correction.
 """
 OPENMLE_FAST_POLICY_PROMPT_SHA256 = hashlib.sha256(
     OPENMLE_FAST_POLICY_SYSTEM_PROMPT.encode("utf-8")
 ).hexdigest()
-OPENMLE_BARE_CHECKPOINT_GUIDANCE = (
-    " Use one physical output line exactly shaped like "
-    "`shell_command {\"command\":\"mkdir -p .agent_memory && printf "
-    "'%s\\n' 'objective: ...' 'measured_validation_or_failure: ...' "
-    "'conclusion: ...' 'code_path: train.py' 'next_action: ...' > "
-    ".agent_memory/CONTINUATION.md\",\"workdir\":\".\","
-    "\"timeout_ms\":20000}`. Replace the placeholders with the current "
-    "state. Keep the shell_command JSON and every snapshot field on that same "
-    "physical line; do not put a raw newline inside the JSON string. On this "
-    "turn, do not create, overwrite, edit, or run `train.py`; only overwrite "
-    "the continuation checkpoint."
-)
+OPENMLE_QWEN_XML_CHECKPOINT_GUIDANCE = """
+
+For this context-boundary write, use shell_command and follow this exact Qwen
+XML shape, replacing the placeholder lines with the current state:
+
+<tool_call>
+<function=shell_command>
+<parameter=command>
+mkdir -p .agent_memory && printf '%s\n' 'objective: ...' 'measured_validation_or_failure: ...' 'conclusion: ...' 'code_path: train.py' 'next_action: ...' > .agent_memory/CONTINUATION.md
+</parameter>
+<parameter=workdir>
+.
+</parameter>
+<parameter=timeout_ms>
+20000
+</parameter>
+</function>
+</tool_call>
+
+On this turn, do not create, overwrite, edit, or run `train.py`; only overwrite
+the continuation checkpoint.
+"""
 
 
 OPENMLE_CONTEXT_COMPACTION_REQUEST = (
     FILESYSTEM_CHECKPOINT_REQUEST
-    + OPENMLE_BARE_CHECKPOINT_GUIDANCE
+    + OPENMLE_QWEN_XML_CHECKPOINT_GUIDANCE
     + " For this ML task, include the last measured validation metric or exact "
     "failure, `code_path: train.py`, and one concrete `next_action` that changes "
     "`train.py` before rerunning. If validation has not completed, write "
     "`validation: not measured yet` and the exact blocker. Do not inspect data, "
     "run code, or submit instead."
 )
-OPENMLE_EXACT_CHECKPOINT_READ_ACTION = (
-    'shell_command {"command":"cat .agent_memory/CONTINUATION.md",'
-    '"workdir":".","timeout_ms":20000}'
-)
+OPENMLE_EXACT_CHECKPOINT_READ_ACTION = """<tool_call>
+<function=shell_command>
+<parameter=command>
+cat .agent_memory/CONTINUATION.md
+</parameter>
+<parameter=workdir>
+.
+</parameter>
+<parameter=timeout_ms>
+20000
+</parameter>
+</function>
+</tool_call>"""
 OPENMLE_POLICY_CONTINUATION_MARKER = (
     FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER
-    + " On the next turn, output exactly this one physical line and nothing else: `"
+    + " On the next turn, output exactly this complete Qwen XML function call "
+    "and nothing else:\n"
     + OPENMLE_EXACT_CHECKPOINT_READ_ACTION
-    + "`. Do not overwrite `.agent_memory/CONTINUATION.md`, inspect another file, "
+    + "\nDo not overwrite `.agent_memory/CONTINUATION.md`, inspect another file, "
     "run `train.py`, or submit on that mandatory read turn."
     + " After that exact read returns, if the latest budget line says only one "
     "action remains and submission.csv exists, submit now. Otherwise, immediately "
@@ -115,7 +179,7 @@ OPENMLE_POLICY_CONTINUATION_MARKER = (
 _OPENMLE_CONTINUATION_PATH = FILESYSTEM_CHECKPOINT_PATH
 
 _EXPECTED_BOUNDARIES = {
-    "actions": "openmle_fast_three_tool_v1",
+    "actions": "openmle_fast_three_tool_qwen_xml_v1",
     "workspace": "openmle_fast_public_workspace_v1",
     "executor": "openmle_fast_executor_v1",
     "grader": "openmle_fast_authenticated_private_ipc_v1",

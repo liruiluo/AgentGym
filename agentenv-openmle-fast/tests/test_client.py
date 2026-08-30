@@ -186,13 +186,13 @@ class OpenMLEFastClientTest(unittest.TestCase):
 
     def test_prompt_teaches_exact_action_grammar_without_task_content(self) -> None:
         prompt = OPENMLE_FAST_POLICY_SYSTEM_PROMPT
-        self.assertIn("Start every response at byte zero with exactly one action", prompt)
-        self.assertIn('optional `workdir` must be exactly "."', prompt)
-        self.assertIn("between 1 and 20000", prompt)
-        self.assertIn("do not place a heredoc or raw multiline program", prompt)
+        self.assertIn("Use exactly one Qwen XML function call per response", prompt)
+        self.assertIn("optional workdir must be exactly `.`", prompt)
+        self.assertIn("from 1 through 20000", prompt)
+        self.assertIn("Do not use `python -c`, `python3 -c`, a heredoc, or `bash -c`", prompt)
         self.assertIn("If an observation reports a parser error", prompt)
-        self.assertIn("no reasoning, explanation, Markdown fence, XML/tool_call tag", prompt)
-        self.assertIn("plain-text action protocol, not a native tool-calling API", prompt)
+        self.assertIn("no reasoning, explanation, Markdown fence", prompt)
+        self.assertIn("<function=shell_command>", prompt)
         self.assertNotIn("WRONG:", prompt)
         self.assertIn("Use the first turns efficiently", prompt)
         self.assertNotIn("Default first three actions", prompt)
@@ -208,7 +208,7 @@ class OpenMLEFastClientTest(unittest.TestCase):
             prompt,
         )
         self.assertNotIn("Do not use shell redirection to create Python code", prompt)
-        self.assertIn("Never use `python -c`, `python3 -c`, a heredoc, or `bash -c`", prompt)
+        self.assertIn("Do not use `python -c`, `python3 -c`, a heredoc, or `bash -c`", prompt)
         self.assertIn("Dependencies are already installed", prompt)
         self.assertIn("Never run `pip`, `pip3`, `conda`, `apt`, `ssh`, `curl`, `wget`, or `chmod`", prompt)
         self.assertIn("print one explicit measured metric line", prompt)
@@ -225,7 +225,7 @@ class OpenMLEFastClientTest(unittest.TestCase):
         self.assertIn("n_jobs=1", prompt)
         self.assertIn("managed 15000 ms runtime", prompt)
         self.assertIn("Never use `/workspace/` in an apply_patch file path", prompt)
-        self.assertIn("mkdir -p .agent_memory && printf", prompt)
+        self.assertIn("<function=submit>", prompt)
         self.assertIn("protected private data exactly once", prompt)
         self.assertIn("first submit is terminal", prompt)
         self.assertIn("there is no automatic submission", prompt)
