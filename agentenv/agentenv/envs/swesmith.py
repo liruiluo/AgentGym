@@ -55,7 +55,12 @@ SWE_POLICY_CONTINUATION_MARKER = FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER
 
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
 ACTION_PROGRESS_SCHEMA = "swesmith_action_progress_v1"
-SWE_MEMORY_CONTRACT = "policy_filesystem_checkpoint_then_client_replace_v3"
+SWE_MEMORY_CONTRACT = "policy_filesystem_checkpoint_then_client_replace_v4"
+SWE_POLICY_CONTROL_SCHEMA = "task_neutral_policy_control_v1"
+SWE_CONTEXT_COMPACTION_POLICY_CONTROL = {
+    "schema": SWE_POLICY_CONTROL_SCHEMA,
+    "kind": "context_compaction",
+}
 SWE_HORIZON_CONTRACT = "unified_policy_step_terminal_failure_minus0p01_v3"
 SWE_CHECKPOINT_MAX_ATTEMPTS = 2
 SWE_CHECKPOINT_MAX_CYCLES_PER_CONTEXT = 2
@@ -626,15 +631,32 @@ class SwesmithEnvClient(BaseEnvClient):
         policy_before = self._policy_step_count
         context_before = self._context_epoch
         session_before = self._session_epoch
+        request_payload: dict[str, Any] = {"id": self.env_id, "action": action}
+        expected_policy_control = None
+        if self._selected_policy_control is not None:
+            if self._selected_policy_control != "context_compaction":
+                raise RuntimeError(
+                    "SWE-smith selected an unsupported policy control"
+                )
+            expected_policy_control = dict(SWE_CONTEXT_COMPACTION_POLICY_CONTROL)
+            request_payload["policy_control"] = expected_policy_control
         response = self._request(
             "POST",
             "step",
-            json={"id": self.env_id, "action": action},
+            json=request_payload,
         )
         self._native_call_count += 1
         self._policy_step_count += 1
         self.info = response
         response_env_info = response.get("info", {})
+        if not isinstance(response_env_info, Mapping):
+            raise RuntimeError("SWE-smith endpoint info must be a mapping")
+        actual_policy_control = response_env_info.get("policy_control")
+        if actual_policy_control != expected_policy_control:
+            raise RuntimeError(
+                "SWE-smith endpoint policy-control receipt mismatch: "
+                f"expected {expected_policy_control!r}, got {actual_policy_control!r}"
+            )
         actor_credit = _validate_actor_credit_receipt(
             response_env_info.get("actor_credit")
             if isinstance(response_env_info, Mapping)

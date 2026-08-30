@@ -66,7 +66,7 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
     def test_contract_has_a_distinct_joint_memory_identity(self) -> None:
         self.assertEqual(
             self.memory_contract,
-            "policy_filesystem_checkpoint_then_client_replace_v3",
+            "policy_filesystem_checkpoint_then_client_replace_v4",
         )
 
     def test_capacity_terminal_requires_the_no_grade_horizon_contract(self) -> None:

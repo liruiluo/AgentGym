@@ -300,7 +300,70 @@ def successful_output() -> StepOutput:
     )
 
 
+def native_shell_response(
+    step: int, *, policy_control: dict[str, str] | None = None
+) -> dict:
+    info = {
+        "step": step,
+        "sample_excluded": False,
+        "actor_credit": {
+            "schema": "task_neutral_actor_credit_v1",
+            "positive_eligible": True,
+            "basis": "shell_executed",
+        },
+        "action_progress": {
+            "schema": "swesmith_action_progress_v1",
+            "action_fingerprint": "a" * 64,
+            "result_fingerprint": str(step) * 64,
+            "workspace_changed": False,
+        },
+    }
+    if policy_control is not None:
+        info["policy_control"] = policy_control
+    return {
+        "observation": "command completed",
+        "reward": 0.0,
+        "done": False,
+        "info": info,
+    }
+
+
 class SwesmithCompactionLifecycleTests(unittest.TestCase):
+    def test_transport_marks_only_selected_checkpoint_control(self) -> None:
+        value = client()
+        value._request = Mock(
+            side_effect=[
+                native_shell_response(
+                    1,
+                    policy_control={
+                        "schema": "task_neutral_policy_control_v1",
+                        "kind": "context_compaction",
+                    },
+                ),
+                native_shell_response(2),
+            ]
+        )
+
+        value._selected_policy_control = "context_compaction"
+        value._step_native_policy_action(
+            'shell_command {"command":"pwd","workdir":"."}'
+        )
+        value._selected_policy_control = None
+        value._step_native_policy_action(
+            'shell_command {"command":"pwd","workdir":"."}'
+        )
+
+        first_payload = value._request.call_args_list[0].kwargs["json"]
+        second_payload = value._request.call_args_list[1].kwargs["json"]
+        self.assertEqual(
+            first_payload["policy_control"],
+            {
+                "schema": "task_neutral_policy_control_v1",
+                "kind": "context_compaction",
+            },
+        )
+        self.assertNotIn("policy_control", second_payload)
+
     def test_failed_control_preserves_action_and_observation_even_after_workspace_change(self) -> None:
         value = client(policy_steps=10)
         value._selected_policy_control = "context_compaction"
