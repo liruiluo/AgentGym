@@ -556,6 +556,57 @@ class OpenMLEFastClientTest(unittest.TestCase):
         self.assertEqual(recovered.reward, 0.0)
         self.assertFalse(recovered.done)
 
+    def test_step_normalizes_qwen_xml_with_upstream_parser_and_keeps_raw_audit(self) -> None:
+        calls = []
+        metadata = self.metadata()
+        raw = """<tool_call>
+<function=shell_command>
+<parameter=command>
+cat .agent_memory/CONTINUATION.md
+</parameter>
+<function=workdir>
+.
+</function>
+</tool_call>"""
+
+        def request(method, url, **kwargs):
+            calls.append((method, url, kwargs))
+            path = url.rsplit("/", 1)[-1]
+            if path == "metadata":
+                return _Response(metadata)
+            if path == "create":
+                return _Response({"id": 7, "observation": "unbound", "info": {}})
+            if path == "reset":
+                return _Response(self.step_response())
+            if path == "step":
+                return _Response(
+                    self.step_response(
+                        observation="read",
+                        action_count=1,
+                        action_kind="shell_command",
+                    )
+                )
+            raise AssertionError(path)
+
+        with patch("requests.request", side_effect=request):
+            client = OpenMLEFastEnvClient(
+                "http://127.0.0.1:9000",
+                **self.client_kwargs(),
+            )
+            client.reset(0)
+            output = client.step(raw)
+
+        posted = [call for call in calls if call[1].endswith("/step")][0][2]["json"]["action"]
+        self.assertEqual(
+            posted,
+            'shell_command {"command": "cat .agent_memory/CONTINUATION.md"}',
+        )
+        submission = output.info["action_submission"]
+        self.assertEqual(submission["raw_policy_output"], raw)
+        self.assertEqual(submission["submitted_action"], posted)
+        self.assertEqual(submission["tool_parser"], "qwen3_coder")
+        self.assertTrue(submission["tool_parser_normalized"])
+
     def test_context_pressure_executes_checkpoint_without_injecting_its_body(self) -> None:
         calls = []
         metadata = self.metadata()

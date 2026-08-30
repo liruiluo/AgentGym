@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 import time
@@ -37,6 +38,7 @@ from .filesystem_checkpoint import (
     filesystem_checkpoint_write_succeeded,
     normalize_filesystem_checkpoint_receipt,
 )
+from .verl_qwen_tool_parser import parse_single_qwen3_tool_call
 
 OPENMLE_FAST_POLICY_SYSTEM_PROMPT = """You are solving one OpenMLE-fast task in an isolated /workspace with exactly 30 total policy actions.
 Use exactly one Qwen XML function call per response. Output no reasoning, explanation, Markdown fence, action-number prefix, bare JSON, or text before or after the function call. Put reflection that must survive context replacement into a workspace file through a valid action.
@@ -177,6 +179,48 @@ OPENMLE_POLICY_CONTINUATION_MARKER = (
 )
 
 _OPENMLE_CONTINUATION_PATH = FILESYSTEM_CHECKPOINT_PATH
+_OPENMLE_QWEN_TOOL_SCHEMAS = (
+    {
+        "type": "function",
+        "function": {
+            "name": "shell_command",
+            "description": "Run one networkless shell command.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "workdir": {"type": "string"},
+                    "timeout_ms": {"type": "integer"},
+                },
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "apply_patch",
+            "description": "Apply one workspace patch.",
+            "parameters": {
+                "type": "object",
+                "properties": {"patch": {"type": "string"}},
+                "required": ["patch"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "submit",
+            "description": "Submit submission.csv.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+)
 
 _EXPECTED_BOUNDARIES = {
     "actions": "openmle_fast_three_tool_qwen_xml_v1",
@@ -528,8 +572,9 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         checkpoint_read_framing_before = self._pending_checkpoint_read_framing
         context_control_selected = self._selected_policy_control == "context_compaction"
         write_retry_framing_before = self._checkpoint_write_retry_framing
+        submitted_action, parser_evidence = _normalize_openmle_policy_action(action)
         response = self._request(
-            "POST", "step", json={"id": self.env_id, "action": action}
+            "POST", "step", json={"id": self.env_id, "action": submitted_action}
         )
         state, reward, done, env_info = _validate_step_response(
             response,
@@ -547,6 +592,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
             done=done,
             env_info=env_info,
         )
+        action_submission.update(parser_evidence)
         context_transition = None
         checkpoint_framing_sha256 = None
         policy_state = state
@@ -880,6 +926,37 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                 f"OpenMLE-fast {method} /{path} returned a non-object response"
             )
         return value
+
+
+def _normalize_openmle_policy_action(action: str) -> tuple[str, dict[str, Any]]:
+    parsed = parse_single_qwen3_tool_call(
+        action,
+        tool_schemas=_OPENMLE_QWEN_TOOL_SCHEMAS,
+    )
+    if parsed is None:
+        if action.strip().startswith("<tool_call>"):
+            return action, {
+                "tool_parser": "qwen3_coder",
+                "tool_parser_normalized": False,
+            }
+        return action, {}
+    arguments = dict(parsed.arguments)
+    if parsed.name == "shell_command":
+        submitted = "shell_command " + json.dumps(arguments, ensure_ascii=False)
+    elif parsed.name == "apply_patch" and set(arguments) == {"patch"}:
+        submitted = "apply_patch\n" + str(arguments["patch"])
+    elif parsed.name == "submit" and not arguments:
+        submitted = "submit"
+    else:
+        return action, {
+            "tool_parser": parsed.parser_name,
+            "tool_parser_normalized": False,
+        }
+    return submitted, {
+        "tool_parser": parsed.parser_name,
+        "tool_parser_normalized": True,
+        "submitted_action": submitted,
+    }
 
 
 def _continuation_write_succeeded(env_info: Mapping[str, Any]) -> bool:
