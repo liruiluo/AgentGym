@@ -29,14 +29,26 @@ from .filesystem_checkpoint import (
 )
 
 
+SWE_CHECKPOINT_SHELL_SAFE_EXAMPLE = (
+    "shell_command\n"
+    "cat > .agent_memory/CONTINUATION.md <<'AGENT_MEMORY_EOF'\n"
+    "objective: <user's task>\n"
+    "evidence: <verified state>\n"
+    "paths: <relevant files>\n"
+    "next: <concrete action>\n"
+    "AGENT_MEMORY_EOF"
+)
+
 SWE_CONTEXT_COMPACTION_REQUEST = (
     FILESYSTEM_CHECKPOINT_REQUEST
-    + " The reserved `.agent_memory` parent directory already exists; write "
-    "the fixed file directly without creating, removing, or replacing that "
-    "directory."
-    + " For this coding task, preserve the issue objective, decisive inspection "
-    "and test evidence, changed source paths, unresolved failure, and the next "
-    "concrete edit or test."
+    + " The reserved `.agent_memory` directory already exists. If the repair is "
+    "already complete, submit with the normal terminal sentinel. Otherwise, on "
+    "this checkpoint-control turn only, overwrite the checkpoint; do not inspect, "
+    "read, test, or edit source. The checkpoint request is the sole exception to "
+    "the ordinary JSON shell envelope: use the quoted-heredoc block below exactly, "
+    "replacing its placeholders. It safely carries apostrophes; do not use "
+    "printf/echo for checkpoint text:\n"
+    + SWE_CHECKPOINT_SHELL_SAFE_EXAMPLE
 )
 SWE_POLICY_CONTINUATION_MARKER = FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER
 
@@ -144,7 +156,10 @@ SWE_POLICY_SYSTEM_PROMPT = (
     '"workdir":".","timeout_ms":120000}\n'
     "Replace the command value with the command you need. The command field is required; "
     "workdir and timeout_ms are optional. workdir is relative to /testbed; use `.` for "
-    "the repository root, never `/testbed` or `./testbed`.\n"
+    "the repository root, never `/testbed` or `./testbed`. The only exception is "
+    "an explicit context-checkpoint request that supplies a one-turn raw "
+    "shell_command quoted-heredoc block; use that block only for the checkpoint, "
+    "then return to this JSON shell form.\n"
     "For a patch, output exactly this shape:\n"
     "apply_patch\n"
     "*** Begin Patch\n"

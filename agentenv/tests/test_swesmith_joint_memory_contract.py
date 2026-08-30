@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 
 
@@ -56,6 +58,7 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
         values = extract_static_string_assignments()
         self.prompt = values["SWE_POLICY_SYSTEM_PROMPT"]
         self.compaction = values["SWE_CONTEXT_COMPACTION_REQUEST"]
+        self.checkpoint_example = values["SWE_CHECKPOINT_SHELL_SAFE_EXAMPLE"]
         self.continuation_marker = values["SWE_POLICY_CONTINUATION_MARKER"]
         self.memory_contract = values["SWE_MEMORY_CONTRACT"]
         self.horizon_contract = values["SWE_HORIZON_CONTRACT"]
@@ -102,6 +105,12 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
         ):
             self.assertIn(fragment, self.prompt)
         self.assertNotIn("a plain final response may summarize", self.prompt)
+        self.assertIn('shell_command {"command":', self.prompt)
+        self.assertIn("then return to this JSON shell form", self.prompt)
+        self.assertNotIn(
+            "Use shell_command for inspection, editing, or tests through a delimiter-light",
+            self.prompt,
+        )
 
     def test_prompt_uses_only_codex_general_tools_for_memory(self) -> None:
         self.assertIn("shell_command", self.prompt)
@@ -128,7 +137,7 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
             ".agent_memory/CONTINUATION.md",
             "executed normally and consumes one policy-action step",
             "removed only after the environment verifies this exact file write",
-            "reserved `.agent_memory` parent directory already exists",
+            "reserved `.agent_memory` directory already exists",
         ):
             self.assertIn(fragment, self.compaction)
         self.assertIn(
@@ -140,6 +149,35 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
             "Do not claim that this response executed a shell command",
         ):
             self.assertNotIn(forbidden, self.compaction)
+
+    def test_compaction_uses_checkpoint_only_shell_block(self) -> None:
+        for fragment in (
+            "If the repair is already complete, submit with the normal terminal sentinel",
+            "this checkpoint-control turn only",
+            "sole exception to the ordinary JSON shell envelope",
+            "cat > .agent_memory/CONTINUATION.md <<'AGENT_MEMORY_EOF'",
+            "do not use printf/echo for checkpoint text",
+        ):
+            self.assertIn(fragment, self.compaction)
+        self.assertNotIn("do not submit", self.compaction)
+        self.assertTrue(self.checkpoint_example.startswith("shell_command\n"))
+
+    def test_checkpoint_block_executes_with_an_apostrophe(self) -> None:
+        command = self.checkpoint_example.split("\n", 1)[1]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory_dir = Path(tmpdir) / ".agent_memory"
+            memory_dir.mkdir()
+            result = subprocess.run(
+                ["/bin/bash", "-c", command],
+                cwd=tmpdir,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            checkpoint = memory_dir / "CONTINUATION.md"
+            self.assertTrue(checkpoint.is_file())
+            self.assertIn("user's task", checkpoint.read_text())
 
 
 if __name__ == "__main__":
