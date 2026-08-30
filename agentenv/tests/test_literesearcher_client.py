@@ -82,6 +82,15 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn("not free-form continuation text", prompt)
         self.assertNotIn("After the first useful Visit", prompt)
 
+    def test_policy_framing_requires_source_grounded_visit_urls(self) -> None:
+        prompt = self._client().policy_framing()[0]["content"]
+        self.assertIn("copy its complete URL exactly as shown", prompt)
+        self.assertIn(
+            "Never invent, translate, decode, re-encode, shorten, or edit a URL",
+            prompt,
+        )
+        self.assertIn("If no suitable URL is visible, Search instead", prompt)
+
     def test_policy_framing_keeps_optional_terminal_synthesis_available(self) -> None:
         prompt = self._client().policy_framing()[0]["content"]
         self.assertIn("One optional penultimate synthesis write", prompt)

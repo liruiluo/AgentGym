@@ -337,8 +337,12 @@ class LiteResearcherEnvClient(BaseEnvClient):
                         goal="extract evidence",
                         page=1,
                     )
-                    + "\nA Visit returns one bounded page; follow next_page with the "
-                    "same URL and goal when needed. A workspace turn uses function "
+                    + "\nFor every Visit, use a complete URL already visible in the "
+                    "question, a Search result, or a prior Visit page, and copy its "
+                    "complete URL exactly as shown. Never invent, translate, decode, "
+                    "re-encode, shorten, or edit a URL. If no suitable URL is visible, "
+                    "Search instead. A Visit returns one bounded page; follow next_page "
+                    "with the same URL and goal when needed. A workspace turn uses function "
                     "shell_command with command, workdir, and timeout_ms parameters in "
                     "that same native format, with no prose, Markdown fence, or second "
                     "tool. "
