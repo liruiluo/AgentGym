@@ -264,9 +264,14 @@ def _export_git_tree(mirror_root: Path, commit: str, destination: Path) -> None:
     assert process.stderr is not None
     try:
         try:
-            with process.stdout, tarfile.open(fileobj=process.stdout, mode="r|") as archive:
-                for member in archive:
-                    _extract_archive_member(archive, member, destination)
+            with process.stdout:
+                with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
+                    for member in archive:
+                        _extract_archive_member(archive, member, destination)
+                # Streaming tar readers stop at the logical end marker while
+                # git may still be flushing block padding. Drain to EOF before
+                # closing the pipe so the producer cannot receive SIGPIPE.
+                process.stdout.read()
         except Exception:
             process.kill()
             process.wait()
