@@ -39,6 +39,24 @@ class OpenMLEFastActionsTest(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertEqual(parse_policy_action(raw).kind, "parser_error")
 
+    def test_accepts_minimal_command_only_qwen_xml(self) -> None:
+        raw = """<tool_call>
+<function=shell_command>
+<parameter=command>
+cat .agent_memory/CONTINUATION.md
+</parameter>
+</function>
+</tool_call>"""
+        parsed = parse_policy_action(raw)
+        self.assertEqual(parsed.kind, "shell_command")
+        self.assertEqual(
+            parsed.arguments,
+            {
+                "command": "cat .agent_memory/CONTINUATION.md",
+                "timeout_ms": 20000,
+            },
+        )
+
     def test_rejects_oversize_nul_and_timeout_above_frozen_limit(self) -> None:
         self.assertEqual(
             parse_policy_action('shell_command {"command":"a\\u0000b"}').kind,

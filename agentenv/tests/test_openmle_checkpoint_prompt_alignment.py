@@ -17,13 +17,7 @@ class OpenMLECheckpointPromptAlignmentTest(unittest.TestCase):
         expected_action = """<tool_call>
 <function=shell_command>
 <parameter=command>
-mkdir -p .agent_memory && printf '%s\n' 'objective: ...' 'measured_validation_or_failure: ...' 'conclusion: ...' 'code_path: train.py' 'next_action: ...' > .agent_memory/CONTINUATION.md
-</parameter>
-<parameter=workdir>
-.
-</parameter>
-<parameter=timeout_ms>
-20000
+mkdir -p .agent_memory && printf '%s\n' objective=OBJECTIVE measured_validation_or_failure=VALIDATION_OR_FAILURE conclusion=CONCLUSION code_path=train.py next_action=NEXT_ACTION > .agent_memory/CONTINUATION.md
 </parameter>
 </function>
 </tool_call>"""
@@ -33,9 +27,11 @@ mkdir -p .agent_memory && printf '%s\n' 'objective: ...' 'measured_validation_or
         self.assertIsNotNone(parsed)
         action_name, arguments = parsed
         self.assertEqual(action_name, "shell_command")
-        self.assertEqual(arguments["workdir"], ".")
-        self.assertEqual(arguments["timeout_ms"], 20000)
+        self.assertEqual(set(arguments), {"command"})
         self.assertIn("> .agent_memory/CONTINUATION.md", arguments["command"])
+        self.assertIn("objective=OBJECTIVE", arguments["command"])
+        self.assertNotIn("<parameter=workdir>", expected_action)
+        self.assertNotIn("<parameter=timeout_ms>", expected_action)
         self.assertIn(
             "do not create, overwrite, edit, or run `train.py`",
             OPENMLE_CONTEXT_COMPACTION_REQUEST,
@@ -52,13 +48,11 @@ mkdir -p .agent_memory && printf '%s\n' 'objective: ...' 'measured_validation_or
             parsed,
             (
                 "shell_command",
-                {
-                    "command": "cat .agent_memory/CONTINUATION.md",
-                    "workdir": ".",
-                    "timeout_ms": 20000,
-                },
+                {"command": "cat .agent_memory/CONTINUATION.md"},
             ),
         )
+        self.assertNotIn("<parameter=workdir>", OPENMLE_EXACT_CHECKPOINT_READ_ACTION)
+        self.assertNotIn("<parameter=timeout_ms>", OPENMLE_EXACT_CHECKPOINT_READ_ACTION)
         self.assertIn(
             OPENMLE_EXACT_CHECKPOINT_READ_ACTION,
             OPENMLE_POLICY_CONTINUATION_MARKER,

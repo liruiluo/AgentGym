@@ -119,19 +119,15 @@ OPENMLE_FAST_POLICY_PROMPT_SHA256 = hashlib.sha256(
 ).hexdigest()
 OPENMLE_QWEN_XML_CHECKPOINT_GUIDANCE = """
 
-For this context-boundary write, use shell_command and follow this exact Qwen
-XML shape, replacing the placeholder lines with the current state:
+For this boundary, output exactly the command-only Qwen XML call below. Replace
+uppercase values with single tokens containing only `[A-Za-z0-9._:/+=-]`.
+Add no optional parameters, extra tags, spaces inside values, backslashes,
+Markdown, or prose.
 
 <tool_call>
 <function=shell_command>
 <parameter=command>
-mkdir -p .agent_memory && printf '%s\n' 'objective: ...' 'measured_validation_or_failure: ...' 'conclusion: ...' 'code_path: train.py' 'next_action: ...' > .agent_memory/CONTINUATION.md
-</parameter>
-<parameter=workdir>
-.
-</parameter>
-<parameter=timeout_ms>
-20000
+mkdir -p .agent_memory && printf '%s\n' objective=OBJECTIVE measured_validation_or_failure=VALIDATION_OR_FAILURE conclusion=CONCLUSION code_path=train.py next_action=NEXT_ACTION > .agent_memory/CONTINUATION.md
 </parameter>
 </function>
 </tool_call>
@@ -154,12 +150,6 @@ OPENMLE_EXACT_CHECKPOINT_READ_ACTION = """<tool_call>
 <function=shell_command>
 <parameter=command>
 cat .agent_memory/CONTINUATION.md
-</parameter>
-<parameter=workdir>
-.
-</parameter>
-<parameter=timeout_ms>
-20000
 </parameter>
 </function>
 </tool_call>"""
