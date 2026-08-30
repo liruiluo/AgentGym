@@ -82,6 +82,15 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn("not free-form continuation text", prompt)
         self.assertNotIn("After the first useful Visit", prompt)
 
+    def test_policy_framing_keeps_optional_terminal_synthesis_available(self) -> None:
+        prompt = self._client().policy_framing()[0]["content"]
+        self.assertIn("One optional penultimate synthesis write", prompt)
+        self.assertIn("enough action budget remains", prompt)
+        self.assertIn("It is never required or rewarded", prompt)
+        self.assertIn("direct answering remains valid", prompt)
+        self.assertIn("and answer next", prompt)
+        self.assertNotIn("must write a final scratchpad", prompt)
+
     def test_policy_framing_requires_relation_aware_evidence_closure(self) -> None:
         prompt = self._client().policy_framing()[0]["content"]
         self.assertIn("check every decisive relation", prompt)
