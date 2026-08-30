@@ -11,6 +11,7 @@ from agentenv_agentmemory.literesearcher import (
     FullPoolLiteResearcherTask,
     FullPoolLiteResearcherTasks,
     LITERESEARCHER_FULLPOOL_SURFACE,
+    LiteResearchJudgeInfrastructureError,
     LiteResearchJudgeResult,
     LiteResearchRequestError,
     LiteResearcherWrapper,
@@ -47,6 +48,27 @@ class _SemanticJudgeStub:
             "contract": self.contract_id,
             "primary": "semantic_judge_stub",
             "fallback": "upstream_em_v1",
+            "semantic_equivalence": True,
+        }
+
+
+class _InfrastructureJudgeStub:
+    contract_id = UPSTREAM_LLM_JUDGE_CONTRACT
+
+    def judge(self, question, targets, answer):
+        del question, targets, answer
+        raise LiteResearchJudgeInfrastructureError(
+            reason="http_error_503",
+            attempts=3,
+            latency_seconds=1.5,
+            primary_model="kimi-k2.6",
+        )
+
+    def metadata(self):
+        return {
+            "contract": self.contract_id,
+            "primary": "semantic_judge_stub",
+            "fallback": "upstream_em_positive_only_v2",
             "semantic_equivalence": True,
         }
 
@@ -208,6 +230,26 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
                 )
             ],
         )
+        wrapper.close(created["id"])
+
+    def test_judge_infrastructure_fault_excludes_sample_without_false_reward(self) -> None:
+        wrapper = LiteResearcherWrapper(
+            self.tasks,
+            self.backend,
+            split="train",
+            surface=LITERESEARCHER_FULLPOOL_SURFACE,
+            judge=_InfrastructureJudgeStub(),
+        )
+        created = wrapper.create(data_idx=0)
+        result = wrapper.step(created["id"], "<answer>PSX</answer>")
+        evidence = result["info"]["wrapper_evidence"]
+        self.assertTrue(result["done"])
+        self.assertEqual(result["reward"], 0.0)
+        self.assertTrue(result["info"]["sample_excluded"])
+        self.assertEqual(result["info"]["status"], "environment_error")
+        self.assertEqual(evidence["judge_failure_reason"], "http_error_503")
+        self.assertEqual(evidence["judge_attempts"], 3)
+        self.assertTrue(evidence["judge_infrastructure_fault"])
         wrapper.close(created["id"])
 
     def test_full_pool_terminal_receipt_records_judge_fallback_reason(self) -> None:

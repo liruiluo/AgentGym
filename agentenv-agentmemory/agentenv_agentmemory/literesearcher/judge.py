@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib import error, parse, request
 
-UPSTREAM_LLM_JUDGE_CONTRACT = "upstream_llm_with_em_fallback_v1"
+UPSTREAM_LLM_JUDGE_CONTRACT = "upstream_llm_positive_em_fail_closed_v2"
 NORMALIZED_EXACT_JUDGE_CONTRACT = "normalized_exact_v1"
 # Formal runs may use either the original company route or the immutable
 # same-pod Qwen judge.  Keep this list frozen so a typo or arbitrary endpoint
@@ -49,6 +49,26 @@ class LiteResearchJudgeResult:
     latency_seconds: float = 0.0
     primary_model: str | None = None
     fallback_reason: str | None = None
+
+
+class LiteResearchJudgeInfrastructureError(RuntimeError):
+    """The semantic judge could not produce a trustworthy verdict."""
+
+    def __init__(
+        self,
+        *,
+        reason: str,
+        attempts: int,
+        latency_seconds: float,
+        primary_model: str,
+    ) -> None:
+        super().__init__(
+            f"semantic judge infrastructure failure after {attempts} attempts: {reason}"
+        )
+        self.reason = reason
+        self.attempts = attempts
+        self.latency_seconds = latency_seconds
+        self.primary_model = primary_model
 
 
 class LiteResearchJudge(Protocol):
@@ -256,13 +276,26 @@ class UpstreamCompatibleLLMJudge:
                 fallback_reason = self._fallback_reason(exc)
                 if attempt < self.max_retries:
                     time.sleep(0.5 * attempt)
-        return LiteResearchJudgeResult(
-            correct=upstream_em(answer, targets),
-            method="upstream_em_fallback",
+        latency_seconds = time.monotonic() - started_at
+        # Exact-match is a sound positive fallback: it can certify an answer
+        # that the semantic judge would also have to accept.  A failed exact
+        # match is inconclusive, however, so never turn a judge outage into a
+        # false-negative reward.  The wrapper marks that trajectory excluded
+        # and the existing task-neutral AgentLoop reschedules it as a whole.
+        if upstream_em(answer, targets):
+            return LiteResearchJudgeResult(
+                correct=True,
+                method="upstream_em_positive_fallback",
+                attempts=self.max_retries,
+                latency_seconds=latency_seconds,
+                primary_model=self.model,
+                fallback_reason=fallback_reason,
+            )
+        raise LiteResearchJudgeInfrastructureError(
+            reason=fallback_reason,
             attempts=self.max_retries,
-            latency_seconds=time.monotonic() - started_at,
+            latency_seconds=latency_seconds,
             primary_model=self.model,
-            fallback_reason=fallback_reason,
         )
 
     def metadata(self) -> dict[str, Any]:
@@ -270,7 +303,8 @@ class UpstreamCompatibleLLMJudge:
         return {
             "contract": self.contract_id,
             "primary": "openai_compatible_semantic_equivalence",
-            "fallback": "upstream_em_v1",
+            "fallback": "upstream_em_positive_only_v2",
+            "fallback_negative": "sample_excluded_and_rescheduled",
             "model": self.model,
             "endpoint_sha256": endpoint_digest,
             "temperature": 0.0,

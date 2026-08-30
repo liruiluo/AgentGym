@@ -6,6 +6,7 @@ from unittest.mock import patch
 from urllib import error
 
 from agentenv_agentmemory.literesearcher.judge import (
+    LiteResearchJudgeInfrastructureError,
     NormalizedExactLiteResearchJudge,
     UpstreamCompatibleLLMJudge,
     upstream_em,
@@ -100,11 +101,42 @@ class LiteResearcherJudgeTests(unittest.TestCase):
         ):
             result = judge.judge("Which laws?", ("penal laws",), "The Penal Laws")
         self.assertTrue(result.correct)
-        self.assertEqual(result.method, "upstream_em_fallback")
+        self.assertEqual(result.method, "upstream_em_positive_fallback")
         self.assertEqual(result.attempts, 3)
         self.assertGreaterEqual(result.latency_seconds, 0.0)
         self.assertEqual(result.primary_model, "qwen")
         self.assertEqual(result.fallback_reason, "url_error")
+        self.assertEqual(urlopen.call_count, 3)
+
+    def test_http_503_without_positive_exact_match_fails_closed(self) -> None:
+        judge = UpstreamCompatibleLLMJudge(
+            api_base="http://judge.example/v1",
+            model="qwen",
+            max_retries=3,
+        )
+        failure = error.HTTPError(
+            "http://judge.example/v1/chat/completions",
+            503,
+            "Service Unavailable",
+            hdrs=None,
+            fp=None,
+        )
+        with (
+            patch(
+                "agentenv_agentmemory.literesearcher.judge.request.urlopen",
+                side_effect=failure,
+            ) as urlopen,
+            patch("agentenv_agentmemory.literesearcher.judge.time.sleep"),
+        ):
+            with self.assertRaises(LiteResearchJudgeInfrastructureError) as raised:
+                judge.judge(
+                    "What was the recorder called?",
+                    ("PSX (digital video recorder)",),
+                    "PSX",
+                )
+        self.assertEqual(raised.exception.reason, "http_error_503")
+        self.assertEqual(raised.exception.attempts, 3)
+        self.assertEqual(raised.exception.primary_model, "qwen")
         self.assertEqual(urlopen.call_count, 3)
 
     def test_metadata_redacts_endpoint_and_key(self) -> None:
@@ -117,8 +149,11 @@ class LiteResearcherJudgeTests(unittest.TestCase):
         serialized = json.dumps(metadata)
         self.assertNotIn("judge.example", serialized)
         self.assertNotIn("secret", serialized)
-        self.assertEqual(metadata["fallback"], "upstream_em_v1")
+        self.assertEqual(metadata["fallback"], "upstream_em_positive_only_v2")
         self.assertEqual(metadata["fallback_after_primary_failures"], 3)
+        self.assertEqual(
+            metadata["fallback_negative"], "sample_excluded_and_rescheduled"
+        )
         self.assertEqual(metadata["max_tokens"], 8192)
         self.assertTrue(metadata["fallback_reason_recorded"])
 

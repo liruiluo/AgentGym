@@ -10,6 +10,7 @@ from .backend import LiteResearchBackendError
 from ..persistent_workspace import WORKSPACE_TOOL_NAMES
 from .judge import (
     LiteResearchJudge,
+    LiteResearchJudgeInfrastructureError,
     NormalizedExactLiteResearchJudge,
     UPSTREAM_LLM_JUDGE_CONTRACT,
 )
@@ -557,6 +558,30 @@ class LiteResearcherWrapper:
                 return self._apply_workspace(env_id, episode, str(action))
             raise ValueError(
                 "expected one search/visit tool_call, one answer, or one workspace action"
+            )
+        except LiteResearchJudgeInfrastructureError as exc:
+            return self._finish(
+                env_id,
+                episode,
+                reward=0.0,
+                status="environment_error",
+                outcome="environment_error",
+                sample_excluded=True,
+                observation="Semantic judge unavailable; episode excluded.",
+                action_submission={"raw_policy_output": str(action), "kind": "answer"},
+                transition=self._append_transition(
+                    episode, "Semantic judge unavailable; episode excluded."
+                ),
+                wrapper_evidence={
+                    "step": step,
+                    "judge_method": "infrastructure_fault",
+                    "judge_attempts": exc.attempts,
+                    "judge_latency_seconds": exc.latency_seconds,
+                    "judge_primary_model": exc.primary_model,
+                    "judge_fallback_used": False,
+                    "judge_failure_reason": exc.reason,
+                    "judge_infrastructure_fault": True,
+                },
             )
         except LiteResearchBackendError as exc:
             return self._finish(

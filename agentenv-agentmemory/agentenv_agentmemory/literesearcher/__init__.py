@@ -32,6 +32,7 @@ from .upstream_backend import UpstreamHybridLiteResearchBackend
 from .judge import (
     LITERESEARCHER_FORMAL_JUDGE_MODEL,
     LITERESEARCHER_FORMAL_JUDGE_MODELS,
+    LiteResearchJudgeInfrastructureError,
     LiteResearchJudgeResult,
     NormalizedExactLiteResearchJudge,
     UpstreamCompatibleLLMJudge,
@@ -55,6 +56,7 @@ __all__ = [
     "FullPoolLiteResearcherTasks",
     "SQLiteFTSLiteResearchBackend",
     "UpstreamHybridLiteResearchBackend",
+    "LiteResearchJudgeInfrastructureError",
     "LiteResearchJudgeResult",
     "NormalizedExactLiteResearchJudge",
     "UpstreamCompatibleLLMJudge",
