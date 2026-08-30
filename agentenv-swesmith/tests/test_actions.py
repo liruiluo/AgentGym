@@ -15,6 +15,28 @@ class SwesmithActionParserTests(unittest.TestCase):
         )
         self.assertFalse(parsed.terminates_episode)
 
+    def test_parses_delimiter_light_shell_body(self) -> None:
+        parsed = parse_policy_action(
+            "shell_command\n"
+            "python - <<'PY'\n"
+            "print({\"quoted\": r\"C:\\\\tmp\"})\n"
+            "PY"
+        )
+        self.assertEqual(parsed.kind, "shell_command")
+        self.assertEqual(parsed.arguments["workdir"], ".")
+        self.assertNotIn("timeout_ms", parsed.arguments)
+        self.assertEqual(
+            parsed.arguments["command"],
+            "python - <<'PY'\nprint({\"quoted\": r\"C:\\\\tmp\"})\nPY",
+        )
+        self.assertFalse(parsed.terminates_episode)
+
+    def test_empty_delimiter_light_shell_body_is_rejected(self) -> None:
+        parsed = parse_policy_action("shell_command\n")
+        self.assertEqual(parsed.kind, "parser_error")
+        self.assertEqual(parsed.tool_hint, "shell_command")
+        self.assertFalse(parsed.terminates_episode)
+
     def test_preserves_explicit_shell_arguments_and_thinking(self) -> None:
         parsed = parse_policy_action(
             "<think>Inspect the failing test.</think>\n"

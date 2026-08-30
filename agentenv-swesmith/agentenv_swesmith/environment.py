@@ -930,41 +930,53 @@ def _initial_observation(
 ) -> str:
     return (
         "Repair the persistent repository in /testbed for this issue. Use exactly one "
-        "action per turn. Use shell_command for inspection, editing, and tests. Its exact "
-        "form is one line such as shell_command "
-        '{"command":"ls","workdir":"."}. Start at byte zero and output only the '
-        "action, without XML, prose, Markdown, or a <think> tag. apply_patch is optional "
-        "and starts with the literal line apply_patch followed by one complete "
-        "*** Begin Patch ... *** End Patch payload. Keep edits localized: never paste or "
-        "rewrite an entire existing file in one action. Use a small patch around the "
-        "changed lines or a bounded shell command, and stay below the response limit. "
-        "The workspace persists for the whole episode and has no .git directory. After a "
-        "source path changed and relevant tests ran, submit with exactly "
-        'shell_command {"command":"echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",'
-        '"workdir":"."}. The successful command must print the upstream submission '
-        "sentinel as its first stdout line; then the current persistent workspace receives "
-        "one official grade. Any plain text is invalid. Reaching the turn limit without "
-        "that sentinel ends the episode with reward -0.01 and does not grade the workspace. "
+        "action per turn. Use shell_command for inspection, editing, or tests through a "
+        "delimiter-light action in this exact shape:\n"
+        "shell_command\n"
+        "find . -maxdepth 2 -type f | head -80\n"
+        "The first line is the literal shell_command header. Everything after its first "
+        "newline is the raw shell command executed from /testbed. There is no JSON, XML, "
+        "workdir field, timeout field, or closing delimiter. To work below the repository "
+        "root, use a relative cd inside the command. Start at byte zero and output only "
+        "that action, without prose, Markdown, or a <think> tag. For a patch, output:\n"
+        "apply_patch\n"
+        "*** Begin Patch\n"
+        "*** Update File: relative/path.py\n"
+        "@@\n"
+        "-old text\n"
+        "+new text\n"
+        "*** End Patch\n"
+        "Keep edits localized: never paste or rewrite an entire existing file in one "
+        "action. Use a small patch around inspected lines or a bounded shell command, "
+        "and stay below the response limit. The workspace persists for the whole episode "
+        "and has no .git directory. After a source path changed and relevant tests ran, "
+        "submit with exactly:\n"
+        "shell_command\n"
+        "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n"
+        "The successful command must print the upstream submission sentinel as its first "
+        "stdout line; then the current persistent workspace receives one official grade. "
+        "Any plain text is invalid. Reaching the turn limit without that sentinel ends "
+        "the episode with reward -0.01 and does not grade the workspace. "
         f"You have at most {max_policy_turns} total policy turns; task-neutral context "
-        "compactions consume this same budget. Verify and submit as soon as the repair is "
+        "checkpoints consume this same budget. Verify and submit as soon as the repair is "
         "ready; do not wait for the horizon.\n\n"
         "Issue:\n"
         + problem_statement.strip()
-        + "\n\nBegin with a real shell action in the exact one-line form above."
+        + "\n\nBegin with one real action in the exact delimiter-light form above."
     )
-
 
 def _parser_error_observation(action: ParsedPolicyAction) -> str:
     return (
         f"Invalid action syntax: {action.error}. This action received reward -0.01; "
-        'the episode remains open. Retry with exactly shell_command '
-        '{"command":"pwd","workdir":"."} on one line. For a patch, start with the '
-        "literal line apply_patch, then one complete *** Begin Patch ... *** End Patch "
-        "payload. Output only one action, with no XML tags, reasoning, Markdown, second "
-        "action, or surrounding text. Keep the edit localized instead of pasting or "
-        "rewriting an entire existing file."
+        "the episode remains open. Retry with exactly two lines: the literal header "
+        "shell_command, then the raw command pwd. Do not add JSON, XML, a closing "
+        "delimiter, reasoning, Markdown, a second action, or surrounding text. For a "
+        "patch, start with the literal line apply_patch, then one complete "
+        "*** Begin Patch ... *** End Patch payload. Keep the edit localized instead of "
+        "pasting or rewriting an entire existing file. Submit only by running the "
+        "upstream submission sentinel through the same delimiter-light shell action "
+        "after editing and testing."
     )
-
 
 def _shell_observation(
     *,

@@ -9,6 +9,7 @@ from typing import Any, Literal, Mapping
 ActionKind = Literal["shell_command", "apply_patch", "final", "parser_error"]
 
 _SHELL_PREFIX = "shell_command "
+_SHELL_BLOCK_PREFIX = "shell_command\n"
 _PATCH_PREFIX = "apply_patch\n"
 UPSTREAM_SUBMISSION_SENTINEL = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
 _PATCH_BEGIN = "*** Begin Patch"
@@ -21,6 +22,7 @@ _NATIVE_FUNCTION_RE = re.compile(r"\A<function=([a-z][a-z0-9_]*)>\Z")
 _NATIVE_PARAMETER_RE = re.compile(r"\A<parameter=([a-z][a-z0-9_]*)>\Z")
 MAX_PRE_ACTION_REASONING_BYTES = 512
 _ACTION_LINE_START_RES = (
+    re.compile(r"(?m)^shell_command\r?$"),
     re.compile(r"(?m)^shell_command (?=\{)"),
     re.compile(r"(?m)^apply_patch\r?\n(?=\*\*\* Begin Patch)"),
     re.compile(r"(?m)^<tool_call>\r?$"),
@@ -126,6 +128,8 @@ def parse_policy_action(raw_output: str) -> ParsedPolicyAction:
     if visible_reasoning:
         thought = "\n\n".join(part for part in (thought, visible_reasoning) if part)
 
+    if action_text.startswith(_SHELL_BLOCK_PREFIX):
+        return _parse_shell_command_body(raw_output, action_text, thought)
     if action_text.startswith(_SHELL_PREFIX):
         return _parse_shell_command(raw_output, action_text, thought)
     if action_text.startswith(_PATCH_PREFIX):
@@ -147,6 +151,30 @@ def parse_policy_action(raw_output: str) -> ParsedPolicyAction:
         thought,
         "plain text is not a submission; run the upstream submission sentinel "
         "after editing and testing",
+    )
+
+
+def _parse_shell_command_body(
+    raw_output: str,
+    action_text: str,
+    thought: str,
+) -> ParsedPolicyAction:
+    """Parse the delimiter-light shell form: header line plus raw command body."""
+
+    command = action_text[len(_SHELL_BLOCK_PREFIX) :]
+    if not command.strip() or "\x00" in command:
+        return _parser_error(
+            raw_output,
+            action_text,
+            thought,
+            "shell_command body must be non-empty and contain no NUL bytes",
+            tool_hint="shell_command",
+        )
+    return _build_shell_command(
+        raw_output,
+        action_text,
+        thought,
+        {"command": command, "workdir": "."},
     )
 
 
@@ -419,7 +447,7 @@ def _split_bounded_action_prefix(
     parser keeps trailing prose and multiple actions fail-closed.
     """
 
-    if text.startswith((_SHELL_PREFIX, _PATCH_PREFIX, _NATIVE_TOOL_START)):
+    if text.startswith((_SHELL_BLOCK_PREFIX, _SHELL_PREFIX, _PATCH_PREFIX, _NATIVE_TOOL_START)):
         return "", text, None
     starts = [
         match.start()
