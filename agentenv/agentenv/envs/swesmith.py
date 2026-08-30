@@ -16,7 +16,8 @@ from agentenv.controller.types import (
     build_task_neutral_transition_info,
 )
 from .filesystem_checkpoint import (
-    FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER,
+    FILESYSTEM_BARE_CHECKPOINT_CONTINUATION_MARKER,
+    FILESYSTEM_BARE_CHECKPOINT_WRITE_GUIDANCE,
     FILESYSTEM_CHECKPOINT_MAX_BYTES,
     FILESYSTEM_CHECKPOINT_PATH,
     FILESYSTEM_CHECKPOINT_REQUEST,
@@ -37,14 +38,20 @@ from .filesystem_checkpoint import (
 
 SWE_CONTEXT_COMPACTION_REQUEST = (
     FILESYSTEM_CHECKPOINT_REQUEST
-    + " The reserved `.agent_memory` parent directory already exists; write "
-    "the fixed file directly without creating, removing, or replacing that "
-    "directory."
+    + FILESYSTEM_BARE_CHECKPOINT_WRITE_GUIDANCE
+    + " The reserved `.agent_memory` parent directory already exists; the "
+    "`mkdir -p` in the exact action only confirms it. This control turn is only "
+    "for writing the continuation checkpoint: do not inspect, edit, test, or "
+    "submit task source on this turn."
     + " For this coding task, preserve the issue objective, decisive inspection "
     "and test evidence, changed source paths, unresolved failure, and the next "
     "concrete edit or test."
 )
-SWE_POLICY_CONTINUATION_MARKER = FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER
+SWE_POLICY_CONTINUATION_MARKER = (
+    FILESYSTEM_BARE_CHECKPOINT_CONTINUATION_MARKER
+    + " Do not inspect, edit, test, or submit task source until the required "
+    "checkpoint read succeeds."
+)
 
 
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
@@ -576,6 +583,7 @@ class SwesmithEnvClient(BaseEnvClient):
                     checkpoint_read_framing_before,
                     checkpoint_read_pending_before,
                     read_failure_reason or "checkpoint_read_not_observed",
+                    continuation_marker=SWE_POLICY_CONTINUATION_MARKER,
                 ),
             )
         return StepOutput(
@@ -635,7 +643,9 @@ class SwesmithEnvClient(BaseEnvClient):
                 framing
             )
             replacement = build_post_checkpoint_context(
-                framing, checkpoint_receipt
+                framing,
+                checkpoint_receipt,
+                continuation_marker=SWE_POLICY_CONTINUATION_MARKER,
             )
             self._context_epoch += 1
             self._pending_checkpoint_read = dict(checkpoint_receipt)

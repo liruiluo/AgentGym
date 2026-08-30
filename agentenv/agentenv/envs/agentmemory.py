@@ -52,6 +52,7 @@ from .filesystem_checkpoint import (
 )
 from .webshop_handoff import (
     WEBSHOP_CONTEXT_COMPACTION_REQUEST,
+    WEBSHOP_POLICY_CONTINUATION_MARKER,
     WEBSHOP_SESSION_HANDOFF_REQUEST,
 )
 
@@ -2746,6 +2747,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
                         checkpoint_read_framing_before,
                         checkpoint_read_pending_before,
                         read_failure_reason or "checkpoint_read_not_observed",
+                        continuation_marker=WEBSHOP_POLICY_CONTINUATION_MARKER,
                     ),
                 )
             elif self.is_filesystem and session_advanced:
@@ -2913,7 +2915,11 @@ class AgentMemoryEnvClient(BaseEnvClient):
             checkpoint_framing_sha256 = filesystem_checkpoint_framing_sha256(
                 framing
             )
-            replacement = build_post_checkpoint_context(framing, checkpoint_receipt)
+            replacement = build_post_checkpoint_context(
+                framing,
+                checkpoint_receipt,
+                continuation_marker=WEBSHOP_POLICY_CONTINUATION_MARKER,
+            )
             self._context_epoch += 1
             if selected == "webshop_session_handoff":
                 self._pending_session_handoff = None

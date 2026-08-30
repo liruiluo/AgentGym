@@ -56,6 +56,9 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
         values = extract_static_string_assignments()
         self.prompt = values["SWE_POLICY_SYSTEM_PROMPT"]
         self.compaction = values["SWE_CONTEXT_COMPACTION_REQUEST"]
+        self.continuation_marker = values["SWE_POLICY_CONTINUATION_MARKER"]
+        self.exact_write = values["FILESYSTEM_BARE_CHECKPOINT_WRITE_ACTION"]
+        self.exact_read = values["FILESYSTEM_BARE_CHECKPOINT_READ_ACTION"]
         self.memory_contract = values["SWE_MEMORY_CONTRACT"]
 
     def test_contract_has_a_distinct_joint_memory_identity(self) -> None:
@@ -113,6 +116,20 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
         self.assertIn("rg -n 'hypothesis|evidence|next check' .agent_memory", self.prompt)
         self.assertIn("followed in a later action", self.prompt)
         self.assertIn("only a syntax illustration", self.prompt)
+
+    def test_checkpoint_control_turns_are_exact_and_cannot_edit_task_source(self) -> None:
+        self.assertIn(self.exact_write, self.compaction)
+        self.assertIn("only for writing the continuation checkpoint", self.compaction)
+        self.assertIn("do not inspect, edit, test, or submit task source", self.compaction)
+        self.assertIn(self.exact_read, self.continuation_marker)
+        self.assertIn("until the required checkpoint read succeeds", self.continuation_marker)
+        source = SWESMITH_PATH.read_text(encoding="utf-8")
+        self.assertEqual(
+            source.count(
+                "continuation_marker=SWE_POLICY_CONTINUATION_MARKER"
+            ),
+            2,
+        )
 
     def test_compaction_is_a_real_bounded_checkpoint_write(self) -> None:
         for fragment in (

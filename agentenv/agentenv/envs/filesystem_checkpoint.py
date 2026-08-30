@@ -56,6 +56,29 @@ FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER = (
     "available and may still be read or updated normally."
 )
 
+FILESYSTEM_BARE_CHECKPOINT_WRITE_ACTION = (
+    "shell_command {\"command\":\"mkdir -p .agent_memory && printf '%s\\\\n' "
+    "'objective: CURRENT_OBJECTIVE' 'decisive_evidence: DECISIVE_EVIDENCE' "
+    "'workspace_paths: RELEVANT_PATHS' 'next_action: NEXT_ACTION' > "
+    ".agent_memory/CONTINUATION.md\"}"
+)
+FILESYSTEM_BARE_CHECKPOINT_WRITE_GUIDANCE = (
+    "\n\nFor this bare/Codex action surface, output exactly the one "
+    "shell_command action below and no other text. Replace the uppercase "
+    "placeholders with concise current state; do not change the command shape "
+    "or add optional JSON fields:\n\n"
+    + FILESYSTEM_BARE_CHECKPOINT_WRITE_ACTION
+)
+FILESYSTEM_BARE_CHECKPOINT_READ_ACTION = (
+    'shell_command {"command":"cat .agent_memory/CONTINUATION.md"}'
+)
+FILESYSTEM_BARE_CHECKPOINT_CONTINUATION_MARKER = (
+    FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER
+    + " The required checkpoint read must happen before any dependent task "
+    "action. Output exactly this action and no other text:\n\n"
+    + FILESYSTEM_BARE_CHECKPOINT_READ_ACTION
+)
+
 
 def checkpoint_retry_trigger_tokens(
     pressure: Any,

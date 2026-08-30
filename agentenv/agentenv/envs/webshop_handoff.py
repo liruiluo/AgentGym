@@ -7,13 +7,19 @@ context replacement live in the task-neutral filesystem-checkpoint helper.
 
 from __future__ import annotations
 
-from .filesystem_checkpoint import FILESYSTEM_CHECKPOINT_REQUEST
+from .filesystem_checkpoint import (
+    FILESYSTEM_BARE_CHECKPOINT_CONTINUATION_MARKER,
+    FILESYSTEM_BARE_CHECKPOINT_WRITE_GUIDANCE,
+    FILESYSTEM_CHECKPOINT_REQUEST,
+)
 
 
-WEBSHOP_BARE_CHECKPOINT_GUIDANCE = (
-    " Use the system prompt's canonical bare shell_command JSON form; run "
-    "`mkdir -p .agent_memory` before overwriting "
-    "`.agent_memory/CONTINUATION.md`."
+WEBSHOP_BARE_CHECKPOINT_GUIDANCE = FILESYSTEM_BARE_CHECKPOINT_WRITE_GUIDANCE
+WEBSHOP_POLICY_CONTINUATION_MARKER = (
+    FILESYSTEM_BARE_CHECKPOINT_CONTINUATION_MARKER
+    + " On this required read turn, do not use search, click, or `rg`. First read "
+    "the continuation with the exact `cat` action above. On the following action, "
+    "you may inspect other workspace records such as Confirmed entries."
 )
 
 

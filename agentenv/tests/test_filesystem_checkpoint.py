@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import unittest
 
 from agentenv.controller.types import PolicyContextPressure
 from agentenv.envs.filesystem_checkpoint import (
+    FILESYSTEM_BARE_CHECKPOINT_CONTINUATION_MARKER,
+    FILESYSTEM_BARE_CHECKPOINT_READ_ACTION,
+    FILESYSTEM_BARE_CHECKPOINT_WRITE_ACTION,
+    FILESYSTEM_BARE_CHECKPOINT_WRITE_GUIDANCE,
     FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER,
     FILESYSTEM_CHECKPOINT_MAX_BYTES,
     FILESYSTEM_CHECKPOINT_PATH,
@@ -31,6 +36,41 @@ from agentenv.envs.filesystem_checkpoint import (
 
 
 class FilesystemCheckpointContractTest(unittest.TestCase):
+
+    def test_bare_checkpoint_control_actions_are_minimal_and_exact(self) -> None:
+        write_name, write_payload = FILESYSTEM_BARE_CHECKPOINT_WRITE_ACTION.split(
+            " ", 1
+        )
+        read_name, read_payload = FILESYSTEM_BARE_CHECKPOINT_READ_ACTION.split(
+            " ", 1
+        )
+        self.assertEqual(write_name, "shell_command")
+        self.assertEqual(read_name, "shell_command")
+        write_args = json.loads(write_payload)
+        read_args = json.loads(read_payload)
+        self.assertEqual(set(write_args), {"command"})
+        self.assertEqual(
+            read_args, {"command": "cat .agent_memory/CONTINUATION.md"}
+        )
+        self.assertIn(FILESYSTEM_CHECKPOINT_PATH, write_args["command"])
+        self.assertIn(
+            FILESYSTEM_BARE_CHECKPOINT_WRITE_ACTION,
+            FILESYSTEM_BARE_CHECKPOINT_WRITE_GUIDANCE,
+        )
+        self.assertIn(
+            FILESYSTEM_BARE_CHECKPOINT_READ_ACTION,
+            FILESYSTEM_BARE_CHECKPOINT_CONTINUATION_MARKER,
+        )
+        self.assertIn(
+            "before any dependent task action",
+            FILESYSTEM_BARE_CHECKPOINT_CONTINUATION_MARKER,
+        )
+        for value in (
+            FILESYSTEM_BARE_CHECKPOINT_WRITE_ACTION,
+            FILESYSTEM_BARE_CHECKPOINT_READ_ACTION,
+        ):
+            self.assertNotIn('"workdir"', value)
+            self.assertNotIn('"timeout_ms"', value)
 
     def test_failed_write_retry_context_is_bounded_stable_and_preserves_history(
         self,
