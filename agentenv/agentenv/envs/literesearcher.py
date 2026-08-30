@@ -46,8 +46,9 @@ LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE = 12_288
 LITERESEARCHER_QWEN_XML_CHECKPOINT_GUIDANCE = """
 
 For this context-boundary write, use shell_command rather than apply_patch.
-Follow this exact Qwen XML shape, replacing the placeholder lines with the
-current research state:
+Output exactly the command-only Qwen XML call below, replacing the placeholder
+lines with the current research state. Add no optional parameters or extra XML
+tags.
 
 <tool_call>
 <function=shell_command>
@@ -59,15 +60,17 @@ Uncertainty: ...
 Next action: ...
 EOF
 </parameter>
-<parameter=workdir>
-.
-</parameter>
-<parameter=timeout_ms>
-10000
-</parameter>
 </function>
 </tool_call>
 """
+
+LITERESEARCHER_EXACT_CHECKPOINT_READ_ACTION = """<tool_call>
+<function=shell_command>
+<parameter=command>
+cat .agent_memory/CONTINUATION.md
+</parameter>
+</function>
+</tool_call>"""
 
 LITERESEARCHER_CONTEXT_COMPACTION_REQUEST = (
     FILESYSTEM_CHECKPOINT_REQUEST
@@ -79,6 +82,8 @@ LITERESEARCHER_CONTEXT_COMPACTION_REQUEST = (
 
 LITERESEARCHER_POLICY_CONTINUATION_MARKER = (
     FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER
+    + "\nOutput exactly this command-only Qwen XML action and no other text:\n\n"
+    + LITERESEARCHER_EXACT_CHECKPOINT_READ_ACTION
 )
 
 
@@ -468,6 +473,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
                     checkpoint_read_framing_before,
                     checkpoint_read_pending_before,
                     read_failure_reason or "checkpoint_read_not_observed",
+                    continuation_marker=LITERESEARCHER_POLICY_CONTINUATION_MARKER,
                 ),
             )
         return StepOutput(
@@ -532,7 +538,9 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 framing
             )
             replacement = build_post_checkpoint_context(
-                framing, checkpoint_receipt
+                framing,
+                checkpoint_receipt,
+                continuation_marker=LITERESEARCHER_POLICY_CONTINUATION_MARKER,
             )
             self._context_epoch += 1
             self._pending_checkpoint_read = dict(checkpoint_receipt)

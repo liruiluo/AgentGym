@@ -11,9 +11,12 @@ from agentenv.envs.filesystem_checkpoint import (
     FILESYSTEM_CHECKPOINT_PATH,
     FILESYSTEM_CHECKPOINT_READ_RECEIPT_SCHEMA,
 )
+from agentenv.envs.verl_qwen_tool_parser import parse_single_qwen3_tool_call
 from agentenv.envs.literesearcher import (
     LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+    LITERESEARCHER_EXACT_CHECKPOINT_READ_ACTION,
     LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
+    LITERESEARCHER_POLICY_CONTINUATION_MARKER,
     LITERESEARCHER_SYSTEM_PROMPT,
     LiteResearcherEnvClient,
 )
@@ -85,6 +88,47 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertNotIn(
             "*** Add File: .agent_memory/CONTINUATION.md",
             LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
+
+    def test_checkpoint_controls_use_minimal_command_only_qwen_xml(self) -> None:
+        self.assertIn(
+            "<parameter=command>", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
+        )
+        self.assertNotIn(
+            "<parameter=workdir>", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
+        )
+        self.assertNotIn(
+            "<parameter=timeout_ms>", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST
+        )
+        self.assertEqual(
+            LITERESEARCHER_EXACT_CHECKPOINT_READ_ACTION.count("<parameter="),
+            1,
+        )
+        self.assertIn(
+            LITERESEARCHER_EXACT_CHECKPOINT_READ_ACTION,
+            LITERESEARCHER_POLICY_CONTINUATION_MARKER,
+        )
+        parsed = parse_single_qwen3_tool_call(
+            LITERESEARCHER_EXACT_CHECKPOINT_READ_ACTION,
+            tool_schemas=(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "shell_command",
+                        "description": "Run a command.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                            "required": ["command"],
+                        },
+                    },
+                },
+            ),
+        )
+        self.assertIsNotNone(parsed)
+        self.assertEqual(
+            dict(parsed.arguments),
+            {"command": "cat .agent_memory/CONTINUATION.md"},
         )
 
     def test_policy_framing_restores_system_role_and_question(self) -> None:
@@ -209,6 +253,10 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertNotIn(secret, str(replacement))
         self.assertNotIn(action, str(replacement))
         self.assertIn(receipt["sha256"], replacement[-1]["content"])
+        self.assertIn(
+            LITERESEARCHER_EXACT_CHECKPOINT_READ_ACTION,
+            replacement[-1]["content"],
+        )
         self.assertTrue(output.info["wrapper_evidence"]["continuation_persisted"])
         self.assertFalse(
             output.info["wrapper_evidence"]["checkpoint_content_in_successor_context"]
@@ -278,6 +326,10 @@ class LiteResearcherClientTests(unittest.TestCase):
         )
         retry_messages = wrong.info["context_transition"]["messages"]
         self.assertIn("Checkpoint read failed", str(retry_messages))
+        self.assertIn(
+            LITERESEARCHER_EXACT_CHECKPOINT_READ_ACTION,
+            retry_messages[-1]["content"],
+        )
         self.assertNotIn('<function=search>["query"]', str(retry_messages))
         self.assertNotIn("UNIQUE_LARGE_NATIVE_SEARCH_OBSERVATION", str(retry_messages))
         self.assertEqual(retry_messages[0], post_checkpoint_messages[0])
