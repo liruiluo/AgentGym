@@ -124,6 +124,7 @@ class PersistentWorkspace:
     shell_sandbox: ShellSandbox
     root_parent: Path | None = None
     limits: WorkspaceLimits = field(default_factory=WorkspaceLimits)
+    initial_directories: tuple[str, ...] = ()
     _root: Path | None = field(default=None, init=False, repr=False)
     _episode_id: str | None = field(default=None, init=False, repr=False)
     _enabled: bool = field(default=True, init=False, repr=False)
@@ -144,6 +145,23 @@ class PersistentWorkspace:
             if not parent.is_dir() or parent.is_symlink():
                 raise ValueError("root_parent must be a real directory")
             self.root_parent = parent
+        if isinstance(self.initial_directories, (str, bytes)):
+            raise TypeError(
+                "initial_directories must be a sequence of relative paths"
+            )
+        normalized_directories = tuple(
+            _normalize_relative_path(path, limits=self.limits)
+            for path in self.initial_directories
+        )
+        directory_prefixes = {
+            PurePosixPath(*parts[:index]).as_posix()
+            for path in normalized_directories
+            for parts in (PurePosixPath(path).parts,)
+            for index in range(1, len(parts) + 1)
+        }
+        if len(directory_prefixes) > self.limits.max_directories:
+            raise ValueError("initial_directories exceed the workspace directory limit")
+        self.initial_directories = normalized_directories
 
     @property
     def enabled(self) -> bool:
@@ -250,6 +268,10 @@ class PersistentWorkspace:
         )
         os.chmod(root, 0o700)
         self._root = root.resolve()
+        for relative in self.initial_directories:
+            target = self._root / relative
+            target.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(target, 0o700)
 
     def close(self) -> None:
         root = self._root

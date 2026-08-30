@@ -105,6 +105,18 @@ class LiteResearcherServerFactoryTests(unittest.TestCase):
             timeout_seconds=45.5,
             max_retries=4,
         )
+        workspace = wrapper._workspace_factory(7)
+        self.assertEqual(workspace.initial_directories, (".agent_memory",))
+        workspace.reset_episode("factory-test")
+        try:
+            self.assertTrue((workspace.host_root / ".agent_memory").is_dir())
+            self.assertEqual(workspace.audit_events, ())
+        finally:
+            workspace.close()
+        self.assertEqual(
+            wrapper.metadata()["workspace_runtime"]["initial_directories"],
+            [".agent_memory"],
+        )
 
 
 if __name__ == "__main__":

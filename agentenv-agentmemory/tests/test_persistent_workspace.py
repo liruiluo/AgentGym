@@ -254,6 +254,43 @@ class PersistentWorkspaceTests(unittest.TestCase):
         finally:
             workspace.close()
 
+    def test_configured_initial_directory_exists_before_first_policy_action(self) -> None:
+        self.assertFalse((self.workspace.host_root / ".agent_memory").exists())
+        workspace = PersistentWorkspace(
+            "precreated-memory",
+            shell_sandbox=InProcessTestShellSandbox(),
+            root_parent=self.parent,
+            initial_directories=(".agent_memory",),
+        )
+        workspace.reset_episode("episode-1")
+        try:
+            memory_directory = workspace.host_root / ".agent_memory"
+            self.assertTrue(memory_directory.is_dir())
+            self.assertEqual(workspace.audit_events, ())
+            result = workspace.apply(
+                shell_action(
+                    "cat > .agent_memory/CONTINUATION.md <<'EOF'\n"
+                    "objective: answer\nnext: search\nEOF"
+                ),
+                env_step=1,
+                phase_index=0,
+            )
+            self.assertEqual(result.tool_op["exit_code"], 0)
+            self.assertTrue(
+                (memory_directory / "CONTINUATION.md").is_file()
+            )
+
+            old_root = workspace.host_root
+            workspace.reset_episode("episode-2")
+            self.assertFalse(old_root.exists())
+            self.assertTrue((workspace.host_root / ".agent_memory").is_dir())
+            self.assertFalse(
+                (workspace.host_root / ".agent_memory/CONTINUATION.md").exists()
+            )
+            self.assertEqual(workspace.audit_events, ())
+        finally:
+            workspace.close()
+
     def test_reset_and_close_remove_episode_workspace(self) -> None:
         self.apply(
             "apply_patch\n*** Begin Patch\n*** Add File: note.md\n+old\n*** End Patch"

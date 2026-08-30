@@ -205,6 +205,7 @@ def _build_literesearcher_wrapper(surface: str) -> LiteResearcherWrapper:
             shell_sandbox=sandbox,
             root_parent=root_parent,
             limits=limits,
+            initial_directories=(".agent_memory",),
         )
 
     split = _required_env("AGENTMEMORY_LITERESEARCHER_SPLIT")
@@ -263,6 +264,7 @@ def _build_literesearcher_wrapper(surface: str) -> LiteResearcherWrapper:
         workspace_runtime_metadata={
             "sandbox": dict(sandbox.metadata),
             "limits": limits.as_metadata(),
+            "initial_directories": [".agent_memory"],
             "host_root_exposed_to_policy": False,
         },
         max_policy_steps=_env_int("AGENTMEMORY_LITERESEARCHER_MAX_POLICY_STEPS", 40),
