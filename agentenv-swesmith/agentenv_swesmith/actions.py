@@ -10,6 +10,12 @@ ActionKind = Literal["shell_command", "apply_patch", "final", "parser_error"]
 
 _SHELL_PREFIX = "shell_command "
 _SHELL_BLOCK_PREFIX = "shell_command\n"
+_CHECKPOINT_PATH = ".agent_memory/CONTINUATION.md"
+_CHECKPOINT_HEREDOC = "AGENT_MEMORY_EOF"
+_CHECKPOINT_SHELL_PREFIX = (
+    f"cat > {_CHECKPOINT_PATH} <<'{_CHECKPOINT_HEREDOC}'\n"
+)
+_CHECKPOINT_SHELL_SUFFIX = f"\n{_CHECKPOINT_HEREDOC}"
 _PATCH_PREFIX = "apply_patch\n"
 UPSTREAM_SUBMISSION_SENTINEL = "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
 _PATCH_BEGIN = "*** Begin Patch"
@@ -159,15 +165,34 @@ def _parse_shell_command_body(
     action_text: str,
     thought: str,
 ) -> ParsedPolicyAction:
-    """Parse the delimiter-light shell form: header line plus raw command body."""
+    """Accept a raw shell body only for the fixed checkpoint heredoc.
+
+    Ordinary SWE-smith actions retain the canonical JSON envelope.  The raw
+    block exists solely so checkpoint text can carry quotes without nested JSON
+    escaping.  Requiring an exact target, quoted delimiter, and final delimiter
+    prevents this exception from becoming a second general shell grammar.
+    """
 
     command = action_text[len(_SHELL_BLOCK_PREFIX) :]
-    if not command.strip() or "\x00" in command:
+    body = None
+    if command.startswith(_CHECKPOINT_SHELL_PREFIX) and command.endswith(
+        _CHECKPOINT_SHELL_SUFFIX
+    ):
+        body = command[
+            len(_CHECKPOINT_SHELL_PREFIX) : -len(_CHECKPOINT_SHELL_SUFFIX)
+        ]
+    if (
+        body is None
+        or not body.strip()
+        or "\x00" in body
+        or _CHECKPOINT_HEREDOC in body.splitlines()
+    ):
         return _parser_error(
             raw_output,
             action_text,
             thought,
-            "shell_command body must be non-empty and contain no NUL bytes",
+            "raw shell_command is reserved for one quoted-heredoc overwrite of "
+            f"{_CHECKPOINT_PATH}; use the canonical JSON shell envelope otherwise",
             tool_hint="shell_command",
         )
     return _build_shell_command(

@@ -15,27 +15,45 @@ class SwesmithActionParserTests(unittest.TestCase):
         )
         self.assertFalse(parsed.terminates_episode)
 
-    def test_parses_delimiter_light_shell_body(self) -> None:
+    def test_parses_checkpoint_only_shell_body(self) -> None:
         parsed = parse_policy_action(
             "shell_command\n"
-            "python - <<'PY'\n"
-            "print({\"quoted\": r\"C:\\\\tmp\"})\n"
-            "PY"
+            "cat > .agent_memory/CONTINUATION.md <<'AGENT_MEMORY_EOF'\n"
+            "objective: user's task\n"
+            "evidence: verified\n"
+            "AGENT_MEMORY_EOF"
         )
         self.assertEqual(parsed.kind, "shell_command")
         self.assertEqual(parsed.arguments["workdir"], ".")
         self.assertNotIn("timeout_ms", parsed.arguments)
-        self.assertEqual(
-            parsed.arguments["command"],
-            "python - <<'PY'\nprint({\"quoted\": r\"C:\\\\tmp\"})\nPY",
-        )
+        self.assertIn("objective: user's task", parsed.arguments["command"])
         self.assertFalse(parsed.terminates_episode)
 
-    def test_empty_delimiter_light_shell_body_is_rejected(self) -> None:
-        parsed = parse_policy_action("shell_command\n")
-        self.assertEqual(parsed.kind, "parser_error")
-        self.assertEqual(parsed.tool_hint, "shell_command")
-        self.assertFalse(parsed.terminates_episode)
+    def test_ordinary_delimiter_light_shell_body_is_rejected(self) -> None:
+        for raw in (
+            "shell_command\npwd",
+            "shell_command\npython - <<'PY'\nprint(1)\nPY",
+            "shell_command\n",
+        ):
+            with self.subTest(raw=raw):
+                parsed = parse_policy_action(raw)
+                self.assertEqual(parsed.kind, "parser_error")
+                self.assertEqual(parsed.tool_hint, "shell_command")
+                self.assertFalse(parsed.terminates_episode)
+
+    def test_checkpoint_shell_body_rejects_early_or_trailing_delimiter(self) -> None:
+        for raw in (
+            "shell_command\n"
+            "cat > .agent_memory/CONTINUATION.md <<'AGENT_MEMORY_EOF'\n"
+            "objective: task\nAGENT_MEMORY_EOF\necho unsafe\nAGENT_MEMORY_EOF",
+            "shell_command\n"
+            "cat > other.md <<'AGENT_MEMORY_EOF'\nobjective: task\n"
+            "AGENT_MEMORY_EOF",
+        ):
+            with self.subTest(raw=raw):
+                parsed = parse_policy_action(raw)
+                self.assertEqual(parsed.kind, "parser_error")
+                self.assertFalse(parsed.terminates_episode)
 
     def test_preserves_explicit_shell_arguments_and_thinking(self) -> None:
         parsed = parse_policy_action(
