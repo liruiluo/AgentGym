@@ -92,7 +92,11 @@ class _DuplicateJsonKey(ValueError):
     pass
 
 
-def parse_policy_action(raw_output: str) -> ParsedPolicyAction:
+def parse_policy_action(
+    raw_output: str,
+    *,
+    allow_checkpoint_shell_block: bool = False,
+) -> ParsedPolicyAction:
     """Classify one sampled SWE-smith turn without executing policy text.
 
     The upstream submission sentinel is emitted by a shell command and is
@@ -104,6 +108,23 @@ def parse_policy_action(raw_output: str) -> ParsedPolicyAction:
         raise TypeError(
             f"SWE-smith policy output must be text, got {type(raw_output).__name__}"
         )
+
+    # The raw heredoc is a privileged serialization for a wrapper-selected
+    # checkpoint control turn.  Inspect it before any whitespace, thinking, or
+    # visible-prefix normalization so the exception must begin at byte zero.
+    if raw_output.startswith(_SHELL_BLOCK_PREFIX):
+        action_text = _strip_single_eos(raw_output).rstrip()
+        if not allow_checkpoint_shell_block:
+            return _parser_error(
+                raw_output,
+                action_text,
+                "",
+                "raw checkpoint shell block requires an explicit wrapper-owned "
+                "context-compaction control marker",
+                tool_hint="shell_command",
+            )
+        return _parse_shell_command_body(raw_output, action_text, "")
+
     thought, action_text, framing_error = _split_thinking(raw_output)
     if framing_error is not None:
         return _parser_error(
@@ -135,7 +156,14 @@ def parse_policy_action(raw_output: str) -> ParsedPolicyAction:
         thought = "\n\n".join(part for part in (thought, visible_reasoning) if part)
 
     if action_text.startswith(_SHELL_BLOCK_PREFIX):
-        return _parse_shell_command_body(raw_output, action_text, thought)
+        return _parser_error(
+            raw_output,
+            action_text,
+            thought,
+            "raw checkpoint shell block must begin at byte zero and requires "
+            "an explicit wrapper-owned context-compaction control marker",
+            tool_hint="shell_command",
+        )
     if action_text.startswith(_SHELL_PREFIX):
         return _parse_shell_command(raw_output, action_text, thought)
     if action_text.startswith(_PATCH_PREFIX):

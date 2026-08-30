@@ -4,12 +4,15 @@ import os
 import unittest
 from unittest.mock import patch
 
+from pydantic import ValidationError
+
 from agentenv_swesmith.launch import (
     _integer,
     _limits_from_environment,
     _runtime_source_from_environment,
 )
 from agentenv_swesmith.privacy import private_detail_authorized
+from agentenv_swesmith.server import StepRequest
 
 
 class SwesmithServerPrivacyTests(unittest.TestCase):
@@ -22,6 +25,46 @@ class SwesmithServerPrivacyTests(unittest.TestCase):
             self.assertFalse(private_detail_authorized(None))
             self.assertFalse(private_detail_authorized("audit-secret-wrong"))
             self.assertTrue(private_detail_authorized("audit-secret"))
+
+
+class SwesmithStepRequestTests(unittest.TestCase):
+    def test_context_compaction_control_is_typed_and_optional(self) -> None:
+        ordinary = StepRequest(id=1, action='shell_command {"command":"pwd"}')
+        self.assertIsNone(ordinary.policy_control)
+
+        controlled = StepRequest(
+            id=1,
+            action="checkpoint",
+            policy_control={
+                "schema": "task_neutral_policy_control_v1",
+                "kind": "context_compaction",
+            },
+        )
+        self.assertEqual(controlled.policy_control.kind, "context_compaction")
+        self.assertEqual(
+            controlled.policy_control.schema_name,
+            "task_neutral_policy_control_v1",
+        )
+
+        invalid_controls = (
+            {
+                "schema": "task_neutral_policy_control_v1",
+                "kind": "ordinary",
+            },
+            {
+                "schema": "task_neutral_policy_control_v1",
+                "kind": "context_compaction",
+                "extra": "forbidden",
+            },
+        )
+        for policy_control in invalid_controls:
+            with self.subTest(policy_control=policy_control):
+                with self.assertRaises(ValidationError):
+                    StepRequest(
+                        id=1,
+                        action="checkpoint",
+                        policy_control=policy_control,
+                    )
 
 
 class SwesmithRuntimeSourceTests(unittest.TestCase):

@@ -15,19 +15,45 @@ class SwesmithActionParserTests(unittest.TestCase):
         )
         self.assertFalse(parsed.terminates_episode)
 
-    def test_parses_checkpoint_only_shell_body(self) -> None:
-        parsed = parse_policy_action(
+    def test_checkpoint_shell_body_requires_explicit_control(self) -> None:
+        raw = (
             "shell_command\n"
             "cat > .agent_memory/CONTINUATION.md <<'AGENT_MEMORY_EOF'\n"
             "objective: user's task\n"
             "evidence: verified\n"
             "AGENT_MEMORY_EOF"
         )
+
+        ordinary = parse_policy_action(raw)
+        self.assertEqual(ordinary.kind, "parser_error")
+        self.assertEqual(ordinary.tool_hint, "shell_command")
+
+        parsed = parse_policy_action(raw, allow_checkpoint_shell_block=True)
         self.assertEqual(parsed.kind, "shell_command")
         self.assertEqual(parsed.arguments["workdir"], ".")
         self.assertNotIn("timeout_ms", parsed.arguments)
         self.assertIn("objective: user's task", parsed.arguments["command"])
         self.assertFalse(parsed.terminates_episode)
+
+    def test_checkpoint_shell_body_is_byte_zero_strict(self) -> None:
+        block = (
+            "shell_command\n"
+            "cat > .agent_memory/CONTINUATION.md <<'AGENT_MEMORY_EOF'\n"
+            "objective: user's task\n"
+            "evidence: verified\n"
+            "AGENT_MEMORY_EOF"
+        )
+        for raw in (
+            "I will checkpoint now.\n" + block,
+            "<think>save state</think>\n" + block,
+            " " + block,
+        ):
+            with self.subTest(raw=raw):
+                parsed = parse_policy_action(
+                    raw, allow_checkpoint_shell_block=True
+                )
+                self.assertEqual(parsed.kind, "parser_error")
+                self.assertEqual(parsed.tool_hint, "shell_command")
 
     def test_ordinary_delimiter_light_shell_body_is_rejected(self) -> None:
         for raw in (
@@ -51,7 +77,9 @@ class SwesmithActionParserTests(unittest.TestCase):
             "AGENT_MEMORY_EOF",
         ):
             with self.subTest(raw=raw):
-                parsed = parse_policy_action(raw)
+                parsed = parse_policy_action(
+                    raw, allow_checkpoint_shell_block=True
+                )
                 self.assertEqual(parsed.kind, "parser_error")
                 self.assertFalse(parsed.terminates_episode)
 

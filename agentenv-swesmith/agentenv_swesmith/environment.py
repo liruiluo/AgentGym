@@ -53,6 +53,11 @@ FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA = (
 )
 FILESYSTEM_CHECKPOINT_PATH = ".agent_memory/CONTINUATION.md"
 FILESYSTEM_CHECKPOINT_MAX_BYTES = 8 * 1024
+POLICY_CONTROL_SCHEMA = "task_neutral_policy_control_v1"
+CONTEXT_COMPACTION_POLICY_CONTROL = {
+    "schema": POLICY_CONTROL_SCHEMA,
+    "kind": "context_compaction",
+}
 GENERATED_PATH_PARTS = frozenset(
     {
         "__pycache__",
@@ -124,6 +129,14 @@ class _Episode:
 class _Slot:
     episode: _Episode | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+def _normalize_policy_control(value: Mapping[str, Any] | None) -> dict[str, str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or dict(value) != CONTEXT_COMPACTION_POLICY_CONTROL:
+        raise RuntimeError("SWE-smith policy control marker is invalid")
+    return dict(CONTEXT_COMPACTION_POLICY_CONTROL)
 
 
 def _actor_credit(positive_eligible: bool, basis: str) -> dict[str, Any]:
@@ -282,7 +295,14 @@ class SwesmithEpisodeManager:
                     sandbox.close()
                 raise
 
-    def step(self, slot_id: int, raw_output: str) -> EpisodeStep:
+    def step(
+        self,
+        slot_id: int,
+        raw_output: str,
+        *,
+        policy_control: Mapping[str, Any] | None = None,
+    ) -> EpisodeStep:
+        normalized_control = _normalize_policy_control(policy_control)
         slot = self._slot(slot_id)
         with slot.lock:
             episode = self._episode(slot)
@@ -293,13 +313,18 @@ class SwesmithEpisodeManager:
             # configured penalty without contaminating the next valid step.
             episode.reward = 0.0
             observation_before = episode.observation
-            action = parse_policy_action(raw_output)
+            action = parse_policy_action(
+                raw_output,
+                allow_checkpoint_shell_block=normalized_control is not None,
+            )
             evidence: dict[str, Any] = {
                 "event": "policy_step",
                 "step": episode.step_count,
                 "observation_before": observation_before,
                 "action": action.as_evidence(),
             }
+            if normalized_control is not None:
+                evidence["policy_control"] = dict(normalized_control)
             public_action_kind = action.kind
             if action.kind == "parser_error":
                 episode.observation = _parser_error_observation(action)
@@ -354,6 +379,7 @@ class SwesmithEpisodeManager:
                 actor_credit=actor_credit,
                 action_progress=evidence.get("action_progress"),
                 filesystem_checkpoint=checkpoint_receipt,
+                policy_control=normalized_control,
             )
 
     def observation(self, slot_id: int) -> str:
@@ -459,7 +485,7 @@ class SwesmithEpisodeManager:
             "reward_contract": REWARD_CONTRACT,
             "context_contract": "one_native_issue_continuous_episode_v1",
             "memory_contract": (
-                "policy_filesystem_checkpoint_then_client_replace_v3"
+                "policy_filesystem_checkpoint_then_client_replace_v4"
             ),
             "submission_contract": SUBMISSION_CONTRACT,
             "horizon_contract": HORIZON_CONTRACT,
@@ -727,6 +753,7 @@ class SwesmithEpisodeManager:
         actor_credit: Mapping[str, Any] | None = None,
         action_progress: Mapping[str, Any] | None = None,
         filesystem_checkpoint: Mapping[str, Any] | None = None,
+        policy_control: Mapping[str, Any] | None = None,
     ) -> EpisodeStep:
         info: dict[str, Any] = {
             "schema": EPISODE_SCHEMA,
@@ -747,6 +774,8 @@ class SwesmithEpisodeManager:
             info["action_progress"] = dict(action_progress)
         if filesystem_checkpoint is not None:
             info["filesystem_checkpoint"] = dict(filesystem_checkpoint)
+        if policy_control is not None:
+            info["policy_control"] = dict(policy_control)
         return EpisodeStep(
             observation=episode.observation,
             reward=episode.reward,

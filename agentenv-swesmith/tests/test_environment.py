@@ -302,7 +302,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.manager.metadata()["max_observation_bytes"], 6144)
         self.assertEqual(
             self.manager.metadata()["memory_contract"],
-            "policy_filesystem_checkpoint_then_client_replace_v3",
+            "policy_filesystem_checkpoint_then_client_replace_v4",
         )
         self.assertEqual(self.manager.metadata()["training_max_policy_turns"], 75)
         self.assertEqual(
@@ -453,6 +453,42 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertEqual(audits[0].stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.audits.stat().st_mode & 0o777, 0o700)
         self.assertEqual(list(self.audits.glob(".*.tmp")), [])
+
+    def test_raw_checkpoint_block_requires_wrapper_control_state(self) -> None:
+        slot = self.manager.create()
+        self.manager.reset(slot, 0)
+        raw = (
+            "shell_command\n"
+            "cat > .agent_memory/CONTINUATION.md <<'AGENT_MEMORY_EOF'\n"
+            "objective: fix the public value\n"
+            "evidence: src/value.py is still buggy\n"
+            "next: inspect and edit src/value.py\n"
+            "AGENT_MEMORY_EOF"
+        )
+
+        ordinary = self.manager.step(slot, raw)
+        self.assertEqual(ordinary.info["action_kind"], "parser_error")
+        self.assertFalse(ordinary.info["filesystem_checkpoint"]["exists"])
+        self.assertNotIn("policy_control", ordinary.info)
+
+        controlled = self.manager.step(
+            slot,
+            raw,
+            policy_control={
+                "schema": "task_neutral_policy_control_v1",
+                "kind": "context_compaction",
+            },
+        )
+        self.assertEqual(controlled.info["action_kind"], "shell_command")
+        self.assertTrue(controlled.info["filesystem_checkpoint"]["changed"])
+        self.assertEqual(
+            controlled.info["policy_control"],
+            {
+                "schema": "task_neutral_policy_control_v1",
+                "kind": "context_compaction",
+            },
+        )
+        self.manager.close(slot)
 
     def test_filesystem_checkpoint_receipt_requires_current_action_change(self) -> None:
         slot = self.manager.create()

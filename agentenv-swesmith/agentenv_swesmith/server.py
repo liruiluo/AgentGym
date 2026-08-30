@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from .environment import SwesmithEpisodeManager
 from .privacy import private_detail_authorized
@@ -21,9 +21,17 @@ class ResetRequest(BaseModel):
     data_idx: int
 
 
+class PolicyControlRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_name: Literal["task_neutral_policy_control_v1"] = Field(alias="schema")
+    kind: Literal["context_compaction"]
+
+
 class StepRequest(BaseModel):
     id: int
     action: str
+    policy_control: PolicyControlRequest | None = None
 
 
 class CloseRequest(BaseModel):
@@ -87,7 +95,17 @@ def reset(body: ResetRequest) -> dict[str, Any]:
 @app.post("/step")
 def step(body: StepRequest) -> dict[str, Any]:
     try:
-        return manager().step(body.id, body.action).as_dict()
+        policy_control = (
+            None
+            if body.policy_control is None
+            else {
+                "schema": body.policy_control.schema_name,
+                "kind": body.policy_control.kind,
+            }
+        )
+        return manager().step(
+            body.id, body.action, policy_control=policy_control
+        ).as_dict()
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RuntimeError as exc:
