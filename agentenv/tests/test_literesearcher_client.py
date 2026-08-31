@@ -93,6 +93,22 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn("rejected as outside the released corpus", prompt)
         self.assertIn("never retry that URL or a modified variant", prompt)
 
+    def test_policy_framing_uses_bounded_conditional_search_visit_discipline(self) -> None:
+        prompt = self._client().policy_framing()[0]["content"]
+        approved = (
+            "For the current unresolved relation, if Search results visibly match "
+            "the needed entity, date, title, quote, or relation, Visit the strongest "
+            "match. If none matches or Visit fails, reformulate that relation's query. "
+            "Answer from Visit evidence, not result titles, as soon as sufficient; do "
+            "not exhaust other relations or results. "
+        )
+        self.assertIn(approved, prompt)
+        self.assertNotIn("After Search, Visit a result", prompt)
+        self.assertNotIn("After each Search or Visit", prompt)
+        self.assertNotIn("check every decisive relation", prompt)
+        self.assertNotIn("before answering", approved)
+        self.assertNotIn("only answer", approved)
+
     def test_policy_framing_keeps_optional_terminal_synthesis_available(self) -> None:
         prompt = self._client().policy_framing()[0]["content"]
         self.assertIn("One optional penultimate synthesis write", prompt)
