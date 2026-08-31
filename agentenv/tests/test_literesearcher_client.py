@@ -119,6 +119,19 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn("unresolved_relations:", LITERESEARCHER_CONTEXT_COMPACTION_EXAMPLE)
         self.assertIn("Record one current candidate_answer", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
         self.assertIn("under supported_relations", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
+        self.assertIn(
+            "copy its exact source-backed name, number, date, title, or relation value "
+            "verbatim into fact",
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
+        self.assertIn(
+            "even when the same value appears in candidate_answer",
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
+        self.assertIn(
+            "Unsupported guesses must not be recorded as facts",
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
         self.assertIn("A candidate mention alone is not support", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
         self.assertIn("drop low-value history before", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
         self.assertIn("Treat the file as your own unverified notes", LITERESEARCHER_POLICY_CONTINUATION_MARKER)
