@@ -22,6 +22,8 @@ SHELL_SANDBOX_CONTRACT = "linux_namespace_chroot_tmpfs_v1"
 _UID_LEASE_ROOT = Path("/run/agentmemorygym-workspace-sandbox-uids")
 _UID_LEASE_BASE = 1_500_000_000
 _UID_LEASE_SLOTS = 4096
+_DEFAULT_ROOTFS_PARENT = Path("/tmp/agentmemorygym-workspace-sandbox-rootfs")
+_ROOTFS_PARENT_ENV = "AGENTMEMORY_SANDBOX_ROOTFS_PARENT"
 
 
 class ShellSandboxError(RuntimeError):
@@ -136,6 +138,7 @@ class LinuxNamespaceShellSandbox:
     mknod_binary: Path
     sleep_binary: Path
     capsh_binary: Path
+    rootfs_parent: Path
 
     @classmethod
     def from_environment(
@@ -197,6 +200,7 @@ class LinuxNamespaceShellSandbox:
             mknod_binary=require("mknod"),
             sleep_binary=require("sleep"),
             capsh_binary=require("capsh"),
+            rootfs_parent=_private_rootfs_parent(),
         )
         if run_preflight:
             sandbox.preflight()
@@ -209,6 +213,8 @@ class LinuxNamespaceShellSandbox:
             "formal_eligible": True,
             "network": "new_namespace_no_routes",
             "rootfs": "minimal_read_only_system_roots",
+            "rootfs_host_parent": str(self.rootfs_parent),
+            "rootfs_host_storage": "pod_local",
             "workspace_mount": "bounded_tmpfs_copy_in_copy_out",
             "shell": "bash_no_profile_no_rc",
             "ripgrep_path": "/tools/rg",
@@ -291,13 +297,13 @@ class LinuxNamespaceShellSandbox:
             "ripgrep",
         )
 
-        parent = workspace_root.parent
+        workspace_parent = workspace_root.parent
         with _lease_ephemeral_model_uid() as model_uid, tempfile.TemporaryDirectory(
-            prefix=".agentmemory-sandbox-root-",
-            dir=parent,
+            prefix="agentmemory-sandbox-root-",
+            dir=self.rootfs_parent,
         ) as rootfs_raw, tempfile.TemporaryDirectory(
             prefix=".agentmemory-sandbox-output-",
-            dir=parent,
+            dir=workspace_parent,
         ) as output_raw:
             rootfs = Path(rootfs_raw)
             output = Path(output_raw)
@@ -346,7 +352,7 @@ class LinuxNamespaceShellSandbox:
                     str(self.sleep_binary),
                     str(self.capsh_binary),
                 ],
-                cwd=parent,
+                cwd=self.rootfs_parent,
                 env={
                     "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
                     "LC_ALL": "C",
@@ -583,6 +589,30 @@ printf "%s\n" "$command_exit" > /run/out/status
 exit 0
 ' agentmemory-inner "$model_command" "$model_workdir" "$cpu_seconds" "$address_space_bytes" "$max_processes" "$max_open_files" "$max_file_bytes" "$model_uid" "$setpriv_binary" "$prlimit_binary" "$env_binary" "$bash_binary" "$mkdir_binary" "$sleep_binary" "$cp_binary" "$capsh_binary"
 """
+
+
+def _private_rootfs_parent() -> Path:
+    """Return a private pod-local parent for ephemeral chroot mount targets."""
+
+    configured = os.environ.get(_ROOTFS_PARENT_ENV)
+    path = Path(configured).expanduser() if configured else _DEFAULT_ROOTFS_PARENT
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = os.lstat(path)
+    except OSError as exc:
+        raise ShellSandboxError(
+            f"cannot prepare sandbox rootfs parent: {path}"
+        ) from exc
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_mode & 0o077
+    ):
+        raise ShellSandboxError(
+            "sandbox rootfs parent must be a private real directory owned by the launcher"
+        )
+    return path
 
 
 def _require_executable(path: Path, label: str) -> Path:

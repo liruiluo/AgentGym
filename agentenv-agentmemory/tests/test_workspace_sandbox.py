@@ -16,6 +16,7 @@ from agentenv_agentmemory.workspace_sandbox import (
     _lease_ephemeral_model_uid,
     _collect_bounded_output,
     _normalize_sha256,
+    _private_rootfs_parent,
     _terminate_process_group,
     _validate_staged_workspace,
     assert_executable_fingerprint,
@@ -196,6 +197,35 @@ class StagedWorkspaceValidationTests(unittest.TestCase):
 
         (self.root / ("p" * 81)).write_text("x", encoding="utf-8")
         self.assert_rejected("path longer")
+
+
+class RootfsParentTests(unittest.TestCase):
+
+    def test_rootfs_parent_is_private_and_explicitly_pod_local(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            configured = Path(raw) / "pod-local-rootfs"
+            with patch.dict(
+                os.environ,
+                {"AGENTMEMORY_SANDBOX_ROOTFS_PARENT": str(configured)},
+            ):
+                observed = _private_rootfs_parent()
+            self.assertEqual(observed, configured)
+            self.assertEqual(observed.stat().st_mode & 0o777, 0o700)
+
+    def test_rootfs_parent_rejects_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            real = Path(raw) / "real"
+            real.mkdir(mode=0o700)
+            linked = Path(raw) / "linked"
+            linked.symlink_to(real, target_is_directory=True)
+            with (
+                patch.dict(
+                    os.environ,
+                    {"AGENTMEMORY_SANDBOX_ROOTFS_PARENT": str(linked)},
+                ),
+                self.assertRaisesRegex(ShellSandboxError, "private real directory"),
+            ):
+                _private_rootfs_parent()
 
 
 class PinValidationTests(unittest.TestCase):
