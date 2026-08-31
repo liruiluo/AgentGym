@@ -29,11 +29,27 @@ from .filesystem_checkpoint import (
 )
 
 
+SWE_CHECKPOINT_SHELL_SAFE_EXAMPLE = (
+    "shell_command {\"command\":\"cat > .agent_memory/CONTINUATION.md "
+    "<<'AGENT_MEMORY_EOF'\\n"
+    "objective: <user's task>\\n"
+    "evidence: <verified state>\\n"
+    "paths: <relevant files>\\n"
+    "next: <concrete action>\\n"
+    "AGENT_MEMORY_EOF\",\"workdir\":\".\"}"
+)
+
 SWE_CONTEXT_COMPACTION_REQUEST = (
     FILESYSTEM_CHECKPOINT_REQUEST
-    + " The reserved `.agent_memory` parent directory already exists; write "
-    "the fixed file directly without creating, removing, or replacing that "
-    "directory."
+    + " The reserved `.agent_memory` directory already exists. If the repair is "
+    "already complete, submit with the normal terminal sentinel. Otherwise, on "
+    "this turn only, overwrite the checkpoint; do not inspect, read, test, edit "
+    "source, or write another path. Use exactly the one-line JSON shell action "
+    "shape below, replacing its placeholders. Keep each literal `\\n` escape "
+    "inside the JSON command so the decoded shell command becomes multiline. The "
+    "quoted heredoc safely carries apostrophes; do not use printf/echo for "
+    "checkpoint text:\n"
+    + SWE_CHECKPOINT_SHELL_SAFE_EXAMPLE
     + " For this coding task, preserve the issue objective, decisive inspection "
     "and test evidence, changed source paths, unresolved failure, and the next "
     "concrete edit or test."
@@ -183,17 +199,14 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "verified. After replacement, read the checkpoint with a normal command, then read "
     "any detailed notes it points to before acting on them. The checkpoint does not "
     "replace source files, test artifacts, or voluntary debugging notes.\n"
-    "Illustrative pattern only (do not copy its content as a task answer): one turn may "
-    "append a concise entry to a relative debugging file, a later turn may search or "
-    "read that file, and a subsequent patch may use the recovered evidence. For example, "
-    "a first action could be `shell_command {\"command\":\"mkdir -p .agent_memory && "
-    "printf '%s\\n' 'hypothesis: parser state is stale' 'evidence: test output ...' "
-    ">> .agent_memory/debugging.md\",\"workdir\":\".\"}`, followed in a later "
-    "action by `shell_command {\"command\":\"rg -n 'hypothesis|evidence|next check' "
-    ".agent_memory\",\"workdir\":\".\"}`. This is only a syntax illustration: "
-    "do not assume this filename, content, or timing is useful for the current issue. "
-    "Writing or reading a note has no separate reward; the native task result is the "
-    "objective.\n\n"
+    "Illustrative pattern only (do not copy its content as a task answer): for "
+    "arbitrary note text, prefer a quoted heredoc inside the JSON command and encode "
+    "its line breaks as literal `\\n` escapes so the outer action remains one valid "
+    "JSON line. A later action can run `rg -n 'hypothesis|evidence|next check' "
+    ".agent_memory`. Do not use inline single-quoted printf/echo for arbitrary note "
+    "text. This is only a syntax illustration: do not assume a filename, content, or "
+    "timing is useful for the current issue. Writing or reading a note has no separate "
+    "reward; the native task result is the objective.\n\n"
     "# Output contract\n"
     "Start at byte zero with shell_command or apply_patch. Output only that one action: "
     "no XML tags, explanation, label, Markdown fence, or <think> tag. After an "

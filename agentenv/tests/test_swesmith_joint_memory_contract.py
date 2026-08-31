@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 
 
@@ -56,6 +59,7 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
         values = extract_static_string_assignments()
         self.prompt = values["SWE_POLICY_SYSTEM_PROMPT"]
         self.compaction = values["SWE_CONTEXT_COMPACTION_REQUEST"]
+        self.checkpoint_example = values["SWE_CHECKPOINT_SHELL_SAFE_EXAMPLE"]
         self.continuation_marker = values["SWE_POLICY_CONTINUATION_MARKER"]
         self.memory_contract = values["SWE_MEMORY_CONTRACT"]
         self.horizon_contract = values["SWE_HORIZON_CONTRACT"]
@@ -116,11 +120,12 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, self.prompt)
 
-    def test_prompt_includes_a_separate_turn_write_then_read_example(self) -> None:
-        self.assertIn(">> .agent_memory/debugging.md", self.prompt)
+    def test_prompt_includes_a_shell_safe_separate_turn_note_contract(self) -> None:
+        self.assertIn("quoted heredoc inside the JSON command", self.prompt)
+        self.assertIn("literal `\\n` escapes", self.prompt)
         self.assertIn("rg -n 'hypothesis|evidence|next check' .agent_memory", self.prompt)
-        self.assertIn("followed in a later action", self.prompt)
         self.assertIn("only a syntax illustration", self.prompt)
+        self.assertNotIn("printf '%s", self.prompt)
 
     def test_compaction_is_an_executed_checkpoint_write_then_later_read(self) -> None:
         for fragment in (
@@ -128,7 +133,7 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
             ".agent_memory/CONTINUATION.md",
             "executed normally and consumes one policy-action step",
             "removed only after the environment verifies this exact file write",
-            "reserved `.agent_memory` parent directory already exists",
+            "reserved `.agent_memory` directory already exists",
         ):
             self.assertIn(fragment, self.compaction)
         self.assertIn(
@@ -140,6 +145,72 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
             "Do not claim that this response executed a shell command",
         ):
             self.assertNotIn(forbidden, self.compaction)
+
+    def test_compaction_requires_immediate_shell_safe_overwrite(self) -> None:
+        for fragment in (
+            "If the repair is already complete, submit with the normal terminal sentinel",
+            "Otherwise, on this turn only, overwrite the checkpoint",
+            "do not inspect, read, test, edit source, or write another path",
+            "one-line JSON shell action",
+            "cat > .agent_memory/CONTINUATION.md <<'AGENT_MEMORY_EOF'",
+            "do not use printf/echo for checkpoint text",
+        ):
+            self.assertIn(fragment, self.compaction)
+        self.assertNotIn("do not submit", self.compaction)
+        self.assertNotIn("printf '%s", self.compaction)
+
+    def test_checkpoint_example_is_valid_json_and_executes_multiline_content(self) -> None:
+        self.assertTrue(self.checkpoint_example.startswith("shell_command "))
+        self.assertNotIn("\n", self.checkpoint_example)
+        payload = json.loads(self.checkpoint_example.split(" ", 1)[1])
+        self.assertEqual(set(payload), {"command", "workdir"})
+        self.assertEqual(payload["workdir"], ".")
+        self.assertIn("\n", payload["command"])
+        self.assertIn("user's task", payload["command"])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            memory_dir = Path(tmpdir) / ".agent_memory"
+            memory_dir.mkdir()
+            result = subprocess.run(
+                ["/bin/bash", "-c", payload["command"]],
+                cwd=tmpdir,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            checkpoint = memory_dir / "CONTINUATION.md"
+            self.assertTrue(checkpoint.is_file())
+            content = checkpoint.read_text()
+            self.assertIn("user's task", content)
+            self.assertIn("next: <concrete action>", content)
+
+    def test_shell_safe_shape_preserves_apostrophe_quotes_multiline_and_paths(self) -> None:
+        command = (
+            "cat > .agent_memory/CONTINUATION.md <<'AGENT_MEMORY_EOF'\n"
+            "objective: user's \"quoted\" task\n"
+            "evidence: source says $HOME and `pwd` literally\n"
+            "paths: src/pkg/example.py; tests/test_example.py\n"
+            "next: run the focused test\n"
+            "AGENT_MEMORY_EOF"
+        )
+        action = "shell_command " + json.dumps(
+            {"command": command, "workdir": "."}, ensure_ascii=False
+        )
+        decoded = json.loads(action.split(" ", 1)[1])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / ".agent_memory").mkdir()
+            result = subprocess.run(
+                ["/bin/bash", "-c", decoded["command"]],
+                cwd=tmpdir,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            content = (Path(tmpdir) / ".agent_memory/CONTINUATION.md").read_text()
+            self.assertIn('user\'s "quoted" task', content)
+            self.assertIn("$HOME and `pwd` literally", content)
+            self.assertIn("src/pkg/example.py", content)
 
 
 if __name__ == "__main__":
