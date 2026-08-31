@@ -774,7 +774,10 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
         return
     if process.poll() is None:
         try:
-            process.wait(timeout=2.0)
+            # Concurrent namespace teardown can remain uninterruptible briefly
+            # while the kernel releases private mounts. Keep the wait bounded,
+            # but do not misclassify a slow post-SIGKILL reap as a live process.
+            process.wait(timeout=30.0)
         except subprocess.TimeoutExpired as exc:
             raise ShellSandboxError(
                 "shell sandbox launcher did not terminate after SIGKILL"

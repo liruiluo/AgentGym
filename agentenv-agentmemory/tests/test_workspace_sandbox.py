@@ -113,13 +113,29 @@ class BoundedOutputTests(unittest.TestCase):
         self.assertFalse(stderr_truncated)
         self.assertFalse(timed_out)
 
+    def test_killed_launcher_allows_bounded_slow_reap(self) -> None:
+        process = Mock()
+        process.pid = 424242
+        process.poll.return_value = None
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="sandbox-launcher", timeout=0.5),
+            None,
+        ]
+        with patch("agentenv_agentmemory.workspace_sandbox.os.killpg"):
+            _terminate_process_group(process)
+
+        self.assertEqual(
+            [call.kwargs["timeout"] for call in process.wait.call_args_list],
+            [0.5, 30.0],
+        )
+
     def test_unreaped_killed_launcher_raises_typed_sandbox_error(self) -> None:
         process = Mock()
         process.pid = 424242
         process.poll.return_value = None
         process.wait.side_effect = [
             subprocess.TimeoutExpired(cmd="sandbox-launcher", timeout=0.5),
-            subprocess.TimeoutExpired(cmd="sandbox-launcher", timeout=2.0),
+            subprocess.TimeoutExpired(cmd="sandbox-launcher", timeout=30.0),
         ]
         with (
             patch("agentenv_agentmemory.workspace_sandbox.os.killpg"),
