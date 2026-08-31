@@ -248,7 +248,34 @@ CLARIFICATION_ACTION_NAMES = ("ASK",)
 NATIVE_ACTION_NAMES = ("search", "click")
 JSON_ACTION_NAMES = (*MEMORY_ACTION_NAMES, *CLARIFICATION_ACTION_NAMES)
 ACTION_NAMES = (*NATIVE_ACTION_NAMES, *JSON_ACTION_NAMES)
-NATIVE_ACTION_RE = re.compile(r"\A(search|click)\[([^\[\]\r\n]+)\]\Z")
+NATIVE_ACTION_PREFIX_RE = re.compile(r"\A(search|click)\[")
+
+
+def _parse_native_bracket_action(text: str) -> tuple[str, str] | None:
+    """Parse one outer native action while allowing balanced brackets in titles."""
+
+    if "\n" in text or "\r" in text:
+        return None
+    prefix = NATIVE_ACTION_PREFIX_RE.match(text)
+    if prefix is None:
+        return None
+    depth = 1
+    argument_start = prefix.end()
+    for index in range(argument_start, len(text)):
+        char = text[index]
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                if index != len(text) - 1:
+                    return None
+                return prefix.group(1), text[argument_start:index].strip()
+            if depth < 0:
+                return None
+    return None
+
+
 JSON_ACTION_RE = re.compile(
     r"\A(" + "|".join(JSON_ACTION_NAMES) + r")\s+(\{.*\})\Z",
     flags=re.DOTALL,
@@ -1919,11 +1946,12 @@ def parse_filesystem_env_action(
     allow_ask: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     cleaned = action.strip()
-    native_match = NATIVE_ACTION_RE.fullmatch(cleaned)
-    if native_match is not None:
-        argument = native_match.group(2).strip()
-        key = "keywords" if native_match.group(1) == "search" else "item"
-        return native_match.group(1), {key: argument}
+    native_action = _parse_native_bracket_action(cleaned)
+    if native_action is not None:
+        action_name, argument = native_action
+        if argument:
+            key = "keywords" if action_name == "search" else "item"
+            return action_name, {key: argument}
     qwen_workspace_action = parse_qwen_workspace_action(cleaned)
     if qwen_workspace_action is not None:
         return qwen_workspace_action
@@ -3092,11 +3120,12 @@ def extract_bare_env_action(text: str) -> str:
 
 def parse_env_action(action: str) -> tuple[str, dict[str, Any]]:
     cleaned = action.strip()
-    native_match = NATIVE_ACTION_RE.fullmatch(cleaned)
-    if native_match is not None:
-        argument = native_match.group(2).strip()
-        key = "keywords" if native_match.group(1) == "search" else "item"
-        return native_match.group(1), {key: argument}
+    native_action = _parse_native_bracket_action(cleaned)
+    if native_action is not None:
+        action_name, argument = native_action
+        if argument:
+            key = "keywords" if action_name == "search" else "item"
+            return action_name, {key: argument}
     json_match = JSON_ACTION_RE.fullmatch(cleaned)
     if json_match is None:
         raise ValueError(

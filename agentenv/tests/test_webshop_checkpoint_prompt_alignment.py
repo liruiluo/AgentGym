@@ -6,6 +6,8 @@ import unittest
 from agentenv.envs.agentmemory import (
     PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE,
     build_filesystem_conversation_start,
+    parse_env_action,
+    parse_filesystem_env_action,
 )
 from agentenv.envs.filesystem_checkpoint import (
     FILESYSTEM_BARE_CHECKPOINT_READ_ACTION,
@@ -47,6 +49,23 @@ class WebShopCheckpointPromptAlignmentTest(unittest.TestCase):
         )
         self.assertIn("do not use search, click, or `rg`", WEBSHOP_POLICY_CONTINUATION_MARKER)
         self.assertIn("On the following action", WEBSHOP_POLICY_CONTINUATION_MARKER)
+
+    def test_client_parsers_accept_balanced_brackets_in_exact_product_title(self) -> None:
+        title = (
+            '[2022] 12" Triple Portable Monitor for Laptop, FOPO FHD 1080P IPS '
+            'Attachable Laptop Screen Extender, Triple Monitor for 13"-16" '
+            'Notebook/Mac/Switch/Xbox One/Phone, Connect with USB-C/HDMI'
+        )
+        action = f"search[{title}]"
+        for parser in (parse_env_action, parse_filesystem_env_action):
+            with self.subTest(parser=parser.__name__):
+                name, arguments = parser(action)
+                self.assertEqual(name, "search")
+                self.assertEqual(arguments, {"keywords": title})
+        for parser in (parse_env_action, parse_filesystem_env_action):
+            with self.subTest(parser=parser.__name__, malformed="multiple"):
+                with self.assertRaises(ValueError):
+                    parser("search[x] click[y]")
 
     def test_webshop_client_wires_exact_read_marker_after_replace_and_retry(self) -> None:
         source = (
