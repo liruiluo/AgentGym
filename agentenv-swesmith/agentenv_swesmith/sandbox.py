@@ -39,6 +39,7 @@ _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _LOCAL_SANDBOX_SCRATCH_ROOT = Path("/tmp")
 _SANDBOX_CLEANUP_TIMEOUT_SECONDS = 2.0
 _SANDBOX_CLEANUP_RETRY_SECONDS = 0.05
+_SANDBOX_PREFLIGHT_TIMEOUT_ATTEMPTS = 2
 _MAX_PRIVATE_OUTPUT_BYTES = 16 * 1024 * 1024
 _TRANSIENT_SANDBOX_CLEANUP_ERRNOS = {
     errno.EBUSY,
@@ -354,36 +355,49 @@ class LinuxNamespaceEpisodeSandbox:
 
     def preflight(self) -> None:
         self._require_open()
-        with tempfile.TemporaryDirectory(prefix="swesmith-sandbox-preflight-") as raw:
-            workspace = Path(raw) / "workspace"
-            workspace.mkdir(mode=0o700)
-            os.chown(workspace, self.model_uid, self.model_gid)
-            result = self._run_namespace(
-                workspace,
-                command=(
-                    "test \"$(command -v rg)\" = /run/tools/rg && "
-                    "rg --version >/dev/null && "
-                    "printf SWESMITH_OCI_ROOTFS_SANDBOX_OK > proof && "
-                    "cat proof"
-                ),
-                workdir=".",
-                timeout_ms=min(10_000, self.limits.max_timeout_ms),
-            )
-            proof = workspace / "proof"
-            valid = (
-                result.exit_code == 0
-                and not result.timed_out
-                and result.stdout == b"SWESMITH_OCI_ROOTFS_SANDBOX_OK"
-                and not result.stderr
-                and proof.is_file()
-                and proof.read_bytes() == b"SWESMITH_OCI_ROOTFS_SANDBOX_OK"
-            )
-            if not valid:
-                raise SwesmithSandboxError(
-                    "SWE-smith OCI-rootfs sandbox preflight failed: "
-                    f"exit={result.exit_code} timeout={result.timed_out} "
-                    f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        result: ShellExecutionResult | None = None
+        attempts = 0
+        # A timed-out namespace has no persistent episode state and is safe to
+        # retry once. All semantic/proof failures remain immediately fail-closed.
+        for attempts in range(1, _SANDBOX_PREFLIGHT_TIMEOUT_ATTEMPTS + 1):
+            with tempfile.TemporaryDirectory(
+                prefix="swesmith-sandbox-preflight-"
+            ) as raw:
+                workspace = Path(raw) / "workspace"
+                workspace.mkdir(mode=0o700)
+                os.chown(workspace, self.model_uid, self.model_gid)
+                result = self._run_namespace(
+                    workspace,
+                    command=(
+                        "test \"$(command -v rg)\" = /run/tools/rg && "
+                        "rg --version >/dev/null && "
+                        "printf SWESMITH_OCI_ROOTFS_SANDBOX_OK > proof && "
+                        "cat proof"
+                    ),
+                    workdir=".",
+                    timeout_ms=min(10_000, self.limits.max_timeout_ms),
                 )
+                proof = workspace / "proof"
+                valid = (
+                    result.exit_code == 0
+                    and not result.timed_out
+                    and result.stdout == b"SWESMITH_OCI_ROOTFS_SANDBOX_OK"
+                    and not result.stderr
+                    and proof.is_file()
+                    and proof.read_bytes() == b"SWESMITH_OCI_ROOTFS_SANDBOX_OK"
+                )
+                if valid:
+                    return
+            if not result.timed_out:
+                break
+
+        assert result is not None
+        raise SwesmithSandboxError(
+            "SWE-smith OCI-rootfs sandbox preflight failed: "
+            f"attempts={attempts} exit={result.exit_code} "
+            f"timeout={result.timed_out} "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
 
     def attach_workspace(self, workspace_root: Path | str) -> WorkspaceTreeSnapshot:
         self._require_open()

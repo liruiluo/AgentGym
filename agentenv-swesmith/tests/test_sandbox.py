@@ -129,6 +129,87 @@ class SandboxPreflightTests(unittest.TestCase):
         self.assertNotIn("python", command.lower())
         sandbox.close()
 
+    def test_retries_one_transient_namespace_timeout(self) -> None:
+        sandbox = _FakeEpisodeSandbox()
+        real_run = sandbox._run_namespace
+        attempts = 0
+
+        def flaky_run(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return ShellExecutionResult(
+                    stdout=b"",
+                    stderr=b"",
+                    exit_code=124,
+                    elapsed_ms=10_000,
+                    timed_out=True,
+                    stdout_truncated=False,
+                    stderr_truncated=False,
+                    termination_reason="wall_timeout",
+                    sandbox_contract="test",
+                    model_uid=sandbox.model_uid,
+                )
+            return real_run(*args, **kwargs)
+
+        with mock.patch.object(
+            sandbox,
+            "_run_namespace",
+            side_effect=flaky_run,
+        ) as run:
+            sandbox.preflight()
+        self.assertEqual(run.call_count, 2)
+        sandbox.close()
+
+    def test_does_not_retry_non_timeout_preflight_failure(self) -> None:
+        sandbox = _FakeEpisodeSandbox()
+        bad_result = ShellExecutionResult(
+            stdout=b"",
+            stderr=b"bad proof",
+            exit_code=1,
+            elapsed_ms=1,
+            timed_out=False,
+            stdout_truncated=False,
+            stderr_truncated=False,
+            termination_reason=None,
+            sandbox_contract="test",
+            model_uid=sandbox.model_uid,
+        )
+        with mock.patch.object(
+            sandbox,
+            "_run_namespace",
+            return_value=bad_result,
+        ) as run, self.assertRaises(SwesmithSandboxError):
+            sandbox.preflight()
+        self.assertEqual(run.call_count, 1)
+        sandbox.close()
+
+    def test_fails_closed_after_two_preflight_timeouts(self) -> None:
+        sandbox = _FakeEpisodeSandbox()
+        timeout_result = ShellExecutionResult(
+            stdout=b"",
+            stderr=b"",
+            exit_code=124,
+            elapsed_ms=10_000,
+            timed_out=True,
+            stdout_truncated=False,
+            stderr_truncated=False,
+            termination_reason="wall_timeout",
+            sandbox_contract="test",
+            model_uid=sandbox.model_uid,
+        )
+        with mock.patch.object(
+            sandbox,
+            "_run_namespace",
+            return_value=timeout_result,
+        ) as run, self.assertRaisesRegex(
+            SwesmithSandboxError,
+            "attempts=2",
+        ):
+            sandbox.preflight()
+        self.assertEqual(run.call_count, 2)
+        sandbox.close()
+
     def test_network_namespace_enables_only_loopback(self) -> None:
         self.assertIn('"$ip_binary" link set dev lo up', _DIRECT_BIND_NAMESPACE_SETUP)
         self.assertNotIn("route add", _DIRECT_BIND_NAMESPACE_SETUP)
