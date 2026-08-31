@@ -40,6 +40,7 @@ _LOCAL_SANDBOX_SCRATCH_ROOT = Path("/tmp")
 _SANDBOX_CLEANUP_TIMEOUT_SECONDS = 2.0
 _SANDBOX_CLEANUP_RETRY_SECONDS = 0.05
 _SANDBOX_PREFLIGHT_TIMEOUT_ATTEMPTS = 2
+_SANDBOX_PREFLIGHT_TIMEOUT_MS = 30_000
 _MAX_PRIVATE_OUTPUT_BYTES = 16 * 1024 * 1024
 _TRANSIENT_SANDBOX_CLEANUP_ERRNOS = {
     errno.EBUSY,
@@ -375,7 +376,10 @@ class LinuxNamespaceEpisodeSandbox:
                         "cat proof"
                     ),
                     workdir=".",
-                    timeout_ms=min(10_000, self.limits.max_timeout_ms),
+                    timeout_ms=min(
+                        _SANDBOX_PREFLIGHT_TIMEOUT_MS,
+                        self.limits.max_timeout_ms,
+                    ),
                 )
                 proof = workspace / "proof"
                 valid = (

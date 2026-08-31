@@ -127,6 +127,19 @@ class SandboxPreflightTests(unittest.TestCase):
             sandbox.preflight()
         command = run.call_args.kwargs["command"]
         self.assertNotIn("python", command.lower())
+        self.assertEqual(run.call_args.kwargs["timeout_ms"], 2_000)
+        sandbox.close()
+
+    def test_preflight_uses_independent_thirty_second_bound(self) -> None:
+        sandbox = _FakeEpisodeSandbox()
+        sandbox.limits = limits(max_timeout_ms=120_000)
+        with mock.patch.object(
+            sandbox,
+            "_run_namespace",
+            wraps=sandbox._run_namespace,
+        ) as run:
+            sandbox.preflight()
+        self.assertEqual(run.call_args.kwargs["timeout_ms"], 30_000)
         sandbox.close()
 
     def test_retries_one_transient_namespace_timeout(self) -> None:
