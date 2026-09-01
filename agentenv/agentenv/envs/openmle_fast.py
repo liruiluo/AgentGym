@@ -254,6 +254,7 @@ _OPENMLE_RELEASE_REVISION = "f56e4b31252a9b81d95fea100098cd49b7290398"
 
 _ALLOWED_MANIFEST_ROLES = frozenset({"gate_only", "train_pool", "heldout"})
 _CLOSE_MAX_ATTEMPTS = 3
+_CLOSE_RETRY_BACKOFF_SECONDS = (0.25, 0.5)
 _GRADE_SCHEMA = "openmle_fast_grade_response_v1"
 _GRADE_CONTRACT_VERSION = "openmle_fast_v1"
 _PUBLIC_GRADE_FIELDS = frozenset(
@@ -886,6 +887,11 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                 return response
             if not response["retryable"]:
                 break
+            if _attempt + 1 < _CLOSE_MAX_ATTEMPTS:
+                remaining = deadline - time.monotonic()
+                delay = min(_CLOSE_RETRY_BACKOFF_SECONDS[_attempt], remaining)
+                if delay > 0:
+                    time.sleep(delay)
         raise RuntimeError("OpenMLE-fast cleanup did not complete")
 
     def _request(

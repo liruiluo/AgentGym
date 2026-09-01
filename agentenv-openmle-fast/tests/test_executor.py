@@ -206,6 +206,33 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
         self.assertLess(backend.timeout_ms, 950)
         self.assertGreaterEqual(receipt.wall_seconds, 0.09)
 
+    def test_external_runner_host_grace_does_not_shave_policy_timeout(self) -> None:
+        limits = replace(
+            self.limits,
+            shell_wall_ms=50,
+            managed_runtime_per_action_ms=40,
+        )
+
+        class SlowExternalLikeBackend(_RecordingBackend):
+            @property
+            def metadata(self):
+                value = dict(super().metadata)
+                value["adapter_host_grace_ms"] = 200
+                return value
+
+            def run(self, *args, **kwargs):
+                time.sleep(0.08)
+                return super().run(*args, **kwargs)
+
+        backend = SlowExternalLikeBackend(limits)
+        executor = OpenMLEFastExecutor(limits=limits, backend=backend)
+        action = parse_policy_action(
+            'shell_command {"command":"true","timeout_ms":50}'
+        )
+        receipt = executor.execute(self.workspace, action)
+        self.assertEqual(receipt.status, "completed")
+        self.assertEqual(backend.timeout_ms, 50)
+
     def test_external_runner_reserves_bounded_receipt_cleanup_grace(self) -> None:
         backend = object.__new__(ExternalSandboxRunnerBackend)
         backend.runner_path = self.workspace / "runner"

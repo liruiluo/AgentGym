@@ -1159,13 +1159,17 @@ cat .agent_memory/CONTINUATION.md
                 return _Response(close_receipts.pop(0))
             raise AssertionError(url)
 
-        with patch("requests.request", side_effect=request):
+        with (
+            patch("requests.request", side_effect=request),
+            patch.object(_CLIENT_MODULE.time, "sleep") as sleep,
+        ):
             client = OpenMLEFastEnvClient(
                 "http://127.0.0.1:9000", **self.client_kwargs()
             )
             receipt = client.close()
         self.assertTrue(receipt["closed"])
         self.assertEqual(sum(url.endswith("/close") for url, _ in calls), 2)
+        sleep.assert_called_once_with(_CLIENT_MODULE._CLOSE_RETRY_BACKOFF_SECONDS[0])
 
     def test_rejects_nonfinite_timeouts_and_retired_manifest_roles(self) -> None:
         for value in (float("nan"), float("inf")):

@@ -33,7 +33,7 @@ FIT_HOOK_CONTRACT = "openmle_fast_fit_hook_v1"
 # Keep the existing policy-time reserve stable, but give the host-side exact
 # runner longer to drain pipes and reap cgroup-v1 state under fully-async fanout.
 EXTERNAL_RUNNER_COMPLETION_GRACE_MS = 3_000
-EXTERNAL_RUNNER_PROCESS_GRACE_MS = 8_000
+EXTERNAL_RUNNER_PROCESS_GRACE_MS = 34_000
 
 
 def _external_runner_environment() -> dict[str, str]:
@@ -565,6 +565,7 @@ class ExternalSandboxRunnerBackend:
             raise OpenMLEFastExecutorError("sandbox runner attestation is incomplete")
         value = dict(value)
         value["adapter_completion_grace_ms"] = EXTERNAL_RUNNER_COMPLETION_GRACE_MS
+        value["adapter_host_grace_ms"] = EXTERNAL_RUNNER_PROCESS_GRACE_MS
         return value
 
     def run(
@@ -852,8 +853,11 @@ class OpenMLEFastExecutor:
         root = Path(workspace).absolute()
         effective_deadline = deadline
         if action.kind == "shell_command":
+            host_grace_ms = self.backend.metadata.get("adapter_host_grace_ms", 0)
+            if type(host_grace_ms) is not int or host_grace_ms < 0:
+                raise OpenMLEFastExecutorError("backend host grace is invalid")
             effective_deadline = MonotonicDeadline.after_ms(
-                self.limits.shell_wall_ms,
+                self.limits.shell_wall_ms + host_grace_ms,
                 cap=deadline,
             )
             if managed_runtime_budget_ms is not None and (
