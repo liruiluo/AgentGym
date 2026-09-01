@@ -692,7 +692,7 @@ class AgeMemEnvClientAdapter(BaseEnvClient):
             if message["role"] != "system":
                 continue
             if AGEMEM_PROMPT_MARKER not in message["content"]:
-                message["content"] = message["content"].rstrip() + "\n\n" + _agemem_prompt()
+                message["content"] = message["content"] + "\n\n" + _agemem_prompt()
             return normalized
         return [{"role": "system", "content": _agemem_prompt()}, *normalized]
 
@@ -709,7 +709,7 @@ class AgeMemEnvClientAdapter(BaseEnvClient):
                     continue
                 suffix = "\n\n" + prompt
                 if content.endswith(suffix):
-                    message["content"] = content[: -len(suffix)].rstrip()
+                    message["content"] = content[: -len(suffix)]
             stripped.append(message)
         return stripped
 

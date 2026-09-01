@@ -140,6 +140,21 @@ class AgeMemAdapterTests(unittest.TestCase):
         normalized = list(adapter.normalize_initial_policy_context(messages))
         self.assertEqual(sum(AGEMEM_PROMPT_MARKER in m["content"] for m in normalized), 1)
 
+    def test_prompt_round_trip_preserves_native_trailing_whitespace(self) -> None:
+        class TrailingPromptEnvClient(FakeEnvClient):
+            def policy_framing(self) -> list[dict[str, str]]:
+                return [{"role": "system", "content": "native-system\n"}]
+
+        native = TrailingPromptEnvClient()
+        adapter = AgeMemEnvClientAdapter(native)
+        adapter.reset(0)
+        messages = adapter.policy_framing() + [
+            {"role": "user", "content": adapter.observe()}
+        ]
+        normalized = list(adapter.normalize_initial_policy_context(messages))
+        adapter.bind_policy_context(normalized, initial=True)
+        self.assertEqual(native.bound[-1][0][0]["content"], "native-system\n")
+
     def test_add_retrieve_update_delete_and_reset_are_episode_private(self) -> None:
         adapter = self.make_adapter()
         messages = self.bind(adapter)
