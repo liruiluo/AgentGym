@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 from copy import deepcopy
 import hashlib
 import json
@@ -29,6 +30,13 @@ from agentenv.controller.types import (
     StepOutput,
     build_task_neutral_context_transition,
     build_task_neutral_transition_info,
+)
+from .context_compaction import (
+    COMPACTIONRL_RECENT_STEPS,
+    COMPACTIONRL_SUMMARY_MAX_BYTES,
+    compactionrl_policy_prompt,
+    configure_compactionrl_controller,
+    context_compaction_controller,
 )
 from .filesystem_checkpoint import (
     FILESYSTEM_CHECKPOINT_MAX_BYTES,
@@ -521,6 +529,31 @@ PROGRAMMATIC_WEBSHOP_SURFACES = frozenset(
         *LATENT_PREFERENCE_SOP_WEBSHOP_SURFACES,
     }
 )
+
+_WEBSHOP_SESSION_TRACE_HEADER = "\n\nCurrent-session action trace:\n"
+_WEBSHOP_WORKSPACE_CONTRACT_HEADER = "\n\nPersistent workspace"
+
+
+def strip_filesystem_webshop_session_trace(observation: str) -> str:
+    """Remove the server's cumulative display trace for append-mode policies.
+
+    The filesystem WebShop server renders the entire current-session trace in
+    every observation because the native CAMG path normally keeps only the
+    latest observation.  CompactionRL instead retains ordinary policy turns,
+    so appending that cumulative rendering would duplicate earlier actions and
+    observations quadratically.  The native server keeps the trace and all
+    task state; this function changes only the policy-visible rendering.
+    """
+
+    if not isinstance(observation, str):
+        raise TypeError("WebShop observation must be text")
+    contract_at = observation.rfind(_WEBSHOP_WORKSPACE_CONTRACT_HEADER)
+    if contract_at < 0:
+        raise ValueError("WebShop filesystem observation lacks workspace contract")
+    trace_at = observation.rfind(_WEBSHOP_SESSION_TRACE_HEADER, 0, contract_at)
+    if trace_at < 0:
+        raise ValueError("WebShop filesystem observation lacks session trace")
+    return observation[:trace_at] + observation[contract_at:]
 LATENT_PREFERENCE_PROMPT_MODE = "latent_preference_sop"
 SELECTIVE_MEMORY_PROMPT_MODE = "selective_memory_sop"
 NATURAL_FILESYSTEM_PROMPT_MODE = "natural_filesystem"
@@ -2206,11 +2239,20 @@ class AgentMemoryEnvClient(BaseEnvClient):
         data_len: int | None,
         *args,
         timeout: int = 300,
+        context_memory_mode: str = "filesystem",
+        compaction_recent_steps: int = COMPACTIONRL_RECENT_STEPS,
+        compaction_summary_max_bytes: int = COMPACTIONRL_SUMMARY_MAX_BYTES,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.env_server_base = env_server_base
         self.timeout = timeout
+        configure_compactionrl_controller(
+            self,
+            mode=context_memory_mode,
+            recent_steps=compaction_recent_steps,
+            summary_max_bytes=compaction_summary_max_bytes,
+        )
         self.metadata = self.get_metadata()
         self.surface = _required_metadata_text(self.metadata, "surface")
         self.formal_schema_version = self.metadata.get("formal_schema_version")
@@ -2393,7 +2435,11 @@ class AgentMemoryEnvClient(BaseEnvClient):
             raise RuntimeError(
                 "AgentMemory formal policy system prompt was not configured"
             )
-        return [{"role": "system", "content": self._policy_system_prompt}]
+        prompt = compactionrl_policy_prompt(
+            self._policy_system_prompt,
+            mode=context_compaction_controller(self).mode,
+        )
+        return [{"role": "system", "content": prompt}]
 
     def normalize_initial_policy_context(
         self,
@@ -2410,8 +2456,18 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 "AgentMemory initial policy context does not end with the current observation"
             )
         return self.policy_framing() + [
-            {"role": "user", "content": observation}
+            {"role": "user", "content": self._policy_observation(observation)}
         ]
+
+    def _policy_observation(self, observation: str) -> str:
+        """Adapt only redundant rendering needed by the selected context mode."""
+
+        if (
+            context_compaction_controller(self).enabled
+            and self.is_filesystem
+        ):
+            return strip_filesystem_webshop_session_trace(observation)
+        return observation
 
     def _reset_policy_transition_state(self, env_info: Mapping[str, Any]) -> None:
         self._policy_step_count = 0
@@ -2429,6 +2485,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self._pending_checkpoint_read: dict[str, Any] | None = None
         self._pending_checkpoint_read_framing: list[dict[str, str]] | None = None
         self._selected_policy_control: str | None = None
+        context_compaction_controller(self).reset()
 
     def bind_policy_context(
         self,
@@ -2438,24 +2495,36 @@ class AgentMemoryEnvClient(BaseEnvClient):
     ) -> None:
         normalized = _copy_policy_messages(messages)
         if initial:
-            framing = list(normalized)
-            if (
-                framing
-                and framing[-1]["role"] == "user"
-                and framing[-1]["content"] == str(self.observe())
-            ):
-                framing.pop()
-            if not framing:
-                raise ValueError("AgentMemory policy framing must not be empty")
-            if framing != self.policy_framing():
+            framing = self.policy_framing()
+            expected = framing + [
+                {
+                    "role": "user",
+                    "content": self._policy_observation(str(self.observe())),
+                }
+            ]
+            if normalized != expected:
                 raise ValueError(
-                    "AgentMemory initial policy framing differs from the formal prompt"
+                    "AgentMemory initial policy context differs from the formal prompt"
                 )
             self._immutable_policy_context = framing
             self._policy_context_bound = True
         self._current_policy_context = normalized
+        context_compaction_controller(self).bind_policy_context(
+            normalized,
+            immutable_framing=self.policy_framing(),
+            initial=initial,
+        )
+
+    def bind_policy_prompt_counter(
+        self,
+        count_prompt_tokens: Callable[[Sequence[Mapping[str, str]]], int],
+    ) -> None:
+        context_compaction_controller(self).bind_prompt_counter(count_prompt_tokens)
 
     def policy_turn_candidate(self) -> str | None:
+        compactor = context_compaction_controller(self)
+        if compactor.enabled:
+            return compactor.policy_turn_candidate()
         if (
             not self.is_filesystem
             or not self._policy_context_bound
@@ -2470,6 +2539,9 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self, pressure: PolicyContextPressure | None
     ) -> str | None:
         self._selected_policy_control = None
+        compactor = context_compaction_controller(self)
+        if compactor.enabled:
+            return compactor.prepare_policy_turn(pressure)
         if not self.is_filesystem or not self._policy_context_bound:
             return None
         if self._pending_checkpoint_read is not None:
@@ -2563,6 +2635,20 @@ class AgentMemoryEnvClient(BaseEnvClient):
             self._reset_policy_transition_state({})
         if not hasattr(self, "is_filesystem"):
             self.is_filesystem = False
+        compactor = context_compaction_controller(self)
+        if compactor.selected:
+            completion = compactor.complete(
+                action,
+                native_call_count=self._native_call_count,
+                context_epoch=self._context_epoch,
+                session_epoch=self._session_epoch,
+                policy_step_count=self._policy_step_count,
+                workspace_continuity_id=self.env_id,
+            )
+            self._policy_step_count += 1
+            if completion.context_replaced:
+                self._context_epoch += 1
+            return completion.step_output
         if self._selected_policy_control in {
             "webshop_session_handoff",
             "webshop_context_compaction",
@@ -2582,6 +2668,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         return self._step_native_policy_action(action)
 
     def _step_native_policy_action(self, action: str) -> StepOutput:
+        compactionrl_enabled = context_compaction_controller(self).enabled
         raw_policy_output = action
         parser_status = "server_native_v3"
         if action.endswith("</s>"):
@@ -2659,7 +2746,11 @@ class AgentMemoryEnvClient(BaseEnvClient):
             "context_epoch_after": self._context_epoch,
             "session_epoch_before": session_before,
             "session_epoch_after": self._session_epoch,
-            "successor_context_policy": self.rollout_context_policy,
+            "successor_context_policy": (
+                "policy_authored_compaction"
+                if compactionrl_enabled
+                else self.rollout_context_policy
+            ),
         }
         read_receipt = None
         if self.is_filesystem:
@@ -2742,9 +2833,22 @@ class AgentMemoryEnvClient(BaseEnvClient):
             if checkpoint_read_pending_before is not None
             and not checkpoint_read_satisfied
             and not bool(response["done"])
-            else response["observation"]
+            else self._policy_observation(str(response["observation"]))
         )
-        if self.is_filesystem and session_advanced:
+        if compactionrl_enabled and self.is_filesystem:
+            native_wrapper_evidence.update(
+                {
+                    "native_session_trace_retained": True,
+                    "policy_session_trace_rendering": "omitted_redundant_cumulative_trace",
+                    "native_observation_sha256": hashlib.sha256(
+                        str(response["observation"]).encode("utf-8")
+                    ).hexdigest(),
+                    "policy_observation_sha256": hashlib.sha256(
+                        policy_observation.encode("utf-8")
+                    ).hexdigest(),
+                }
+            )
+        if self.is_filesystem and session_advanced and not compactionrl_enabled:
             self._pending_session_handoff = {
                 "fresh_observation": str(response["observation"]),
                 "session_before": session_before,
@@ -2752,7 +2856,11 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 "native_call_count": self._native_call_count,
             }
         if self._policy_context_bound and not bool(response["done"]):
-            if self._selected_policy_control in {
+            if compactionrl_enabled:
+                context_transition = build_task_neutral_context_transition(
+                    CONTEXT_OPERATION_APPEND
+                )
+            elif self._selected_policy_control in {
                 "webshop_session_handoff",
                 "webshop_context_compaction",
             }:

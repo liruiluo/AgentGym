@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 import math
 from typing import Any, Mapping, Sequence
@@ -14,6 +15,13 @@ from agentenv.controller.types import (
     StepOutput,
     build_task_neutral_context_transition,
     build_task_neutral_transition_info,
+)
+from .context_compaction import (
+    COMPACTIONRL_RECENT_STEPS,
+    COMPACTIONRL_SUMMARY_MAX_BYTES,
+    compactionrl_policy_prompt,
+    configure_compactionrl_controller,
+    context_compaction_controller,
 )
 from .filesystem_checkpoint import (
     FILESYSTEM_BARE_CHECKPOINT_CONTINUATION_MARKER,
@@ -249,6 +257,9 @@ class SwesmithEnvClient(BaseEnvClient):
         timeout: int = 900,
         invalid_action_reward: float = 0.0,
         checkpoint_contract_penalty: float = 0.0,
+        context_memory_mode: str = "filesystem",
+        compaction_recent_steps: int = COMPACTIONRL_RECENT_STEPS,
+        compaction_summary_max_bytes: int = COMPACTIONRL_SUMMARY_MAX_BYTES,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -276,6 +287,12 @@ class SwesmithEnvClient(BaseEnvClient):
         self.timeout = timeout
         self.invalid_action_reward = float(invalid_action_reward)
         self.checkpoint_contract_penalty = float(checkpoint_contract_penalty)
+        configure_compactionrl_controller(
+            self,
+            mode=context_memory_mode,
+            recent_steps=compaction_recent_steps,
+            summary_max_bytes=compaction_summary_max_bytes,
+        )
         metadata = self._request("GET", "metadata")
         memory_contract = metadata.get("memory_contract")
         if memory_contract != SWE_MEMORY_CONTRACT:
@@ -309,6 +326,7 @@ class SwesmithEnvClient(BaseEnvClient):
         self._pending_checkpoint_read: dict[str, Any] | None = None
         self._pending_checkpoint_read_framing: list[dict[str, str]] | None = None
         self._zero_progress_shell_receipts: set[tuple[str, str]] = set()
+        context_compaction_controller(self).reset()
 
     def _classify_shell_actor_credit(
         self,
@@ -332,7 +350,11 @@ class SwesmithEnvClient(BaseEnvClient):
         return dict(actor_credit)
 
     def policy_framing(self) -> list[dict[str, str]]:
-        return [{"role": "system", "content": SWE_POLICY_SYSTEM_PROMPT}]
+        prompt = compactionrl_policy_prompt(
+            SWE_POLICY_SYSTEM_PROMPT,
+            mode=context_compaction_controller(self).mode,
+        )
+        return [{"role": "system", "content": prompt}]
 
     def normalize_initial_policy_context(
         self,
@@ -370,8 +392,22 @@ class SwesmithEnvClient(BaseEnvClient):
             self._immutable_policy_context = deepcopy(normalized)
             self._policy_context_bound = True
         self._current_policy_context = normalized
+        context_compaction_controller(self).bind_policy_context(
+            normalized,
+            immutable_framing=self.policy_framing(),
+            initial=initial,
+        )
+
+    def bind_policy_prompt_counter(
+        self,
+        count_prompt_tokens: Callable[[Sequence[Mapping[str, str]]], int],
+    ) -> None:
+        context_compaction_controller(self).bind_prompt_counter(count_prompt_tokens)
 
     def policy_turn_candidate(self) -> str | None:
+        compactor = context_compaction_controller(self)
+        if compactor.enabled:
+            return compactor.policy_turn_candidate()
         if not self._policy_context_bound or self._pending_checkpoint_read is not None:
             return None
         return SWE_CONTEXT_COMPACTION_REQUEST
@@ -380,6 +416,9 @@ class SwesmithEnvClient(BaseEnvClient):
         self, pressure: PolicyContextPressure | None
     ) -> str | None:
         self._selected_policy_control = None
+        compactor = context_compaction_controller(self)
+        if compactor.enabled:
+            return compactor.prepare_policy_turn(pressure)
         if not self._policy_context_bound:
             return None
         if self._pending_checkpoint_read is not None:
@@ -441,6 +480,20 @@ class SwesmithEnvClient(BaseEnvClient):
         return value
 
     def step(self, action: str) -> StepOutput:
+        compactor = context_compaction_controller(self)
+        if compactor.selected:
+            completion = compactor.complete(
+                action,
+                native_call_count=self._native_call_count,
+                context_epoch=self._context_epoch,
+                session_epoch=self._session_epoch,
+                policy_step_count=self._policy_step_count,
+                workspace_continuity_id=self.env_id,
+            )
+            self._policy_step_count += 1
+            if completion.context_replaced:
+                self._context_epoch += 1
+            return completion.step_output
         if self._selected_policy_control == "context_compaction":
             return self._complete_context_compaction(action)
         return self._step_native_policy_action(action)

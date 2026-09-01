@@ -5,7 +5,7 @@ import json
 import math
 import os
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from typing import Any
 
@@ -19,6 +19,13 @@ from agentenv.controller.types import (
     StepOutput,
     build_task_neutral_context_transition,
     build_task_neutral_transition_info,
+)
+from .context_compaction import (
+    COMPACTIONRL_RECENT_STEPS,
+    COMPACTIONRL_SUMMARY_MAX_BYTES,
+    compactionrl_policy_prompt,
+    configure_compactionrl_controller,
+    context_compaction_controller,
 )
 from .filesystem_checkpoint import (
     FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER,
@@ -307,6 +314,9 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         allow_ineligible_test_backend: bool = False,
         timeout: float = 200.0,
         timeout_margin_seconds: float = 5.0,
+        context_memory_mode: str = "filesystem",
+        compaction_recent_steps: int = COMPACTIONRL_RECENT_STEPS,
+        compaction_summary_max_bytes: int = COMPACTIONRL_SUMMARY_MAX_BYTES,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -330,6 +340,12 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         if type(allow_ineligible_test_backend) is not bool:
             raise TypeError("OpenMLE-fast test-backend opt-in must be Boolean")
         self.timeout = float(timeout)
+        configure_compactionrl_controller(
+            self,
+            mode=context_memory_mode,
+            recent_steps=compaction_recent_steps,
+            summary_max_bytes=compaction_summary_max_bytes,
+        )
         metadata = self._request("GET", "metadata")
         expected_manifest_sha256 = _resolve_expected_text(
             expected_manifest_sha256,
@@ -447,6 +463,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         self._checkpoint_write_retry_framing: list[dict[str, str]] | None = None
         self._pending_checkpoint_read: dict[str, Any] | None = None
         self._pending_checkpoint_read_framing: list[dict[str, str]] | None = None
+        context_compaction_controller(self).reset()
 
     def __len__(self) -> int:
         return self.data_len
@@ -465,7 +482,11 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         return observation
 
     def policy_framing(self) -> list[dict[str, str]]:
-        return [{"role": "system", "content": OPENMLE_FAST_POLICY_SYSTEM_PROMPT}]
+        prompt = compactionrl_policy_prompt(
+            OPENMLE_FAST_POLICY_SYSTEM_PROMPT,
+            mode=context_compaction_controller(self).mode,
+        )
+        return [{"role": "system", "content": prompt}]
 
     def normalize_initial_policy_context(
         self, messages: Sequence[Mapping[str, str]]
@@ -500,14 +521,31 @@ class OpenMLEFastEnvClient(BaseEnvClient):
             self._immutable_policy_context = deepcopy(normalized)
             self._policy_context_bound = True
         self._current_policy_context = normalized
+        context_compaction_controller(self).bind_policy_context(
+            normalized,
+            immutable_framing=self.policy_framing(),
+            initial=initial,
+        )
+
+    def bind_policy_prompt_counter(
+        self,
+        count_prompt_tokens: Callable[[Sequence[Mapping[str, str]]], int],
+    ) -> None:
+        context_compaction_controller(self).bind_prompt_counter(count_prompt_tokens)
 
     def policy_turn_candidate(self) -> str | None:
+        compactor = context_compaction_controller(self)
+        if compactor.enabled:
+            return compactor.policy_turn_candidate()
         if not self._policy_context_bound or self._pending_checkpoint_read is not None:
             return None
         return OPENMLE_CONTEXT_COMPACTION_REQUEST
 
     def prepare_policy_turn(self, pressure: PolicyContextPressure | None) -> str | None:
         self._selected_policy_control = None
+        compactor = context_compaction_controller(self)
+        if compactor.enabled:
+            return compactor.prepare_policy_turn(pressure)
         if not self._policy_context_bound:
             return None
         if self._pending_checkpoint_read is not None:
@@ -555,6 +593,20 @@ class OpenMLEFastEnvClient(BaseEnvClient):
     def step(self, action: str) -> StepOutput:
         if not isinstance(action, str):
             raise TypeError("OpenMLE-fast action must be raw policy text")
+        compactor = context_compaction_controller(self)
+        if compactor.selected:
+            completion = compactor.complete(
+                action,
+                native_call_count=self._native_call_count,
+                context_epoch=self._context_epoch,
+                session_epoch=self._session_epoch,
+                policy_step_count=self._policy_step_count,
+                workspace_continuity_id=self.env_id,
+            )
+            self._policy_step_count += 1
+            if completion.context_replaced:
+                self._context_epoch += 1
+            return completion.step_output
         native_before = self._native_call_count
         policy_before = self._policy_step_count
         context_before = self._context_epoch

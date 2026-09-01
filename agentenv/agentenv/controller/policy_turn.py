@@ -50,6 +50,13 @@ def prepare_policy_turn(
 
     action_messages = _normalize_messages(messages)
     client.bind_policy_context(deepcopy(action_messages), initial=False)
+    # BaseEnvClient exposes this as a no-op extension hook, while older
+    # task-neutral test/third-party clients may still be duck-typed against the
+    # pre-hook interface.  CompactionRL wrappers implement the hook; legacy
+    # wrappers do not need it.
+    bind_prompt_counter = getattr(client, "bind_policy_prompt_counter", None)
+    if bind_prompt_counter is not None:
+        bind_prompt_counter(count_prompt_tokens)
     action_prompt_tokens = int(count_prompt_tokens(action_messages))
     candidate = client.policy_turn_candidate()
     if candidate is None:

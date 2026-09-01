@@ -1,4 +1,5 @@
 from abc import ABCMeta, abstractmethod
+from collections.abc import Callable
 from typing import Mapping, Sequence
 
 from .types import (
@@ -75,6 +76,14 @@ class BaseEnvClient(metaclass=ABCMeta):
         """
 
         del messages, initial
+
+    def bind_policy_prompt_counter(
+        self,
+        count_prompt_tokens: Callable[[Sequence[Mapping[str, str]]], int],
+    ) -> None:
+        """Expose the runner's exact prompt renderer to wrapper-owned transitions."""
+
+        del count_prompt_tokens
 
     def prepare_policy_turn(
         self, pressure: PolicyContextPressure | None
