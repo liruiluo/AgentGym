@@ -2459,13 +2459,20 @@ class AgentMemoryEnvClient(BaseEnvClient):
             {"role": "user", "content": self._policy_observation(observation)}
         ]
 
-    def _policy_observation(self, observation: str) -> str:
+    def _policy_observation(
+        self,
+        observation: str,
+        *,
+        terminal: bool = False,
+    ) -> str:
         """Adapt only redundant rendering needed by the selected context mode."""
 
         if (
             context_compaction_controller(self).enabled
             and self.is_filesystem
         ):
+            if terminal:
+                return observation
             return strip_filesystem_webshop_session_trace(observation)
         return observation
 
@@ -2833,13 +2840,20 @@ class AgentMemoryEnvClient(BaseEnvClient):
             if checkpoint_read_pending_before is not None
             and not checkpoint_read_satisfied
             and not bool(response["done"])
-            else self._policy_observation(str(response["observation"]))
+            else self._policy_observation(
+                str(response["observation"]),
+                terminal=bool(response["done"]),
+            )
         )
         if compactionrl_enabled and self.is_filesystem:
             native_wrapper_evidence.update(
                 {
                     "native_session_trace_retained": True,
-                    "policy_session_trace_rendering": "omitted_redundant_cumulative_trace",
+                    "policy_session_trace_rendering": (
+                        "terminal_observation_preserved"
+                        if bool(response["done"])
+                        else "omitted_redundant_cumulative_trace"
+                    ),
                     "native_observation_sha256": hashlib.sha256(
                         str(response["observation"]).encode("utf-8")
                     ).hexdigest(),

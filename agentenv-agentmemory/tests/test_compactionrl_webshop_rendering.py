@@ -20,6 +20,7 @@ from agentenv_agentmemory.filesystem_webshop_env import (
 )
 from tests.test_memoryarena_webshop_native import (
     TARGETS,
+    WRONG,
     FakeNativeBackend,
     make_bundle,
 )
@@ -156,6 +157,22 @@ class CompactionRLWebShopRenderingTests(unittest.TestCase):
                 for message in self.messages
                 if message["role"] == "user"
             )
+        )
+
+    def test_terminal_observation_without_workspace_sections_is_preserved(self) -> None:
+        self._step("search[item]")
+        self._step(f"click[{WRONG}]")
+        terminal = self._step("click[Buy Now]")
+
+        self.assertTrue(terminal.done)
+        self.assertEqual(
+            terminal.state,
+            "The shopping episode has ended.\n\n"
+            "Task family: bundled_shopping\nProgress: 0/6",
+        )
+        self.assertEqual(
+            terminal.info["wrapper_evidence"]["policy_session_trace_rendering"],
+            "terminal_observation_preserved",
         )
 
 
