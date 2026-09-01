@@ -103,11 +103,14 @@ class LiteResearcherClientTests(unittest.TestCase):
             "not exhaust other relations or results. "
         )
         self.assertIn(approved, prompt)
-        self.assertNotIn("After Search, Visit a result", prompt)
-        self.assertNotIn("After each Search or Visit", prompt)
-        self.assertNotIn("check every decisive relation", prompt)
-        self.assertNotIn("before answering", approved)
-        self.assertNotIn("only answer", approved)
+        for forbidden in (
+            "After Search, Visit a result",
+            "After each Search or Visit",
+            "check every decisive relation",
+            "before answering",
+            "only answer",
+        ):
+            self.assertNotIn(forbidden, prompt)
 
     def test_policy_framing_keeps_optional_terminal_synthesis_available(self) -> None:
         prompt = self._client().policy_framing()[0]["content"]
