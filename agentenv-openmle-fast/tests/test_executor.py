@@ -299,7 +299,11 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
             )
         self.assertEqual(
             run.call_args.kwargs["env"],
-            {"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8"},
+            {
+                "PATH": "/usr/bin:/bin",
+                "LC_ALL": "C.UTF-8",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
         )
         request = json.loads(run.call_args.kwargs["input"].decode("utf-8"))
         self.assertEqual(request["command"], command)

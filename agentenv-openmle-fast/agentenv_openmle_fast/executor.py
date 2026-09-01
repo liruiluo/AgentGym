@@ -41,7 +41,11 @@ def _external_runner_environment() -> dict[str, str]:
     # runner is a Python 3.6 executable, so its filesystem encoding is fixed at
     # interpreter startup from LC_ALL; the plain C locale makes argv encoding
     # ASCII and turns valid policy commands into infrastructure exclusions.
-    return {"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8"}
+    return {
+        "PATH": "/usr/bin:/bin",
+        "LC_ALL": "C.UTF-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
 
 
 class OpenMLEFastExecutorError(RuntimeError):
