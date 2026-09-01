@@ -139,6 +139,26 @@ cat .agent_memory/CONTINUATION.md
 *** End Patch"""
         self.assertIsNone(_parse_tool_call(raw))
 
+    def test_parser_rejects_fenced_workspace_actions(self) -> None:
+        bare = 'shell_command {"command":"pwd"}'
+        for fence in ("```analysis```\n", "~~~xml\n"):
+            with self.subTest(fence=fence):
+                self.assertIsNone(_parse_tool_call(fence + bare))
+
+        xml = """<tool_call>
+<function=shell_command>
+<parameter=command>
+pwd
+</parameter>
+</function>
+</tool_call>"""
+        for fence in ("```analysis```\n", "~~~xml\n"):
+            with self.subTest(fence=fence):
+                with self.assertRaisesRegex(
+                    ValueError, "workspace tool_call must be the complete policy output"
+                ):
+                    _parse_tool_call(fence + xml)
+
     def test_policy_framing_restores_the_system_role(self) -> None:
         client = self._client()
         self.assertEqual(
