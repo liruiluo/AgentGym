@@ -16,3 +16,5 @@ from .searchqa import SearchQAEnvClient, SearchQATask
 from .swesmith import SwesmithEnvClient, SwesmithTask
 from .literesearcher import LiteResearcherEnvClient, LiteResearcherTask
 from .openmle_fast import OpenMLEFastEnvClient, OpenMLEFastTask
+
+from .agemem import AgeMemAdapterConfig, AgeMemEnvClientAdapter
