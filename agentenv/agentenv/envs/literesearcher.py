@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from typing import Any, Mapping, Sequence
 
 import requests
@@ -194,11 +195,22 @@ class LiteResearcherEnvClient(BaseEnvClient):
         data_len: int | None = None,
         *args,
         timeout: int = 900,
+        invalid_action_reward: float = 0.0,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
+        if (
+            isinstance(invalid_action_reward, bool)
+            or not isinstance(invalid_action_reward, (int, float))
+            or not math.isfinite(float(invalid_action_reward))
+            or float(invalid_action_reward) > 0.0
+        ):
+            raise ValueError(
+                "LiteResearcher invalid_action_reward must be finite and non-positive"
+            )
         self.env_server_base = env_server_base.rstrip("/")
         self.timeout = timeout
+        self.invalid_action_reward = float(invalid_action_reward)
         metadata = self._request("GET", "metadata")
         if metadata.get("domain_id") != "literesearcher":
             raise RuntimeError("LiteResearcher endpoint reports the wrong domain")
@@ -365,12 +377,30 @@ class LiteResearcherEnvClient(BaseEnvClient):
             if isinstance(response_info, Mapping)
             else {}
         )
+        native_reward = float(response["reward"])
+        reward = native_reward
+        reward_overlay = None
+        invalid_action = (
+            response_info.get("status") == "invalid_action"
+            or (
+                isinstance(server_wrapper, Mapping)
+                and server_wrapper.get("invalid_action") is True
+            )
+        )
+        if invalid_action:
+            reward, reward_overlay = self._invalid_action_reward_overlay(
+                native_reward=native_reward,
+                done=bool(response["done"]),
+                sample_excluded=bool(response_info.get("sample_excluded", False)),
+            )
         wrapper_evidence: dict[str, Any] = {
             "event": "native_action",
             "server_wrapper_evidence": (
                 dict(server_wrapper) if isinstance(server_wrapper, Mapping) else {}
             ),
         }
+        if reward_overlay is not None:
+            wrapper_evidence["reward_overlay"] = reward_overlay
         read_receipt = None
         if isinstance(server_wrapper, Mapping):
             read_receipt = server_wrapper.get("filesystem_checkpoint_read")
@@ -478,7 +508,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
             )
         return StepOutput(
             state=policy_state,
-            reward=float(response["reward"]),
+            reward=reward,
             done=bool(response["done"]),
             info=build_task_neutral_transition_info(
                 env_info=response_info,
@@ -497,6 +527,33 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 wrapper_evidence=wrapper_evidence,
             ),
         )
+
+    def _invalid_action_reward_overlay(
+        self,
+        *,
+        native_reward: float,
+        done: bool,
+        sample_excluded: bool,
+    ) -> tuple[float, dict[str, Any] | None]:
+        invalid_action_reward = float(getattr(self, "invalid_action_reward", 0.0))
+        if invalid_action_reward == 0.0:
+            return native_reward, None
+        if sample_excluded:
+            raise RuntimeError(
+                "LiteResearcher invalid action cannot also be sample_excluded"
+            )
+        if native_reward != 0.0:
+            raise RuntimeError(
+                "LiteResearcher invalid-action overlay requires zero native reward"
+            )
+        reward = native_reward + invalid_action_reward
+        return reward, {
+            "schema": "literesearcher_invalid_action_reward_v1",
+            "native_reward": native_reward,
+            "penalty": invalid_action_reward,
+            "total_reward": reward,
+            "terminal": done,
+        }
 
     def _complete_context_compaction(self, action: str) -> StepOutput:
         write_retry_framing_before = self._checkpoint_write_retry_framing
@@ -567,9 +624,53 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 ),
             )
 
+        reward = float(native_output.reward)
+        wrapper_evidence = {
+            "event": "context_compaction",
+            "workspace_continuity_id": self.env_id,
+            "native_environment_call_count": 1,
+            "continuation_path": FILESYSTEM_CHECKPOINT_PATH,
+            "continuation_max_bytes": FILESYSTEM_CHECKPOINT_MAX_BYTES,
+            "continuation_persisted": persisted,
+            "checkpoint_receipt": checkpoint_receipt,
+            "checkpoint_failure_reason": checkpoint_failure_reason,
+            "context_replaced": bool(persisted and not native_output.done),
+            "retry_pending": self._checkpoint_retry_pending,
+            "checkpoint_retry_observation_bounded": self._checkpoint_retry_pending,
+            "checkpoint_retry_context_rebuilt": self._checkpoint_retry_pending,
+            "preserved_policy_output": persisted,
+            "preserved_native_observation": persisted,
+            "checkpoint_action_in_successor_context": False,
+            "checkpoint_observation_in_successor_context": False,
+            "checkpoint_content_in_successor_context": False,
+            "checkpoint_framing_sha256": checkpoint_framing_sha256,
+            "checkpoint_read_required_after": bool(
+                persisted and not native_output.done
+            ),
+            "server_wrapper_evidence": (
+                dict(server_wrapper) if isinstance(server_wrapper, Mapping) else {}
+            ),
+        }
+        existing_overlay = info.get("wrapper_evidence", {}).get("reward_overlay")
+        if not persisted and not native_output.done and existing_overlay is None:
+            reward, checkpoint_overlay = self._invalid_action_reward_overlay(
+                native_reward=reward,
+                done=False,
+                sample_excluded=bool(
+                    isinstance(env_info, Mapping)
+                    and env_info.get("sample_excluded", False)
+                ),
+            )
+            if checkpoint_overlay is not None:
+                checkpoint_overlay = dict(checkpoint_overlay)
+                checkpoint_overlay["basis"] = "checkpoint_contract_unsatisfied"
+                wrapper_evidence["reward_overlay"] = checkpoint_overlay
+        elif existing_overlay is not None:
+            wrapper_evidence["reward_overlay"] = dict(existing_overlay)
+
         return StepOutput(
             state=policy_observation,
-            reward=native_output.reward,
+            reward=reward,
             done=native_output.done,
             info=build_task_neutral_transition_info(
                 env_info=env_info if isinstance(env_info, Mapping) else {},
@@ -587,36 +688,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 policy_step_before=info.get("policy_step_before"),
                 policy_step_after=info.get("policy_step_after"),
                 context_transition=context_transition,
-                wrapper_evidence={
-                    "event": "context_compaction",
-                    "workspace_continuity_id": self.env_id,
-                    "native_environment_call_count": 1,
-                    "continuation_path": FILESYSTEM_CHECKPOINT_PATH,
-                    "continuation_max_bytes": FILESYSTEM_CHECKPOINT_MAX_BYTES,
-                    "continuation_persisted": persisted,
-                    "checkpoint_receipt": checkpoint_receipt,
-                    "checkpoint_failure_reason": checkpoint_failure_reason,
-                    "context_replaced": bool(persisted and not native_output.done),
-                    "retry_pending": self._checkpoint_retry_pending,
-                    "checkpoint_retry_observation_bounded": (
-                        self._checkpoint_retry_pending
-                    ),
-                    "checkpoint_retry_context_rebuilt": self._checkpoint_retry_pending,
-                    "preserved_policy_output": persisted,
-                    "preserved_native_observation": persisted,
-                    "checkpoint_action_in_successor_context": False,
-                    "checkpoint_observation_in_successor_context": False,
-                    "checkpoint_content_in_successor_context": False,
-                    "checkpoint_framing_sha256": checkpoint_framing_sha256,
-                    "checkpoint_read_required_after": bool(
-                        persisted and not native_output.done
-                    ),
-                    "server_wrapper_evidence": (
-                        dict(server_wrapper)
-                        if isinstance(server_wrapper, Mapping)
-                        else {}
-                    ),
-                },
+                wrapper_evidence=wrapper_evidence,
             ),
         )
 
