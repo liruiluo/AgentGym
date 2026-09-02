@@ -432,6 +432,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         self.env_id = env_id
         self.info = created
         self._episode_identity: dict[str, Any] | None = None
+        self.episode_source_identity: dict[str, Any] | None = None
         self._reset_transition_state()
 
     def _reset_transition_state(self) -> None:
@@ -809,6 +810,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         )
 
     def reset(self, idx: int = 0) -> dict[str, Any]:
+        self.episode_source_identity = None
         if type(idx) is not int or idx < 0 or idx >= self.data_len:
             raise ValueError(
                 "OpenMLE-fast reset index is outside the configured data range"
@@ -831,6 +833,15 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         self._episode_identity = _receipt_identity(env_info)
         if self.sample_excluded:
             raise RuntimeError("OpenMLE-fast reset was truncated and must be resampled")
+        self.episode_source_identity = {
+            "schema": "camg_native_episode_source_identity_v1",
+            "route_id": "openmle_fast",
+            "data_idx": env_info["data_idx"],
+            "task_id": env_info["task_id"],
+            "source_family": env_info["source_family"],
+            "manifest_role": env_info["manifest_role"],
+            "manifest_sha256": env_info["manifest_sha256"],
+        }
         return response
 
     def finalize_policy_horizon(self) -> StepOutput:

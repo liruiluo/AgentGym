@@ -66,6 +66,8 @@ class FilesystemNativeSmokeContractTests(unittest.TestCase):
             )
             roots = []
             try:
+                _, reset_info = env.reset(data_idx=0)
+                self.assertEqual(reset_info["orbit_index"], 0)
                 task = SMOKE._task_for_index(provider, 0)
                 results = []
                 previous_root = None

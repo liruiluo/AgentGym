@@ -866,6 +866,7 @@ class ProceduralMemoryBundle:
     budget_cents: int
     split: str
     orbit_id: str
+    orbit_index: int
     scenario_id: str
     proof_sha256: str
     generator_version: str
@@ -874,6 +875,14 @@ class ProceduralMemoryBundle:
     def __post_init__(self) -> None:
         require_id(self.task_id, field="bundle task_id")
         require_id(self.orbit_id, field="bundle orbit_id")
+        if (
+            isinstance(self.orbit_index, bool)
+            or not isinstance(self.orbit_index, int)
+            or self.orbit_index < 0
+        ):
+            raise ProceduralMemoryDataError(
+                "bundle orbit_index must be a non-negative integer."
+            )
         require_id(self.scenario_id, field="bundle scenario_id")
         require_id(self.generator_version, field="bundle generator_version")
         require_sha256(self.proof_sha256, field="bundle proof_sha256")

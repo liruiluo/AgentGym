@@ -470,6 +470,7 @@ class ProceduralFilesystemWebShopEnv(PersistentWorkspaceWebShopEnv):
                 "source": "agentmemory_programmatic_generator",
                 "surface": self.surface,
                 "scenario_id": bundle.scenario_id,
+                "orbit_index": bundle.orbit_index,
                 "candidate_count_per_phase": 2,
                 "purchase_eligibility_scope": "current_phase_two_approved_listings",
                 "task_prompt_product_identity": "complete_native_title",

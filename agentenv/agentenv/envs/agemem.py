@@ -205,6 +205,7 @@ class AgeMemEnvClientAdapter(BaseEnvClient):
         self._memory_action_count = 0
         self._current_policy_context: list[dict[str, str]] | None = None
         self._native_control_selected = False
+        self._episode_source_identity: dict[str, Any] | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.native_client, name)
@@ -302,7 +303,15 @@ class AgeMemEnvClientAdapter(BaseEnvClient):
         self._memory_action_count = 0
         self._current_policy_context = None
         self._native_control_selected = False
-        return self.native_client.reset(idx)
+        self._episode_source_identity = None
+        response = self.native_client.reset(idx)
+        identity = getattr(self.native_client, "episode_source_identity", None)
+        if not isinstance(identity, Mapping) or not identity:
+            raise RuntimeError(
+                "AgeMem native client reset did not expose episode source identity"
+            )
+        self._episode_source_identity = deepcopy(dict(identity))
+        return response
 
     def finalize_policy_horizon(self) -> StepOutput | None:
         output = self.native_client.finalize_policy_horizon()
@@ -637,6 +646,9 @@ class AgeMemEnvClientAdapter(BaseEnvClient):
             reward=float(self.config.invalid_action_reward) if not accepted else 0.0,
             done=False,
             info=build_task_neutral_transition_info(
+                env_info={
+                    "episode_source_identity": self._require_episode_source_identity()
+                },
                 action_submission={
                     "schema": AGEMEM_ACTION_SCHEMA,
                     "raw_policy_output": raw_action,
@@ -677,6 +689,18 @@ class AgeMemEnvClientAdapter(BaseEnvClient):
             "hidden_model_calls": 0,
         }
         info["wrapper_evidence"] = evidence
+        env_info = info.get("env_info")
+        if env_info is None:
+            env_info = {}
+        if not isinstance(env_info, Mapping):
+            raise TypeError("native client env_info must be a mapping")
+        env_info = deepcopy(dict(env_info))
+        identity = self._require_episode_source_identity()
+        observed_identity = env_info.get("episode_source_identity")
+        if observed_identity is not None and observed_identity != identity:
+            raise RuntimeError("native client episode source identity drifted")
+        env_info["episode_source_identity"] = identity
+        info["env_info"] = env_info
         reward = output.reward
         if reward is None:
             if not bool(output.done) or not self.sample_excluded:
@@ -692,6 +716,12 @@ class AgeMemEnvClientAdapter(BaseEnvClient):
             done=bool(output.done),
             info=info,
         )
+
+    def _require_episode_source_identity(self) -> dict[str, Any]:
+        identity = self._episode_source_identity
+        if not isinstance(identity, Mapping) or not identity:
+            raise RuntimeError("AgeMem episode source identity is unavailable")
+        return deepcopy(dict(identity))
 
     def _inject_prompt(
         self, messages: Sequence[Mapping[str, str]]

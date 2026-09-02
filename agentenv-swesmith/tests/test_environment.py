@@ -225,6 +225,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
             "PASS_TO_PASS": ["tests/test_keep.py::test_keep"],
             "patch": "SECRET_GOLD_PATCH",
         }
+        self.instance = row
         shard = self.root / "data.jsonl"
         shard.write_text(json.dumps(row) + "\n", encoding="utf-8")
         manifest = {
@@ -419,6 +420,7 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertEqual(detail["data_idx"], 0)
         self.assertEqual(detail["slot_id"], slot)
         self.assertEqual(detail["instance_id"], self.instance_id)
+        self.assertEqual(detail["base_repository"], self.instance["repo"])
         self.assertEqual(
             Path(detail["workspace"]["episode_root"]).parent,
             self.episodes.resolve(),
