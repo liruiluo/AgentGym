@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from copy import deepcopy
 from typing import Mapping, Sequence
 
 from agentenv.controller.env import BaseEnvClient
@@ -41,6 +42,7 @@ class FakeEnvClient(BaseEnvClient):
         self.closed = False
         self.reset_count = 0
         self.fail_reset = False
+        self.episode_source_identity = None
 
     def __len__(self) -> int:
         return 4
@@ -104,8 +106,16 @@ class FakeEnvClient(BaseEnvClient):
     def reset(self, idx: int) -> None:
         self.reset_count += 1
         self.info = {"observation": f"{self.label}-observation-{idx}"}
+        self.episode_source_identity = None
         if self.fail_reset:
             raise RuntimeError("synthetic reset failure")
+        self.episode_source_identity = {
+            "schema": "camg_native_episode_source_identity_v1",
+            "route_id": "swesmith",
+            "data_idx": idx,
+            "instance_id": f"repository.issue-{idx}",
+            "base_repository": "repository",
+        }
 
     def finalize_policy_horizon(self) -> StepOutput | None:
         return None
@@ -321,6 +331,23 @@ class AgeMemAdapterTests(unittest.TestCase):
         evidence = native.info["wrapper_evidence"]
         self.assertEqual(evidence["event"], "native_action")
         self.assertEqual(evidence["agemem_adapter"]["memory_size_after"], 0)
+
+    def test_every_native_and_memory_action_carries_episode_source_identity(self) -> None:
+        adapter = self.make_adapter(label="coding")
+        self.bind(adapter)
+        expected = deepcopy(adapter.native_client.episode_source_identity)
+        memory = adapter.step(memory_action("Add_memory", content="source-bound fact"))
+        native = adapter.step('shell_command {"command":"pwd"}')
+        for output in (memory, native):
+            self.assertEqual(
+                output.info["env_info"]["episode_source_identity"], expected
+            )
+
+        adapter.native_client.fail_reset = True
+        with self.assertRaisesRegex(RuntimeError, "synthetic reset failure"):
+            adapter.reset(2)
+        with self.assertRaisesRegex(RuntimeError, "source identity"):
+            adapter.step(memory_action("Retrieve_memory", query="source-bound"))
 
     def test_native_control_has_priority_over_memory_interception(self) -> None:
         adapter = self.make_adapter()

@@ -2351,6 +2351,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
             "metadata": self.metadata,
         }
         self.last_action_submission: dict[str, str] | None = None
+        self.episode_source_identity: dict[str, Any] | None = None
         self._reset_policy_transition_state(created.get("info", {}))
         self.conversation_start = (
             build_v3_conversation_start(self.metadata)
@@ -3060,7 +3061,28 @@ class AgentMemoryEnvClient(BaseEnvClient):
         return bool(self.info.get("env_info", {}).get("sample_excluded", False))
 
     def reset(self, idx: int = 0) -> dict[str, Any]:
+        self.episode_source_identity = None
         response = self.post("reset", {"data_idx": idx})
+        response_env_info = response.get("info", {})
+        if not isinstance(response_env_info, Mapping):
+            raise RuntimeError("AgentMemory reset info must be a mapping")
+        if getattr(self, "is_procedural", False):
+            data_idx = response_env_info.get("data_idx")
+            scenario_id = response_env_info.get("scenario_id")
+            orbit_index = response_env_info.get("orbit_index")
+            if type(data_idx) is not int or data_idx != idx:
+                raise RuntimeError("AgentMemory reset data_idx identity drifted")
+            if not isinstance(scenario_id, str) or not scenario_id.strip():
+                raise RuntimeError("AgentMemory reset scenario_id is missing")
+            if type(orbit_index) is not int or orbit_index < 0:
+                raise RuntimeError("AgentMemory reset orbit_index is missing or invalid")
+            self.episode_source_identity = {
+                "schema": "camg_native_episode_source_identity_v1",
+                "route_id": "webshop",
+                "data_idx": data_idx,
+                "scenario_id": scenario_id,
+                "orbit_index": orbit_index,
+            }
         self.last_action_submission = None
         self.info = {
             "observation": response["observation"],
@@ -3069,9 +3091,6 @@ class AgentMemoryEnvClient(BaseEnvClient):
             "env_info": response.get("info", {}),
             "metadata": self.metadata,
         }
-        response_env_info = response.get("info", {})
-        if not isinstance(response_env_info, Mapping):
-            response_env_info = {}
         self._reset_policy_transition_state(response_env_info)
         return response
 

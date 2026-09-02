@@ -130,6 +130,7 @@ class VerifiedProceduralBundleProvider:
             budget_cents=task.budget_cents,
             split=task.split,
             orbit_id=task.orbit_id,
+            orbit_index=task.orbit_index,
             scenario_id=task.scenario_id,
             proof_sha256=proof.proof_sha256,
             generator_version=task.generator_version,

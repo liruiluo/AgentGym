@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import math
+import os
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import requests
@@ -70,6 +73,37 @@ SWE_POLICY_CONTINUATION_MARKER = (
 ACTOR_CREDIT_SCHEMA = "task_neutral_actor_credit_v1"
 ACTION_PROGRESS_SCHEMA = "swesmith_action_progress_v1"
 SWE_MEMORY_CONTRACT = "policy_filesystem_checkpoint_then_client_replace_v3"
+
+
+def _load_private_detail_token(
+    path_value: str | None,
+    sha256_value: str | None,
+) -> str | None:
+    if path_value is None and sha256_value is None:
+        return None
+    if not isinstance(path_value, str) or not path_value:
+        raise ValueError("SWE-smith detail_token_path is required with its hash")
+    if (
+        not isinstance(sha256_value, str)
+        or len(sha256_value) != 64
+        or any(character not in "0123456789abcdef" for character in sha256_value)
+    ):
+        raise ValueError("SWE-smith detail_token_sha256 must be a lowercase SHA-256")
+    path = Path(path_value)
+    if not path.is_absolute() or path.is_symlink() or not path.is_file():
+        raise ValueError("SWE-smith detail token must be an absolute regular file")
+    if os.stat(path).st_mode & 0o777 != 0o600:
+        raise ValueError("SWE-smith detail token must have mode 0600")
+    payload = path.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != sha256_value:
+        raise ValueError("SWE-smith detail token SHA-256 mismatch")
+    try:
+        token = payload.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise ValueError("SWE-smith detail token must be UTF-8") from exc
+    if not token or "\n" in token or "\r" in token:
+        raise ValueError("SWE-smith detail token must contain one non-empty line")
+    return token
 _POSITIVE_ACTOR_CREDIT_BASES = {
     "shell_executed",
     "workspace_changed",
@@ -249,6 +283,8 @@ class SwesmithEnvClient(BaseEnvClient):
         timeout: int = 900,
         invalid_action_reward: float = 0.0,
         checkpoint_contract_penalty: float = 0.0,
+        detail_token_path: str | None = None,
+        detail_token_sha256: str | None = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -274,6 +310,11 @@ class SwesmithEnvClient(BaseEnvClient):
             )
         self.env_server_base = env_server_base.rstrip("/")
         self.timeout = timeout
+        self._detail_token = _load_private_detail_token(
+            detail_token_path,
+            detail_token_sha256,
+        )
+        self.episode_source_identity: dict[str, Any] | None = None
         self.invalid_action_reward = float(invalid_action_reward)
         self.checkpoint_contract_penalty = float(checkpoint_contract_penalty)
         metadata = self._request("GET", "metadata")
@@ -775,11 +816,32 @@ class SwesmithEnvClient(BaseEnvClient):
         )
 
     def reset(self, idx: int = 0) -> dict[str, Any]:
+        self.episode_source_identity = None
         response = self._request(
             "POST",
             "reset",
             json={"id": self.env_id, "data_idx": idx},
         )
+        if self._detail_token is not None:
+            detail = self.detail(private_token=self._detail_token)
+            data_idx = detail.get("data_idx")
+            instance_id = detail.get("instance_id")
+            base_repository = detail.get("base_repository")
+            if type(data_idx) is not int or data_idx != idx:
+                raise RuntimeError("SWE-smith private detail data_idx drifted")
+            if not isinstance(instance_id, str) or not instance_id.strip():
+                raise RuntimeError("SWE-smith private detail instance_id is missing")
+            if not isinstance(base_repository, str) or not base_repository.strip():
+                raise RuntimeError(
+                    "SWE-smith private detail base_repository is missing"
+                )
+            self.episode_source_identity = {
+                "schema": "camg_native_episode_source_identity_v1",
+                "route_id": "swesmith",
+                "data_idx": data_idx,
+                "instance_id": instance_id,
+                "base_repository": base_repository,
+            }
         self.info = response
         self._reset_policy_transition_state()
         return response

@@ -229,6 +229,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
         self.env_id = int(created["id"])
         self.info = created
         self.metadata = metadata
+        self.episode_source_identity: dict[str, Any] | None = None
         self._reset_policy_transition_state()
 
     def _reset_policy_transition_state(self) -> None:
@@ -693,9 +694,37 @@ class LiteResearcherEnvClient(BaseEnvClient):
         )
 
     def reset(self, idx: int = 0) -> dict[str, Any]:
+        self.episode_source_identity = None
         response = self._request(
             "POST", "reset", json={"id": self.env_id, "data_idx": idx}
         )
+        response_info = response.get("info")
+        if isinstance(response_info, Mapping) and all(
+            field in response_info
+            for field in ("data_idx", "row_identity", "source_pool_index")
+        ):
+            data_idx = response_info.get("data_idx")
+            row_identity = response_info.get("row_identity")
+            source_pool_index = response_info.get("source_pool_index")
+            if type(data_idx) is not int or data_idx != idx:
+                raise RuntimeError("LiteResearcher reset data_idx identity drifted")
+            if (
+                not isinstance(row_identity, str)
+                or len(row_identity) != 64
+                or any(character not in "0123456789abcdef" for character in row_identity)
+            ):
+                raise RuntimeError("LiteResearcher reset row_identity is invalid")
+            if type(source_pool_index) is not int or source_pool_index < 0:
+                raise RuntimeError(
+                    "LiteResearcher reset source_pool_index is invalid"
+                )
+            self.episode_source_identity = {
+                "schema": "camg_native_episode_source_identity_v1",
+                "route_id": "literesearcher",
+                "data_idx": data_idx,
+                "row_identity": row_identity,
+                "source_pool_index": source_pool_index,
+            }
         self.info = response
         self._reset_policy_transition_state()
         return response

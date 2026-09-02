@@ -620,6 +620,9 @@ class ProceduralNaturalChainTests(unittest.TestCase):
             cache_orbits=2,
         )
         self.assertNotEqual(provider.get(0).task_id, provider.get(2).task_id)
+        self.assertEqual(provider.get(0).orbit_index, 0)
+        self.assertEqual(provider.get(1).orbit_index, 0)
+        self.assertEqual(provider.get(2).orbit_index, 1)
         with self.assertRaises(IndexError):
             provider.get(20)
         for index in range(0, 20, 2):
@@ -1101,6 +1104,7 @@ class ProductPoolAndRuntimeTests(unittest.TestCase):
         )
         try:
             _, reset_info = env.reset(data_idx=0)
+            self.assertEqual(reset_info["orbit_index"], 0)
             forbidden = {
                 "task_id",
                 "purchase_history",
