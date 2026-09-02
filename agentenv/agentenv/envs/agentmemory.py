@@ -47,6 +47,7 @@ from .filesystem_checkpoint import (
     filesystem_checkpoint_framing_sha256,
     filesystem_checkpoint_read_observed,
     filesystem_checkpoint_read_failure_reason,
+    filesystem_checkpoint_read_matches,
     filesystem_workspace_action_request_sha256,
     filesystem_checkpoint_write_succeeded,
 )
@@ -54,6 +55,7 @@ from .webshop_handoff import (
     WEBSHOP_CONTEXT_COMPACTION_REQUEST,
     WEBSHOP_POLICY_CONTINUATION_MARKER,
     WEBSHOP_POST_CHECKPOINT_READ_MARKER,
+    WEBSHOP_REPEATED_CHECKPOINT_READ_MARKER,
     WEBSHOP_SESSION_HANDOFF_REQUEST,
 )
 
@@ -2429,6 +2431,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self._checkpoint_write_retry_framing: list[dict[str, str]] | None = None
         self._pending_checkpoint_read: dict[str, Any] | None = None
         self._pending_checkpoint_read_framing: list[dict[str, str]] | None = None
+        self._consumed_checkpoint_read: dict[str, Any] | None = None
         self._selected_policy_control: str | None = None
 
     def bind_policy_context(
@@ -2611,6 +2614,8 @@ class AgentMemoryEnvClient(BaseEnvClient):
         session_before = self._session_epoch
         checkpoint_read_pending_before = self._pending_checkpoint_read
         checkpoint_read_framing_before = self._pending_checkpoint_read_framing
+        consumed_checkpoint_read_before = self._consumed_checkpoint_read
+        browser_action = _parse_native_bracket_action(parsed_action)
         response = self.post("step", {"action": parsed_action})
         self._native_call_count += 1
         self._policy_step_count += 1
@@ -2709,7 +2714,25 @@ class AgentMemoryEnvClient(BaseEnvClient):
                         }
                     )
         checkpoint_read_satisfied = False
+        checkpoint_read_already_consumed = False
         read_failure_reason = None
+        if (
+            checkpoint_read_pending_before is None
+            and consumed_checkpoint_read_before is not None
+            and consumed_checkpoint_read_before.get("session_index") == session_before
+            and session_after == session_before
+            and filesystem_checkpoint_read_matches(
+                read_receipt,
+                consumed_checkpoint_read_before.get("checkpoint_receipt"),
+            )
+        ):
+            checkpoint_read_already_consumed = True
+            native_wrapper_evidence.update(
+                {
+                    "checkpoint_read_already_consumed": True,
+                    "checkpoint_read_consumed_session_index": session_before,
+                }
+            )
         if checkpoint_read_pending_before is not None:
             read_failure_reason = filesystem_checkpoint_read_failure_reason(
                 read_receipt,
@@ -2750,7 +2773,28 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 f"{WEBSHOP_POST_CHECKPOINT_READ_MARKER}\n"
                 f"{response['observation']}"
             )
+            self._consumed_checkpoint_read = {
+                "session_index": session_before,
+                "checkpoint_receipt": dict(checkpoint_read_pending_before),
+                "framing": deepcopy(checkpoint_read_framing_before),
+            }
             native_wrapper_evidence["checkpoint_read_consumed"] = True
+        elif checkpoint_read_already_consumed and not bool(response["done"]):
+            consumed_framing = consumed_checkpoint_read_before.get("framing")
+            if (
+                not isinstance(consumed_framing, list)
+                or not consumed_framing
+                or consumed_framing[-1].get("role") != "user"
+            ):
+                raise RuntimeError(
+                    "WebShop consumed checkpoint read lost its fresh browser state"
+                )
+            policy_observation = (
+                f"{consumed_framing[-1]['content']}\n\n"
+                "Recovered checkpoint contents:\n"
+                f"{response['observation']}\n\n"
+                f"{WEBSHOP_REPEATED_CHECKPOINT_READ_MARKER}"
+            )
         elif (
             checkpoint_read_pending_before is not None
             and not checkpoint_read_satisfied
@@ -2761,6 +2805,12 @@ class AgentMemoryEnvClient(BaseEnvClient):
             )
         else:
             policy_observation = response["observation"]
+        if (
+            bool(response["done"])
+            or session_advanced
+            or browser_action is not None
+        ):
+            self._consumed_checkpoint_read = None
         if self.is_filesystem and session_advanced:
             self._pending_session_handoff = {
                 "fresh_observation": str(response["observation"]),
@@ -2972,6 +3022,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 self._pending_context_checkpoint = None
             self._pending_checkpoint_read = dict(checkpoint_receipt)
             self._pending_checkpoint_read_framing = deepcopy(framing)
+            self._consumed_checkpoint_read = None
             self._checkpoint_write_retry_framing = None
             context_transition = build_task_neutral_context_transition(
                 CONTEXT_OPERATION_REPLACE,
@@ -2983,6 +3034,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
             self._checkpoint_write_retry_framing = None
             self._pending_checkpoint_read = None
             self._pending_checkpoint_read_framing = None
+            self._consumed_checkpoint_read = None
         elif retry_pending:
             if write_retry_framing_before is None:
                 raise RuntimeError(
