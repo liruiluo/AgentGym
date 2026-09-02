@@ -82,7 +82,9 @@ class CompactionRLControllerTests(unittest.TestCase):
     def test_valid_summary_keeps_latest_complete_pairs_and_zero_reward(self) -> None:
         controller = self._controller(recent_steps=2)
         self.assertEqual(
-            controller.prepare_policy_turn(pressure(capacity=512)),
+            controller.prepare_policy_turn(
+                pressure(capacity=900, action=200, candidate=220)
+            ),
             COMPACTIONRL_REQUEST,
         )
         completion = controller.complete(
@@ -142,9 +144,15 @@ class CompactionRLControllerTests(unittest.TestCase):
             {"role": "assistant", "content": "action-2"},
             {"role": "user", "content": "observation-2"},
         ]
-        capacity = (count_characters(one_pair) + count_characters(two_pairs)) // 2
+        next_request = [{"role": "user", "content": COMPACTIONRL_REQUEST}]
+        capacity = (
+            count_characters(one_pair + next_request)
+            + count_characters(two_pairs + next_request)
+        ) // 2
         self.assertEqual(
-            controller.prepare_policy_turn(pressure(capacity=capacity)),
+            controller.prepare_policy_turn(
+                pressure(capacity=capacity, action=200, candidate=220)
+            ),
             COMPACTIONRL_REQUEST,
         )
         completion = controller.complete(
@@ -159,6 +167,47 @@ class CompactionRLControllerTests(unittest.TestCase):
         self.assertEqual(completion.retained_recent_steps, 1)
         self.assertEqual(replacement[-2:], one_pair[-2:])
         self.assertNotIn({"role": "assistant", "content": "action-1"}, replacement)
+
+    def test_replacement_reserves_room_for_the_next_control_request(self) -> None:
+        controller = self._controller(recent_steps=0)
+        summary = "compact state"
+        replacement = [
+            {"role": "system", "content": "system"},
+            {
+                "role": "user",
+                "content": COMPACTIONRL_RESUME_PREFIX + summary,
+            },
+        ]
+        capacity = count_characters(replacement)
+        self.assertLess(
+            capacity,
+            count_characters(
+                replacement + [{"role": "user", "content": COMPACTIONRL_REQUEST}]
+            ),
+        )
+        self.assertEqual(
+            controller.prepare_policy_turn(
+                pressure(capacity=capacity, action=100, candidate=120)
+            ),
+            COMPACTIONRL_REQUEST,
+        )
+
+        completion = controller.complete(
+            summary,
+            native_call_count=0,
+            context_epoch=0,
+            session_epoch=0,
+            policy_step_count=0,
+            workspace_continuity_id="episode",
+        )
+
+        evidence = completion.step_output.info["wrapper_evidence"]
+        self.assertFalse(evidence["summary_valid"])
+        self.assertEqual(
+            evidence["summary_failure_reason"],
+            "summary_prompt_overflow",
+        )
+        self.assertFalse(completion.context_replaced)
 
     def test_invalid_and_prompt_overflow_summaries_retry_without_native_call(self) -> None:
         controller = self._controller(summary_max_bytes=16)
@@ -234,7 +283,22 @@ class CompactionRLWrapperIntegrationTests(unittest.TestCase):
                 candidate_tokens = count_characters(
                     messages + [{"role": "user", "content": COMPACTIONRL_REQUEST}]
                 )
-                capacity = candidate_tokens + 128
+                expected_replacement = [
+                    client.policy_framing()[0],
+                    {
+                        "role": "user",
+                        "content": (
+                            COMPACTIONRL_RESUME_PREFIX + "same shared summary"
+                        ),
+                    },
+                    {"role": "assistant", "content": "task action"},
+                    {"role": "user", "content": "task observation"},
+                    {"role": "user", "content": COMPACTIONRL_REQUEST},
+                ]
+                capacity = max(
+                    candidate_tokens,
+                    count_characters(expected_replacement),
+                ) + 128
                 prepared = prepare_policy_turn(
                     client,
                     messages,

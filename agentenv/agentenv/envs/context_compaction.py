@@ -331,11 +331,15 @@ class CompactionRLController:
         failure_reason = None
         retained_steps = 0
         post_prompt_tokens: int | None = None
+        next_control_prompt_tokens: int | None = None
         pre_context = deepcopy(self._pre_request_context)
         if valid:
             pairs = _recent_action_observation_pairs(
                 pre_context,
                 limit=self.recent_steps,
+            )
+            next_control_request = build_compactionrl_request(
+                self.summary_max_bytes,
             )
             replacement = None
             for keep in range(len(pairs), -1, -1):
@@ -353,10 +357,25 @@ class CompactionRLController:
                     if self._prompt_counter is None
                     else int(self._prompt_counter(candidate))
                 )
-                if candidate_tokens is None or candidate_tokens <= self._prompt_capacity:
+                candidate_with_next_control = candidate + [
+                    {
+                        "role": "user",
+                        "content": next_control_request,
+                    }
+                ]
+                candidate_next_control_tokens = (
+                    None
+                    if self._prompt_counter is None
+                    else int(self._prompt_counter(candidate_with_next_control))
+                )
+                if candidate_tokens is None or (
+                    candidate_tokens <= self._prompt_capacity
+                    and candidate_next_control_tokens <= self._prompt_capacity
+                ):
                     replacement = candidate
                     retained_steps = keep
                     post_prompt_tokens = candidate_tokens
+                    next_control_prompt_tokens = candidate_next_control_tokens
                     break
             if replacement is None:
                 valid = False
@@ -407,6 +426,7 @@ class CompactionRLController:
             "post_context_message_count": len(replacement),
             "post_context_sha256": _message_digest(replacement),
             "post_prompt_token_count": post_prompt_tokens,
+            "next_control_prompt_token_count": next_control_prompt_tokens,
             "prompt_capacity": self._prompt_capacity,
             "context_replaced": valid,
             "retry_pending": self._retry_pending,
