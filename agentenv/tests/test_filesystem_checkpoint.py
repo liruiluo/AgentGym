@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 
 from agentenv.controller.types import PolicyContextPressure
 from agentenv.envs.filesystem_checkpoint import (
@@ -52,11 +55,36 @@ class FilesystemCheckpointContractTest(unittest.TestCase):
         self.assertEqual(
             read_args, {"command": "cat .agent_memory/CONTINUATION.md"}
         )
-        self.assertIn(FILESYSTEM_CHECKPOINT_PATH, write_args["command"])
+        command = write_args["command"]
+        self.assertIn(FILESYSTEM_CHECKPOINT_PATH, command)
+        self.assertIn("<<'AGENT_MEMORY_EOF'", command)
+        self.assertNotIn("printf", command)
+        self.assertLess(
+            command.index("> .agent_memory/CONTINUATION.md"),
+            command.index("CURRENT_OBJECTIVE"),
+        )
         self.assertIn(
             FILESYSTEM_BARE_CHECKPOINT_WRITE_ACTION,
             FILESYSTEM_BARE_CHECKPOINT_WRITE_GUIDANCE,
         )
+        with tempfile.TemporaryDirectory() as workspace:
+            concrete = (
+                command.replace("CURRENT_OBJECTIVE", "Buy Snyder's snack")
+                .replace("DECISIVE_EVIDENCE", "Lay's title is exact")
+                .replace("RELEVANT_PATHS", "notes/item.txt")
+                .replace("NEXT_ACTION", "search[Snyder's snack]")
+            )
+            completed = subprocess.run(
+                ["/bin/bash", "-lc", concrete],
+                cwd=workspace,
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            checkpoint = (Path(workspace) / FILESYSTEM_CHECKPOINT_PATH).read_text()
+            self.assertIn("Snyder's", checkpoint)
+            self.assertIn("Lay's", checkpoint)
         self.assertIn(
             FILESYSTEM_BARE_CHECKPOINT_READ_ACTION,
             FILESYSTEM_BARE_CHECKPOINT_CONTINUATION_MARKER,

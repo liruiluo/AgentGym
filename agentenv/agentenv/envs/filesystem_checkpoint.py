@@ -57,10 +57,13 @@ FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER = (
 )
 
 FILESYSTEM_BARE_CHECKPOINT_WRITE_ACTION = (
-    "shell_command {\"command\":\"mkdir -p .agent_memory && printf '%s\\\\n' "
-    "'objective: CURRENT_OBJECTIVE' 'decisive_evidence: DECISIVE_EVIDENCE' "
-    "'workspace_paths: RELEVANT_PATHS' 'next_action: NEXT_ACTION' > "
-    ".agent_memory/CONTINUATION.md\"}"
+    'shell_command {"command":"mkdir -p .agent_memory && cat > '
+    ".agent_memory/CONTINUATION.md <<'AGENT_MEMORY_EOF'\\n"
+    "objective: CURRENT_OBJECTIVE\\n"
+    "decisive_evidence: DECISIVE_EVIDENCE\\n"
+    "workspace_paths: RELEVANT_PATHS\\n"
+    "next_action: NEXT_ACTION\\n"
+    'AGENT_MEMORY_EOF"}'
 )
 FILESYSTEM_BARE_CHECKPOINT_WRITE_GUIDANCE = (
     "\n\nFor this bare/Codex action surface, output exactly the one "
