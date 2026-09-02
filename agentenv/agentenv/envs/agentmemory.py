@@ -2770,8 +2770,9 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 )
             policy_observation = (
                 f"{checkpoint_read_framing_before[-1]['content']}\n\n"
-                f"{WEBSHOP_POST_CHECKPOINT_READ_MARKER}\n"
-                f"{response['observation']}"
+                "Recovered checkpoint contents:\n"
+                f"{response['observation']}\n\n"
+                f"{WEBSHOP_POST_CHECKPOINT_READ_MARKER}"
             )
             self._consumed_checkpoint_read = {
                 "session_index": session_before,
