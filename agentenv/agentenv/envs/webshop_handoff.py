@@ -23,6 +23,16 @@ WEBSHOP_POLICY_CONTINUATION_MARKER = (
 )
 
 
+WEBSHOP_POST_CHECKPOINT_READ_MARKER = (
+    "The required continuation checkpoint read succeeded. The current browser "
+    "page above did not change during that workspace read. Use the recovered "
+    "checkpoint contents below and continue shopping now with one bare "
+    "search[...] or click[...] action. Do not read "
+    "`.agent_memory/CONTINUATION.md` again unless a later context-boundary "
+    "request explicitly requires it.\n\nRecovered checkpoint contents:"
+)
+
+
 WEBSHOP_SESSION_HANDOFF_REQUEST = (
     FILESYSTEM_CHECKPOINT_REQUEST
     + WEBSHOP_BARE_CHECKPOINT_GUIDANCE

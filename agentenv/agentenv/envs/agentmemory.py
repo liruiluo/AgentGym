@@ -53,6 +53,7 @@ from .filesystem_checkpoint import (
 from .webshop_handoff import (
     WEBSHOP_CONTEXT_COMPACTION_REQUEST,
     WEBSHOP_POLICY_CONTINUATION_MARKER,
+    WEBSHOP_POST_CHECKPOINT_READ_MARKER,
     WEBSHOP_SESSION_HANDOFF_REQUEST,
 )
 
@@ -2735,15 +2736,31 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 self._pending_checkpoint_read = None
                 self._pending_checkpoint_read_framing = None
 
-        policy_observation = (
-            build_filesystem_checkpoint_read_retry_observation(
-                read_failure_reason or "checkpoint_read_not_observed"
+        if checkpoint_read_satisfied and not bool(response["done"]):
+            if (
+                checkpoint_read_framing_before is None
+                or not checkpoint_read_framing_before
+                or checkpoint_read_framing_before[-1].get("role") != "user"
+            ):
+                raise RuntimeError(
+                    "WebShop successful checkpoint read lost its fresh browser state"
+                )
+            policy_observation = (
+                f"{checkpoint_read_framing_before[-1]['content']}\n\n"
+                f"{WEBSHOP_POST_CHECKPOINT_READ_MARKER}\n"
+                f"{response['observation']}"
             )
-            if checkpoint_read_pending_before is not None
+            native_wrapper_evidence["checkpoint_read_consumed"] = True
+        elif (
+            checkpoint_read_pending_before is not None
             and not checkpoint_read_satisfied
             and not bool(response["done"])
-            else response["observation"]
-        )
+        ):
+            policy_observation = build_filesystem_checkpoint_read_retry_observation(
+                read_failure_reason or "checkpoint_read_not_observed"
+            )
+        else:
+            policy_observation = response["observation"]
         if self.is_filesystem and session_advanced:
             self._pending_session_handoff = {
                 "fresh_observation": str(response["observation"]),
@@ -2786,7 +2803,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 context_transition = build_task_neutral_context_transition(
                     CONTEXT_OPERATION_REPLACE,
                     messages=self._fresh_policy_context(
-                        str(response["observation"]),
+                        str(policy_observation),
                     ),
                 )
         return StepOutput(
