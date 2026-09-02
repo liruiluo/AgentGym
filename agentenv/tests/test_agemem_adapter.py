@@ -322,6 +322,53 @@ class AgeMemAdapterTests(unittest.TestCase):
         self.assertEqual(evidence["event"], "native_action")
         self.assertEqual(evidence["agemem_adapter"]["memory_size_after"], 0)
 
+    def test_truncated_native_null_reward_is_preserved_for_reschedule(self) -> None:
+        class ExcludedNativeClient(FakeEnvClient):
+            @property
+            def sample_excluded(self) -> bool:
+                return True
+
+            def step(self, action: str) -> StepOutput:
+                self.native_actions.append(action)
+                return StepOutput(
+                    state="infrastructure fault",
+                    reward=None,
+                    done=True,
+                    info=build_task_neutral_transition_info(
+                        env_info={
+                            "truncated": True,
+                            "terminal_reason": "grader_infrastructure_fault",
+                        },
+                        action_submission={"raw_policy_output": action},
+                    ),
+                )
+
+        adapter = AgeMemEnvClientAdapter(ExcludedNativeClient())
+        adapter.reset(0)
+        output = adapter.step('shell_command {"command":"python train.py"}')
+        self.assertIsNone(output.reward)
+        self.assertTrue(output.done)
+        self.assertTrue(adapter.sample_excluded)
+
+    def test_null_native_reward_without_exclusion_is_rejected(self) -> None:
+        class InvalidNullRewardClient(FakeEnvClient):
+            def step(self, action: str) -> StepOutput:
+                self.native_actions.append(action)
+                return StepOutput(
+                    state="invalid null reward",
+                    reward=None,
+                    done=True,
+                    info=build_task_neutral_transition_info(
+                        env_info={"truncated": False},
+                        action_submission={"raw_policy_output": action},
+                    ),
+                )
+
+        adapter = AgeMemEnvClientAdapter(InvalidNullRewardClient())
+        adapter.reset(0)
+        with self.assertRaisesRegex(RuntimeError, "null reward"):
+            adapter.step('shell_command {"command":"python train.py"}')
+
     def test_native_control_has_priority_over_memory_interception(self) -> None:
         adapter = self.make_adapter()
         self.bind(adapter)

@@ -677,9 +677,18 @@ class AgeMemEnvClientAdapter(BaseEnvClient):
             "hidden_model_calls": 0,
         }
         info["wrapper_evidence"] = evidence
+        reward = output.reward
+        if reward is None:
+            if not bool(output.done) or not self.sample_excluded:
+                raise RuntimeError(
+                    "native client returned a null reward without a terminal "
+                    "sample-exclusion receipt"
+                )
+        else:
+            reward = float(reward)
         return StepOutput(
             state=str(output.state),
-            reward=float(output.reward),
+            reward=reward,
             done=bool(output.done),
             info=info,
         )
