@@ -35,6 +35,7 @@ def _targets_sha256(targets: tuple[str, ...]) -> str:
 @dataclass(frozen=True)
 class FullPoolLiteResearcherTask:
     index: int
+    source_pool_index: int
     question: str
     targets: tuple[str, ...]
     mask_url: str
@@ -162,11 +163,19 @@ def load_full_pool(
     raw_sources = _read_raw_sources(source_root, reports)
 
     tasks: list[FullPoolLiteResearcherTask] = []
+    seen_source_pool_indices: set[int] = set()
     with pool_rows_path.open(encoding="utf-8") as handle:
         for expected_index, line in enumerate(handle):
             row = json.loads(line)
-            if int(row["pool_index"]) != expected_index:
+            runtime_index = int(row["pool_index"])
+            if runtime_index != expected_index:
                 raise ValueError("LiteResearcher pool row order is not contiguous")
+            source_pool_index = int(row.get("source_pool_index", runtime_index))
+            if source_pool_index < 0:
+                raise ValueError("LiteResearcher source pool index must be non-negative")
+            if source_pool_index in seen_source_pool_indices:
+                raise ValueError("LiteResearcher source pool index must be unique")
+            seen_source_pool_indices.add(source_pool_index)
             relative = str(row["parquet_path"])
             physical_row = int(row["physical_row"])
             try:
@@ -203,13 +212,19 @@ def load_full_pool(
             actual_mask_sha = _text_sha256(mask_url) if mask_url else None
             if actual_mask_sha != expected_mask_sha:
                 raise ValueError("LiteResearcher mask_url differs from the frozen pool row")
+            row_identity = str(row["row_identity"])
+            if len(row_identity) != 64 or any(
+                character not in "0123456789abcdef" for character in row_identity
+            ):
+                raise ValueError("LiteResearcher row identity is not a lowercase SHA-256")
             tasks.append(
                 FullPoolLiteResearcherTask(
                     index=expected_index,
+                    source_pool_index=source_pool_index,
                     question=question,
                     targets=targets,
                     mask_url=mask_url,
-                    row_identity=str(row["row_identity"]),
+                    row_identity=row_identity,
                     parquet_path=relative,
                     physical_row=physical_row,
                     data_source=str(raw["data_source"]),

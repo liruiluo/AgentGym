@@ -115,6 +115,7 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
             (
                 FullPoolLiteResearcherTask(
                     index=0,
+                    source_pool_index=17,
                     question="Which public result is supported by the Alpha research evidence?",
                     targets=("Beta Fact",),
                     mask_url="https://public.example/answer",
@@ -171,6 +172,24 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
         )
         self.assertNotIn(self.tasks.train[0].mask_url, searched["observation"])
         self.assertNotIn("Alpha Secret", searched["observation"])
+        wrapper.close(created["id"])
+
+    def test_reset_payload_exposes_only_stable_heldout_source_identity(self) -> None:
+        wrapper = LiteResearcherWrapper(
+            self.tasks,
+            self.backend,
+            split="train",
+            surface=LITERESEARCHER_FULLPOOL_SURFACE,
+            judge=_SemanticJudgeStub(),
+        )
+        created = wrapper.create(data_idx=0)
+        info = created["info"]
+        self.assertEqual(info["data_idx"], 0)
+        self.assertEqual(info["row_identity"], "a" * 64)
+        self.assertEqual(info["source_pool_index"], 17)
+        public = json.dumps(info, ensure_ascii=False)
+        self.assertNotIn("Beta Fact", public)
+        self.assertNotIn(self.tasks.train[0].mask_url, public)
         wrapper.close(created["id"])
 
     def test_sixty_four_read_only_threads_are_stable(self) -> None:

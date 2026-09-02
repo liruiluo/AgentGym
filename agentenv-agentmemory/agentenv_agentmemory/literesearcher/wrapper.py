@@ -906,6 +906,8 @@ class LiteResearcherWrapper:
             "task_id": task.task_id,
             "data_idx": episode["data_idx"],
             "source_data_idx": task.index,
+            "row_identity": task.row_identity,
+            "source_pool_index": task.source_pool_index,
             "status": episode["status"],
             "phase_index": 0,
             "phase_count": None,
