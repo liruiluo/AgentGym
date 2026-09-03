@@ -3,6 +3,9 @@ from __future__ import annotations
 import unittest
 
 from agentenv.envs.agentmemory import parse_qwen_workspace_action
+from agentenv.envs.filesystem_checkpoint import (
+    FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
+)
 from agentenv.envs.openmle_fast import (
     OPENMLE_CONTEXT_COMPACTION_REQUEST,
     OPENMLE_EXACT_CHECKPOINT_READ_ACTION,
@@ -74,6 +77,10 @@ mkdir -p .agent_memory && printf '%s\n' objective=OBJECTIVE measured_validation_
             "plain-text action protocol",
             OPENMLE_FAST_POLICY_SYSTEM_PROMPT,
         )
+        self.assertIn(
+            FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
+            OPENMLE_FAST_POLICY_SYSTEM_PROMPT,
+        )
 
     def test_dynamic_request_keeps_checkpoint_contract_local(self) -> None:
         self.assertIn(
@@ -82,6 +89,10 @@ mkdir -p .agent_memory && printf '%s\n' objective=OBJECTIVE measured_validation_
         )
         self.assertIn("<tool_call>", OPENMLE_CONTEXT_COMPACTION_REQUEST)
         self.assertIn("Qwen", OPENMLE_CONTEXT_COMPACTION_REQUEST)
+        self.assertIn(
+            FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
+            OPENMLE_CONTEXT_COMPACTION_REQUEST,
+        )
 
 
 if __name__ == "__main__":

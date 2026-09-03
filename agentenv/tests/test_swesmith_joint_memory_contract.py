@@ -61,6 +61,9 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
         self.checkpoint_example = values["SWE_CHECKPOINT_SHELL_SAFE_EXAMPLE"]
         self.continuation_marker = values["SWE_POLICY_CONTINUATION_MARKER"]
         self.exact_read = values["SWE_CHECKPOINT_READ_ACTION"]
+        self.long_lived_notice = values[
+            "FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE"
+        ]
         self.memory_contract = values["SWE_MEMORY_CONTRACT"]
 
     def test_contract_has_a_distinct_joint_memory_identity(self) -> None:
@@ -86,6 +89,8 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
             "Writing or reading a note has no separate reward",
         ):
             self.assertIn(fragment, self.prompt)
+        self.assertIn(self.long_lived_notice, self.prompt)
+        self.assertIn(self.long_lived_notice, self.compaction)
 
     def test_prompt_requires_action_only_and_upstream_submission_sentinel(self) -> None:
         for fragment in (

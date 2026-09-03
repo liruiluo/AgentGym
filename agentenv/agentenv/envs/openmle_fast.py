@@ -22,6 +22,7 @@ from agentenv.controller.types import (
 )
 from .filesystem_checkpoint import (
     FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER,
+    FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
     FILESYSTEM_CHECKPOINT_MAX_BYTES,
     FILESYSTEM_CHECKPOINT_PATH,
     FILESYSTEM_CHECKPOINT_REQUEST,
@@ -109,7 +110,7 @@ On a later turn, create workspace-relative `train.py` with one shell_command and
 
 Work as an iterative ML engineer. Training-set metrics do not count as local validation. The printed validation value must come from executed code, not a placeholder. Keep each run within the managed 15000 ms runtime; do not use broad sweeps, nested parallelism, or large grid searches. After a traceback or measured validation result, modify `train.py` and run it again. The environment exposes no repeatable private score or free validation oracle.
 
-Do not write the continuation note before the first measured validation unless an explicit context-compaction request requires it. At that request, use one shell_command function call to overwrite `.agent_memory/CONTINUATION.md`. Include the last measured validation metric or exact failure, `code_path: train.py`, and a `next_action` that changes `train.py` before rerunning; `python train.py` alone is not enough. When compaction finishes, after a continuation marker, read it exactly once and perform that edit; do not re-inspect the task or repeat the note without new evidence.
+Do not write the continuation note before the first measured validation unless an explicit context-compaction request requires it. At that request, use one shell_command function call to overwrite `.agent_memory/CONTINUATION.md`. Include the last measured validation metric or exact failure, `code_path: train.py`, and a `next_action` that changes `train.py` before rerunning; `python train.py` alone is not enough. When compaction finishes, after a continuation marker, read it exactly once and perform that edit; do not re-inspect the task or repeat the note without new evidence. """ + FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE + """
 
 Reading, editing, running, writing or reading memory, compaction, and submit all consume the same 30-action budget. Every observation reports completed and remaining actions. TASK.md and data are read-only. When a measured local validation and `submission.csv` exist, iterate only while enough actions remain and submit no later than action 27. `submit` grades against the protected private data exactly once; the first submit is terminal, and there is no automatic submission at the action limit; action 30 ends in failure if it is not submit.
 If an observation reports a parser error, respond next with only one corrected complete Qwen XML function call. Never describe the correction.

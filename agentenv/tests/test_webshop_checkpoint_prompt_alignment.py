@@ -12,6 +12,7 @@ from agentenv.envs.agentmemory import (
 from agentenv.envs.filesystem_checkpoint import (
     FILESYSTEM_BARE_CHECKPOINT_READ_ACTION,
     FILESYSTEM_BARE_CHECKPOINT_WRITE_ACTION,
+    FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
 )
 from agentenv.envs.webshop_handoff import (
     WEBSHOP_CONTEXT_COMPACTION_REQUEST,
@@ -37,12 +38,17 @@ class WebShopCheckpointPromptAlignmentTest(unittest.TestCase):
             self.assertIn(".agent_memory/CONTINUATION.md", prompt)
             self.assertNotIn("Qwen XML", prompt)
         self.assertIn("Use shell_command with one JSON object", system_prompt)
+        self.assertIn(
+            FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
+            system_prompt,
+        )
         for request in (
             WEBSHOP_SESSION_HANDOFF_REQUEST,
             WEBSHOP_CONTEXT_COMPACTION_REQUEST,
         ):
             self.assertIn(FILESYSTEM_BARE_CHECKPOINT_WRITE_ACTION, request)
             self.assertIn("do not change the command shape", request)
+            self.assertIn(FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE, request)
         self.assertIn(
             FILESYSTEM_BARE_CHECKPOINT_READ_ACTION,
             WEBSHOP_POLICY_CONTINUATION_MARKER,

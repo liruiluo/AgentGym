@@ -33,6 +33,13 @@ _FILESYSTEM_SHELL_ACTION_RE = re.compile(
 )
 _FILESYSTEM_APPLY_PATCH_PREFIX = "apply_patch\n"
 
+FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE = (
+    f"`{FILESYSTEM_CHECKPOINT_PATH}` is a single-boundary handoff slot, not "
+    "cumulative memory. Every later context boundary overwrites this same file. "
+    "Store evidence that must survive multiple context boundaries in other ordinary "
+    "workspace files before the boundary, and list those paths in the checkpoint."
+)
+
 FILESYSTEM_CHECKPOINT_REQUEST = (
     "The conversation is nearing a context boundary. Use this turn for exactly "
     "one normal executable shell_command or apply_patch action that creates or "
@@ -45,7 +52,8 @@ FILESYSTEM_CHECKPOINT_REQUEST = (
     "write keeps the current context and can be retried. This bounded checkpoint "
     "is only a cross-context working-state snapshot, not a replacement for task "
     "artifacts or longer-lived evidence notes; continue to create, read, and update "
-    "other workspace files whenever they are useful."
+    "other workspace files whenever they are useful. "
+    + FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE
 )
 
 FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER = (

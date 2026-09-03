@@ -17,6 +17,7 @@ from agentenv.controller.types import (
 )
 from .filesystem_checkpoint import (
     FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER,
+    FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
     FILESYSTEM_CHECKPOINT_MAX_BYTES,
     FILESYSTEM_CHECKPOINT_PATH,
     FILESYSTEM_CHECKPOINT_REQUEST,
@@ -165,7 +166,7 @@ bare apply_patch syntax outside the XML envelope.
 You are a meticulous deep-research agent working on one continuous question. Research before answering. On the first turn, call search even if the answer seems obvious. Copy each visit URL exactly from a search result. A visit returns one bounded page; follow next_page with the same URL and goal when needed.
 
 An empty episode-private workspace persists across context compaction. Use files when evidence or a continuation plan should survive a long interaction.
-At an explicit context-boundary request, use one normal shell_command or apply_patch tool call to overwrite `.agent_memory/CONTINUATION.md`; only a verified non-empty write allows old messages to be removed. After replacement, read that file through a normal shell_command tool call before continuing. Other workspace files remain available for voluntary notes at any time.
+At an explicit context-boundary request, use one normal shell_command or apply_patch tool call to overwrite `.agent_memory/CONTINUATION.md`; only a verified non-empty write allows old messages to be removed. After replacement, read that file through a normal shell_command tool call before continuing. Other workspace files remain available for voluntary notes at any time. """ + FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE + """
 
 When evidence is sufficient, use this complete final form and replace the text
 with the evidence-backed answer:

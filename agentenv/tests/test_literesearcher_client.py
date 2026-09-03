@@ -8,6 +8,7 @@ import requests
 
 from agentenv.controller.types import PolicyContextPressure
 from agentenv.envs.filesystem_checkpoint import (
+    FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
     FILESYSTEM_CHECKPOINT_PATH,
     FILESYSTEM_CHECKPOINT_READ_RECEIPT_SCHEMA,
 )
@@ -70,6 +71,14 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn("persists across context compaction", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn(".agent_memory/CONTINUATION.md", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("Other workspace files remain available", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn(
+            FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
+            LITERESEARCHER_SYSTEM_PROMPT,
+        )
+        self.assertIn(
+            FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
         self.assertIn("not a replacement for task artifacts", LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
         self.assertIn(
             "For this context-boundary write, use shell_command rather than "

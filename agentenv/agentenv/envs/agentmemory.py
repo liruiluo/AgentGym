@@ -31,6 +31,7 @@ from agentenv.controller.types import (
     build_task_neutral_transition_info,
 )
 from .filesystem_checkpoint import (
+    FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
     FILESYSTEM_CHECKPOINT_MAX_BYTES,
     FILESYSTEM_CHECKPOINT_PATH,
     build_filesystem_checkpoint_read_retry_observation,
@@ -1412,7 +1413,8 @@ def build_filesystem_conversation_start(
         "verified non-empty write lets the wrapper remove old messages. Then read "
         "that file through a normal action in the new context. Other workspace files "
         "remain available for voluntary notes. There is no host-path access or "
-        "dedicated memory API."
+        "dedicated memory API. "
+        + FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE
     )
     if surface == LATENT_PREFERENCE_FILESYSTEM_WEBSHOP_SURFACE:
         interface += (

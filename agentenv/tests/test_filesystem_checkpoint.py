@@ -14,8 +14,10 @@ from agentenv.envs.filesystem_checkpoint import (
     FILESYSTEM_BARE_CHECKPOINT_WRITE_ACTION,
     FILESYSTEM_BARE_CHECKPOINT_WRITE_GUIDANCE,
     FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER,
+    FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
     FILESYSTEM_CHECKPOINT_MAX_BYTES,
     FILESYSTEM_CHECKPOINT_PATH,
+    FILESYSTEM_CHECKPOINT_REQUEST,
     FILESYSTEM_CHECKPOINT_REQUEST_TOKEN_SLACK,
     FILESYSTEM_CHECKPOINT_RETRY_OBSERVATION_MAX_TOKENS,
     build_filesystem_checkpoint_read_retry_observation,
@@ -39,6 +41,20 @@ from agentenv.envs.filesystem_checkpoint import (
 
 
 class FilesystemCheckpointContractTest(unittest.TestCase):
+
+    def test_checkpoint_is_explicitly_overwritten_not_cumulative_memory(self) -> None:
+        for fragment in (
+            "single-boundary handoff slot",
+            "not cumulative memory",
+            "Every later context boundary overwrites this same file",
+            "other ordinary workspace files",
+            "list those paths in the checkpoint",
+        ):
+            self.assertIn(fragment, FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE)
+        self.assertIn(
+            FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
+            FILESYSTEM_CHECKPOINT_REQUEST,
+        )
 
     def test_bare_checkpoint_control_actions_are_minimal_and_exact(self) -> None:
         write_name, write_payload = FILESYSTEM_BARE_CHECKPOINT_WRITE_ACTION.split(

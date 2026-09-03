@@ -17,6 +17,7 @@ from agentenv.controller.types import (
 )
 from .filesystem_checkpoint import (
     FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER,
+    FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
     FILESYSTEM_CHECKPOINT_MAX_BYTES,
     FILESYSTEM_CHECKPOINT_PATH,
     FILESYSTEM_CHECKPOINT_REQUEST,
@@ -243,7 +244,9 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "same policy-action budget. Old messages are removed only after the exact write is "
     "verified. After replacement, read the checkpoint with a normal command, then read "
     "any detailed notes it points to before acting on them. The checkpoint does not "
-    "replace source files, test artifacts, or voluntary debugging notes.\n"
+    "replace source files, test artifacts, or voluntary debugging notes. "
+    + FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE
+    + "\n"
     "Illustrative pattern only (do not copy its content as a task answer): for "
     "arbitrary note text, put a quoted heredoc inside one shell_command command "
     "parameter. A later shell_command can run `rg -n "
