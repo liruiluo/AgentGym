@@ -147,6 +147,14 @@ OPENMLE_POLICY_CONTINUATION_MARKER = (
 )
 
 
+def qwen_call(name: str, **parameters: object) -> str:
+    body = ["<tool_call>", f"<function={name}>"]
+    for key, value in parameters.items():
+        body.extend((f"<parameter={key}>", str(value), "</parameter>"))
+    body.extend(("</function>", "</tool_call>"))
+    return "\n".join(body)
+
+
 def checkpoint_receipt(
     *,
     action_kind: str = "apply_patch",
@@ -444,7 +452,7 @@ class OpenMLEFastClientTest(unittest.TestCase):
         }
         return terminal
 
-    def test_attests_before_create_and_forwards_raw_action(self) -> None:
+    def test_attests_before_create_and_translates_qwen_action(self) -> None:
         calls = []
         metadata = self.metadata()
 
@@ -500,10 +508,17 @@ class OpenMLEFastClientTest(unittest.TestCase):
             self.assertTrue(calls[0][1].endswith("/metadata"))
             self.assertTrue(calls[1][1].endswith("/create"))
             client.reset(0)
-            raw = 'shell_command {"command":"printf \'unchanged\'"}'
+            raw = qwen_call("shell_command", command="printf 'unchanged'")
             output = client.step(raw)
-            self.assertEqual(calls[-1][2]["json"]["action"], raw)
+            submitted = 'shell_command {"command": "printf \'unchanged\'"}'
+            self.assertEqual(calls[-1][2]["json"]["action"], submitted)
             self.assertEqual(output.info["action_submission"]["raw_policy_output"], raw)
+            self.assertEqual(
+                output.info["action_submission"]["submitted_action"], submitted
+            )
+            self.assertTrue(
+                output.info["action_submission"]["tool_parser_normalized"]
+            )
             self.assertEqual(output.info["policy_step_before"], 0)
             self.assertEqual(output.info["policy_step_after"], 1)
             terminal = client.finalize_policy_horizon()
@@ -548,7 +563,7 @@ class OpenMLEFastClientTest(unittest.TestCase):
             client.reset(0)
             invalid = client.step("malformed")
             recovered = client.step(
-                'shell_command {"command":"pwd","workdir":"."}'
+                qwen_call("shell_command", command="pwd", workdir=".")
             )
 
         self.assertEqual(invalid.reward, -0.01)
@@ -564,8 +579,9 @@ class OpenMLEFastClientTest(unittest.TestCase):
 <parameter=command>
 cat .agent_memory/CONTINUATION.md
 </parameter>
-<function=workdir>
+<parameter=workdir>
 .
+</parameter>
 </function>
 </tool_call>"""
 
@@ -599,7 +615,8 @@ cat .agent_memory/CONTINUATION.md
         posted = [call for call in calls if call[1].endswith("/step")][0][2]["json"]["action"]
         self.assertEqual(
             posted,
-            'shell_command {"command": "cat .agent_memory/CONTINUATION.md"}',
+            'shell_command {"command": "cat .agent_memory/CONTINUATION.md", '
+            '"workdir": "."}',
         )
         submission = output.info["action_submission"]
         self.assertEqual(submission["raw_policy_output"], raw)
@@ -678,16 +695,18 @@ cat .agent_memory/CONTINUATION.md
             self.assertEqual(selected, candidate)
 
             secret_body = "next inspect train.csv"
-            action = f"""apply_patch
-*** Begin Patch
+            patch_body = f"""*** Begin Patch
 *** Add File: .agent_memory/CONTINUATION.md
 +{secret_body}
 *** End Patch"""
+            action = qwen_call("apply_patch", patch=patch_body)
             output = client.step(action)
 
         step_calls = [call for call in calls if call[1].endswith("/step")]
         self.assertEqual(len(step_calls), 1)
-        self.assertEqual(step_calls[0][2]["json"]["action"], action)
+        self.assertEqual(
+            step_calls[0][2]["json"]["action"], "apply_patch\n" + patch_body
+        )
         self.assertEqual(metadata["max_policy_actions"], 30)
         self.assertEqual(
             (
@@ -1076,14 +1095,19 @@ cat .agent_memory/CONTINUATION.md
                 "http://127.0.0.1:9000", **self.client_kwargs()
             )
             client.reset(0)
-            result = client.step("submit")
+            raw = qwen_call("submit")
+            result = client.step(raw)
         self.assertEqual(
             result.info["action_submission"],
             {
-                "raw_policy_output": "submit",
+                "raw_policy_output": raw,
                 "request_id": "request-terminal",
                 "episode_id": "episode-1",
                 "submission_sha256": "f" * 64,
+                "tool_contract": "qwen3_xml_single_call_v1",
+                "tool_parser": "qwen3_coder",
+                "tool_parser_normalized": True,
+                "submitted_action": "submit",
             },
         )
 

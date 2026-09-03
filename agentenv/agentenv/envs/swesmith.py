@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 import math
 from typing import Any, Mapping, Sequence
 
@@ -33,6 +34,11 @@ from .filesystem_checkpoint import (
     filesystem_checkpoint_read_observed,
     filesystem_checkpoint_write_succeeded,
     normalize_filesystem_checkpoint_receipt,
+)
+from .verl_qwen_tool_parser import (
+    QWEN_INVALID_ACTION_SENTINEL,
+    QWEN_SINGLE_TOOL_CALL_CONTRACT,
+    parse_single_qwen3_tool_call,
 )
 
 
@@ -176,13 +182,51 @@ def _validate_action_progress_receipt(value: Any) -> dict[str, Any]:
     normalized["workspace_changed"] = workspace_changed
     return normalized
 
+_SWE_QWEN_TOOL_SCHEMAS = (
+    {
+        "type": "function",
+        "function": {
+            "name": "shell_command",
+            "description": "Run one command in the persistent /testbed workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "workdir": {"type": "string"},
+                    "timeout_ms": {"type": "integer", "minimum": 1},
+                },
+                "required": ["command"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "apply_patch",
+            "description": "Apply one bounded patch in the persistent workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {"patch": {"type": "string"}},
+                "required": ["patch"],
+                "additionalProperties": False,
+            },
+        },
+    },
+)
+
+
 SWE_POLICY_SYSTEM_PROMPT = (
     "You are a coding agent in one persistent /testbed repository. Inspect, edit, "
     "and test until the issue is fixed. Your response channel is an action parser, "
-    "not a chat channel. Reason silently. Every policy turn is exactly one action, "
-    "starting at byte zero. Never prefix an action with narration such as 'Let me' "
-    "or 'I found'.\n\n"
+    "not a chat channel. Reason silently. "
+    + QWEN_SINGLE_TOOL_CALL_CONTRACT
+    + " Never prefix an action with narration such as 'Let me' or 'I found'.\n\n"
     "# Exact tool syntax\n"
+    "<tools>\n"
+    '{"type":"function","function":{"name":"shell_command","description":"Run one command in the persistent /testbed workspace.","parameters":{"type":"object","properties":{"command":{"type":"string"},"workdir":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1}},"required":["command"],"additionalProperties":false}}}\n'
+    '{"type":"function","function":{"name":"apply_patch","description":"Apply one bounded patch in the persistent workspace.","parameters":{"type":"object","properties":{"patch":{"type":"string"}},"required":["patch"],"additionalProperties":false}}}\n'
+    "</tools>\n"
     "For inspection, editing, or tests, output exactly one Qwen XML tool call. "
     "For a shell command, use exactly this shape:\n"
     "<tool_call>\n"
@@ -267,6 +311,82 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "before or after a tool call is a parser error and nothing runs. This "
     "workspace intentionally has no .git directory."
 )
+
+
+def _swe_invalid_qwen_action(reason: str) -> tuple[str, dict[str, Any]]:
+    return QWEN_INVALID_ACTION_SENTINEL, {
+        "tool_contract": "qwen3_xml_single_call_v1",
+        "tool_parser": "qwen3_coder",
+        "tool_parser_normalized": False,
+        "tool_parser_error": reason,
+        "submitted_action": QWEN_INVALID_ACTION_SENTINEL,
+    }
+
+
+def normalize_swesmith_policy_action(
+    action: str,
+) -> tuple[str, dict[str, Any]]:
+    """Translate one strict policy-facing Qwen call to SWE's legacy executor."""
+
+    parsed = parse_single_qwen3_tool_call(
+        action,
+        tool_schemas=_SWE_QWEN_TOOL_SCHEMAS,
+    )
+    if parsed is None:
+        return _swe_invalid_qwen_action(
+            "expected_exactly_one_qwen_xml_tool_call"
+        )
+    name = parsed.name.strip().lower()
+    arguments = dict(parsed.arguments)
+    try:
+        if name == "shell_command":
+            allowed = {"command", "workdir", "timeout_ms"}
+            if "command" not in arguments or not set(arguments) <= allowed:
+                raise ValueError(
+                    "shell_command requires command and accepts only workdir/timeout_ms"
+                )
+            command = arguments["command"]
+            if not isinstance(command, str) or not command.strip():
+                raise ValueError("shell_command command must be a non-empty string")
+            normalized: dict[str, Any] = {"command": command, "workdir": "."}
+            if "workdir" in arguments:
+                workdir = arguments["workdir"]
+                if (
+                    not isinstance(workdir, str)
+                    or not workdir.strip()
+                    or "\x00" in workdir
+                ):
+                    raise ValueError("shell_command workdir must be a safe non-empty string")
+                normalized["workdir"] = workdir.strip()
+            if "timeout_ms" in arguments:
+                timeout_ms = arguments["timeout_ms"]
+                if (
+                    isinstance(timeout_ms, bool)
+                    or not isinstance(timeout_ms, int)
+                    or timeout_ms < 1
+                ):
+                    raise ValueError("shell_command timeout_ms must be a positive integer")
+                normalized["timeout_ms"] = timeout_ms
+            submitted = "shell_command " + json.dumps(
+                normalized, ensure_ascii=False, separators=(",", ":")
+            )
+        elif name == "apply_patch":
+            if set(arguments) != {"patch"}:
+                raise ValueError("apply_patch requires exactly patch")
+            patch = arguments["patch"]
+            if not isinstance(patch, str) or not patch.strip():
+                raise ValueError("apply_patch patch must be a non-empty string")
+            submitted = "apply_patch\n" + patch.strip()
+        else:
+            raise ValueError(f"unsupported SWE-smith function: {name}")
+    except (TypeError, ValueError) as exc:
+        return _swe_invalid_qwen_action(str(exc))
+    return submitted, {
+        "tool_contract": "qwen3_xml_single_call_v1",
+        "tool_parser": parsed.parser_name,
+        "tool_parser_normalized": True,
+        "submitted_action": submitted,
+    }
 
 
 class SwesmithEnvClient(BaseEnvClient):
@@ -494,10 +614,11 @@ class SwesmithEnvClient(BaseEnvClient):
         session_before = self._session_epoch
         checkpoint_read_pending_before = self._pending_checkpoint_read
         checkpoint_read_framing_before = self._pending_checkpoint_read_framing
+        submitted_action, parser_evidence = normalize_swesmith_policy_action(action)
         response = self._request(
             "POST",
             "step",
-            json={"id": self.env_id, "action": action},
+            json={"id": self.env_id, "action": submitted_action},
         )
         self._native_call_count += 1
         self._policy_step_count += 1
@@ -656,7 +777,17 @@ class SwesmithEnvClient(BaseEnvClient):
             done=bool(response["done"]),
             info=build_task_neutral_transition_info(
                 env_info=response_env_info,
-                action_submission={"raw_policy_output": action},
+                action_submission={
+                    "raw_policy_output": action,
+                    "submitted_action": submitted_action,
+                    **parser_evidence,
+                    "endpoint_action_submission": (
+                        dict(response_env_info.get("action_submission"))
+                        if isinstance(response_env_info, Mapping)
+                        and isinstance(response_env_info.get("action_submission"), Mapping)
+                        else {}
+                    ),
+                },
                 native_step_before=native_before,
                 native_step_after=self._native_call_count,
                 native_call_count_before=native_before,

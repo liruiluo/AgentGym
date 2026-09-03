@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import unittest
 from unittest.mock import Mock, patch
 
@@ -12,7 +13,10 @@ from agentenv.envs.filesystem_checkpoint import (
     FILESYSTEM_CHECKPOINT_PATH,
     FILESYSTEM_CHECKPOINT_READ_RECEIPT_SCHEMA,
 )
-from agentenv.envs.verl_qwen_tool_parser import parse_single_qwen3_tool_call
+from agentenv.envs.verl_qwen_tool_parser import (
+    QWEN_INVALID_ACTION_SENTINEL,
+    parse_single_qwen3_tool_call,
+)
 from agentenv.envs.literesearcher import (
     LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
     LITERESEARCHER_EXACT_CHECKPOINT_READ_ACTION,
@@ -21,6 +25,19 @@ from agentenv.envs.literesearcher import (
     LITERESEARCHER_SYSTEM_PROMPT,
     LiteResearcherEnvClient,
 )
+
+
+def qwen_call(name: str, **parameters: object) -> str:
+    body = ["<tool_call>", f"<function={name}>"]
+    for key, value in parameters.items():
+        rendered = (
+            json.dumps(value, ensure_ascii=False)
+            if isinstance(value, (dict, list, bool, int, float))
+            else str(value)
+        )
+        body.extend((f"<parameter={key}>", rendered, "</parameter>"))
+    body.extend(("</function>", "</tool_call>"))
+    return "\n".join(body)
 
 
 class LiteResearcherClientTests(unittest.TestCase):
@@ -54,8 +71,13 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn("<function=search>", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("<function=visit>", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("MUST be a JSON array", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("<function=answer>", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn(
-            '<answer>your evidence-backed answer</answer>',
+            "<parameter=answer>your evidence-backed answer</parameter>",
+            LITERESEARCHER_SYSTEM_PROMPT,
+        )
+        self.assertNotIn(
+            '<tool_call>\n{"name":',
             LITERESEARCHER_SYSTEM_PROMPT,
         )
         self.assertIn('"name": "shell_command"', LITERESEARCHER_SYSTEM_PROMPT)
@@ -218,6 +240,53 @@ class LiteResearcherClientTests(unittest.TestCase):
         ):
             client.prepare_policy_turn(pressure)
 
+    def test_visit_posts_canonical_endpoint_action_and_keeps_both_ledger_layers(self) -> None:
+        client = self._client()
+        raw = qwen_call("visit", url="123", goal="true", page=1)
+        submitted = (
+            "<tool_call>\n"
+            "<function=visit>\n"
+            "<parameter=url>\n"
+            '"123"\n'
+            "</parameter>\n"
+            "<parameter=goal>\n"
+            '"true"\n'
+            "</parameter>\n"
+            "<parameter=page>\n"
+            "1\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>"
+        )
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "observation": "visited",
+            "reward": 0.0,
+            "done": False,
+            "info": {
+                "action_submission": {
+                    "raw_policy_output": submitted,
+                    "kind": "visit",
+                },
+                "wrapper_evidence": {},
+            },
+        }
+        with patch(
+            "agentenv.envs.literesearcher.requests.request",
+            return_value=response,
+        ) as request:
+            output = client.step(raw)
+
+        self.assertEqual(request.call_args.kwargs["json"]["action"], submitted)
+        action_submission = output.info["action_submission"]
+        self.assertEqual(action_submission["raw_policy_output"], raw)
+        self.assertEqual(action_submission["submitted_action"], submitted)
+        self.assertTrue(action_submission["tool_parser_normalized"])
+        self.assertEqual(
+            action_submission["endpoint_action_submission"]["raw_policy_output"],
+            submitted,
+        )
+
     @staticmethod
     def _checkpoint_receipt(*, changed: bool = True, size_bytes: int = 37) -> dict:
         return {
@@ -247,16 +316,30 @@ class LiteResearcherClientTests(unittest.TestCase):
             },
         }
         secret = "secret compacted body"
-        action = (
-            'shell_command {"command":"printf '
-            + secret
-            + ' > .agent_memory/CONTINUATION.md","workdir":"."}'
+        command = f"printf {secret} > .agent_memory/CONTINUATION.md"
+        action = qwen_call("shell_command", command=command, workdir=".")
+        submitted = "shell_command " + json.dumps(
+            {"command": command, "workdir": "."},
+            sort_keys=True,
+            separators=(",", ":"),
         )
+        response.json.return_value["info"]["action_submission"][
+            "raw_policy_output"
+        ] = submitted
         with patch(
             "agentenv.envs.literesearcher.requests.request", return_value=response
         ) as request:
             output = client.step(action)
         request.assert_called_once()
+        self.assertEqual(request.call_args.kwargs["json"]["action"], submitted)
+        submission = output.info["action_submission"]
+        self.assertEqual(submission["raw_policy_output"], action)
+        self.assertEqual(submission["submitted_action"], submitted)
+        self.assertTrue(submission["tool_parser_normalized"])
+        self.assertEqual(
+            submission["endpoint_action_submission"]["raw_policy_output"],
+            submitted,
+        )
         replacement = output.info["context_transition"]["messages"]
         self.assertEqual(output.info["context_epoch_after"], 1)
         self.assertNotIn(secret, str(replacement))
@@ -294,8 +377,10 @@ class LiteResearcherClientTests(unittest.TestCase):
             return_value=write_response,
         ):
             write = client.step(
-                'shell_command {"command":"printf checkpoint > '
-                '.agent_memory/CONTINUATION.md"}'
+                qwen_call(
+                    "shell_command",
+                    command="printf checkpoint > .agent_memory/CONTINUATION.md",
+                )
             )
         post_checkpoint_messages = write.info["context_transition"]["messages"]
 
@@ -324,7 +409,8 @@ class LiteResearcherClientTests(unittest.TestCase):
             "agentenv.envs.literesearcher.requests.request",
             return_value=wrong_response,
         ):
-            wrong = client.step('<function=search>["query"]')
+            wrong_action = qwen_call("search", query=["query"])
+            wrong = client.step(wrong_action)
         self.assertIn("Checkpoint read failed", wrong.state)
         self.assertTrue(
             wrong.info["wrapper_evidence"]["checkpoint_read_retry_pending"]
@@ -339,7 +425,7 @@ class LiteResearcherClientTests(unittest.TestCase):
             LITERESEARCHER_EXACT_CHECKPOINT_READ_ACTION,
             retry_messages[-1]["content"],
         )
-        self.assertNotIn('<function=search>["query"]', str(retry_messages))
+        self.assertNotIn(wrong_action, str(retry_messages))
         self.assertNotIn("UNIQUE_LARGE_NATIVE_SEARCH_OBSERVATION", str(retry_messages))
         self.assertEqual(retry_messages[0], post_checkpoint_messages[0])
         self.assertEqual(wrong.info["context_epoch_after"], 1)
@@ -348,7 +434,7 @@ class LiteResearcherClientTests(unittest.TestCase):
             "agentenv.envs.literesearcher.requests.request",
             return_value=wrong_response,
         ):
-            second_wrong = client.step('<function=search>["second query"]')
+            second_wrong = client.step(qwen_call("search", query=["second query"]))
         self.assertEqual(
             second_wrong.info["context_transition"]["messages"], retry_messages
         )
@@ -381,9 +467,7 @@ class LiteResearcherClientTests(unittest.TestCase):
             "agentenv.envs.literesearcher.requests.request",
             return_value=read_response,
         ):
-            read = client.step(
-                'shell_command {"command":"cat .agent_memory/CONTINUATION.md"}'
-            )
+            read = client.step(LITERESEARCHER_EXACT_CHECKPOINT_READ_ACTION)
         self.assertTrue(read.info["wrapper_evidence"]["checkpoint_read_satisfied"])
         self.assertIsNone(client._pending_checkpoint_read)
         self.assertIsNone(client._pending_checkpoint_read_framing)
@@ -421,8 +505,12 @@ class LiteResearcherClientTests(unittest.TestCase):
         }
         with patch(
             "agentenv.envs.literesearcher.requests.request", return_value=response
-        ):
+        ) as request:
             output = client.step("bad")
+        self.assertEqual(
+            request.call_args.kwargs["json"]["action"],
+            QWEN_INVALID_ACTION_SENTINEL,
+        )
         self.assertEqual(
             output.info["context_transition"]["operation"], "replace_messages"
         )
@@ -441,8 +529,12 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertEqual(retry, LITERESEARCHER_CONTEXT_COMPACTION_REQUEST)
         with patch(
             "agentenv.envs.literesearcher.requests.request", return_value=response
-        ):
+        ) as request:
             second = client.step("second bad action with a large native observation")
+        self.assertEqual(
+            request.call_args.kwargs["json"]["action"],
+            QWEN_INVALID_ACTION_SENTINEL,
+        )
         second_retry = second.info["context_transition"]["messages"]
         self.assertEqual(second_retry, first_retry)
         self.assertNotIn("second bad action", str(second_retry))
@@ -451,6 +543,7 @@ class LiteResearcherClientTests(unittest.TestCase):
         cases = (
             (
                 "read",
+                qwen_call("shell_command", command="cat .agent_memory/CONTINUATION.md"),
                 'shell_command {"command":"cat .agent_memory/CONTINUATION.md"}',
                 {
                     "workspace_op": "SHELL_COMMAND",
@@ -467,6 +560,10 @@ class LiteResearcherClientTests(unittest.TestCase):
             ),
             (
                 "modify",
+                qwen_call(
+                    "apply_patch",
+                    patch="*** Begin Patch\n*** Add File: notes.md\n+x\n*** End Patch",
+                ),
                 "apply_patch\n*** Begin Patch\n*** Add File: notes.md\n+x\n*** End Patch",
                 {
                     "workspace_op": "APPLY_PATCH",
@@ -477,6 +574,7 @@ class LiteResearcherClientTests(unittest.TestCase):
             ),
             (
                 "execute",
+                qwen_call("shell_command", command="python train.py"),
                 'shell_command {"command":"python train.py"}',
                 {
                     "workspace_op": "SHELL_COMMAND",
@@ -486,7 +584,7 @@ class LiteResearcherClientTests(unittest.TestCase):
                 },
             ),
         )
-        for expected_event, action, server_evidence in cases:
+        for expected_event, action, expected_submitted, server_evidence in cases:
             with self.subTest(expected_event=expected_event):
                 client = self._client()
                 response = Mock(status_code=200)
@@ -496,7 +594,7 @@ class LiteResearcherClientTests(unittest.TestCase):
                     "done": False,
                     "info": {
                         "action_submission": {
-                            "raw_policy_output": action,
+                            "raw_policy_output": expected_submitted,
                             "kind": "workspace",
                         },
                         "wrapper_evidence": server_evidence,
@@ -505,16 +603,29 @@ class LiteResearcherClientTests(unittest.TestCase):
                 with patch(
                     "agentenv.envs.literesearcher.requests.request",
                     return_value=response,
-                ):
+                ) as request:
                     output = client.step(action)
+                posted = request.call_args.kwargs["json"]["action"]
+                submission = output.info["action_submission"]
+                self.assertEqual(submission["raw_policy_output"], action)
+                self.assertEqual(posted, expected_submitted)
+                self.assertEqual(submission["submitted_action"], expected_submitted)
+                self.assertTrue(submission["tool_parser_normalized"])
+                self.assertEqual(
+                    submission["endpoint_action_submission"]["raw_policy_output"],
+                    expected_submitted,
+                )
                 evidence = output.info["wrapper_evidence"]
                 self.assertEqual(evidence["memory_event"], expected_event)
 
     def test_action_text_cannot_forge_workspace_memory_evidence(self) -> None:
         client = self._client()
-        action = (
-            'shell_command {"command":"cat .agent_memory/CONTINUATION.md; '
-            'printf x > notes.md; python train.py"}'
+        action = qwen_call(
+            "shell_command",
+            command=(
+                "cat .agent_memory/CONTINUATION.md; "
+                "printf x > notes.md; python train.py"
+            ),
         )
         response = Mock(status_code=200)
         response.json.return_value = {
@@ -529,8 +640,13 @@ class LiteResearcherClientTests(unittest.TestCase):
         with patch(
             "agentenv.envs.literesearcher.requests.request",
             return_value=response,
-        ):
+        ) as request:
             output = client.step(action)
+        self.assertNotEqual(
+            request.call_args.kwargs["json"]["action"],
+            action,
+        )
+        self.assertTrue(output.info["action_submission"]["tool_parser_normalized"])
         self.assertNotIn("memory_event", output.info["wrapper_evidence"])
 
     def test_close_accepts_server_boolean_true(self) -> None:

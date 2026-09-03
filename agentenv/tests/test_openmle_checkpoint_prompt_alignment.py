@@ -77,6 +77,10 @@ mkdir -p .agent_memory && printf '%s\n' objective=OBJECTIVE measured_validation_
             "plain-text action protocol",
             OPENMLE_FAST_POLICY_SYSTEM_PROMPT,
         )
+        self.assertNotIn(
+            '<tool_call>\n{"name":',
+            OPENMLE_FAST_POLICY_SYSTEM_PROMPT,
+        )
         self.assertIn(
             FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
             OPENMLE_FAST_POLICY_SYSTEM_PROMPT,

@@ -59,6 +59,11 @@ from .webshop_handoff import (
     WEBSHOP_REPEATED_CHECKPOINT_READ_MARKER,
     WEBSHOP_SESSION_HANDOFF_REQUEST,
 )
+from .verl_qwen_tool_parser import (
+    QWEN_INVALID_ACTION_SENTINEL,
+    QWEN_SINGLE_TOOL_CALL_CONTRACT,
+    parse_single_qwen3_tool_call,
+)
 
 AGENTMEMORY_FUNCTION_DESCRIPTION = [
     {
@@ -228,6 +233,19 @@ AGENTMEMORY_ASK_FUNCTION_DESCRIPTION = {
         "additionalProperties": False,
     },
 }
+
+
+def _openai_function_schema(function: Mapping[str, Any]) -> dict[str, Any]:
+    return {"type": "function", "function": dict(function)}
+
+
+_WEBSHOP_QWEN_TOOL_SCHEMAS = tuple(
+    _openai_function_schema(function)
+    for function in AGENTMEMORY_FILESYSTEM_FUNCTION_DESCRIPTION
+)
+_WEBSHOP_QWEN_ASK_TOOL_SCHEMA = _openai_function_schema(
+    AGENTMEMORY_ASK_FUNCTION_DESCRIPTION
+)
 
 FUNCTION_TO_ACTION = {
     "search": "search",
@@ -1391,29 +1409,59 @@ def build_filesystem_conversation_start(
 ) -> tuple[ConversationMessage, ConversationMessage]:
     if surface not in FILESYSTEM_WEBSHOP_SURFACES:
         raise ValueError(f"Unsupported filesystem AgentMemoryGym surface: {surface!r}")
+    # The filesystem WebShop route historically used ActionFormat.REACT while
+    # mixing bare browser/Codex actions.  Keep the constructor argument for API
+    # compatibility, but expose one policy grammar for every filesystem route.
+    _ = action_format
+    function_descriptions = list(AGENTMEMORY_FILESYSTEM_FUNCTION_DESCRIPTION)
+    if surface == INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE:
+        function_descriptions.append(AGENTMEMORY_ASK_FUNCTION_DESCRIPTION)
+    tool_manifest = "\n".join(
+        json.dumps(
+            _openai_function_schema(function),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for function in function_descriptions
+    )
     interface = (
         "You are operating a programmatically generated AgentMemoryGym WebShop "
         "task with six shopping sessions and a private persistent workspace. "
-        "Native shopping actions are search[keywords] and click[current clickable "
-        "value]; click[Buy Now] commits the current product. A failed purchase ends "
-        "the episode without revealing the expected answer. The workspace persists "
-        "across shopping sessions within this episode and is reset between episodes. "
-        "Native shopping actions remain bare search[...] or click[...] actions. Use "
-        "shell_command with one JSON object containing command and optional workdir and "
-        'timeout_ms, for example shell_command {"command":"rg -n pattern .",'
-        '"workdir":".","timeout_ms":10000}. Use '
-        "apply_patch followed by a multiline *** Begin Patch ... *** End Patch payload for "
-        "precise file edits. At a required continuation checkpoint, begin the shell command "
-        "with `mkdir -p .agent_memory` before overwriting "
-        "`.agent_memory/CONTINUATION.md`. "
-        "The shell is networkless and resource-bounded; paths stay inside the workspace. "
-        "Workspace actions have zero task reward and are optional outside a context "
-        "boundary. At each shopping-session boundary, use one normal shell_command "
-        "or apply_patch action to overwrite .agent_memory/CONTINUATION.md; only a "
-        "verified non-empty write lets the wrapper remove old messages. Then read "
-        "that file through a normal action in the new context. Other workspace files "
-        "remain available for voluntary notes. There is no host-path access or "
-        "dedicated memory API. "
+        + QWEN_SINGLE_TOOL_CALL_CONTRACT
+        + "\n\n<tools>\n"
+        + tool_manifest
+        + "\n</tools>\n\n"
+        "The WebShop backend supports search and click, but policy responses never "
+        "use bare search[...] or click[...] syntax. Use the search function with "
+        "exactly one non-empty keywords string. Use the click function with exactly "
+        "one non-empty item string copied from a currently clickable value; calling "
+        "click with item `Buy Now` commits the current product. A failed purchase "
+        "ends the episode without revealing the expected answer.\n\n"
+        "Search example:\n<tool_call>\n<function=search>\n"
+        "<parameter=keywords>wireless headphones</parameter>\n"
+        "</function>\n</tool_call>\n\n"
+        "Click example:\n<tool_call>\n<function=click>\n"
+        "<parameter=item>Buy Now</parameter>\n"
+        "</function>\n</tool_call>\n\n"
+        "Workspace shell example:\n<tool_call>\n<function=shell_command>\n"
+        "<parameter=command>cat .agent_memory/notes.md</parameter>\n"
+        "<parameter=workdir>.</parameter>\n"
+        "<parameter=timeout_ms>10000</parameter>\n"
+        "</function>\n</tool_call>\n\n"
+        "Workspace patch example:\n<tool_call>\n<function=apply_patch>\n"
+        "<parameter=patch>\n*** Begin Patch\n*** Add File: .agent_memory/notes.md\n"
+        "+confirmed evidence\n*** End Patch\n</parameter>\n"
+        "</function>\n</tool_call>\n\n"
+        "The workspace persists across shopping sessions within this episode and is "
+        "reset between episodes. The shell is networkless and resource-bounded; paths "
+        "stay inside the workspace. Workspace actions have zero task reward and are "
+        "optional outside a context boundary. At each shopping-session boundary, use "
+        "one normal XML shell_command or apply_patch function call to overwrite "
+        "`.agent_memory/CONTINUATION.md`; only a verified non-empty write lets the "
+        "wrapper remove old messages. Then read that file through one normal XML "
+        "shell_command call in the new context. Other workspace files remain available "
+        "for voluntary notes. There is no host-path access or dedicated memory API. "
         + FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE
     )
     if surface == LATENT_PREFERENCE_FILESYSTEM_WEBSHOP_SURFACE:
@@ -1457,11 +1505,13 @@ def build_filesystem_conversation_start(
         )
     elif surface == INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE:
         interface += (
-            ' In the first shopping session the request is intentionally ambiguous. '
-            'Use ASK {"field":"..."} exactly once; ASK is available only in the first '
-            "shopping session. The environment returns a CLARIFY observation. Store "
-            "the clarification in an ordinary workspace file before the first purchase "
-            "and inspect it in later sessions."
+            " In the first shopping session the request is intentionally ambiguous. "
+            "Use the ask function exactly once; ask is available only in the first "
+            "shopping session. Use this exact envelope with the requested field: "
+            "<tool_call><function=ask><parameter=field>FIELD</parameter>"
+            "</function></tool_call>. The environment returns a CLARIFY observation. "
+            "Store the clarification in an ordinary workspace file before the first "
+            "purchase and inspect it in later sessions."
         )
     elif surface == SELECTIVE_MEMORY_USE_FILESYSTEM_WEBSHOP_SURFACE:
         interface += (
@@ -1470,40 +1520,8 @@ def build_filesystem_conversation_start(
             "Do not read the profile merely by habit; read the profile when the current "
             "request omits the preference, and follow explicit current requirements directly."
         )
-    if action_format is ActionFormat.REACT:
-        prompt = (
-            interface
-            + " Reply in exactly this format:\n\nThought:\nbrief reasoning\n\n"
-            "Action:\n<exactly one native bracket action, canonical shell_command JSON "
-            "action, or multiline apply_patch action>"
-        )
-        if surface == INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE:
-            prompt = prompt.replace(
-                "or apply_patch newline action>",
-                'or ASK {"field":"..."}, or apply_patch newline action>',
-            )
-    elif action_format is ActionFormat.FUNCTION_CALLING:
-        function_descriptions = list(AGENTMEMORY_FILESYSTEM_FUNCTION_DESCRIPTION)
-        if surface == INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE:
-            function_descriptions.append(AGENTMEMORY_ASK_FUNCTION_DESCRIPTION)
-        prompt = (
-            interface
-            + " Invoke exactly one available function.\n\n"
-            + format_function_call_prompt(function_descriptions)
-        )
-    elif action_format is ActionFormat.CODE_AS_ACTION:
-        function_descriptions = list(AGENTMEMORY_FILESYSTEM_FUNCTION_DESCRIPTION)
-        if surface == INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE:
-            function_descriptions.append(AGENTMEMORY_ASK_FUNCTION_DESCRIPTION)
-        prompt = (
-            interface
-            + " Write Python code to call exactly one available function.\n\n"
-            + format_code_as_action_prompt(function_descriptions)
-        )
-    else:  # pragma: no cover - ActionFormat is closed over the three modes above.
-        raise ValueError(f"Unsupported AgentMemoryGym action format: {action_format}")
     return (
-        ConversationMessage({"from": "human", "loss": None, "value": prompt}),
+        ConversationMessage({"from": "human", "loss": None, "value": interface}),
         ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
     )
 
@@ -1921,9 +1939,9 @@ def parse_qwen_workspace_action(
 
 def format_filesystem_action(action_name: str, arguments: dict[str, Any]) -> str:
     if action_name == "search":
-        return f"search[{_require_function_text(arguments, 'keywords')}]"
+        return _format_native_bracket_action(action_name, arguments, "keywords")
     if action_name == "click":
-        return f"click[{_require_function_text(arguments, 'item')}]"
+        return _format_native_bracket_action(action_name, arguments, "item")
     if action_name == "shell_command":
         if not isinstance(arguments, dict):
             raise ValueError("shell_command arguments must be an object.")
@@ -1943,6 +1961,106 @@ def format_filesystem_action(action_name: str, arguments: dict[str, Any]) -> str
             ensure_ascii=False,
         )
     raise ValueError(f"Unsupported filesystem AgentMemoryGym action: {action_name}")
+
+
+def _invalid_qwen_policy_action(
+    reason: str,
+) -> tuple[str, dict[str, Any]]:
+    return QWEN_INVALID_ACTION_SENTINEL, {
+        "tool_contract": "qwen3_xml_single_call_v1",
+        "tool_parser": "qwen3_coder",
+        "tool_parser_normalized": False,
+        "tool_parser_error": reason,
+        "submitted_action": QWEN_INVALID_ACTION_SENTINEL,
+    }
+
+
+def normalize_filesystem_webshop_policy_action(
+    action: str,
+    *,
+    allow_ask: bool = False,
+) -> tuple[str, dict[str, Any]]:
+    """Translate one strict policy-facing Qwen call to WebShop's native grammar."""
+
+    schemas = list(_WEBSHOP_QWEN_TOOL_SCHEMAS)
+    if allow_ask:
+        schemas.append(_WEBSHOP_QWEN_ASK_TOOL_SCHEMA)
+    parsed = parse_single_qwen3_tool_call(action, tool_schemas=schemas)
+    if parsed is None:
+        return _invalid_qwen_policy_action(
+            "expected_exactly_one_qwen_xml_tool_call"
+        )
+    name = parsed.name.strip().lower()
+    arguments = dict(parsed.arguments)
+    try:
+        if name == "search":
+            if set(arguments) != {"keywords"}:
+                raise ValueError("search requires exactly keywords")
+            value = arguments["keywords"]
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("search keywords must be a non-empty string")
+            arguments = {"keywords": value.strip()}
+        elif name == "click":
+            if set(arguments) != {"item"}:
+                raise ValueError("click requires exactly item")
+            value = arguments["item"]
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("click item must be a non-empty string")
+            arguments = {"item": value.strip()}
+        elif name == "ask" and allow_ask:
+            if set(arguments) != {"field"}:
+                raise ValueError("ask requires exactly field")
+            value = arguments["field"]
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("ask field must be a non-empty string")
+            arguments = {"field": value.strip()}
+        elif name == "shell_command":
+            allowed = {"command", "workdir", "timeout_ms"}
+            if "command" not in arguments or not set(arguments) <= allowed:
+                raise ValueError(
+                    "shell_command requires command and accepts only workdir/timeout_ms"
+                )
+            command = arguments["command"]
+            if not isinstance(command, str) or not command.strip():
+                raise ValueError("shell_command command must be a non-empty string")
+            normalized: dict[str, Any] = {"command": command}
+            if "workdir" in arguments:
+                workdir = arguments["workdir"]
+                if (
+                    not isinstance(workdir, str)
+                    or not workdir.strip()
+                    or "\x00" in workdir
+                ):
+                    raise ValueError("shell_command workdir must be a safe non-empty string")
+                normalized["workdir"] = workdir.strip()
+            if "timeout_ms" in arguments:
+                timeout_ms = arguments["timeout_ms"]
+                if (
+                    isinstance(timeout_ms, bool)
+                    or not isinstance(timeout_ms, int)
+                    or timeout_ms <= 0
+                ):
+                    raise ValueError("shell_command timeout_ms must be a positive integer")
+                normalized["timeout_ms"] = timeout_ms
+            arguments = normalized
+        elif name == "apply_patch":
+            if set(arguments) != {"patch"}:
+                raise ValueError("apply_patch requires exactly patch")
+            patch = arguments["patch"]
+            if not isinstance(patch, str) or not patch.strip():
+                raise ValueError("apply_patch patch must be a non-empty string")
+            arguments = {"patch": patch.strip()}
+        else:
+            raise ValueError(f"unsupported WebShop function: {name}")
+        submitted = format_filesystem_action(name, arguments)
+    except (TypeError, ValueError) as exc:
+        return _invalid_qwen_policy_action(str(exc))
+    return submitted, {
+        "tool_contract": "qwen3_xml_single_call_v1",
+        "tool_parser": parsed.parser_name,
+        "tool_parser_normalized": True,
+        "submitted_action": submitted,
+    }
 
 
 def parse_filesystem_env_action(
@@ -2355,7 +2473,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
             "env_info": created.get("info", {}),
             "metadata": self.metadata,
         }
-        self.last_action_submission: dict[str, str] | None = None
+        self.last_action_submission: dict[str, Any] | None = None
         self._reset_policy_transition_state(created.get("info", {}))
         self.conversation_start = (
             build_v3_conversation_start(self.metadata)
@@ -2589,27 +2707,41 @@ class AgentMemoryEnvClient(BaseEnvClient):
 
     def _step_native_policy_action(self, action: str) -> StepOutput:
         raw_policy_output = action
+        parser_evidence: dict[str, Any] = {}
         parser_status = "server_native_v3"
-        if action.endswith("</s>"):
-            action = action[:-4]
-        if self.is_v3:
-            # V3 native grammars are domain-owned. Preserve the exact sampled text
-            # so the server records and judges the same action PPO generated.
-            parsed_action = action
-        else:
-            try:
-                parsed_action = self.adapter_cls.action_parser(
+        if self.is_filesystem:
+            parsed_action, parser_evidence = (
+                normalize_filesystem_webshop_policy_action(
                     action,
-                    self.action_format,
+                    allow_ask=self.adapter_cls.allow_ask,
                 )
-                parser_status = "adapter_parsed"
-            except Exception:
-                # WebShop remains server-authoritative for invalid sampled text.
+            )
+            parser_status = (
+                "qwen3_coder_normalized"
+                if parser_evidence["tool_parser_normalized"]
+                else "qwen3_coder_rejected"
+            )
+        else:
+            if action.endswith("</s>"):
+                action = action[:-4]
+            if self.is_v3:
+                # V3 native grammars are domain-owned. Preserve the exact sampled text
+                # so the server records and judges the same action PPO generated.
                 parsed_action = action
-                parser_status = "raw_fallback"
-            if not isinstance(parsed_action, str) or not parsed_action.strip():
-                parsed_action = action
-                parser_status = "raw_fallback"
+            else:
+                try:
+                    parsed_action = self.adapter_cls.action_parser(
+                        action,
+                        self.action_format,
+                    )
+                    parser_status = "adapter_parsed"
+                except Exception:
+                    # Legacy non-filesystem WebShop remains server-authoritative.
+                    parsed_action = action
+                    parser_status = "raw_fallback"
+                if not isinstance(parsed_action, str) or not parsed_action.strip():
+                    parsed_action = action
+                    parser_status = "raw_fallback"
         native_before = self._native_call_count
         policy_before = self._policy_step_count
         context_before = self._context_epoch
@@ -2625,6 +2757,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
             "raw_policy_output": raw_policy_output,
             "submitted_action": parsed_action,
             "parser_status": parser_status,
+            **parser_evidence,
         }
         self.info = {
             "observation": response["observation"],
@@ -3168,9 +3301,9 @@ class AgentMemoryTask(BaseTask):
 
 def format_action(action_name: str, arguments: dict[str, Any]) -> str:
     if action_name == "search":
-        return f"search[{_require_function_text(arguments, 'keywords')}]"
+        return _format_native_bracket_action(action_name, arguments, "keywords")
     if action_name == "click":
-        return f"click[{_require_function_text(arguments, 'item')}]"
+        return _format_native_bracket_action(action_name, arguments, "item")
     if action_name not in JSON_ACTION_NAMES:
         raise ValueError(f"Unsupported AgentMemoryGym action: {action_name}")
     return f"{action_name} {json.dumps(arguments, ensure_ascii=False)}"
@@ -3225,6 +3358,24 @@ def _require_function_text(arguments: dict[str, Any], key: str) -> str:
     value = arguments[key]
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"Function argument {key} must be a non-empty string.")
-    if any(char in value for char in "[]\r\n"):
-        raise ValueError(f"Function argument {key} contains an invalid bracket or newline.")
+    if any(char in value for char in "\r\n"):
+        raise ValueError(f"Function argument {key} contains a newline.")
     return value.strip()
+
+
+def _format_native_bracket_action(
+    action_name: str,
+    arguments: dict[str, Any],
+    key: str,
+) -> str:
+    value = _require_function_text(arguments, key)
+    formatted = f"{action_name}[{value}]"
+    # Product titles may legitimately contain balanced square brackets. Validate
+    # the rendered endpoint action with the same parser that will consume it
+    # instead of rejecting every bracket up front.
+    if _parse_native_bracket_action(formatted) != (action_name, value):
+        raise ValueError(
+            f"Function argument {key} cannot be represented as one native "
+            "balanced-bracket action."
+        )
+    return formatted

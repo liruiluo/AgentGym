@@ -39,7 +39,10 @@ from .filesystem_checkpoint import (
     filesystem_checkpoint_write_succeeded,
     normalize_filesystem_checkpoint_receipt,
 )
-from .verl_qwen_tool_parser import parse_single_qwen3_tool_call
+from .verl_qwen_tool_parser import (
+    QWEN_INVALID_ACTION_SENTINEL,
+    parse_single_qwen3_tool_call,
+)
 
 OPENMLE_FAST_POLICY_SYSTEM_PROMPT = """You are solving one OpenMLE-fast task in an isolated /workspace with exactly 30 total policy actions.
 Use exactly one Qwen XML function call per response. Output no reasoning, explanation, Markdown fence, action-number prefix, bare JSON, or text before or after the function call. Put reflection that must survive context replacement into a workspace file through a valid action.
@@ -184,6 +187,7 @@ _OPENMLE_QWEN_TOOL_SCHEMAS = (
                     "timeout_ms": {"type": "integer"},
                 },
                 "required": ["command"],
+                "additionalProperties": False,
             },
         },
     },
@@ -196,6 +200,7 @@ _OPENMLE_QWEN_TOOL_SCHEMAS = (
                 "type": "object",
                 "properties": {"patch": {"type": "string"}},
                 "required": ["patch"],
+                "additionalProperties": False,
             },
         },
     },
@@ -208,6 +213,7 @@ _OPENMLE_QWEN_TOOL_SCHEMAS = (
                 "type": "object",
                 "properties": {},
                 "required": [],
+                "additionalProperties": False,
             },
         },
     },
@@ -925,31 +931,76 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         return value
 
 
+def _openmle_invalid_qwen_action(reason: str) -> tuple[str, dict[str, Any]]:
+    return QWEN_INVALID_ACTION_SENTINEL, {
+        "tool_contract": "qwen3_xml_single_call_v1",
+        "tool_parser": "qwen3_coder",
+        "tool_parser_normalized": False,
+        "tool_parser_error": reason,
+        "submitted_action": QWEN_INVALID_ACTION_SENTINEL,
+    }
+
+
 def _normalize_openmle_policy_action(action: str) -> tuple[str, dict[str, Any]]:
+    """Translate strict policy-facing Qwen XML to the frozen endpoint grammar."""
+
     parsed = parse_single_qwen3_tool_call(
         action,
         tool_schemas=_OPENMLE_QWEN_TOOL_SCHEMAS,
     )
     if parsed is None:
-        if action.strip().startswith("<tool_call>"):
-            return action, {
-                "tool_parser": "qwen3_coder",
-                "tool_parser_normalized": False,
-            }
-        return action, {}
+        return _openmle_invalid_qwen_action(
+            "expected_exactly_one_qwen_xml_tool_call"
+        )
+    name = parsed.name.strip().lower()
     arguments = dict(parsed.arguments)
-    if parsed.name == "shell_command":
-        submitted = "shell_command " + json.dumps(arguments, ensure_ascii=False)
-    elif parsed.name == "apply_patch" and set(arguments) == {"patch"}:
-        submitted = "apply_patch\n" + str(arguments["patch"])
-    elif parsed.name == "submit" and not arguments:
-        submitted = "submit"
-    else:
-        return action, {
-            "tool_parser": parsed.parser_name,
-            "tool_parser_normalized": False,
-        }
+    try:
+        if name == "shell_command":
+            allowed = {"command", "workdir", "timeout_ms"}
+            if "command" not in arguments or not set(arguments) <= allowed:
+                raise ValueError(
+                    "shell_command requires command and accepts only workdir/timeout_ms"
+                )
+            command = arguments["command"]
+            if not isinstance(command, str) or not command.strip():
+                raise ValueError("shell_command command must be a non-empty string")
+            normalized: dict[str, Any] = {"command": command}
+            if "workdir" in arguments:
+                workdir = arguments["workdir"]
+                if not isinstance(workdir, str) or workdir.strip() != ".":
+                    raise ValueError("shell_command workdir must be exactly .")
+                normalized["workdir"] = "."
+            if "timeout_ms" in arguments:
+                timeout_ms = arguments["timeout_ms"]
+                if (
+                    isinstance(timeout_ms, bool)
+                    or not isinstance(timeout_ms, int)
+                    or not 1 <= timeout_ms <= 20_000
+                ):
+                    raise ValueError(
+                        "shell_command timeout_ms must be an integer from 1 through 20000"
+                    )
+                normalized["timeout_ms"] = timeout_ms
+            submitted = "shell_command " + json.dumps(
+                normalized, ensure_ascii=False
+            )
+        elif name == "apply_patch":
+            if set(arguments) != {"patch"}:
+                raise ValueError("apply_patch requires exactly patch")
+            patch = arguments["patch"]
+            if not isinstance(patch, str) or not patch.strip():
+                raise ValueError("apply_patch patch must be a non-empty string")
+            submitted = "apply_patch\n" + patch.strip()
+        elif name == "submit":
+            if arguments:
+                raise ValueError("submit accepts no parameters")
+            submitted = "submit"
+        else:
+            raise ValueError(f"unsupported OpenMLE-fast function: {name}")
+    except (TypeError, ValueError) as exc:
+        return _openmle_invalid_qwen_action(str(exc))
     return submitted, {
+        "tool_contract": "qwen3_xml_single_call_v1",
         "tool_parser": parsed.parser_name,
         "tool_parser_normalized": True,
         "submitted_action": submitted,

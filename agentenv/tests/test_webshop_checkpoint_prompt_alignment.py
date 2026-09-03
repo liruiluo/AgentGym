@@ -10,8 +10,8 @@ from agentenv.envs.agentmemory import (
     parse_filesystem_env_action,
 )
 from agentenv.envs.filesystem_checkpoint import (
-    FILESYSTEM_BARE_CHECKPOINT_READ_ACTION,
-    FILESYSTEM_BARE_CHECKPOINT_WRITE_ACTION,
+    FILESYSTEM_QWEN_CHECKPOINT_READ_ACTION,
+    FILESYSTEM_QWEN_CHECKPOINT_WRITE_ACTION,
     FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
 )
 from agentenv.envs.webshop_handoff import (
@@ -23,7 +23,7 @@ from agentenv.controller.types import ActionFormat
 
 
 class WebShopCheckpointPromptAlignmentTest(unittest.TestCase):
-    def test_react_prompt_and_dynamic_checkpoint_request_use_same_bare_format(self) -> None:
+    def test_react_prompt_and_dynamic_checkpoint_request_use_same_qwen_xml_format(self) -> None:
         conversation = build_filesystem_conversation_start(
             ActionFormat.REACT,
             surface=PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE,
@@ -36,8 +36,10 @@ class WebShopCheckpointPromptAlignmentTest(unittest.TestCase):
         ):
             self.assertIn("shell_command", prompt)
             self.assertIn(".agent_memory/CONTINUATION.md", prompt)
-            self.assertNotIn("Qwen XML", prompt)
-        self.assertIn("Use shell_command with one JSON object", system_prompt)
+            self.assertIn("Qwen XML", prompt)
+            self.assertIn("<tool_call>", prompt)
+        self.assertIn("never use bare search[...] or click[...] syntax", system_prompt)
+        self.assertNotIn('<tool_call>\n{"name":', system_prompt)
         self.assertIn(
             FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,
             system_prompt,
@@ -46,11 +48,11 @@ class WebShopCheckpointPromptAlignmentTest(unittest.TestCase):
             WEBSHOP_SESSION_HANDOFF_REQUEST,
             WEBSHOP_CONTEXT_COMPACTION_REQUEST,
         ):
-            self.assertIn(FILESYSTEM_BARE_CHECKPOINT_WRITE_ACTION, request)
+            self.assertIn(FILESYSTEM_QWEN_CHECKPOINT_WRITE_ACTION, request)
             self.assertIn("do not change the command shape", request)
             self.assertIn(FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE, request)
         self.assertIn(
-            FILESYSTEM_BARE_CHECKPOINT_READ_ACTION,
+            FILESYSTEM_QWEN_CHECKPOINT_READ_ACTION,
             WEBSHOP_POLICY_CONTINUATION_MARKER,
         )
         self.assertIn("do not use search, click, or `rg`", WEBSHOP_POLICY_CONTINUATION_MARKER)

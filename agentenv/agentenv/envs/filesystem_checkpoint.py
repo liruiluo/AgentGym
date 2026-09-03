@@ -90,6 +90,43 @@ FILESYSTEM_BARE_CHECKPOINT_CONTINUATION_MARKER = (
     + FILESYSTEM_BARE_CHECKPOINT_READ_ACTION
 )
 
+FILESYSTEM_QWEN_CHECKPOINT_WRITE_ACTION = (
+    "<tool_call>\n"
+    "<function=shell_command>\n"
+    "<parameter=command>\n"
+    "mkdir -p .agent_memory && cat > .agent_memory/CONTINUATION.md "
+    "<<'AGENT_MEMORY_EOF'\n"
+    "objective: CURRENT_OBJECTIVE\n"
+    "decisive_evidence: DECISIVE_EVIDENCE\n"
+    "workspace_paths: RELEVANT_PATHS\n"
+    "next_action: NEXT_ACTION\n"
+    "AGENT_MEMORY_EOF\n"
+    "</parameter>\n"
+    "</function>\n"
+    "</tool_call>"
+)
+FILESYSTEM_QWEN_CHECKPOINT_WRITE_GUIDANCE = (
+    "\n\nOutput exactly the one Qwen XML shell_command call below and no other "
+    "text. Replace the uppercase placeholders with concise current state; do "
+    "not change the command shape or add optional parameters:\n\n"
+    + FILESYSTEM_QWEN_CHECKPOINT_WRITE_ACTION
+)
+FILESYSTEM_QWEN_CHECKPOINT_READ_ACTION = (
+    "<tool_call>\n"
+    "<function=shell_command>\n"
+    "<parameter=command>\n"
+    "cat .agent_memory/CONTINUATION.md\n"
+    "</parameter>\n"
+    "</function>\n"
+    "</tool_call>"
+)
+FILESYSTEM_QWEN_CHECKPOINT_CONTINUATION_MARKER = (
+    FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER
+    + " The required checkpoint read must happen before any dependent task "
+    "action. Output exactly this Qwen XML action and no other text:\n\n"
+    + FILESYSTEM_QWEN_CHECKPOINT_READ_ACTION
+)
+
 
 def checkpoint_retry_trigger_tokens(
     pressure: Any,
@@ -168,8 +205,8 @@ def build_filesystem_checkpoint_retry_observation(reason: str) -> str:
         raise ValueError("filesystem checkpoint failure reason must be nonempty")
     observation = (
         f"Filesystem checkpoint was not accepted ({reason}). The earlier context "
-        f"is still present. Retry now with exactly one shell_command or apply_patch "
-        f"that overwrites `{FILESYSTEM_CHECKPOINT_PATH}` with 1 to "
+        f"is still present. Retry now with exactly one Qwen XML shell_command or "
+        f"apply_patch function call that overwrites `{FILESYSTEM_CHECKPOINT_PATH}` with 1 to "
         f"{FILESYSTEM_CHECKPOINT_MAX_BYTES} bytes."
     )
     if (

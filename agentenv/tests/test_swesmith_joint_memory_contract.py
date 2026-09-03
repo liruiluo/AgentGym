@@ -10,6 +10,7 @@ import unittest
 ENV_PATH = Path(__file__).resolve().parents[1] / "agentenv" / "envs"
 FILESYSTEM_CHECKPOINT_PATH = ENV_PATH / "filesystem_checkpoint.py"
 SWESMITH_PATH = ENV_PATH / "swesmith.py"
+QWEN_PARSER_PATH = ENV_PATH / "verl_qwen_tool_parser.py"
 
 
 def extract_static_string_assignments() -> dict[str, str]:
@@ -38,7 +39,7 @@ def extract_static_string_assignments() -> dict[str, str]:
             return "".join(pieces)
         raise ValueError(f"unsupported static string expression: {ast.dump(node)}")
 
-    for source in (FILESYSTEM_CHECKPOINT_PATH, SWESMITH_PATH):
+    for source in (FILESYSTEM_CHECKPOINT_PATH, QWEN_PARSER_PATH, SWESMITH_PATH):
         tree = ast.parse(source.read_text(encoding="utf-8"))
         for node in tree.body:
             if not isinstance(node, ast.Assign) or len(node.targets) != 1:
@@ -95,7 +96,7 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
     def test_prompt_requires_action_only_and_upstream_submission_sentinel(self) -> None:
         for fragment in (
             "response channel is an action parser, not a chat channel",
-            "starting at byte zero",
+            "Start at byte zero",
             "Never prefix an action with narration",
             "workdir is relative to /testbed",
             "never `/testbed` or `./testbed`",

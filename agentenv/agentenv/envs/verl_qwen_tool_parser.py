@@ -13,6 +13,20 @@ from dataclasses import dataclass
 from typing import Any
 
 
+QWEN_SINGLE_TOOL_CALL_CONTRACT = (
+    "Every policy response must contain exactly one Qwen XML `<tool_call>` "
+    "envelope and nothing else. Start with `<tool_call>` and end with "
+    "`</tool_call>`; do not emit reasoning, prose, Markdown fences, `<think>`, "
+    "bare JSON, or bare tool syntax."
+)
+
+# The endpoint-side legacy parsers intentionally remain capable of reading their
+# canonical internal actions. Policy-facing clients replace malformed/non-XML
+# model output with this value so those legacy parsers cannot accidentally execute
+# a bare action. The sentinel is deliberately outside every environment grammar.
+QWEN_INVALID_ACTION_SENTINEL = "__AMG_INVALID_QWEN_TOOL_CALL__"
+
+
 @dataclass(frozen=True)
 class ParsedQwenToolCall:
     name: str
@@ -35,7 +49,14 @@ def parse_single_qwen3_tool_call(
     if not isinstance(raw_output, str):
         raise TypeError("Qwen policy output must be text")
     text = raw_output.strip()
+    if text.endswith("</s>"):
+        text = text[:-4].rstrip()
     if not text.startswith("<tool_call>") or not text.endswith("</tool_call>"):
+        return None
+    # The upstream serving parser deliberately tolerates surrounding/truncated
+    # markup. AMG's PPO action contract is stricter: a parameter value must not
+    # smuggle a second call envelope that is then treated as command text.
+    if text.count("<tool_call>") != 1 or text.count("</tool_call>") != 1:
         return None
 
     # These imports are intentionally lazy. Standalone environment utilities
@@ -51,11 +72,49 @@ def parse_single_qwen3_tool_call(
 
     # veRL currently exposes token-based async extraction publicly. The
     # environment adapter already receives decoded text, so use the same
-    # parser's text helpers rather than re-tokenizing or copying its grammar.
-    raw_calls = parser._get_function_calls(text)
-    if len(raw_calls) != 1:
+    # parser's regexes and conversion helper rather than re-tokenizing or
+    # copying its grammar. veRL intentionally tolerates prose around a call and
+    # truncated tags for general agent serving; AMG's one-action PPO contract is
+    # stricter, so require its upstream-recognized tags to cover the whole body.
+    try:
+        envelope = parser.tool_call_complete_regex.fullmatch(text)
+        if envelope is None:
+            return None
+        envelope_body = envelope.group(1).strip()
+        function_match = parser.tool_call_function_regex.fullmatch(envelope_body)
+        if function_match is None or function_match.group(1) is None:
+            return None
+        raw_function_call = function_match.group(1)
+        separator = raw_function_call.find(">")
+        if separator < 0:
+            return None
+        parameter_body = raw_function_call[separator + 1 :]
+        parameter_matches = list(
+            parser.tool_call_parameter_regex.finditer(parameter_body)
+        )
+        cursor = 0
+        parameter_names: set[str] = set()
+        for parameter_match in parameter_matches:
+            if parameter_body[cursor : parameter_match.start()].strip():
+                return None
+            # Reject veRL's truncated-parameter fallback. A complete policy
+            # action must close every parameter before the function closes.
+            match_text = parameter_match.group(1)
+            if match_text is None:
+                return None
+            name_separator = match_text.find(">")
+            if name_separator < 0:
+                return None
+            parameter_name = match_text[:name_separator]
+            if not parameter_name or parameter_name in parameter_names:
+                return None
+            parameter_names.add(parameter_name)
+            cursor = parameter_match.end()
+        if parameter_body[cursor:].strip():
+            return None
+        function_call = parser._parse_xml_function_call(raw_function_call, schemas)
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
         return None
-    function_call = parser._parse_xml_function_call(raw_calls[0], schemas)
     if function_call is None:
         return None
     try:

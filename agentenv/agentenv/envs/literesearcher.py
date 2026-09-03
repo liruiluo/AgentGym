@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 import math
 from typing import Any, Mapping, Sequence
 
@@ -34,6 +35,11 @@ from .filesystem_checkpoint import (
     filesystem_checkpoint_write_succeeded,
     normalize_filesystem_checkpoint_receipt,
 )
+from .verl_qwen_tool_parser import (
+    QWEN_INVALID_ACTION_SENTINEL,
+    QWEN_SINGLE_TOOL_CALL_CONTRACT,
+    parse_single_qwen3_tool_call,
+)
 
 
 # The route-level forecast must cover the largest policy-visible observation
@@ -43,6 +49,85 @@ from .filesystem_checkpoint import (
 # margin so compaction is sampled before the
 # next native action can push the prompt past the 30,720-token PPO width.
 LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE = 12_288
+
+
+_LITERESEARCHER_QWEN_TOOL_SCHEMAS = (
+    {
+        "type": "function",
+        "function": {
+            "name": "search",
+            "description": "Search the released web corpus.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "visit",
+            "description": "Visit one URL returned by search.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "goal": {"type": "string"},
+                    "page": {"type": "integer", "minimum": 1},
+                },
+                "required": ["url", "goal"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "shell_command",
+            "description": "Run one networkless workspace command.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                    "workdir": {"type": "string"},
+                    "timeout_ms": {"type": "integer", "minimum": 1},
+                },
+                "required": ["command"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "apply_patch",
+            "description": "Apply one patch to a workspace file.",
+            "parameters": {
+                "type": "object",
+                "properties": {"patch": {"type": "string"}},
+                "required": ["patch"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "answer",
+            "description": "Return the final evidence-backed answer and terminate.",
+            "parameters": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+                "additionalProperties": False,
+            },
+        },
+    },
+)
 
 
 LITERESEARCHER_QWEN_XML_CHECKPOINT_GUIDANCE = """
@@ -91,6 +176,7 @@ LITERESEARCHER_POLICY_CONTINUATION_MARKER = (
 
 LITERESEARCHER_SYSTEM_PROMPT = """# Tools
 
+""" + QWEN_SINGLE_TOOL_CALL_CONTRACT + """
 You have access to the following functions. Every function call uses the same
 Qwen XML envelope shown below; never mix XML with a bare Codex-style action.
 
@@ -99,6 +185,7 @@ Qwen XML envelope shown below; never mix XML with a bare Codex-style action.
 {"type": "function", "function": {"name": "visit", "description": "Visit one opaque URL returned by search.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "goal": {"type": "string"}, "page": {"type": "integer", "minimum": 1}}, "required": ["url", "goal"]}}}
 {"type": "function", "function": {"name": "shell_command", "description": "Run a networkless command in the episode-private persistent workspace.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "workdir": {"type": "string"}, "timeout_ms": {"type": "integer", "minimum": 1}}, "required": ["command"]}}}
 {"type": "function", "function": {"name": "apply_patch", "description": "Apply one patch to files in the episode-private persistent workspace.", "parameters": {"type": "object", "properties": {"patch": {"type": "string"}}, "required": ["patch"]}}}
+{"type": "function", "function": {"name": "answer", "description": "Return the final evidence-backed answer and terminate the episode.", "parameters": {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]}}}
 </tools>
 
 For a search, use this complete form. The query value MUST be a JSON array of
@@ -158,7 +245,7 @@ For a workspace file edit, put the complete patch inside the patch parameter:
 </function>
 </tool_call>
 
-Function names are limited to search, visit, shell_command, and apply_patch.
+Function names are limited to search, visit, shell_command, apply_patch, and answer.
 Required parameters must be present. Emit no text after a function call. Do not
 put quotation marks around parameter names. Do not emit bare shell_command or
 bare apply_patch syntax outside the XML envelope.
@@ -170,9 +257,172 @@ At an explicit context-boundary request, use one normal shell_command or apply_p
 
 When evidence is sufficient, use this complete final form and replace the text
 with the evidence-backed answer:
-<answer>your evidence-backed answer</answer>
+<tool_call>
+<function=answer>
+<parameter=answer>your evidence-backed answer</parameter>
+</function>
+</tool_call>
 
-Emit exactly one function call or final answer per turn."""
+Emit exactly one Qwen XML function call per turn."""
+
+def _literesearcher_invalid_qwen_action(reason: str) -> tuple[str, dict[str, Any]]:
+    return QWEN_INVALID_ACTION_SENTINEL, {
+        "tool_contract": "qwen3_xml_single_call_v1",
+        "tool_parser": "qwen3_coder",
+        "tool_parser_normalized": False,
+        "tool_parser_error": reason,
+        "submitted_action": QWEN_INVALID_ACTION_SENTINEL,
+    }
+
+
+def _qwen_xml_parameter(name: str, value: str) -> str:
+    return f"<parameter={name}>\n{value}\n</parameter>"
+
+
+def _canonical_literesearcher_domain_xml(
+    name: str,
+    arguments: Mapping[str, Any],
+) -> str:
+    parameters: list[str] = []
+    if name == "search":
+        parameters.append(
+            _qwen_xml_parameter(
+                "query",
+                json.dumps(arguments["query"], ensure_ascii=False),
+            )
+        )
+    elif name == "visit":
+        # The frozen endpoint accepts either raw text or JSON string literals,
+        # but raw values such as ``123`` and ``true`` are decoded as non-strings.
+        # Quote both strings so every accepted client value round-trips exactly.
+        parameters.extend(
+            [
+                _qwen_xml_parameter(
+                    "url", json.dumps(arguments["url"], ensure_ascii=False)
+                ),
+                _qwen_xml_parameter(
+                    "goal", json.dumps(arguments["goal"], ensure_ascii=False)
+                ),
+            ]
+        )
+        if "page" in arguments:
+            parameters.append(_qwen_xml_parameter("page", str(arguments["page"])))
+    else:  # pragma: no cover - caller owns the closed domain set.
+        raise ValueError(f"unsupported LiteResearcher domain function: {name}")
+    return (
+        "<tool_call>\n"
+        f"<function={name}>\n"
+        + "\n".join(parameters)
+        + "\n</function>\n</tool_call>"
+    )
+
+
+def normalize_literesearcher_policy_action(
+    action: str,
+) -> tuple[str, dict[str, Any]]:
+    """Translate strict Qwen XML to the frozen LiteResearcher endpoint grammar."""
+
+    parsed = parse_single_qwen3_tool_call(
+        action,
+        tool_schemas=_LITERESEARCHER_QWEN_TOOL_SCHEMAS,
+    )
+    if parsed is None:
+        return _literesearcher_invalid_qwen_action(
+            "expected_exactly_one_qwen_xml_tool_call"
+        )
+    name = parsed.name.strip().lower()
+    arguments = dict(parsed.arguments)
+    try:
+        if name == "search":
+            if set(arguments) != {"query"}:
+                raise ValueError("search requires exactly query")
+            query = arguments["query"]
+            if (
+                not isinstance(query, list)
+                or not query
+                or any(not isinstance(item, str) or not item.strip() for item in query)
+            ):
+                raise ValueError("search query must be a non-empty string array")
+            arguments = {"query": [item.strip() for item in query]}
+            submitted = _canonical_literesearcher_domain_xml(name, arguments)
+        elif name == "visit":
+            required = {"url", "goal"}
+            if not required <= set(arguments) or not set(arguments) <= required | {"page"}:
+                raise ValueError("visit requires url and goal, with optional page")
+            normalized_visit: dict[str, Any] = {}
+            for key in ("url", "goal"):
+                value = arguments[key]
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"visit {key} must be a non-empty string")
+                if value != value.strip():
+                    raise ValueError(
+                        f"visit {key} must not have leading or trailing whitespace"
+                    )
+                normalized_visit[key] = value
+            if "page" in arguments:
+                page = arguments["page"]
+                if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+                    raise ValueError("visit page must be a positive integer")
+                normalized_visit["page"] = page
+            arguments = normalized_visit
+            submitted = _canonical_literesearcher_domain_xml(name, arguments)
+        elif name == "shell_command":
+            allowed = {"command", "workdir", "timeout_ms"}
+            if "command" not in arguments or not set(arguments) <= allowed:
+                raise ValueError(
+                    "shell_command requires command and accepts only workdir/timeout_ms"
+                )
+            command = arguments["command"]
+            if not isinstance(command, str) or not command.strip():
+                raise ValueError("shell_command command must be a non-empty string")
+            normalized_shell: dict[str, Any] = {"command": command}
+            if "workdir" in arguments:
+                workdir = arguments["workdir"]
+                if not isinstance(workdir, str) or not workdir.strip() or "\x00" in workdir:
+                    raise ValueError("shell_command workdir must be a safe non-empty string")
+                normalized_shell["workdir"] = workdir.strip()
+            if "timeout_ms" in arguments:
+                timeout_ms = arguments["timeout_ms"]
+                if (
+                    isinstance(timeout_ms, bool)
+                    or not isinstance(timeout_ms, int)
+                    or timeout_ms < 1
+                ):
+                    raise ValueError("shell_command timeout_ms must be a positive integer")
+                normalized_shell["timeout_ms"] = timeout_ms
+            submitted = "shell_command " + json.dumps(
+                normalized_shell,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        elif name == "apply_patch":
+            if set(arguments) != {"patch"}:
+                raise ValueError("apply_patch requires exactly patch")
+            patch = arguments["patch"]
+            if not isinstance(patch, str) or not patch.strip():
+                raise ValueError("apply_patch patch must be a non-empty string")
+            submitted = "apply_patch\n" + patch.strip()
+        elif name == "answer":
+            if set(arguments) != {"answer"}:
+                raise ValueError("answer requires exactly answer")
+            answer = arguments["answer"]
+            if not isinstance(answer, str) or not answer.strip():
+                raise ValueError("answer must be a non-empty string")
+            if "</answer>" in answer.lower():
+                raise ValueError("answer contains a reserved closing tag")
+            submitted = f"<answer>{answer.strip()}</answer>"
+        else:
+            raise ValueError(f"unsupported LiteResearcher function: {name}")
+    except (TypeError, ValueError) as exc:
+        return _literesearcher_invalid_qwen_action(str(exc))
+    return submitted, {
+        "tool_contract": "qwen3_xml_single_call_v1",
+        "tool_parser": parsed.parser_name,
+        "tool_parser_normalized": True,
+        "submitted_action": submitted,
+    }
+
 
 class LiteResearcherEnvClient(BaseEnvClient):
     """Task-neutral LiteResearcher client with policy-authored compaction."""
@@ -361,18 +611,28 @@ class LiteResearcherEnvClient(BaseEnvClient):
         context_before = self._context_epoch
         checkpoint_read_pending_before = self._pending_checkpoint_read
         checkpoint_read_framing_before = self._pending_checkpoint_read_framing
+        submitted_action, parser_evidence = (
+            normalize_literesearcher_policy_action(action)
+        )
         response = self._request(
             "POST",
             "step",
-            json={"id": self.env_id, "action": action},
+            json={"id": self.env_id, "action": submitted_action},
         )
         self._native_call_count += 1
         self._policy_step_count += 1
         self.info = response
         response_info = response.get("info", {})
-        action_submission = response_info.get("action_submission")
-        if not isinstance(action_submission, Mapping):
-            action_submission = {"raw_policy_output": action}
+        endpoint_action_submission = response_info.get("action_submission")
+        action_submission: dict[str, Any] = {
+            "raw_policy_output": action,
+            "submitted_action": submitted_action,
+            **parser_evidence,
+        }
+        if isinstance(endpoint_action_submission, Mapping):
+            action_submission["endpoint_action_submission"] = dict(
+                endpoint_action_submission
+            )
         server_wrapper = (
             response_info.get("wrapper_evidence", {})
             if isinstance(response_info, Mapping)
