@@ -42,14 +42,22 @@ from .filesystem_checkpoint import (
 )
 from .verl_qwen_tool_parser import (
     QWEN_INVALID_ACTION_SENTINEL,
+    QWEN_PARAMETER_TAG_CONTRACT,
+    append_qwen_parser_retry_guidance,
     describe_inert_qwen_function_record,
     parse_single_qwen3_tool_call,
 )
 
-OPENMLE_FAST_POLICY_SYSTEM_PROMPT = """You are solving one OpenMLE-fast task in an isolated /workspace with exactly 30 total policy actions.
-Use exactly one Qwen XML function call per response. Output no reasoning, explanation, Markdown fence, action-number prefix, bare JSON, or text before or after the function call. Put reflection that must survive context replacement into a workspace file through a valid action.
-
-<tools>
+OPENMLE_FAST_POLICY_SYSTEM_PROMPT = (
+    "You are solving one OpenMLE-fast task in an isolated /workspace with "
+    "exactly 30 total policy actions.\n"
+    "Use exactly one Qwen XML function call per response. Output no reasoning, "
+    "explanation, Markdown fence, action-number prefix, bare JSON, or text before "
+    "or after the function call. "
+    + QWEN_PARAMETER_TAG_CONTRACT
+    + " Put reflection that must survive context replacement into a workspace "
+    "file through a valid action.\n\n"
+    """<tools>
 {"type": "function", "function": {"name": "shell_command", "description": "Run one networkless shell command in the episode-private persistent workspace.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "workdir": {"type": "string"}, "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 20000}}, "required": ["command"]}}}
 {"type": "function", "function": {"name": "apply_patch", "description": "Apply one patch to files in the episode-private persistent workspace.", "parameters": {"type": "object", "properties": {"patch": {"type": "string"}}, "required": ["patch"]}}}
 {"type": "function", "function": {"name": "submit", "description": "Submit workspace-relative submission.csv once to the protected private grader and terminate the episode.", "parameters": {"type": "object", "properties": {}, "required": []}}}
@@ -120,6 +128,7 @@ Do not write the continuation note before the first measured validation unless a
 Reading, editing, running, writing or reading memory, compaction, and submit all consume the same 30-action budget. Every observation reports completed and remaining actions. TASK.md and data are read-only. When a measured local validation and `submission.csv` exist, iterate only while enough actions remain and submit no later than action 27. `submit` grades against the protected private data exactly once; the first submit is terminal, and there is no automatic submission at the action limit; action 30 ends in failure if it is not submit.
 If an observation reports a parser error, respond next with only one corrected complete Qwen XML function call. Never describe the correction.
 """
+)
 OPENMLE_FAST_POLICY_PROMPT_SHA256 = hashlib.sha256(
     OPENMLE_FAST_POLICY_SYSTEM_PROMPT.encode("utf-8")
 ).hexdigest()
@@ -887,6 +896,12 @@ class OpenMLEFastEnvClient(BaseEnvClient):
             self._checkpoint_write_retry_framing = None
             self._pending_checkpoint_read = None
             self._pending_checkpoint_read_framing = None
+        if parser_evidence["tool_parser_normalized"] is False and not done:
+            policy_state = append_qwen_parser_retry_guidance(
+                policy_state,
+                reason=str(parser_evidence["tool_parser_error"]),
+            )
+            wrapper_evidence["qwen_parser_retry_guidance"] = True
         return StepOutput(
             state=policy_state,
             reward=reward,

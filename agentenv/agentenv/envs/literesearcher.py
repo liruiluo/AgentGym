@@ -38,6 +38,7 @@ from .filesystem_checkpoint import (
 from .verl_qwen_tool_parser import (
     QWEN_INVALID_ACTION_SENTINEL,
     QWEN_SINGLE_TOOL_CALL_CONTRACT,
+    append_qwen_parser_retry_guidance,
     parse_single_qwen3_tool_call,
 )
 
@@ -748,6 +749,15 @@ class LiteResearcherEnvClient(BaseEnvClient):
             and not bool(response["done"])
             else str(response["observation"])
         )
+        if (
+            parser_evidence["tool_parser_normalized"] is False
+            and not bool(response["done"])
+        ):
+            policy_state = append_qwen_parser_retry_guidance(
+                policy_state,
+                reason=str(parser_evidence["tool_parser_error"]),
+            )
+            wrapper_evidence["qwen_parser_retry_guidance"] = True
         context_transition = None
         if (
             checkpoint_read_pending_before is not None

@@ -14,12 +14,39 @@ from dataclasses import dataclass
 from typing import Any
 
 
+QWEN_PARAMETER_TAG_CONTRACT = (
+    "Every function argument must use the literal Qwen form "
+    "`<parameter=ARGUMENT_NAME>VALUE</parameter>`. Never replace it with a tag "
+    "named after the argument such as `<command>`, `<workdir>`, `<timeout_ms>`, "
+    "or `<patch>`, and never use an unnamed `<parameter>` tag."
+)
+
 QWEN_SINGLE_TOOL_CALL_CONTRACT = (
     "Every policy response must contain exactly one Qwen XML `<tool_call>` "
     "envelope and nothing else. Start with `<tool_call>` and end with "
     "`</tool_call>`; do not emit reasoning, prose, Markdown fences, `<think>`, "
-    "bare JSON, or bare tool syntax."
+    "bare JSON, or bare tool syntax. "
+    + QWEN_PARAMETER_TAG_CONTRACT
 )
+
+
+def append_qwen_parser_retry_guidance(observation: str, *, reason: str) -> str:
+    """Add one concise, task-neutral syntax correction after a rejected call."""
+
+    if not isinstance(observation, str):
+        raise TypeError("Qwen parser retry observation must be text")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("Qwen parser retry reason must be non-empty text")
+    return (
+        observation.rstrip()
+        + "\n\nQwen XML correction: the previous response was rejected ("
+        + reason.strip()
+        + "). Do not repeat its markup. Start the next response with `<tool_call>`, "
+        "use one `<function=NAME>` block, encode every argument only as "
+        "`<parameter=ARGUMENT_NAME>VALUE</parameter>`, and end with "
+        "`</function></tool_call>`. Never use `<command>`, `<workdir>`, "
+        "`<timeout_ms>`, `<patch>`, or an unnamed `<parameter>` tag. Emit no prose."
+    )
 
 # The endpoint-side legacy parsers intentionally remain capable of reading their
 # canonical internal actions. Policy-facing clients replace malformed/non-XML

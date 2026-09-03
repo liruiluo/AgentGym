@@ -30,6 +30,8 @@ from agentenv.envs.swesmith import (
 )
 from agentenv.envs.verl_qwen_tool_parser import (
     QWEN_INVALID_ACTION_SENTINEL,
+    QWEN_PARAMETER_TAG_CONTRACT,
+    append_qwen_parser_retry_guidance,
     describe_inert_qwen_function_record,
 )
 
@@ -82,6 +84,50 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
                 self.assertIn("<function=", prompt)
                 self.assertIn("<parameter=", prompt)
                 self.assertIsNone(re.search(r"<tool_call>\s*\{", prompt))
+
+    def test_every_policy_prompt_forbids_argument_named_xml_tags(self) -> None:
+        webshop_prompt = build_filesystem_conversation_start(
+            ActionFormat.REACT,
+            surface=PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE,
+        )[0]["value"]
+        prompts = {
+            "webshop": webshop_prompt,
+            "swesmith": SWE_POLICY_SYSTEM_PROMPT,
+            "literesearcher": LITERESEARCHER_SYSTEM_PROMPT,
+            "openmle_fast": OPENMLE_FAST_POLICY_SYSTEM_PROMPT,
+        }
+        for environment, prompt in prompts.items():
+            with self.subTest(environment=environment):
+                self.assertIn(QWEN_PARAMETER_TAG_CONTRACT, prompt)
+                self.assertIn("<parameter=ARGUMENT_NAME>", prompt)
+                self.assertIn("Never replace it with a tag", prompt)
+
+    def test_parser_retry_guidance_breaks_malformed_parameter_tag_loop(self) -> None:
+        observation = append_qwen_parser_retry_guidance(
+            "Action rejected by the exact parser.",
+            reason="expected_exactly_one_qwen_xml_tool_call",
+        )
+        self.assertIn("Do not repeat its markup", observation)
+        self.assertIn("<parameter=ARGUMENT_NAME>VALUE</parameter>", observation)
+        for malformed in (
+            "`<command>`",
+            "`<workdir>`",
+            "`<timeout_ms>`",
+            "an unnamed `<parameter>` tag",
+        ):
+            with self.subTest(malformed=malformed):
+                self.assertIn(malformed, observation)
+
+    def test_webshop_add_file_example_preserves_exact_confirmed_shape(self) -> None:
+        prompt = build_filesystem_conversation_start(
+            ActionFormat.REACT,
+            surface=PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE,
+        )[0]["value"]
+        self.assertIn("+Confirmed example attribute: example value", prompt)
+        self.assertIn("The leading `+` is patch syntax", prompt)
+        self.assertIn("exact full `Confirmed <field>: <value>` line", prompt)
+        self.assertIn("a product title is not a field/value note", prompt)
+        self.assertNotIn("+confirmed evidence", prompt)
 
     def assert_valid_translation(
         self,
