@@ -1143,18 +1143,39 @@ def _initial_observation(
 ) -> str:
     return (
         "Repair the persistent repository in /testbed for this issue. Use exactly one "
-        "action per turn. Use shell_command for inspection, editing, and tests. Its exact "
-        "form is one line such as shell_command "
-        '{"command":"ls","workdir":"."}. Start at byte zero and output only the '
-        "action, without XML, prose, Markdown, or a <think> tag. apply_patch is optional "
-        "and starts with the literal line apply_patch followed by one complete "
+        "action per turn. Use shell_command for inspection, editing, and tests through "
+        "one Qwen XML tool call in this exact shape:\n"
+        "<tool_call>\n"
+        "<function=shell_command>\n"
+        "<parameter=command>\n"
+        "ls\n"
+        "</parameter>\n"
+        "<parameter=workdir>\n"
+        ".\n"
+        "</parameter>\n"
+        "</function>\n"
+        "</tool_call>\n"
+        "Write command text directly instead of JSON-escaping quotes or backslashes. "
+        "Start at byte zero with <tool_call> and output only that call, without prose, "
+        "Markdown, or a <think> tag. For apply_patch, use the same outer call with "
+        "<function=apply_patch> and one <parameter=patch> containing one complete "
         "*** Begin Patch ... *** End Patch payload. Keep edits localized: never paste or "
         "rewrite an entire existing file in one action. Use a small patch around the "
         "changed lines or a bounded shell command, and stay below the response limit. "
         "The workspace persists for the whole episode and has no .git directory. After a "
-        "source path changed and relevant tests ran, submit with exactly "
-        'shell_command {"command":"echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT",'
-        '"workdir":"."}. The successful command must print the upstream submission '
+        "source path changed and relevant tests ran, submit with exactly this Qwen XML "
+        "tool call:\n"
+        "<tool_call>\n"
+        "<function=shell_command>\n"
+        "<parameter=command>\n"
+        "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\n"
+        "</parameter>\n"
+        "<parameter=workdir>\n"
+        ".\n"
+        "</parameter>\n"
+        "</function>\n"
+        "</tool_call>\n"
+        "The successful command must print the upstream submission "
         "sentinel as its first stdout line; then the current persistent workspace receives "
         "one official grade. Any plain text is invalid. Reaching the turn limit without "
         "that sentinel ends the episode with reward -0.01 and does not grade the workspace. "
@@ -1163,19 +1184,31 @@ def _initial_observation(
         "ready; do not wait for the horizon.\n\n"
         "Issue:\n"
         + problem_statement.strip()
-        + "\n\nBegin with a real shell action in the exact one-line form above."
+        + "\n\nBegin with a real shell_command Qwen XML tool call in the exact form above."
     )
 
 
 def _parser_error_observation(action: ParsedPolicyAction) -> str:
     return (
         f"Invalid action syntax: {action.error}. This action received reward -0.01; "
-        'the episode remains open. Retry with exactly shell_command '
-        '{"command":"pwd","workdir":"."} on one line. For a patch, start with the '
-        "literal line apply_patch, then one complete *** Begin Patch ... *** End Patch "
-        "payload. Output only one action, with no XML tags, reasoning, Markdown, second "
-        "action, or surrounding text. Keep the edit localized instead of pasting or "
-        "rewriting an entire existing file."
+        "the episode remains open. Start at byte zero and retry with exactly one Qwen XML "
+        "tool call:\n"
+        "<tool_call>\n"
+        "<function=shell_command>\n"
+        "<parameter=command>\n"
+        "pwd\n"
+        "</parameter>\n"
+        "<parameter=workdir>\n"
+        ".\n"
+        "</parameter>\n"
+        "</function>\n"
+        "</tool_call>\n"
+        "For a patch, use <function=apply_patch> with one <parameter=patch> containing "
+        "one complete *** Begin Patch ... *** End Patch payload. Output only one tool "
+        "call, with no reasoning, Markdown, second action, or surrounding text. Keep the "
+        "edit localized instead of pasting or rewriting an entire existing file. Submit "
+        "only by running the upstream submission sentinel in a Qwen XML shell_command "
+        "after editing and testing."
     )
 
 

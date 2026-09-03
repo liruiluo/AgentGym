@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import ast
-import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -61,8 +60,7 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
         self.compaction = values["SWE_CONTEXT_COMPACTION_REQUEST"]
         self.checkpoint_example = values["SWE_CHECKPOINT_SHELL_SAFE_EXAMPLE"]
         self.continuation_marker = values["SWE_POLICY_CONTINUATION_MARKER"]
-        self.exact_write = values["FILESYSTEM_BARE_CHECKPOINT_WRITE_ACTION"]
-        self.exact_read = values["FILESYSTEM_BARE_CHECKPOINT_READ_ACTION"]
+        self.exact_read = values["SWE_CHECKPOINT_READ_ACTION"]
         self.memory_contract = values["SWE_MEMORY_CONTRACT"]
 
     def test_contract_has_a_distinct_joint_memory_identity(self) -> None:
@@ -102,6 +100,22 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
             self.assertIn(fragment, self.prompt)
         self.assertNotIn("a plain final response may summarize", self.prompt)
 
+    def test_prompt_uses_qwen_xml_for_every_ordinary_tool_example(self) -> None:
+        for fragment in (
+            "output exactly one Qwen XML tool call",
+            "<tool_call>\n<function=shell_command>\n<parameter=command>\n",
+            "<function=apply_patch>\n<parameter=patch>\n",
+            "Start at byte zero with <tool_call>",
+            "Do not use the bare shell_command JSON form",
+        ):
+            self.assertIn(fragment, self.prompt)
+        for forbidden in (
+            'shell_command {"command"',
+            "Start at byte zero with shell_command or apply_patch",
+            "no XML tags",
+        ):
+            self.assertNotIn(forbidden, self.prompt)
+
     def test_prompt_uses_only_codex_general_tools_for_memory(self) -> None:
         self.assertIn("shell_command", self.prompt)
         self.assertIn("apply_patch", self.prompt)
@@ -116,8 +130,10 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
             self.assertNotIn(forbidden, self.prompt)
 
     def test_prompt_includes_a_shell_safe_separate_turn_note_contract(self) -> None:
-        self.assertIn("quoted heredoc inside the JSON command", self.prompt)
-        self.assertIn("literal `\\n` escapes", self.prompt)
+        self.assertIn(
+            "quoted heredoc inside one shell_command command parameter",
+            self.prompt,
+        )
         self.assertIn("rg -n 'hypothesis|evidence|next check' .agent_memory", self.prompt)
         self.assertIn("only a syntax illustration", self.prompt)
         self.assertNotIn("printf '%s", self.prompt)
@@ -157,7 +173,7 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
             "If the repair is already complete, submit with the normal terminal sentinel",
             "Otherwise, on this turn only, overwrite the checkpoint",
             "do not inspect, read, test, edit source, or write another path",
-            "one-line JSON shell action",
+            "Qwen XML shell action",
             "cat > .agent_memory/CONTINUATION.md <<'AGENT_MEMORY_EOF'",
             "do not use printf/echo for checkpoint text",
         ):
@@ -165,19 +181,19 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
         self.assertNotIn("do not submit", self.compaction)
         self.assertNotIn("printf '%s", self.compaction)
 
-    def test_checkpoint_example_is_valid_json_and_executes_multiline_content(self) -> None:
-        self.assertTrue(self.checkpoint_example.startswith("shell_command "))
-        self.assertNotIn("\n", self.checkpoint_example)
-        payload = json.loads(self.checkpoint_example.split(" ", 1)[1])
-        self.assertEqual(set(payload), {"command", "workdir"})
-        self.assertEqual(payload["workdir"], ".")
-        self.assertIn("\n", payload["command"])
-        self.assertIn("user's task", payload["command"])
+    def test_checkpoint_example_is_valid_xml_and_executes_multiline_content(self) -> None:
+        self.assertTrue(self.checkpoint_example.startswith("<tool_call>\n"))
+        self.assertTrue(self.checkpoint_example.endswith("\n</tool_call>"))
+        command = _qwen_parameter(self.checkpoint_example, "command")
+        workdir = _qwen_parameter(self.checkpoint_example, "workdir")
+        self.assertEqual(workdir, ".")
+        self.assertIn("\n", command)
+        self.assertIn("user's task", command)
         with tempfile.TemporaryDirectory() as tmpdir:
             memory_dir = Path(tmpdir) / ".agent_memory"
             memory_dir.mkdir()
             result = subprocess.run(
-                ["/bin/bash", "-c", payload["command"]],
+                ["/bin/bash", "-c", command],
                 cwd=tmpdir,
                 capture_output=True,
                 text=True,
@@ -199,14 +215,23 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
             "next: run the focused test\n"
             "AGENT_MEMORY_EOF"
         )
-        action = "shell_command " + json.dumps(
-            {"command": command, "workdir": "."}, ensure_ascii=False
+        action = (
+            "<tool_call>\n"
+            "<function=shell_command>\n"
+            "<parameter=command>\n"
+            + command
+            + "\n</parameter>\n"
+            "<parameter=workdir>\n"
+            ".\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>"
         )
-        decoded = json.loads(action.split(" ", 1)[1])
+        decoded_command = _qwen_parameter(action, "command")
         with tempfile.TemporaryDirectory() as tmpdir:
             (Path(tmpdir) / ".agent_memory").mkdir()
             result = subprocess.run(
-                ["/bin/bash", "-c", decoded["command"]],
+                ["/bin/bash", "-c", decoded_command],
                 cwd=tmpdir,
                 capture_output=True,
                 text=True,
@@ -217,6 +242,14 @@ class SwesmithJointMemoryPromptTests(unittest.TestCase):
             self.assertIn('user\'s "quoted" task', content)
             self.assertIn("$HOME and `pwd` literally", content)
             self.assertIn("src/pkg/example.py", content)
+
+
+def _qwen_parameter(action: str, name: str) -> str:
+    start = f"<parameter={name}>\n"
+    end = "\n</parameter>"
+    self_start = action.index(start) + len(start)
+    self_end = action.index(end, self_start)
+    return action[self_start:self_end]
 
 
 if __name__ == "__main__":

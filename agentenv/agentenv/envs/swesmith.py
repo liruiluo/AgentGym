@@ -16,7 +16,7 @@ from agentenv.controller.types import (
     build_task_neutral_transition_info,
 )
 from .filesystem_checkpoint import (
-    FILESYSTEM_BARE_CHECKPOINT_CONTINUATION_MARKER,
+    FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER,
     FILESYSTEM_CHECKPOINT_MAX_BYTES,
     FILESYSTEM_CHECKPOINT_PATH,
     FILESYSTEM_CHECKPOINT_REQUEST,
@@ -36,13 +36,33 @@ from .filesystem_checkpoint import (
 
 
 SWE_CHECKPOINT_SHELL_SAFE_EXAMPLE = (
-    "shell_command {\"command\":\"cat > .agent_memory/CONTINUATION.md "
-    "<<'AGENT_MEMORY_EOF'\\n"
-    "objective: <user's task>\\n"
-    "evidence: <verified state>\\n"
-    "paths: <relevant files>\\n"
-    "next: <concrete action>\\n"
-    "AGENT_MEMORY_EOF\",\"workdir\":\".\"}"
+    "<tool_call>\n"
+    "<function=shell_command>\n"
+    "<parameter=command>\n"
+    "cat > .agent_memory/CONTINUATION.md <<'AGENT_MEMORY_EOF'\n"
+    "objective: <user's task>\n"
+    "evidence: <verified state>\n"
+    "paths: <relevant files>\n"
+    "next: <concrete action>\n"
+    "AGENT_MEMORY_EOF\n"
+    "</parameter>\n"
+    "<parameter=workdir>\n"
+    ".\n"
+    "</parameter>\n"
+    "</function>\n"
+    "</tool_call>"
+)
+SWE_CHECKPOINT_READ_ACTION = (
+    "<tool_call>\n"
+    "<function=shell_command>\n"
+    "<parameter=command>\n"
+    "cat .agent_memory/CONTINUATION.md\n"
+    "</parameter>\n"
+    "<parameter=workdir>\n"
+    ".\n"
+    "</parameter>\n"
+    "</function>\n"
+    "</tool_call>"
 )
 
 SWE_CONTEXT_COMPACTION_REQUEST = (
@@ -50,10 +70,9 @@ SWE_CONTEXT_COMPACTION_REQUEST = (
     + " The reserved `.agent_memory` directory already exists. If the repair is "
     "already complete, submit with the normal terminal sentinel. Otherwise, on "
     "this turn only, overwrite the checkpoint; do not inspect, read, test, edit "
-    "source, or write another path. Use exactly the one-line JSON shell action "
-    "shape below, replacing its placeholders. Keep each literal `\\n` escape "
-    "inside the JSON command so the decoded shell command becomes multiline. The "
-    "quoted heredoc safely carries apostrophes; do not use printf/echo for "
+    "source, or write another path. Use exactly the Qwen XML shell action below, "
+    "replacing its placeholders. Keep the quoted heredoc and literal multiline "
+    "command inside the command parameter; do not use printf/echo for "
     "checkpoint text:\n"
     + SWE_CHECKPOINT_SHELL_SAFE_EXAMPLE
     + " For this coding task, preserve the issue objective, decisive inspection "
@@ -61,9 +80,11 @@ SWE_CONTEXT_COMPACTION_REQUEST = (
     "concrete edit or test."
 )
 SWE_POLICY_CONTINUATION_MARKER = (
-    FILESYSTEM_BARE_CHECKPOINT_CONTINUATION_MARKER
+    FILESYSTEM_CHECKPOINT_CONTINUATION_MARKER
     + " Do not inspect, edit, test, or submit task source until the required "
-    "checkpoint read succeeds."
+    "checkpoint read succeeds. Output exactly this Qwen XML action and no other "
+    "text:\n\n"
+    + SWE_CHECKPOINT_READ_ACTION
 )
 
 
@@ -161,20 +182,38 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "starting at byte zero. Never prefix an action with narration such as 'Let me' "
     "or 'I found'.\n\n"
     "# Exact tool syntax\n"
-    "For inspection, editing, or tests, output one line in exactly this shape:\n"
-    'shell_command {"command":"find . -maxdepth 2 -type f | head -80",'
-    '"workdir":".","timeout_ms":120000}\n'
-    "Replace the command value with the command you need. The command field is required; "
-    "workdir and timeout_ms are optional. workdir is relative to /testbed; use `.` for "
-    "the repository root, never `/testbed` or `./testbed`.\n"
-    "For a patch, output exactly this shape:\n"
-    "apply_patch\n"
+    "For inspection, editing, or tests, output exactly one Qwen XML tool call. "
+    "For a shell command, use exactly this shape:\n"
+    "<tool_call>\n"
+    "<function=shell_command>\n"
+    "<parameter=command>\n"
+    "find . -maxdepth 2 -type f | head -80\n"
+    "</parameter>\n"
+    "<parameter=workdir>\n"
+    ".\n"
+    "</parameter>\n"
+    "<parameter=timeout_ms>\n"
+    "120000\n"
+    "</parameter>\n"
+    "</function>\n"
+    "</tool_call>\n"
+    "Replace the command text with the command you need. The command parameter is "
+    "required; workdir and timeout_ms are optional. Command text is literal and does "
+    "not use JSON string escaping. workdir is relative to /testbed; use `.` for the "
+    "repository root, never `/testbed` or `./testbed`.\n"
+    "For a patch, use exactly this shape:\n"
+    "<tool_call>\n"
+    "<function=apply_patch>\n"
+    "<parameter=patch>\n"
     "*** Begin Patch\n"
     "*** Update File: relative/path.py\n"
     "@@\n"
     "-old text\n"
     "+new text\n"
     "*** End Patch\n"
+    "</parameter>\n"
+    "</function>\n"
+    "</tool_call>\n"
     "Replace the path and hunk with text from the file you inspected. apply_patch is "
     "optional; use shell_command when an exact patch is uncertain. The path after "
     "*** Update File must be relative to /testbed, for example src/module.py, never "
@@ -206,23 +245,23 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "any detailed notes it points to before acting on them. The checkpoint does not "
     "replace source files, test artifacts, or voluntary debugging notes.\n"
     "Illustrative pattern only (do not copy its content as a task answer): for "
-    "arbitrary note text, prefer a quoted heredoc inside the JSON command and encode "
-    "its line breaks as literal `\\n` escapes so the outer action remains one valid "
-    "JSON line. A later action can run `rg -n 'hypothesis|evidence|next check' "
-    ".agent_memory`. Do not use inline single-quoted printf/echo for arbitrary note "
-    "text. This is only a syntax illustration: do not assume a filename, content, or "
-    "timing is useful for the current issue. Writing or reading a note has no separate "
-    "reward; the native task result is the objective.\n\n"
+    "arbitrary note text, put a quoted heredoc inside one shell_command command "
+    "parameter. A later shell_command can run `rg -n "
+    "'hypothesis|evidence|next check' .agent_memory`. Do not use inline single-quoted "
+    "printf/echo for arbitrary note text. This is only a syntax illustration: do not "
+    "assume a filename, content, or timing is useful for the current issue. Writing or "
+    "reading a note has no separate reward; the native task result is the objective.\n\n"
     "# Output contract\n"
-    "Start at byte zero with shell_command or apply_patch. Output only that one action: "
-    "no XML tags, explanation, label, Markdown fence, or <think> tag. After an "
-    "observation, emit the next action directly; do not describe what you plan to do. "
-    "A shell command can edit the persistent workspace. Do not repeat a successful "
-    "inspection or edit. Never submit a plain-text final response. After at least one "
-    "non-generated source path has changed and the relevant tests have run, submit with "
-    "exactly `shell_command {\"command\":\"echo "
-    "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT\",\"workdir\":\".\"}`. "
-    "Prose before or after a tool action is a parser error and nothing runs. This "
+    "Start at byte zero with <tool_call>. Output only that one Qwen XML tool call: no "
+    "explanation, label, Markdown fence, or <think> tag. Do not use the bare "
+    "shell_command JSON form or bare apply_patch form. After an observation, emit the "
+    "next action directly; do not describe what you plan to do. A shell command can "
+    "edit the persistent workspace. Do not repeat a successful inspection or edit. "
+    "Never submit a plain-text final response. After at least one non-generated source "
+    "path has changed and the relevant tests have run, submit with one shell_command "
+    "Qwen XML tool call whose command parameter is exactly `echo "
+    "COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT` and whose workdir parameter is `.`. Prose "
+    "before or after a tool call is a parser error and nothing runs. This "
     "workspace intentionally has no .git directory."
 )
 

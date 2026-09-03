@@ -337,9 +337,13 @@ class SwesmithEnvironmentTests(unittest.TestCase):
         self.assertEqual(self.manager.metadata()["active_environment_count"], 1)
         self.assertIn("Fix the public value", reset.observation)
         self.assertIn("Use shell_command", reset.observation)
-        self.assertIn('shell_command {"command":"ls","workdir":"."}', reset.observation)
-        self.assertIn("without XML", reset.observation)
-        self.assertIn("literal line apply_patch", reset.observation)
+        self.assertIn("<tool_call>", reset.observation)
+        self.assertIn("<function=shell_command>", reset.observation)
+        self.assertIn("<parameter=command>\nls\n</parameter>", reset.observation)
+        self.assertIn("<function=apply_patch>", reset.observation)
+        self.assertIn("<parameter=patch>", reset.observation)
+        self.assertNotIn('shell_command {"command":"ls"', reset.observation)
+        self.assertNotIn("without XML", reset.observation)
         self.assertIn("*** Begin Patch ... *** End Patch", reset.observation)
         self.assertIn("Keep edits localized", reset.observation)
         self.assertIn("never paste or rewrite an entire existing file", reset.observation)
@@ -813,13 +817,27 @@ class SwesmithEnvironmentTests(unittest.TestCase):
                 "basis": "parser_rejected",
             },
         )
-        self.assertIn('shell_command {"command":"pwd","workdir":"."}', result.observation)
-        self.assertIn("literal line apply_patch", result.observation)
+        self.assertIn("<tool_call>", result.observation)
+        self.assertIn("<function=shell_command>", result.observation)
+        self.assertIn("<parameter=command>\npwd\n</parameter>", result.observation)
+        self.assertIn("<function=apply_patch>", result.observation)
+        self.assertIn("<parameter=patch>", result.observation)
         self.assertIn("one complete *** Begin Patch", result.observation)
-        self.assertIn("no XML tags", result.observation)
         self.assertIn("surrounding text", result.observation)
+        self.assertNotIn('shell_command {"command":"pwd"', result.observation)
+        self.assertNotIn("no XML tags", result.observation)
         recovered = self.manager.step(
-            slot, 'shell_command {"command":"pwd","workdir":"."}'
+            slot,
+            "<tool_call>\n"
+            "<function=shell_command>\n"
+            "<parameter=command>\n"
+            "pwd\n"
+            "</parameter>\n"
+            "<parameter=workdir>\n"
+            ".\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>",
         )
         self.assertFalse(recovered.done)
         self.assertEqual(recovered.reward, 0.0)
