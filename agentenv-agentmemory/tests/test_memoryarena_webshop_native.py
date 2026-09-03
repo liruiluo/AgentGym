@@ -162,6 +162,30 @@ class MixedActionParserTests(unittest.TestCase):
         self.assertEqual(parsed.op, "ADD")
         self.assertEqual(parsed.payload, {"key": "k", "value": "v"})
 
+    def test_accepts_balanced_brackets_inside_native_argument(self) -> None:
+        action = 'search[[2022] 12" Triple Portable Monitor for 13"-16" Laptops]'
+        parsed = parse_mixed_action(action)
+        self.assertEqual(parsed.raw_action, action)
+        self.assertEqual(parsed.op, "SEARCH")
+        self.assertEqual(infer_raw_action_op(action), "SEARCH")
+
+        click_action = "click[Edition [2022]]"
+        parsed_click = parse_mixed_action(click_action)
+        self.assertEqual(parsed_click.raw_action, click_action)
+        self.assertEqual(parsed_click.op, "CLICK")
+        self.assertEqual(infer_raw_action_op(click_action), "CLICK")
+
+    def test_rejects_unbalanced_or_trailing_native_argument(self) -> None:
+        for action in (
+            "search[[2022] monitor",
+            "search[monitor]]",
+            "search[[2022] monitor] trailing",
+            "search[[2022] monitor]\nclick[item]",
+        ):
+            with self.subTest(action=action), self.assertRaises(InvalidNativeAction):
+                parse_mixed_action(action)
+            self.assertEqual(infer_raw_action_op(action), "INVALID")
+
     def test_rejects_surrogate_and_multiple_actions(self) -> None:
         for action in [
             'SEARCH {"query":"x"}',

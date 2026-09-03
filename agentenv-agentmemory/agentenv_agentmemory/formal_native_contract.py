@@ -5,6 +5,7 @@ import math
 import re
 from typing import Any, Sequence
 
+from .native_action_codec import parse_native_bracket_action
 from .persistent_workspace import (
     WORKSPACE_TOOL_OPS,
     WorkspaceActionError,
@@ -29,7 +30,6 @@ FORMAL_NATIVE_ACTION_OPS = frozenset(
         "INVALID",
     }
 )
-_NATIVE_ACTION_RE = re.compile(r"\A(search|click)\[([^\[\]\r\n]+)\]\Z")
 _MEMORY_ACTION_RE = re.compile(
     r"\A(ADD|UPDATE|DELETE|RETRIEVE|SUMMARY|FILTER)\s+(\{.*\})\Z",
     re.DOTALL,
@@ -46,14 +46,15 @@ def canonical_tool_op(value: Any) -> str:
 
 def infer_raw_action_op(raw_action: str) -> str:
     text = str(raw_action).strip()
-    native = _NATIVE_ACTION_RE.fullmatch(text)
+    native = parse_native_bracket_action(text)
     if native is not None:
         # The environment strips the bracket argument and rejects an empty
         # value. Keep the reward ledger on the same INVALID branch instead of
         # classifying ``search[ ]``/``click[\t]`` as executed native actions.
-        if not native.group(2).strip():
+        action_name, argument = native
+        if not argument.strip():
             return "INVALID"
-        return native.group(1).upper()
+        return action_name.upper()
     memory = _MEMORY_ACTION_RE.fullmatch(text)
     if memory is not None:
         try:

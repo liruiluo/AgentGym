@@ -133,6 +133,11 @@ class NativeWebShopBackendCompatibilityTests(unittest.TestCase):
                 backend._server.product_item_dict["B000000001"]["Price"],
                 "$12.50",
             )
+            bracketed = 'search[[2022] 12" Triple Portable Monitor]'
+            expected = ("search", '[2022] 12" Triple Portable Monitor')
+            self.assertEqual(module.parse_action(bracketed), expected)
+            self.assertEqual(engine_module.parse_action(bracketed), expected)
+            self.assertEqual(module.parse_action("search[x] trailing"), ("search[x] trailing", None))
             self.assertEqual(backend.active_session_count(), 0)
 
 

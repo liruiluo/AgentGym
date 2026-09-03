@@ -9,6 +9,7 @@ from typing import Any, Sequence
 from .formal_native_contract import build_reward_components, infer_raw_action_op
 from .memoryarena_dataset import MemoryArenaBundle
 from .memory_state import MemoryEntry, rank_memory_entries_bm25
+from .native_action_codec import parse_native_bracket_action
 from .native_webshop_backend import NativePage, NativeWebShopBackend
 from .reward_hierarchy import (
     EXACT_REPEAT_ACTION_PENALTY,
@@ -30,7 +31,6 @@ LTM_INVENTORY_KEY_RE = re.compile(
     rf"\A[A-Za-z0-9](?:[A-Za-z0-9 _-]{{0,{LTM_INVENTORY_KEY_MAX_CHARS - 2}}}"
     r"[A-Za-z0-9])?\Z"
 )
-NATIVE_ACTION_RE = re.compile(r"\A(search|click)\[([^\[\]\r\n]+)\]\Z")
 MEMORY_ACTION_RE = re.compile(r"\A(ADD|UPDATE|DELETE|RETRIEVE|SUMMARY|FILTER)\s+(\{.*\})\Z", re.DOTALL)
 
 
@@ -723,13 +723,14 @@ def parse_mixed_action(action: str) -> ParsedAction:
     if not isinstance(action, str):
         raise InvalidNativeAction(f"Action must be a string, got {type(action).__name__}.")
     text = action.strip()
-    native_match = NATIVE_ACTION_RE.fullmatch(text)
-    if native_match is not None:
-        argument = native_match.group(2).strip()
+    native_action = parse_native_bracket_action(text)
+    if native_action is not None:
+        action_name, raw_argument = native_action
+        argument = raw_argument.strip()
         if not argument:
-            raise InvalidNativeAction(f"{native_match.group(1)} argument must be non-empty.")
-        raw_action = f"{native_match.group(1)}[{argument}]"
-        return ParsedAction(op=native_match.group(1).upper(), raw_action=raw_action)
+            raise InvalidNativeAction(f"{action_name} argument must be non-empty.")
+        raw_action = f"{action_name}[{argument}]"
+        return ParsedAction(op=action_name.upper(), raw_action=raw_action)
 
     memory_match = MEMORY_ACTION_RE.fullmatch(text)
     if memory_match is None:

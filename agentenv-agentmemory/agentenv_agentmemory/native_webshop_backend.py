@@ -14,6 +14,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Collection, Protocol
 
+from .native_action_codec import parse_memoryarena_native_action
+
 
 FROZEN_MEMORYARENA_COMMIT = "6cd9de14b71915e39ac742a20dc33785e14b6aab"
 NATIVE_WEBSHOP_UPSTREAM_SCOPE = (
@@ -148,6 +150,12 @@ class MemoryArenaNativeWebShopBackend:
                 "env.env_systems.web_shopping_env.runtime.service."
                 "web_agent_site.engine.engine"
             )
+            # The pinned MemoryArena parser greedily splits at an inner closing
+            # bracket.  Install the adapter-owned compatibility parser in both
+            # locations used by the upstream module without modifying its
+            # attested source tree.
+            module.parse_action = parse_memoryarena_native_action
+            engine_module.parse_action = parse_memoryarena_native_action
             imported_search_root = Path(engine_module.SEARCH_ENGINE_ROOT).expanduser().resolve()
             if imported_search_root != self.search_root:
                 raise RuntimeError(
