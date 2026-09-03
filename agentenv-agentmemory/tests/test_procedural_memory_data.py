@@ -473,20 +473,32 @@ class ProceduralNaturalChainTests(unittest.TestCase):
             "This is the first shopping session, so no preceding-session note exists",
             left.phases[0].question,
         )
-        self.assertNotIn("As the first action, issue exactly shell_command", left.phases[0].question)
+        self.assertNotIn("As the first action, use the workspace shell tool", left.phases[0].question)
         for phase in left.phases[1:]:
-            self.assertIn("As the first action, issue exactly shell_command", phase.question)
+            self.assertIn("As the first action, use the workspace shell tool", phase.question)
         self.assertIn("do not replace it with a generic certified", combined)
         self.assertIn("leave that note unchanged and commit the purchase", combined)
         self.assertIn(
-            "As the first action, issue exactly shell_command",
+            "As the first action, use the workspace shell tool",
             combined,
         )
         self.assertIn("to discover and print saved Confirmed lines", combined)
         self.assertIn("do not guess a path", combined)
         self.assertIn("rg --hidden -n '^Confirmed ' .", combined)
         self.assertIn("A command without --hidden can miss the note", combined)
-        self.assertIn("If stdout is empty, retry that exact command", combined)
+        self.assertIn("If stdout is empty, rerun that exact command", combined)
+        self.assertNotIn("search[", combined)
+        self.assertNotIn("click[", combined)
+        self.assertNotIn("issue exactly shell_command", combined)
+        first_question = left.phases[0].question
+        self.assertLess(
+            first_question.index("displayed ASIN to open it"),
+            first_question.index("Only after that product page is open"),
+        )
+        self.assertLess(
+            first_question.index("Only after that product page is open"),
+            first_question.index("`Buy Now` item"),
+        )
         self.assertIn(
             "complete Product title without shortening it",
             combined,
@@ -629,7 +641,7 @@ class ProceduralNaturalChainTests(unittest.TestCase):
         self.assertEqual(metadata["memory_dependency"], "previous_purchased_natural_attribute")
         self.assertEqual(
             metadata["question_format_version"],
-            "natural_customer_approved_shortlist_chain_question_v10",
+            "natural_customer_approved_shortlist_chain_question_v11",
         )
 
     def test_reseeded_stream_exhausts_full_period_before_next_seed_epoch(

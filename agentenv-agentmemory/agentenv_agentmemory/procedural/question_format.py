@@ -7,7 +7,7 @@ from .schema import AttributeTransition
 from .scenarios import scenario_by_id
 
 
-QUESTION_FORMAT_VERSION = "natural_customer_approved_shortlist_chain_question_v10"
+QUESTION_FORMAT_VERSION = "natural_customer_approved_shortlist_chain_question_v11"
 
 
 def render_question(
@@ -56,11 +56,11 @@ def render_question(
             + "\n".join(f"- {row}" for row in rows)
             + "\nThe immediately preceding purchase and its attribute value are not "
             "repeated in this session, and prior action messages do not reveal the filename "
-            "you chose. As the first action, issue exactly shell_command "
-            "{\"command\":\"rg --hidden -n '^Confirmed ' .\",\"workdir\":\".\","
-            "\"timeout_ms\":10000} to discover and print saved Confirmed lines; do not guess a "
-            "path. A command without --hidden can miss the note. If stdout is empty, retry that "
-            "exact command and do nothing else. "
+            "you chose. As the first action, use the workspace shell tool to run exactly "
+            "`rg --hidden -n '^Confirmed ' .` from the workspace root with a 10000 ms "
+            "timeout to discover and print saved Confirmed lines; do not guess a path. "
+            "A command without --hidden can miss the note. "
+            "If stdout is empty, rerun that exact command and do nothing else. "
             "Before any catalog search, click, or new file write, confirm that the shell "
             f"output contains the preceding {previous_slot.attribute_name} note. Do not "
             "infer or recreate the previous value from the two table rows. Use the read "
@@ -69,7 +69,8 @@ def render_question(
             "approved card's complete Product title without shortening it; open only a result "
             "whose complete visible title exactly matches that card, including size, count, and "
             "pack qualifiers; only on that exact product page copy the card's Confirmed line "
-            "verbatim into one new Add File note; after Done!, click[Buy Now]."
+            "verbatim into one new Add File note; after Done!, call the browser click tool with "
+            "the currently available `Buy Now` item."
         )
         if previous_slot.attribute_name != transition.previous_attribute_name:
             raise ValueError("transition previous attribute metadata mismatch")
@@ -86,14 +87,18 @@ def render_question(
         "1. For this session, the customer shared exactly two approved product cards "
         "below. Only those two exact listings are eligible for this order; other "
         "catalog products are not approved alternatives even if they have the same "
-        "color, material, flavor, or other attribute. Copy the chosen card's complete Product "
-        "title verbatim into search[...]; do not shorten it. Open only a result whose complete "
-        "visible title exactly equals that card, including size, count, and pack qualifiers.\n"
+        "color, material, flavor, or other attribute. Pass the chosen card's complete Product "
+        "title verbatim as the browser search query; do not shorten it. Then call the browser "
+        "click tool with that result's displayed ASIN to open it. Open only a result whose "
+        "complete visible title exactly equals that card, including size, count, and pack "
+        "qualifiers.\n"
         "2. The pairing table is this customer's own plan, so both approved products "
         "may be ordinary real-world choices. Do not replace the table with general "
         "product knowledge.\n"
         "3. In sessions 1 through 5, do not write a note before opening the exact selected "
-        "listing. Before click[Buy Now], use Add File once with a new path to preserve only "
+        "listing with its displayed ASIN. Only after that product page is open, and before "
+        "committing the purchase with the browser click tool's `Buy Now` item, use Add File "
+        "once with a new path to preserve only "
         "the selected card's complete Confirmed field name and value. Copy the card's entire "
         "Confirmed line verbatim; never invent a `Confirmed ... to buy:` field or replace the "
         "field and value with a product title. Use exactly one content "
