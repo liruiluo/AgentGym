@@ -38,7 +38,13 @@ class WebShopCheckpointPromptAlignmentTest(unittest.TestCase):
             self.assertIn(".agent_memory/CONTINUATION.md", prompt)
             self.assertIn("Qwen XML", prompt)
             self.assertIn("<tool_call>", prompt)
-        self.assertIn("never use bare search[...] or click[...] syntax", system_prompt)
+        self.assertIn(
+            "exposes only the `search` and `click` functions through the complete "
+            "Qwen XML envelope",
+            system_prompt,
+        )
+        self.assertNotIn("search[", system_prompt)
+        self.assertNotIn("click[", system_prompt)
         self.assertNotIn('<tool_call>\n{"name":', system_prompt)
         self.assertIn(
             FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE,

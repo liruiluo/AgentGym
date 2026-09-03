@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import time
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
@@ -41,6 +42,7 @@ from .filesystem_checkpoint import (
 )
 from .verl_qwen_tool_parser import (
     QWEN_INVALID_ACTION_SENTINEL,
+    describe_inert_qwen_function_record,
     parse_single_qwen3_tool_call,
 )
 
@@ -121,6 +123,98 @@ If an observation reports a parser error, respond next with only one corrected c
 OPENMLE_FAST_POLICY_PROMPT_SHA256 = hashlib.sha256(
     OPENMLE_FAST_POLICY_SYSTEM_PROMPT.encode("utf-8")
 ).hexdigest()
+
+_OPENMLE_LEGACY_POLICY_ACTION_LINES = {
+    '- `shell_command {"command":"...","workdir":".","timeout_ms":20000}`': (
+        "- Use the complete Qwen XML `shell_command` function-call form defined "
+        "in the system message."
+    ),
+    "- `apply_patch` followed by one `*** Begin Patch` / `*** End Patch` envelope": (
+        "- Use the complete Qwen XML `apply_patch` function-call form; place "
+        "the patch in its `patch` parameter."
+    ),
+    "- `submit {}` grades `submission.csv` exactly once and always terminates": (
+        "- Use the complete Qwen XML `submit` function-call form; submission "
+        "still grades `submission.csv` exactly once and terminates."
+    ),
+}
+
+_OPENMLE_INLINE_JSON_ACTION_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?P<name>shell_command|submit)\s+(?=\{)",
+    flags=re.IGNORECASE,
+)
+_OPENMLE_INLINE_PATCH_ACTION_RE = re.compile(
+    r"(?<![A-Za-z0-9_])apply_patch[ \t]*\r?\n"
+    r"(?P<patch>\*\*\* Begin Patch[\s\S]*?^\*\*\* End Patch[^\r\n]*)",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
+_OPENMLE_BARE_PATCH_INSTRUCTION_RE = re.compile(
+    r"(?:(?<![A-Za-z0-9_])`apply_patch`|"
+    r"(?<![A-Za-z0-9_`])apply_patch(?!`))\s+followed by",
+    flags=re.IGNORECASE,
+)
+
+
+def _replace_openmle_json_action_records(text: str) -> str:
+    output: list[str] = []
+    cursor = 0
+    decoder = json.JSONDecoder()
+    while True:
+        match = _OPENMLE_INLINE_JSON_ACTION_RE.search(text, cursor)
+        if match is None:
+            output.append(text[cursor:])
+            return "".join(output)
+        object_start = match.end()
+        try:
+            arguments, length = decoder.raw_decode(text[object_start:])
+        except json.JSONDecodeError:
+            output.append(text[cursor : match.start()])
+            output.append(
+                f"the textual `{match.group('name').lower()}` function record beginning "
+            )
+            cursor = object_start
+            continue
+        normalized_arguments = (
+            arguments
+            if isinstance(arguments, dict)
+            else {"record": arguments}
+        )
+        output.append(text[cursor : match.start()])
+        output.append(
+            describe_inert_qwen_function_record(
+                match.group("name").lower(), normalized_arguments
+            )
+        )
+        cursor = object_start + length
+
+
+def _replace_openmle_patch_action_records(text: str) -> str:
+    return _OPENMLE_INLINE_PATCH_ACTION_RE.sub(
+        lambda match: describe_inert_qwen_function_record(
+            "apply_patch", {"patch": match.group("patch")}
+        ),
+        text,
+    )
+
+
+def normalize_openmle_policy_observation(observation: str) -> str:
+    """Keep frozen endpoint instructions while hiding its bare action grammar."""
+
+    if not isinstance(observation, str):
+        raise TypeError("OpenMLE-fast policy observation must be text")
+    # Protect complete patch payloads before touching endpoint-generated prose:
+    # their file contents can legitimately quote any legacy instruction line.
+    visible = _replace_openmle_patch_action_records(observation)
+    for legacy, qwen_xml in _OPENMLE_LEGACY_POLICY_ACTION_LINES.items():
+        visible = re.sub(
+            rf"(?m)^{re.escape(legacy)}$",
+            lambda _match, replacement=qwen_xml: replacement,
+            visible,
+        )
+    visible = _replace_openmle_json_action_records(visible)
+    return _OPENMLE_BARE_PATCH_INSTRUCTION_RE.sub(
+        "the complete Qwen XML `apply_patch` function call uses", visible
+    )
 OPENMLE_QWEN_XML_CHECKPOINT_GUIDANCE = """
 
 For this boundary, output exactly the command-only Qwen XML call below. Replace
@@ -469,7 +563,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
             raise RuntimeError(  # noqa: TRY004 - remote schema drift
                 "OpenMLE-fast observation is not text"
             )
-        return observation
+        return normalize_openmle_policy_observation(observation)
 
     def policy_framing(self) -> list[dict[str, str]]:
         return [{"role": "system", "content": OPENMLE_FAST_POLICY_SYSTEM_PROMPT}]
@@ -593,7 +687,7 @@ class OpenMLEFastEnvClient(BaseEnvClient):
         action_submission.update(parser_evidence)
         context_transition = None
         checkpoint_framing_sha256 = None
-        policy_state = state
+        policy_state = normalize_openmle_policy_observation(state)
         wrapper_evidence: dict[str, Any] = {
             "event": "native_action",
             "workspace_continuity_id": self.env_id,

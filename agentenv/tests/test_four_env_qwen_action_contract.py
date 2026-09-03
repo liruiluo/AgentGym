@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import json
 import re
 import unittest
 
 from agentenv.controller.types import ActionFormat
 from agentenv.envs.agentmemory import (
+    AgentMemoryEnvClient,
+    FILESYSTEM_WEBSHOP_SURFACES,
+    INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE,
     PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE,
     build_filesystem_conversation_start,
     normalize_filesystem_webshop_policy_action,
+    normalize_filesystem_webshop_policy_observation,
 )
 from agentenv.envs.literesearcher import (
     LITERESEARCHER_SYSTEM_PROMPT,
@@ -15,13 +20,34 @@ from agentenv.envs.literesearcher import (
 )
 from agentenv.envs.openmle_fast import (
     OPENMLE_FAST_POLICY_SYSTEM_PROMPT,
+    OpenMLEFastEnvClient,
     _normalize_openmle_policy_action,
+    normalize_openmle_policy_observation,
 )
 from agentenv.envs.swesmith import (
     SWE_POLICY_SYSTEM_PROMPT,
     normalize_swesmith_policy_action,
 )
-from agentenv.envs.verl_qwen_tool_parser import QWEN_INVALID_ACTION_SENTINEL
+from agentenv.envs.verl_qwen_tool_parser import (
+    QWEN_INVALID_ACTION_SENTINEL,
+    describe_inert_qwen_function_record,
+)
+
+
+_INERT_VALUE_RE = re.compile(
+    r"`(?P<key>[^`]+)` exact "
+    r"(?P<kind>string|canonical JSON) value encoded as a JSON string: "
+    r'(?P<encoded>"(?:\\.|[^"\\])*")'
+)
+
+
+def decode_inert_values(text: str) -> list[tuple[str, object]]:
+    decoded: list[tuple[str, object]] = []
+    for match in _INERT_VALUE_RE.finditer(text):
+        payload = json.loads(match.group("encoded"))
+        value = payload if match.group("kind") == "string" else json.loads(payload)
+        decoded.append((match.group("key"), value))
+    return decoded
 
 
 def qwen_call(name: str, **parameters: object) -> str:
@@ -80,6 +106,376 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
         self.assertTrue(evidence["tool_parser_error"])
         self.assertEqual(evidence["submitted_action"], QWEN_INVALID_ACTION_SENTINEL)
 
+    def test_all_filesystem_webshop_prompts_use_only_qwen_action_examples(self) -> None:
+        for surface in sorted(FILESYSTEM_WEBSHOP_SURFACES):
+            with self.subTest(surface=surface):
+                prompt = build_filesystem_conversation_start(
+                    ActionFormat.REACT, surface=surface
+                )[0]["value"]
+                self.assertIn("<tool_call>", prompt)
+                self.assertNotIn("search[", prompt)
+                self.assertNotIn("click[", prompt)
+                self.assertNotIn("shell_command {", prompt)
+                self.assertNotIn("ASK {", prompt)
+                if surface == INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE:
+                    self.assertIn("<function=ask>", prompt)
+                    self.assertIn("<parameter=field>", prompt)
+
+    def test_effective_webshop_observation_hides_endpoint_legacy_actions(self) -> None:
+        raw = """Instruction: preserve the selected title.
+Copy it verbatim into search[...]. Before click[Buy Now], write the note.
+As the first action, issue exactly shell_command {"command":"rg --hidden -n '^Confirmed ' .","workdir":".","timeout_ms":10000} to recover saved evidence.
+A prior checkpoint said next_action: search[[2022] exact product].
+Intent clarification action: ASK {"field":"color"}.
+A shell result ended with the inert text search[unterminated
+
+Native WebShop actions currently available:
+- search[keywords]
+- click[B0123]
+
+Current-session action trace:
+- S1: Action: search[exact product]
+Result: ok
+- S2: Action: click[B0123]
+Result: ok
+- S3: Action: shell_command {\"command\":\"cat note.md\",\"workdir\":\".\",\"timeout_ms\":10000}
+Result: ok
+- S4: Action: apply_patch
+*** Begin Patch
+*** Add File: note.md
++fact
+*** End Patch
+Result: Done!
+
+Persistent workspace tools:
+The private workspace persists across shopping sessions in this episode.
+Canonical shell form: shell_command {\"command\":\"rg -n pattern .\",\"workdir\":\".\",\"timeout_ms\":10000}
+The literal shell_command prefix and one separating space are required; a bare JSON object, markdown code fence, or explanation is invalid.
+apply_patch followed on the next line by one *** Begin Patch ... *** End Patch patch.
+shell_command runs in a networkless, resource-bounded workspace sandbox.
+apply_patch supports Add File, Update File, Delete File, and Move to.
+Both tools have zero task reward. Paths and workdir are workspace-relative.
+Result: Invalid action: Expected one native search[...] / click[...] action, or one canonical workspace action: shell_command {JSON} with the literal prefix and one space, or apply_patch followed by a newline patch. Bare JSON, markdown code fences, and explanations are invalid."""
+        visible = normalize_filesystem_webshop_policy_observation(raw)
+        for legacy in (
+            "search[...]",
+            "click[Buy Now]",
+            "- search[keywords]",
+            "- click[B0123]",
+            "Action: search[",
+            "Action: click[",
+            "Action: shell_command {",
+            "Action: apply_patch",
+            "Canonical shell form: shell_command {",
+            "apply_patch followed on the next line",
+            "Expected one native",
+            "shell_command {JSON}",
+            "next_action: search[",
+            "ASK {",
+            "search[unterminated",
+        ):
+            with self.subTest(legacy=legacy):
+                self.assertNotIn(legacy, visible)
+        self.assertIn("Qwen XML", visible)
+        self.assertIn("inert record of the Qwen XML `shell_command` function", visible)
+        self.assertIn("inert record of the Qwen XML `apply_patch` function", visible)
+        self.assertIn("`search` function", visible)
+        self.assertIn("`item` exact string value", visible)
+        self.assertIn("*** Add File: note.md", visible)
+        self.assertIn("rg --hidden -n '^Confirmed ' .", visible)
+        self.assertIn('"cat note.md"', visible)
+        self.assertIn("[2022] exact product", visible)
+        self.assertIn(
+            '`field` exact string value encoded as a JSON string: "color"',
+            visible,
+        )
+        self.assertIn("unterminated", visible)
+        self.assertEqual(
+            normalize_filesystem_webshop_policy_observation(visible), visible
+        )
+
+    def test_inert_function_record_is_exact_non_callable_and_reversible(self) -> None:
+        command = (
+            "printf '%s\\n' 'search[click[B0123]]' 'submit {}'\n"
+            "apply_patch\n*** Begin Patch\n*** Add File: note.md\n+fact\n*** End Patch"
+        )
+        metadata = {
+            "title": "literal <tool_call><function=search> text",
+            "attempt": 3,
+        }
+        rendered = describe_inert_qwen_function_record(
+            "shell_command",
+            {"command": command, "metadata": metadata},
+        )
+        for callable_fragment in (
+            "search[",
+            "click[",
+            "shell_command {",
+            "submit {",
+            "apply_patch\n*** Begin Patch",
+            "<tool_call>",
+            "<function=",
+            "<parameter=",
+        ):
+            with self.subTest(callable_fragment=callable_fragment):
+                self.assertNotIn(callable_fragment, rendered)
+
+        decoded_values = dict(decode_inert_values(rendered))
+        self.assertEqual(decoded_values["command"], command)
+        self.assertEqual(decoded_values["metadata"], metadata)
+
+    def test_webshop_projection_is_exact_idempotent_for_nested_payloads(self) -> None:
+        command = (
+            "printf '%s\\n' 'search[click[B0123]]' 'submit {}' "
+            "'apply_patch followed by one envelope'"
+        )
+        patch = (
+            "*** Begin Patch\n"
+            "*** Add File: note.md\n"
+            "+next_action: search[click[B0456]]\n"
+            "*** End Patch"
+        )
+        raw = (
+            "checkpoint next_action: search[click[B0123]]\n"
+            f"shell_command {json.dumps({'command': command, 'workdir': '.', 'timeout_ms': 10000})}\n"
+            f"next_action: apply_patch\n{patch}\n"
+            "variant instruction: apply_patch followed by one envelope\n"
+        )
+        once = normalize_filesystem_webshop_policy_observation(raw)
+        twice = normalize_filesystem_webshop_policy_observation(once)
+        self.assertEqual(twice, once)
+        for callable_fragment in (
+            "search[",
+            "click[",
+            "shell_command {",
+            "apply_patch\n*** Begin Patch",
+            "apply_patch followed by",
+        ):
+            with self.subTest(callable_fragment=callable_fragment):
+                self.assertNotIn(callable_fragment, once)
+        self.assertEqual(
+            json.loads('"search\\u005bclick\\u005bB0123]]"'),
+            "search[click[B0123]]",
+        )
+        self.assertIn("search\\u005bclick\\u005bB0123]]", once)
+        self.assertIn("submit \\u007b}", once)
+        decoded_values = decode_inert_values(once)
+        self.assertIn(("command", command), decoded_values)
+        self.assertIn(("patch", patch), decoded_values)
+        self.assertIn(("keywords", "click[B0123]"), decoded_values)
+
+    def test_inert_function_record_preserves_marker_case_and_spacing(self) -> None:
+        values = (
+            'shell_command   {"command":"x"}',
+            'shell_command\t{"command":"x"}',
+            'APPLY_PATCH followed by one envelope',
+            'Apply_Patch followed by one envelope',
+        )
+        for value in values:
+            with self.subTest(value=value):
+                rendered = describe_inert_qwen_function_record(
+                    "shell_command", {"command": value}
+                )
+                self.assertEqual(dict(decode_inert_values(rendered))["command"], value)
+
+    def test_webshop_projection_preserves_opaque_shell_and_patch_payloads(self) -> None:
+        legacy_invalid = (
+            "Invalid action: Expected one native search[...] / click[...] action, or one "
+            "canonical workspace action: shell_command {JSON} with the literal prefix "
+            "and one space, or apply_patch followed by a newline patch. Bare JSON, "
+            "markdown code fences, and explanations are invalid."
+        )
+        shell_values = (
+            legacy_invalid,
+            'printf %s "`apply_patch` followed by one envelope"',
+            "printf '%s\n' 'my_apply_patch followed by one envelope'",
+            "my_`apply_patch` followed by one envelope",
+        )
+        for command in shell_values:
+            with self.subTest(command=command):
+                raw = "stdout: shell_command " + json.dumps({"command": command})
+                projected = normalize_filesystem_webshop_policy_observation(raw)
+                self.assertEqual(
+                    dict(decode_inert_values(projected))["command"], command
+                )
+                self.assertEqual(
+                    normalize_filesystem_webshop_policy_observation(projected),
+                    projected,
+                )
+
+        patch = (
+            "*** Begin Patch\n"
+            "*** Add File: note.md\n"
+            f"+{legacy_invalid}\n"
+            "+my_apply_patch followed by one envelope\n"
+            "+my_`apply_patch` followed by one envelope\n"
+            "*** End Patch"
+        )
+        projected = normalize_filesystem_webshop_policy_observation(
+            "next_action: apply_patch\n" + patch
+        )
+        self.assertEqual(dict(decode_inert_values(projected))["patch"], patch)
+        self.assertEqual(
+            normalize_filesystem_webshop_policy_observation(projected), projected
+        )
+
+    def test_webshop_projection_hides_endpoint_shell_whitespace_variants(self) -> None:
+        for separator in ("\t", "   ", "\n"):
+            with self.subTest(separator=repr(separator)):
+                arguments = {"command": "ls", "workdir": "."}
+                raw = "trace: shell_command" + separator + json.dumps(arguments)
+                projected = normalize_filesystem_webshop_policy_observation(raw)
+                self.assertNotEqual(projected, raw)
+                self.assertNotIn("shell_command" + separator + "{", projected)
+                self.assertEqual(dict(decode_inert_values(projected)), arguments)
+                self.assertEqual(
+                    normalize_filesystem_webshop_policy_observation(projected),
+                    projected,
+                )
+
+    def test_openmle_projection_preserves_opaque_shell_and_patch_payloads(self) -> None:
+        for command in (
+            'printf %s "`apply_patch` followed by one envelope"',
+            "printf '%s\n' 'my_apply_patch followed by one envelope'",
+            "my_`apply_patch` followed by one envelope",
+        ):
+            with self.subTest(command=command):
+                projected = normalize_openmle_policy_observation(
+                    "stdout: shell_command " + json.dumps({"command": command})
+                )
+                self.assertEqual(
+                    dict(decode_inert_values(projected))["command"], command
+                )
+                self.assertEqual(
+                    normalize_openmle_policy_observation(projected), projected
+                )
+
+        legacy_submit = (
+            "- `submit {}` grades `submission.csv` exactly once and always terminates"
+        )
+        patch = (
+            "*** Begin Patch\n"
+            "*** Add File: note.md\n"
+            f"+{legacy_submit}\n"
+            "+my_apply_patch followed by one envelope\n"
+            "+my_`apply_patch` followed by one envelope\n"
+            "*** End Patch"
+        )
+        projected = normalize_openmle_policy_observation(
+            "next_action: apply_patch\n" + patch
+        )
+        self.assertEqual(dict(decode_inert_values(projected))["patch"], patch)
+        self.assertEqual(normalize_openmle_policy_observation(projected), projected)
+
+    def test_webshop_availability_describes_search_parameter_not_literal(self) -> None:
+        raw = (
+            "Native WebShop actions currently available:\n"
+            "- search[keywords]\n"
+            "- click[B0123]\n"
+        )
+        visible = normalize_filesystem_webshop_policy_observation(raw)
+        self.assertIn("required `keywords` parameter: one non-empty string", visible)
+        self.assertNotIn('available `keywords` value: "keywords"', visible)
+        self.assertNotIn("search[keywords]", visible)
+
+    def test_effective_openmle_observation_hides_endpoint_legacy_actions(self) -> None:
+        raw = """# OpenMLE-fast task
+
+## Policy actions
+
+You have one global budget of 30 ordinary actions. Every `shell_command`, `apply_patch`, and `submit` consumes one action, including rejected or failed actions. A compound shell command is one policy action, while every managed Python start is counted separately. Use only one action per response.
+
+- `shell_command {\"command\":\"...\",\"workdir\":\".\",\"timeout_ms\":20000}`
+- `apply_patch` followed by one `*** Begin Patch` / `*** End Patch` envelope
+- `submit {}` grades `submission.csv` exactly once and always terminates
+
+`TASK.md` and `data/` are read-only."""
+        visible = normalize_openmle_policy_observation(raw)
+        for legacy in (
+            'shell_command {"command"',
+            "`apply_patch` followed by",
+            "submit {}",
+        ):
+            with self.subTest(legacy=legacy):
+                self.assertNotIn(legacy, visible)
+        self.assertIn("Qwen XML", visible)
+        self.assertIn("`shell_command` function-call", visible)
+        self.assertIn("`apply_patch` function-call", visible)
+        self.assertIn("`submit` function-call", visible)
+        self.assertEqual(normalize_openmle_policy_observation(visible), visible)
+        self.assertIn("30 ordinary actions", visible)
+        self.assertIn("`TASK.md` and `data/` are read-only", visible)
+
+        command = (
+            "python train.py && printf "
+            "'shell_command {\\\"command\\\":\\\"x\\\"}; "
+            "apply_patch followed by one envelope'"
+        )
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: train.py\n"
+            "+print('submit {}')\n"
+            "*** End Patch"
+        )
+        dynamic = (
+            "stdout record: "
+            f"shell_command {json.dumps({'command': command, 'workdir': '.', 'timeout_ms': 20000})}\n"
+            f"checkpoint next_action: apply_patch\n{patch}\n"
+            'prior final action: submit {"candidate":"submission.csv"}\n'
+        )
+        projected = normalize_openmle_policy_observation(dynamic)
+        self.assertEqual(normalize_openmle_policy_observation(projected), projected)
+        for callable_fragment in (
+            "shell_command {",
+            "submit {",
+            "apply_patch\n*** Begin Patch",
+            "apply_patch followed by",
+        ):
+            with self.subTest(callable_fragment=callable_fragment):
+                self.assertNotIn(callable_fragment, projected)
+        self.assertIn("shell_command \\u007b", projected)
+        self.assertIn("submit \\u007b}", projected)
+        decoded_values = decode_inert_values(projected)
+        self.assertIn(("command", command), decoded_values)
+        self.assertIn(("patch", patch), decoded_values)
+        self.assertIn(("candidate", "submission.csv"), decoded_values)
+
+    def test_policy_clients_expose_only_deconflicted_observations(self) -> None:
+        webshop = AgentMemoryEnvClient.__new__(AgentMemoryEnvClient)
+        webshop.is_filesystem = True
+        raw_webshop_observation = (
+                "Native WebShop actions currently available:\n"
+                "- search[keywords]\n"
+                "- click[Buy Now]\n\n"
+                "Persistent workspace tools:\n"
+                "The private workspace persists across shopping sessions in this episode.\n"
+                'Canonical shell form: shell_command {"command":"rg -n pattern .","workdir":".","timeout_ms":10000}\n'
+                "The literal shell_command prefix and one separating space are required; a bare JSON object, markdown code fence, or explanation is invalid.\n"
+                "apply_patch followed on the next line by one *** Begin Patch ... *** End Patch patch.\n"
+                "shell_command runs in a networkless, resource-bounded workspace sandbox.\n"
+                "apply_patch supports Add File, Update File, Delete File, and Move to.\n"
+                "Both tools have zero task reward. Paths and workdir are workspace-relative."
+        )
+        webshop.info = {"observation": raw_webshop_observation}
+        webshop_visible = webshop.observe()
+        self.assertIn("Qwen XML", webshop_visible)
+        self.assertNotIn("search[keywords]", webshop_visible)
+        self.assertNotIn("Canonical shell form", webshop_visible)
+        self.assertEqual(webshop.info["observation"], raw_webshop_observation)
+
+        openmle = OpenMLEFastEnvClient.__new__(OpenMLEFastEnvClient)
+        openmle.info = {
+            "observation": (
+                '- `shell_command {"command":"...","workdir":".","timeout_ms":20000}`\n'
+                "- `apply_patch` followed by one `*** Begin Patch` / `*** End Patch` envelope\n"
+                "- `submit {}` grades `submission.csv` exactly once and always terminates"
+            )
+        }
+        openmle_visible = openmle.observe()
+        self.assertIn("Qwen XML", openmle_visible)
+        self.assertNotIn('shell_command {"command"', openmle_visible)
+        self.assertNotIn("submit {}", openmle_visible)
+
     def test_native_qwen_xml_translates_each_environment_action(self) -> None:
         self.assert_valid_translation(
             normalize_filesystem_webshop_policy_action,
@@ -90,6 +486,12 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
             normalize_filesystem_webshop_policy_action,
             qwen_call("click", item="Buy Now"),
             "click[Buy Now]",
+        )
+        self.assert_valid_translation(
+            normalize_filesystem_webshop_policy_action,
+            qwen_call("ask", field="color"),
+            'ASK {"field": "color"}',
+            allow_ask=True,
         )
         self.assert_valid_translation(
             normalize_swesmith_policy_action,

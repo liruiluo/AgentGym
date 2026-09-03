@@ -8,6 +8,7 @@ AgentLoop or maintaining a second XML grammar here.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -25,6 +26,72 @@ QWEN_SINGLE_TOOL_CALL_CONTRACT = (
 # model output with this value so those legacy parsers cannot accidentally execute
 # a bare action. The sentinel is deliberately outside every environment grammar.
 QWEN_INVALID_ACTION_SENTINEL = "__AMG_INVALID_QWEN_TOOL_CALL__"
+
+_LEGACY_MARKER_IN_JSON_STRING_RE = re.compile(
+    r"(?i)(?:"
+    r"(?<![A-Za-z0-9_])(?P<bracket>search|click)\["
+    r"|(?<![A-Za-z0-9_])(?P<object>shell_command|ask|submit)\s+\{"
+    r"|(?P<patch>`apply_patch`|(?<![A-Za-z0-9_`])apply_patch(?!`))"
+    r"(?=(?:\s+followed|\s*\\n\*\*\* Begin Patch))"
+    r")"
+)
+
+
+def _inert_exact_value(value: Any) -> tuple[str, str]:
+    """Encode one record value reversibly without exposing legacy call syntax."""
+
+    if isinstance(value, str):
+        kind = "string"
+        payload = value
+    else:
+        kind = "canonical JSON"
+        payload = json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+    encoded = json.dumps(payload, ensure_ascii=False)
+
+    def escape_marker(match: re.Match[str]) -> str:
+        matched = match.group(0)
+        if match.group("bracket") is not None:
+            return matched[:-1] + "\\u005b"
+        if match.group("object") is not None:
+            return matched[:-1] + "\\u007b"
+        underscore = matched.find("_")
+        if underscore < 0:
+            raise AssertionError("apply_patch marker lost its underscore")
+        return matched[:underscore] + "\\u005f" + matched[underscore + 1 :]
+
+    encoded = _LEGACY_MARKER_IN_JSON_STRING_RE.sub(escape_marker, encoded)
+    # A prior record can contain model-authored XML-looking text. Keep it exact
+    # but non-callable in the next policy prompt for the same reason as legacy
+    # endpoint syntax. JSON decoding restores both characters losslessly.
+    encoded = encoded.replace("<", "\\u003c").replace(">", "\\u003e")
+    return kind, encoded
+
+
+def describe_inert_qwen_function_record(
+    name: str, arguments: Mapping[str, Any]
+) -> str:
+    """Render an exact, non-callable record using only the Qwen function vocabulary.
+
+    Values are JSON-string encoded so a reader can recover them exactly. Legacy
+    action-looking substrings inside those values use JSON unicode escapes; this
+    keeps the projection idempotent and prevents opaque stdout/checkpoint payloads
+    from becoming a second executable-looking grammar.
+    """
+
+    if not arguments:
+        return f"an inert record of the Qwen XML `{name}` function with no parameters"
+    rendered_arguments = []
+    for key, value in arguments.items():
+        kind, encoded = _inert_exact_value(value)
+        rendered_arguments.append(
+            f"`{key}` exact {kind} value encoded as a JSON string: {encoded}"
+        )
+    return (
+        f"an inert record of the Qwen XML `{name}` function; "
+        + "; ".join(rendered_arguments)
+    )
 
 
 @dataclass(frozen=True)

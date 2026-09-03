@@ -62,6 +62,7 @@ from .webshop_handoff import (
 from .verl_qwen_tool_parser import (
     QWEN_INVALID_ACTION_SENTINEL,
     QWEN_SINGLE_TOOL_CALL_CONTRACT,
+    describe_inert_qwen_function_record,
     parse_single_qwen3_tool_call,
 )
 
@@ -320,6 +321,241 @@ QWEN_WORKSPACE_PARAMETER_RE = re.compile(
     r"<parameter=([^>\s]+)>\s*(.*?)\s*</parameter>",
     flags=re.IGNORECASE | re.DOTALL,
 )
+
+_WEBSHOP_LEGACY_AVAILABLE_ACTIONS_RE = re.compile(
+    r"(?m)^Native WebShop actions currently available:\n"
+    r"(?P<actions>(?:- (?:search|click)\[[^\n]*\]\n?)+)"
+)
+_WEBSHOP_LEGACY_INVALID_ACTION = (
+    "Invalid action: Expected one native search[...] / click[...] action, or one "
+    "canonical workspace action: shell_command {JSON} with the literal prefix "
+    "and one space, or apply_patch followed by a newline patch. Bare JSON, "
+    "markdown code fences, and explanations are invalid."
+)
+_WEBSHOP_QWEN_INVALID_ACTION = (
+    "Invalid action: expected exactly one complete Qwen XML function call for "
+    "an available `search`, `click`, `shell_command`, or `apply_patch` function. "
+    "Bare JSON, endpoint-native syntax, Markdown code fences, and explanations "
+    "are invalid."
+)
+_WEBSHOP_LEGACY_INVALID_ACTION_RE = re.compile(
+    rf"(?m)^(?P<prefix>(?:Result:\s*)?){re.escape(_WEBSHOP_LEGACY_INVALID_ACTION)}$"
+)
+_WEBSHOP_INLINE_SHELL_ACTION_RE = re.compile(
+    r"(?<![A-Za-z0-9_])shell_command\s+(?=\{)", flags=re.IGNORECASE
+)
+_WEBSHOP_INLINE_ASK_ACTION_RE = re.compile(
+    r"(?<![A-Za-z0-9_])ask\s+(?=\{)", flags=re.IGNORECASE
+)
+_WEBSHOP_INLINE_PATCH_ACTION_RE = re.compile(
+    r"(?<![A-Za-z0-9_])apply_patch[ \t]*\r?\n"
+    r"(?P<patch>\*\*\* Begin Patch[\s\S]*?^\*\*\* End Patch[^\r\n]*)",
+    flags=re.MULTILINE,
+)
+_WEBSHOP_BARE_PATCH_INSTRUCTION_RE = re.compile(
+    r"(?:(?<![A-Za-z0-9_])`apply_patch`|"
+    r"(?<![A-Za-z0-9_`])apply_patch(?!`))\s+followed by",
+    flags=re.IGNORECASE,
+)
+_WEBSHOP_EMBEDDED_BROWSER_ACTION_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(search|click)\[", flags=re.IGNORECASE
+)
+_WEBSHOP_LEGACY_WORKSPACE_CONTRACT = "\n".join(
+    (
+        "Persistent workspace tools:",
+        "The private workspace persists across shopping sessions in this episode.",
+        'Canonical shell form: shell_command {"command":"rg -n pattern .","workdir":".","timeout_ms":10000}',
+        "The literal shell_command prefix and one separating space are required; a bare JSON object, markdown code fence, or explanation is invalid.",
+        "apply_patch followed on the next line by one *** Begin Patch ... *** End Patch patch.",
+        "shell_command runs in a networkless, resource-bounded workspace sandbox.",
+        "apply_patch supports Add File, Update File, Delete File, and Move to.",
+        "Both tools have zero task reward. Paths and workdir are workspace-relative.",
+    )
+)
+_WEBSHOP_QWEN_WORKSPACE_CONTRACT = "\n".join(
+    (
+        "Persistent workspace tools:",
+        "The private workspace persists across shopping sessions in this episode.",
+        "Use only the complete Qwen XML shell_command or apply_patch function-call forms defined in the system message; endpoint-internal bare action syntax is not a policy response.",
+        "shell_command runs in a networkless, resource-bounded workspace sandbox.",
+        "apply_patch supports Add File, Update File, Delete File, and Move to.",
+        "Both tools have zero task reward. Paths and workdir are workspace-relative.",
+    )
+)
+
+
+def _render_webshop_available_functions(match: re.Match[str]) -> str:
+    rendered = ["Native WebShop functions currently available through Qwen XML:"]
+    for raw_line in match.group("actions").splitlines():
+        action = raw_line.removeprefix("- ")
+        name, _, argument = action.partition("[")
+        argument = argument[:-1] if argument.endswith("]") else argument
+        parameter = "keywords" if name == "search" else "item"
+        if name == "search" and argument == "keywords":
+            rendered.append(
+                "- `search` function; required `keywords` parameter: one non-empty string"
+            )
+        else:
+            rendered.append(
+                f"- `{name}` function; available `{parameter}` value: "
+                f"{json.dumps(argument, ensure_ascii=False)}"
+            )
+    return "\n".join(rendered) + "\n"
+
+
+def _replace_embedded_webshop_browser_actions(text: str) -> str:
+    """Describe embedded endpoint actions without teaching a second grammar."""
+
+    output: list[str] = []
+    cursor = 0
+    while True:
+        match = _WEBSHOP_EMBEDDED_BROWSER_ACTION_RE.search(text, cursor)
+        if match is None:
+            output.append(text[cursor:])
+            return "".join(output)
+        argument_start = match.end()
+        depth = 1
+        end = argument_start
+        while end < len(text) and depth:
+            if text[end] == "[":
+                depth += 1
+            elif text[end] == "]":
+                depth -= 1
+            end += 1
+        if depth:
+            # An unmatched opening bracket is not an executable endpoint action,
+            # but leaving the prefix intact can prevent later real actions in the
+            # same observation from being normalized.  Keep the payload text and
+            # render only the ambiguous prefix as inert prose.
+            output.append(text[cursor : match.start()])
+            output.append(f"the textual `{match.group(1).lower()}` function record beginning ")
+            cursor = argument_start
+            continue
+        name = match.group(1).lower()
+        parameter = "keywords" if name == "search" else "item"
+        argument = text[argument_start : end - 1]
+        output.append(text[cursor : match.start()])
+        output.append(describe_inert_qwen_function_record(name, {parameter: argument}))
+        cursor = end
+
+
+def _replace_embedded_webshop_shell_actions(text: str) -> str:
+    """Translate complete one-line endpoint shell JSON into Qwen-facing prose."""
+
+    output: list[str] = []
+    cursor = 0
+    decoder = json.JSONDecoder()
+    while True:
+        match = _WEBSHOP_INLINE_SHELL_ACTION_RE.search(text, cursor)
+        if match is None:
+            output.append(text[cursor:])
+            return "".join(output)
+        object_start = match.end()
+        try:
+            arguments, length = decoder.raw_decode(text[object_start:])
+        except json.JSONDecodeError:
+            # Preserve the bytes for structural endpoint messages such as the
+            # canonical invalid-action explanation. A final fallback pass hides
+            # any still-unparsed marker after those exact messages are handled.
+            output.append(text[cursor:object_start])
+            cursor = object_start
+            continue
+        if not isinstance(arguments, dict) or "command" not in arguments:
+            output.append(text[cursor : match.start()])
+            output.append(
+                describe_inert_qwen_function_record(
+                    "shell_command", {"record": arguments}
+                )
+            )
+            cursor = object_start + length
+            continue
+        output.append(text[cursor : match.start()])
+        output.append(describe_inert_qwen_function_record("shell_command", arguments))
+        cursor = object_start + length
+
+
+def _replace_embedded_webshop_ask_actions(text: str) -> str:
+    """Translate complete endpoint ASK objects into inert Qwen-facing prose."""
+
+    output: list[str] = []
+    cursor = 0
+    decoder = json.JSONDecoder()
+    while True:
+        match = _WEBSHOP_INLINE_ASK_ACTION_RE.search(text, cursor)
+        if match is None:
+            output.append(text[cursor:])
+            return "".join(output)
+        object_start = match.end()
+        try:
+            arguments, length = decoder.raw_decode(text[object_start:])
+        except json.JSONDecodeError:
+            output.append(text[cursor:object_start])
+            cursor = object_start
+            continue
+        if not isinstance(arguments, dict) or "field" not in arguments:
+            output.append(text[cursor : match.start()])
+            output.append(
+                describe_inert_qwen_function_record("ask", {"record": arguments})
+            )
+            cursor = object_start + length
+            continue
+        output.append(text[cursor : match.start()])
+        output.append(describe_inert_qwen_function_record("ask", arguments))
+        cursor = object_start + length
+
+
+def _replace_embedded_webshop_patch_actions(text: str) -> str:
+    """Translate complete bare patch envelopes into inert exact records."""
+
+    return _WEBSHOP_INLINE_PATCH_ACTION_RE.sub(
+        lambda match: describe_inert_qwen_function_record(
+            "apply_patch", {"patch": match.group("patch")}
+        ),
+        text,
+    )
+
+
+def normalize_filesystem_webshop_policy_observation(observation: str) -> str:
+    """Project endpoint-native records onto one Qwen-XML policy vocabulary.
+
+    The endpoint observation and audit ledger remain unchanged.  This returned
+    policy view replaces only recognizable action envelopes and preserves their
+    argument payloads as quoted records, including checkpoint and shell output,
+    so those records cannot teach a second executable response grammar.
+    """
+
+    if not isinstance(observation, str):
+        raise TypeError("WebShop policy observation must be text")
+    # Protect complete patch payloads before replacing endpoint-generated prose:
+    # patch contents can legitimately contain any of the legacy instruction text.
+    visible = _replace_embedded_webshop_patch_actions(observation)
+    visible = _WEBSHOP_LEGACY_AVAILABLE_ACTIONS_RE.sub(
+        _render_webshop_available_functions, visible
+    )
+    visible = visible.replace(
+        _WEBSHOP_LEGACY_WORKSPACE_CONTRACT,
+        _WEBSHOP_QWEN_WORKSPACE_CONTRACT,
+    )
+    # The workspace boilerplate has now been removed, so complete shell/ASK
+    # records can be made inert without swallowing that canonical example.
+    visible = _replace_embedded_webshop_shell_actions(visible)
+    visible = _replace_embedded_webshop_ask_actions(visible)
+    visible = _WEBSHOP_LEGACY_INVALID_ACTION_RE.sub(
+        lambda match: match.group("prefix") + _WEBSHOP_QWEN_INVALID_ACTION,
+        visible,
+    )
+    visible = _replace_embedded_webshop_browser_actions(visible)
+    visible = _WEBSHOP_BARE_PATCH_INSTRUCTION_RE.sub(
+        "the complete Qwen XML `apply_patch` function call uses", visible
+    )
+    # Any marker left here was malformed rather than a complete JSON record.
+    # Keep its remaining payload visible, but do not expose executable syntax.
+    visible = _WEBSHOP_INLINE_SHELL_ACTION_RE.sub(
+        "the textual `shell_command` record beginning ", visible
+    )
+    return _WEBSHOP_INLINE_ASK_ACTION_RE.sub(
+        "the textual `ask` function record beginning ", visible
+    )
 
 
 def _optional_transition_int(value: Any) -> int | None:
@@ -1432,9 +1668,9 @@ def build_filesystem_conversation_start(
         + "\n\n<tools>\n"
         + tool_manifest
         + "\n</tools>\n\n"
-        "The WebShop backend supports search and click, but policy responses never "
-        "use bare search[...] or click[...] syntax. Use the search function with "
-        "exactly one non-empty keywords string. Use the click function with exactly "
+        "The WebShop backend exposes only the `search` and `click` functions through "
+        "the complete Qwen XML envelope above. Use the search function with exactly "
+        "one non-empty keywords string. Use the click function with exactly "
         "one non-empty item string copied from a currently clickable value; calling "
         "click with item `Buy Now` commits the current product. A failed purchase "
         "ends the episode without revealing the expected answer.\n\n"
@@ -2677,7 +2913,10 @@ class AgentMemoryEnvClient(BaseEnvClient):
         return response.json()
 
     def observe(self) -> str:
-        return self.info["observation"]
+        observation = self.info["observation"]
+        if self.is_filesystem:
+            return normalize_filesystem_webshop_policy_observation(observation)
+        return observation
 
     def step(self, action: str) -> StepOutput:
         # A few offline adapters construct the client with ``__new__`` to
@@ -2941,6 +3180,10 @@ class AgentMemoryEnvClient(BaseEnvClient):
             )
         else:
             policy_observation = response["observation"]
+        if self.is_filesystem:
+            policy_observation = normalize_filesystem_webshop_policy_observation(
+                str(policy_observation)
+            )
         if (
             bool(response["done"])
             or session_advanced
@@ -2949,7 +3192,9 @@ class AgentMemoryEnvClient(BaseEnvClient):
             self._consumed_checkpoint_read = None
         if self.is_filesystem and session_advanced:
             self._pending_session_handoff = {
-                "fresh_observation": str(response["observation"]),
+                "fresh_observation": normalize_filesystem_webshop_policy_observation(
+                    str(response["observation"])
+                ),
                 "session_before": session_before,
                 "session_after": session_after,
                 "native_call_count": self._native_call_count,
@@ -3120,7 +3365,9 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 raise RuntimeError(
                     "WebShop server did not attest the exact context checkpoint commit"
                 )
-            fresh_observation = str(server_trace_commit["observation"])
+            fresh_observation = normalize_filesystem_webshop_policy_observation(
+                str(server_trace_commit["observation"])
+            )
         retry_pending = bool(
             (
                 self._pending_session_handoff is not None
