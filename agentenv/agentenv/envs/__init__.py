@@ -18,3 +18,5 @@ from .literesearcher import LiteResearcherEnvClient, LiteResearcherTask
 from .openmle_fast import OpenMLEFastEnvClient, OpenMLEFastTask
 
 from .agemem import AgeMemAdapterConfig, AgeMemEnvClientAdapter
+from .letta_code import LettaCodeAdapterConfig, LettaCodeEnvClientAdapter
+from .mem0 import Mem0AdapterConfig, Mem0EnvClientAdapter
