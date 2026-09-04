@@ -920,6 +920,13 @@ class LiteResearcherWrapper:
             "workspace_tools": ["shell_command", "apply_patch"],
             "reward_contract": self.reward_contract,
         }
+        if self.surface == LITERESEARCHER_FULLPOOL_SURFACE:
+            info.update(
+                {
+                    "row_identity": task.row_identity,
+                    "source_pool_index": task.source_pool_index,
+                }
+            )
         payload = {
             "observation": task.question if observation is None else str(observation),
             "reward": float(episode.get("reward", 0.0)),

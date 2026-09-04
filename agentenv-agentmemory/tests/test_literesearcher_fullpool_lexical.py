@@ -119,6 +119,7 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
                     targets=("Beta Fact",),
                     mask_url="https://public.example/answer",
                     row_identity="a" * 64,
+                    source_pool_index=17,
                     parquet_path="train.parquet",
                     physical_row=0,
                     data_source="test",
@@ -158,6 +159,10 @@ class LiteResearcherFullPoolLexicalTests(unittest.TestCase):
             judge=_SemanticJudgeStub(),
         )
         created = wrapper.create(data_idx=0)
+        self.assertEqual(created["info"]["row_identity"], "a" * 64)
+        self.assertEqual(created["info"]["source_pool_index"], 17)
+        self.assertEqual(created["info"]["source_data_idx"], 0)
+        self.assertEqual(created["info"]["data_idx"], 0)
         public = json.dumps(
             {"observation": created["observation"], "metadata": wrapper.metadata()},
             ensure_ascii=False,

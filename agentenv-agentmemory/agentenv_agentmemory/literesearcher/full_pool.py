@@ -39,6 +39,7 @@ class FullPoolLiteResearcherTask:
     targets: tuple[str, ...]
     mask_url: str
     row_identity: str
+    source_pool_index: int
     parquet_path: str
     physical_row: int
     data_source: str
@@ -210,6 +211,7 @@ def load_full_pool(
                     targets=targets,
                     mask_url=mask_url,
                     row_identity=str(row["row_identity"]),
+                    source_pool_index=int(row["source_pool_index"]),
                     parquet_path=relative,
                     physical_row=physical_row,
                     data_source=str(raw["data_source"]),

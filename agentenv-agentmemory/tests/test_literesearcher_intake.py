@@ -202,6 +202,8 @@ class LiteResearcherIntakeTests(unittest.TestCase):
                     created = wrapper.create(data_idx=data_idx)
                     self.assertEqual(created["info"]["data_idx"], data_idx)
                     self.assertEqual(created["info"]["source_data_idx"], task.index)
+                    self.assertNotIn("row_identity", created["info"])
+                    self.assertNotIn("source_pool_index", created["info"])
                     wrapper.close(created["id"])
 
                     hits = backend.search(task.question, top_k=5)
