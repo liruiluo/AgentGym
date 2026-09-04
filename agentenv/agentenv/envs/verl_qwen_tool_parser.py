@@ -15,10 +15,10 @@ from typing import Any
 
 
 QWEN_PARAMETER_TAG_CONTRACT = (
-    "Every function argument must use the literal Qwen form "
-    "`<parameter=ARGUMENT_NAME>VALUE</parameter>`. Never replace it with a tag "
-    "named after the argument such as `<command>`, `<workdir>`, `<timeout_ms>`, "
-    "or `<patch>`, and never use an unnamed `<parameter>` tag."
+    "Encode every function argument with the literal Qwen form "
+    "`<parameter=ARGUMENT_NAME>VALUE</parameter>`. Copy each argument name "
+    "exactly from the selected function's schema and close every argument with "
+    "`</parameter>`."
 )
 
 QWEN_SINGLE_TOOL_CALL_CONTRACT = (
@@ -41,11 +41,11 @@ def append_qwen_parser_retry_guidance(observation: str, *, reason: str) -> str:
         observation.rstrip()
         + "\n\nQwen XML correction: the previous response was rejected ("
         + reason.strip()
-        + "). Do not repeat its markup. Start the next response with `<tool_call>`, "
-        "use one `<function=NAME>` block, encode every argument only as "
+        + "). Copy the complete syntax of one matching valid example from the "
+        "system message. Start with `<tool_call>`, choose one listed "
+        "`<function=FUNCTION_NAME>` block, encode each declared argument as "
         "`<parameter=ARGUMENT_NAME>VALUE</parameter>`, and end with "
-        "`</function></tool_call>`. Never use `<command>`, `<workdir>`, "
-        "`<timeout_ms>`, `<patch>`, or an unnamed `<parameter>` tag. Emit no prose."
+        "`</function></tool_call>`. Emit no other text."
     )
 
 # The endpoint-side legacy parsers intentionally remain capable of reading their

@@ -85,7 +85,7 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
                 self.assertIn("<parameter=", prompt)
                 self.assertIsNone(re.search(r"<tool_call>\s*\{", prompt))
 
-    def test_every_policy_prompt_forbids_argument_named_xml_tags(self) -> None:
+    def test_every_policy_prompt_uses_positive_only_parameter_guidance(self) -> None:
         webshop_prompt = build_filesystem_conversation_start(
             ActionFormat.REACT,
             surface=PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE,
@@ -100,23 +100,25 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
             with self.subTest(environment=environment):
                 self.assertIn(QWEN_PARAMETER_TAG_CONTRACT, prompt)
                 self.assertIn("<parameter=ARGUMENT_NAME>", prompt)
-                self.assertIn("Never replace it with a tag", prompt)
+                for malformed in ("`<command>`", "`<workdir>`", "`<timeout_ms>`", "`<patch>`"):
+                    self.assertNotIn(malformed, prompt)
 
-    def test_parser_retry_guidance_breaks_malformed_parameter_tag_loop(self) -> None:
+    def test_parser_retry_guidance_is_positive_only(self) -> None:
         observation = append_qwen_parser_retry_guidance(
             "Action rejected by the exact parser.",
             reason="expected_exactly_one_qwen_xml_tool_call",
         )
-        self.assertIn("Do not repeat its markup", observation)
+        self.assertIn("Copy the complete syntax of one matching valid example", observation)
         self.assertIn("<parameter=ARGUMENT_NAME>VALUE</parameter>", observation)
         for malformed in (
             "`<command>`",
             "`<workdir>`",
             "`<timeout_ms>`",
+            "`<patch>`",
             "an unnamed `<parameter>` tag",
         ):
             with self.subTest(malformed=malformed):
-                self.assertIn(malformed, observation)
+                self.assertNotIn(malformed, observation)
 
     def test_webshop_add_file_example_preserves_exact_confirmed_shape(self) -> None:
         prompt = build_filesystem_conversation_start(
