@@ -83,6 +83,12 @@ class SwesmithDatasetTests(unittest.TestCase):
         self.assertEqual(dataset[1].shard_line, 3)
         self.assertEqual(dataset[1].problem_statement, "fix B")
 
+    def test_base_repository_uses_repo_revision_suffix_not_first_dot(self) -> None:
+        row = instance("owner__repo.with.dot.12345678.task_a", "fix A")
+        row["repo"] = "swesmith/owner__repo.with.dot.12345678"
+        dataset = SwesmithDataset(self.write_manifest([row]))
+        self.assertEqual(dataset[0].base_repository, "owner__repo.with.dot")
+
     def test_selection_is_frozen_by_file_hash_and_count(self) -> None:
         rows = [
             instance("owner__repo.12345678.task_a", "fix A"),
