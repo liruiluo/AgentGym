@@ -18,8 +18,7 @@ QWEN_SINGLE_TOOL_CALL_CONTRACT = (
     "Every policy response must contain exactly one Qwen XML `<tool_call>` "
     "envelope and nothing else. Start with `<tool_call>` and end with "
     "`</tool_call>`; do not emit reasoning, prose, Markdown fences, `<think>`, "
-    "bare JSON, or bare tool syntax. Copy one concrete function-call example "
-    "from the prompt and replace only its argument values."
+    "bare JSON, or bare tool syntax."
 )
 
 # The endpoint-side legacy parsers intentionally remain capable of reading their
