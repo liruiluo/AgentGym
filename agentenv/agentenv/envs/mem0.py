@@ -307,7 +307,6 @@ class Mem0EnvClientAdapter(BaseEnvClient):
                     "model": self.config.embedding_model,
                     "api_key": "camg-local",
                     "openai_base_url": self.config.embedding_base_url,
-                    "embedding_dims": self.config.embedding_dims,
                 },
             },
             "history_db_path": str(episode_dir / "history.db"),

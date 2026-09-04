@@ -181,6 +181,10 @@ class Mem0AdapterTests(unittest.TestCase):
             config["embedder"]["config"]["openai_base_url"],
             "http://127.0.0.1:65202/v1",
         )
+        # BGE-M3 has a fixed 1024-dimensional output and rejects the OpenAI
+        # ``dimensions`` request field.  The Qdrant schema still records 1024
+        # above, while the embedder request must leave the native size intact.
+        self.assertNotIn("embedding_dims", config["embedder"]["config"])
         self.assertEqual(config["llm"]["provider"], "openai")
         self.assertTrue(Path(config["history_db_path"]).is_relative_to(self.temp.name))
 
