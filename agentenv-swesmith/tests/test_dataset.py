@@ -31,7 +31,13 @@ class SwesmithDatasetTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def write_manifest(self, rows: list[dict], *, selection: dict | None = None) -> Path:
+    def write_manifest(
+        self,
+        rows: list[dict],
+        *,
+        selection: dict | None = None,
+        role: str = "plumbing",
+    ) -> Path:
         shard = self.root / "train.jsonl"
         shard.write_text(
             "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
@@ -45,7 +51,7 @@ class SwesmithDatasetTests(unittest.TestCase):
                 "repository": "SWE-bench/SWE-smith",
                 "revision": REVISION,
             },
-            "role": "plumbing",
+            "role": role,
             "selection": selection or {"mode": "all_usable"},
             "shards": [
                 {
@@ -94,6 +100,15 @@ class SwesmithDatasetTests(unittest.TestCase):
         self.assertEqual(len(dataset), 1)
         self.assertEqual(dataset[0].instance_id, rows[1]["instance_id"])
         self.assertEqual(dataset.provenance.selection_mode, "instance_ids")
+
+    def test_formal_heldout_role_is_accepted(self) -> None:
+        dataset = SwesmithDataset(
+            self.write_manifest(
+                [instance("owner__repo.12345678.task_a", "fix")],
+                role="formal_heldout",
+            )
+        )
+        self.assertEqual(dataset.provenance.role, "formal_heldout")
 
     def test_opaque_instance_identity_is_never_accepted_as_data_idx(self) -> None:
         dataset = SwesmithDataset(
