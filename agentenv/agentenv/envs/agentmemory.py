@@ -1649,25 +1649,11 @@ def build_filesystem_conversation_start(
     # mixing bare browser/Codex actions.  Keep the constructor argument for API
     # compatibility, but expose one policy grammar for every filesystem route.
     _ = action_format
-    function_descriptions = list(AGENTMEMORY_FILESYSTEM_FUNCTION_DESCRIPTION)
-    if surface == INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE:
-        function_descriptions.append(AGENTMEMORY_ASK_FUNCTION_DESCRIPTION)
-    tool_manifest = "\n".join(
-        json.dumps(
-            _openai_function_schema(function),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        for function in function_descriptions
-    )
     interface = (
         "You are operating a programmatically generated AgentMemoryGym WebShop "
         "task with six shopping sessions and a private persistent workspace. "
         + QWEN_SINGLE_TOOL_CALL_CONTRACT
-        + "\n\n<tools>\n"
-        + tool_manifest
-        + "\n</tools>\n\n"
+        + "\n\n"
         "The WebShop backend exposes only the `search` and `click` functions through "
         "the complete Qwen XML envelope above. Use the search function with exactly "
         "one non-empty keywords string. Use the click function with exactly "
@@ -1761,6 +1747,12 @@ def build_filesystem_conversation_start(
             "Do not read the profile merely by habit; read the profile when the current "
             "request omits the preference, and follow explicit current requirements directly."
         )
+    interface += (
+        "\n\nInitial-action contract: when Progress is 0/6 and the observation "
+        "lists approved cards but no search-result page, the next function must be "
+        "search with one approved full product title. Never call click with item "
+        "`search`; click items must be copied from currently displayed clickable values."
+    )
     return (
         ConversationMessage({"from": "human", "loss": None, "value": interface}),
         ConversationMessage({"from": "gpt", "loss": False, "value": "Ok."}),
@@ -2758,6 +2750,14 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 "AgentMemory formal policy system prompt was not configured"
             )
         return [{"role": "system", "content": self._policy_system_prompt}]
+
+    def policy_tool_schemas(self) -> list[dict[str, Any]] | None:
+        if not self.is_filesystem:
+            return None
+        schemas = deepcopy(list(_WEBSHOP_QWEN_TOOL_SCHEMAS))
+        if self.adapter_cls.allow_ask:
+            schemas.append(deepcopy(_WEBSHOP_QWEN_ASK_TOOL_SCHEMA))
+        return schemas
 
     def normalize_initial_policy_context(
         self,

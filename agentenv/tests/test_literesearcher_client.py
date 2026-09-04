@@ -65,9 +65,14 @@ class LiteResearcherClientTests(unittest.TestCase):
         return client
 
     def test_prompt_uses_exact_native_tool_and_workspace_formats(self) -> None:
-        self.assertIn("# Tools", LITERESEARCHER_SYSTEM_PROMPT)
-        self.assertIn('"name": "search"', LITERESEARCHER_SYSTEM_PROMPT)
-        self.assertIn('"name": "visit"', LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertNotIn("<tools>", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertEqual(
+            [
+                schema["function"]["name"]
+                for schema in self._client().policy_tool_schemas()
+            ],
+            ["search", "visit", "shell_command", "apply_patch", "answer"],
+        )
         self.assertIn("<function=search>", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("<function=visit>", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("MUST be a JSON array", LITERESEARCHER_SYSTEM_PROMPT)
@@ -80,14 +85,12 @@ class LiteResearcherClientTests(unittest.TestCase):
             '<tool_call>\n{"name":',
             LITERESEARCHER_SYSTEM_PROMPT,
         )
-        self.assertIn('"name": "shell_command"', LITERESEARCHER_SYSTEM_PROMPT)
-        self.assertIn('"name": "apply_patch"', LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("<function=shell_command>", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("<parameter=command>", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("<function=apply_patch>", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("<parameter=patch>", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn(
-            "never mix XML with a bare Codex-style action",
+            "Never mix the native Qwen XML envelope with a bare Codex-style action",
             LITERESEARCHER_SYSTEM_PROMPT,
         )
         self.assertIn("persists across context compaction", LITERESEARCHER_SYSTEM_PROMPT)

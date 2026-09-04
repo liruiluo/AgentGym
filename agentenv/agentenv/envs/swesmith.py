@@ -222,11 +222,7 @@ SWE_POLICY_SYSTEM_PROMPT = (
     "not a chat channel. Reason silently. "
     + QWEN_SINGLE_TOOL_CALL_CONTRACT
     + " Never prefix an action with narration such as 'Let me' or 'I found'.\n\n"
-    "# Exact tool syntax\n"
-    "<tools>\n"
-    '{"type":"function","function":{"name":"shell_command","description":"Run one command in the persistent /testbed workspace.","parameters":{"type":"object","properties":{"command":{"type":"string"},"workdir":{"type":"string"},"timeout_ms":{"type":"integer","minimum":1}},"required":["command"],"additionalProperties":false}}}\n'
-    '{"type":"function","function":{"name":"apply_patch","description":"Apply one bounded patch in the persistent workspace.","parameters":{"type":"object","properties":{"patch":{"type":"string"}},"required":["patch"],"additionalProperties":false}}}\n'
-    "</tools>\n"
+    "# Exact tool syntax\n\n"
     "For inspection, editing, or tests, output exactly one Qwen XML tool call. "
     "For a shell command, use exactly this shape:\n"
     "<tool_call>\n"
@@ -495,6 +491,9 @@ class SwesmithEnvClient(BaseEnvClient):
 
     def policy_framing(self) -> list[dict[str, str]]:
         return [{"role": "system", "content": SWE_POLICY_SYSTEM_PROMPT}]
+
+    def policy_tool_schemas(self) -> list[dict[str, Any]]:
+        return deepcopy(list(_SWE_QWEN_TOOL_SCHEMAS))
 
     def normalize_initial_policy_context(
         self,

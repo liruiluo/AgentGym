@@ -174,19 +174,8 @@ LITERESEARCHER_POLICY_CONTINUATION_MARKER = (
 )
 
 
-LITERESEARCHER_SYSTEM_PROMPT = """# Tools
-
-""" + QWEN_SINGLE_TOOL_CALL_CONTRACT + """
-You have access to the following functions. Every function call uses the same
-Qwen XML envelope shown below; never mix XML with a bare Codex-style action.
-
-<tools>
-{"type": "function", "function": {"name": "search", "description": "Search the released web corpus with one or more queries.", "parameters": {"type": "object", "properties": {"query": {"type": "array", "items": {"type": "string"}, "minItems": 1}}, "required": ["query"]}}}
-{"type": "function", "function": {"name": "visit", "description": "Visit one opaque URL returned by search.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "goal": {"type": "string"}, "page": {"type": "integer", "minimum": 1}}, "required": ["url", "goal"]}}}
-{"type": "function", "function": {"name": "shell_command", "description": "Run a networkless command in the episode-private persistent workspace.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "workdir": {"type": "string"}, "timeout_ms": {"type": "integer", "minimum": 1}}, "required": ["command"]}}}
-{"type": "function", "function": {"name": "apply_patch", "description": "Apply one patch to files in the episode-private persistent workspace.", "parameters": {"type": "object", "properties": {"patch": {"type": "string"}}, "required": ["patch"]}}}
-{"type": "function", "function": {"name": "answer", "description": "Return the final evidence-backed answer and terminate the episode.", "parameters": {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]}}}
-</tools>
+LITERESEARCHER_SYSTEM_PROMPT = QWEN_SINGLE_TOOL_CALL_CONTRACT + """
+Use only functions from the native Tools section above. Never mix the native Qwen XML envelope with a bare Codex-style action.
 
 For a search, use this complete form. The query value MUST be a JSON array of
 one or more non-empty strings, never a single string:
@@ -509,6 +498,9 @@ class LiteResearcherEnvClient(BaseEnvClient):
         """Expose the exact immutable prompt used by this wrapper."""
 
         return [{"role": "system", "content": LITERESEARCHER_SYSTEM_PROMPT}]
+
+    def policy_tool_schemas(self) -> list[dict[str, Any]]:
+        return deepcopy(list(_LITERESEARCHER_QWEN_TOOL_SCHEMAS))
 
     def normalize_initial_policy_context(
         self,

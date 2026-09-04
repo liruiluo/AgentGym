@@ -10,22 +10,31 @@ from agentenv.envs.agentmemory import (
     FILESYSTEM_WEBSHOP_SURFACES,
     INTENT_CLARIFICATION_FILESYSTEM_WEBSHOP_SURFACE,
     PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE,
+    FilesystemAgentMemoryAdapter,
+    IntentClarificationFilesystemAgentMemoryAdapter,
+    _WEBSHOP_QWEN_ASK_TOOL_SCHEMA,
+    _WEBSHOP_QWEN_TOOL_SCHEMAS,
     build_filesystem_conversation_start,
     normalize_filesystem_webshop_policy_action,
     normalize_filesystem_webshop_policy_observation,
 )
 from agentenv.envs.literesearcher import (
     LITERESEARCHER_SYSTEM_PROMPT,
+    LiteResearcherEnvClient,
+    _LITERESEARCHER_QWEN_TOOL_SCHEMAS,
     normalize_literesearcher_policy_action,
 )
 from agentenv.envs.openmle_fast import (
     OPENMLE_FAST_POLICY_SYSTEM_PROMPT,
     OpenMLEFastEnvClient,
+    _OPENMLE_QWEN_TOOL_SCHEMAS,
     _normalize_openmle_policy_action,
     normalize_openmle_policy_observation,
 )
 from agentenv.envs.swesmith import (
     SWE_POLICY_SYSTEM_PROMPT,
+    SwesmithEnvClient,
+    _SWE_QWEN_TOOL_SCHEMAS,
     normalize_swesmith_policy_action,
 )
 from agentenv.envs.verl_qwen_tool_parser import (
@@ -65,6 +74,95 @@ def qwen_call(name: str, **parameters: object) -> str:
 
 
 class FourEnvironmentQwenActionContractTest(unittest.TestCase):
+
+    @staticmethod
+    def _policy_prompts() -> dict[str, str]:
+        return {
+            "webshop": build_filesystem_conversation_start(
+                ActionFormat.REACT,
+                surface=PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE,
+            )[0]["value"],
+            "swesmith": SWE_POLICY_SYSTEM_PROMPT,
+            "literesearcher": LITERESEARCHER_SYSTEM_PROMPT,
+            "openmle_fast": OPENMLE_FAST_POLICY_SYSTEM_PROMPT,
+        }
+
+    def test_native_template_owns_tool_manifests(self) -> None:
+        for environment, prompt in self._policy_prompts().items():
+            with self.subTest(environment=environment):
+                self.assertNotIn("<tools>", prompt)
+                self.assertNotRegex(prompt, r'"type"\s*:\s*"function"')
+                self.assertNotIn("Copy one concrete function-call example", prompt)
+                self.assertNotIn("example_function_name", prompt)
+                self.assertNotIn("FUNCTION_NAME", prompt)
+                self.assertNotIn("ARGUMENT_NAME", prompt)
+
+    def test_wrappers_expose_the_exact_parser_tool_schemas(self) -> None:
+        webshop = object.__new__(AgentMemoryEnvClient)
+        webshop.is_filesystem = True
+        webshop.adapter_cls = FilesystemAgentMemoryAdapter
+        self.assertEqual(
+            webshop.policy_tool_schemas(), list(_WEBSHOP_QWEN_TOOL_SCHEMAS)
+        )
+
+        clarification = object.__new__(AgentMemoryEnvClient)
+        clarification.is_filesystem = True
+        clarification.adapter_cls = IntentClarificationFilesystemAgentMemoryAdapter
+        self.assertEqual(
+            clarification.policy_tool_schemas(),
+            [*_WEBSHOP_QWEN_TOOL_SCHEMAS, _WEBSHOP_QWEN_ASK_TOOL_SCHEMA],
+        )
+
+        legacy = object.__new__(AgentMemoryEnvClient)
+        legacy.is_filesystem = False
+        legacy.adapter_cls = FilesystemAgentMemoryAdapter
+        self.assertIsNone(legacy.policy_tool_schemas())
+
+        fixed = (
+            (SwesmithEnvClient, _SWE_QWEN_TOOL_SCHEMAS),
+            (LiteResearcherEnvClient, _LITERESEARCHER_QWEN_TOOL_SCHEMAS),
+            (OpenMLEFastEnvClient, _OPENMLE_QWEN_TOOL_SCHEMAS),
+        )
+        for client_type, schemas in fixed:
+            with self.subTest(client=client_type.__name__):
+                client = object.__new__(client_type)
+                self.assertEqual(client.policy_tool_schemas(), list(schemas))
+
+        openmle = object.__new__(OpenMLEFastEnvClient)
+        shell_schema = openmle.policy_tool_schemas()[0]["function"]["parameters"]
+        self.assertEqual(
+            shell_schema["properties"]["timeout_ms"],
+            {"type": "integer", "minimum": 1, "maximum": 20_000},
+        )
+
+        copied = webshop.policy_tool_schemas()
+        assert copied is not None
+        copied[0]["function"]["name"] = "mutated"
+        self.assertNotEqual(
+            webshop.policy_tool_schemas()[0]["function"]["name"], "mutated"
+        )
+
+    def test_first_action_lifecycle_guards_are_wrapper_owned(self) -> None:
+        prompts = self._policy_prompts()
+        self.assertIn(
+            "when Progress is 0/6 and the observation lists approved cards but "
+            "no search-result page, the next function must be search",
+            prompts["webshop"],
+        )
+        self.assertIn(
+            "Never call click with item `search`",
+            prompts["webshop"],
+        )
+        self.assertIn(
+            "when only the task description is visible and no public file has "
+            "been inspected, the next function must be shell_command",
+            prompts["openmle_fast"],
+        )
+        self.assertIn(
+            "Do not call apply_patch before at least one successful inspection action",
+            prompts["openmle_fast"],
+        )
+
     def test_every_policy_prompt_teaches_native_qwen_xml_not_wrapped_json(self) -> None:
         webshop_prompt = build_filesystem_conversation_start(
             ActionFormat.REACT,

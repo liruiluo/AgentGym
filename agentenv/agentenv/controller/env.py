@@ -1,5 +1,5 @@
 from abc import ABCMeta, abstractmethod
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from .types import (
     ActionFormat,
@@ -51,6 +51,11 @@ class BaseEnvClient(metaclass=ABCMeta):
         with a formal runtime prompt can expose it here so dataset bootstrap and
         online rollout bind the same framing.
         """
+
+        return None
+
+    def policy_tool_schemas(self) -> Sequence[Mapping[str, Any]] | None:
+        """Return wrapper-owned tool schemas for the model chat template."""
 
         return None
 
