@@ -31,7 +31,13 @@ class SwesmithDatasetTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def write_manifest(self, rows: list[dict], *, selection: dict | None = None) -> Path:
+    def write_manifest(
+        self,
+        rows: list[dict],
+        *,
+        selection: dict | None = None,
+        role: str = "plumbing",
+    ) -> Path:
         shard = self.root / "train.jsonl"
         shard.write_text(
             "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
@@ -45,7 +51,7 @@ class SwesmithDatasetTests(unittest.TestCase):
                 "repository": "SWE-bench/SWE-smith",
                 "revision": REVISION,
             },
-            "role": "plumbing",
+            "role": role,
             "selection": selection or {"mode": "all_usable"},
             "shards": [
                 {
@@ -76,6 +82,15 @@ class SwesmithDatasetTests(unittest.TestCase):
         self.assertEqual(dataset[1].physical_index, 2)
         self.assertEqual(dataset[1].shard_line, 3)
         self.assertEqual(dataset[1].problem_statement, "fix B")
+
+    def test_formal_heldout_role_is_accepted_for_frozen_evaluation(self) -> None:
+        manifest = self.write_manifest(
+            [instance("owner__repo.12345678.task_a", "fix A")],
+            role="formal_heldout",
+        )
+        dataset = SwesmithDataset(manifest)
+        self.assertEqual(dataset.provenance.role, "formal_heldout")
+        self.assertEqual(len(dataset), 1)
 
     def test_selection_is_frozen_by_file_hash_and_count(self) -> None:
         rows = [

@@ -10,7 +10,7 @@ from typing import Any, Mapping
 
 DATASET_MANIFEST_SCHEMA = "swesmith_jsonl_manifest_v1"
 UPSTREAM_REPOSITORY = "SWE-bench/SWE-smith"
-DATASET_ROLES = frozenset({"plumbing", "train", "heldout"})
+DATASET_ROLES = frozenset({"plumbing", "train", "heldout", "formal_heldout"})
 
 
 class SwesmithDatasetError(RuntimeError):
