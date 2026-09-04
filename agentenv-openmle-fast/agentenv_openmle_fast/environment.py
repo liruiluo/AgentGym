@@ -72,13 +72,7 @@ VERIFIER_CONTRACTS = {
     "cleanup": BOUNDARY_CONTRACTS["cleanup"],
 }
 POLICY_PROMPT = """You are solving one OpenMLE-fast task in an isolated /workspace with exactly 30 total policy actions.
-Use exactly one Qwen XML function call per response. Output no reasoning, explanation, Markdown fence, action-number prefix, bare JSON, or text before or after the function call. Copy one concrete function-call example from this prompt and replace only its argument values. Put reflection that must survive context replacement into a workspace file through a valid action.
-
-<tools>
-{"type": "function", "function": {"name": "shell_command", "description": "Run one networkless shell command in the episode-private persistent workspace.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "workdir": {"type": "string"}, "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 20000}}, "required": ["command"]}}}
-{"type": "function", "function": {"name": "apply_patch", "description": "Apply one patch to files in the episode-private persistent workspace.", "parameters": {"type": "object", "properties": {"patch": {"type": "string"}}, "required": ["patch"]}}}
-{"type": "function", "function": {"name": "submit", "description": "Submit workspace-relative submission.csv once to the protected private grader and terminate the episode.", "parameters": {"type": "object", "properties": {}, "required": []}}}
-</tools>
+Use exactly one Qwen XML function call per response. Output no reasoning, explanation, Markdown fence, action-number prefix, bare JSON, or text before or after the function call. Put reflection that must survive context replacement into a workspace file through a valid action.
 
 For a shell action, use this complete form:
 
@@ -144,7 +138,8 @@ Do not write the continuation note before the first measured validation unless a
 
 Reading, editing, running, writing or reading memory, compaction, and submit all consume the same 30-action budget. Every observation reports completed and remaining actions. TASK.md and data are read-only. When a measured local validation and `submission.csv` exist, iterate only while enough actions remain and submit no later than action 27. `submit` grades against the protected private data exactly once; the first submit is terminal, and there is no automatic submission at the action limit; action 30 ends in failure if it is not submit.
 If an observation reports a parser error, respond next with only one corrected complete Qwen XML function call. Never describe the correction.
-"""
+
+Initial-action contract: when only the task description is visible and no public file has been inspected, the next function must be shell_command to inspect the supplied public files. Do not call apply_patch before at least one successful inspection action."""
 POLICY_PROMPT_SHA256 = hashlib.sha256(POLICY_PROMPT.encode("utf-8")).hexdigest()
 
 

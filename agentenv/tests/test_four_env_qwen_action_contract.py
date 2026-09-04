@@ -41,6 +41,10 @@ from agentenv.envs.verl_qwen_tool_parser import (
     QWEN_INVALID_ACTION_SENTINEL,
     describe_inert_qwen_function_record,
 )
+from agentenv_openmle_fast.environment import (
+    POLICY_PROMPT as OPENMLE_FAST_ENDPOINT_POLICY_PROMPT,
+    POLICY_PROMPT_SHA256 as OPENMLE_FAST_ENDPOINT_POLICY_PROMPT_SHA256,
+)
 
 
 _INERT_VALUE_RE = re.compile(
@@ -86,6 +90,20 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
             "literesearcher": LITERESEARCHER_SYSTEM_PROMPT,
             "openmle_fast": OPENMLE_FAST_POLICY_SYSTEM_PROMPT,
         }
+
+    def test_openmle_client_and_endpoint_share_one_prompt_contract(self) -> None:
+        import hashlib
+
+        self.assertEqual(
+            OPENMLE_FAST_POLICY_SYSTEM_PROMPT,
+            OPENMLE_FAST_ENDPOINT_POLICY_PROMPT,
+        )
+        self.assertEqual(
+            hashlib.sha256(
+                OPENMLE_FAST_POLICY_SYSTEM_PROMPT.encode("utf-8")
+            ).hexdigest(),
+            OPENMLE_FAST_ENDPOINT_POLICY_PROMPT_SHA256,
+        )
 
     def test_native_template_owns_tool_manifests(self) -> None:
         for environment, prompt in self._policy_prompts().items():
