@@ -48,6 +48,32 @@ class VisibleAsinFakeNativeBackend(FakeNativeBackend):
 
 
 class FilesystemNativeSmokeContractTests(unittest.TestCase):
+    def test_reset_info_exposes_native_orbit_identity(self) -> None:
+        pool, records, prices = make_fixture_pool(1)
+        provider = VerifiedProceduralBundleProvider(
+            generator=NaturalAttributeChainGenerator(pool=pool, seed=233),
+            split="test",
+            task_count=2,
+            start_orbit=7,
+        )
+        backend = VisibleAsinFakeNativeBackend(records, prices)
+        with tempfile.TemporaryDirectory() as temporary:
+            env = ProceduralFilesystemWebShopEnv(
+                provider=provider,
+                backend=backend,
+                env_uid="filesystem-native-orbit-identity",
+                shell_sandbox=InProcessTestShellSandbox(),
+                workspace_root_parent=Path(temporary),
+            )
+            try:
+                _, info = env.reset(data_idx=1)
+                self.assertEqual(provider.get(1).orbit_index, 7)
+                self.assertEqual(info["orbit_index"], 7)
+                self.assertEqual(info["scenario_id"], provider.get(1).scenario_id)
+            finally:
+                env.close()
+                backend.close()
+
     def test_four_intervention_arms_and_cleanup(self) -> None:
         pool, records, prices = make_fixture_pool(1)
         provider = VerifiedProceduralBundleProvider(

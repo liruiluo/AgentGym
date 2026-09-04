@@ -866,6 +866,7 @@ class ProceduralMemoryBundle:
     budget_cents: int
     split: str
     orbit_id: str
+    orbit_index: int
     scenario_id: str
     proof_sha256: str
     generator_version: str
@@ -878,6 +879,14 @@ class ProceduralMemoryBundle:
         require_id(self.generator_version, field="bundle generator_version")
         require_sha256(self.proof_sha256, field="bundle proof_sha256")
         require_sha256(self.product_pool_sha256, field="bundle product_pool_sha256")
+        if (
+            isinstance(self.orbit_index, bool)
+            or not isinstance(self.orbit_index, int)
+            or self.orbit_index < 0
+        ):
+            raise ProceduralMemoryDataError(
+                "bundle orbit_index must be a non-negative integer."
+            )
         if (
             len(self.questions) != 6
             or len(self.target_asins) != 6
