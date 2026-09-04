@@ -14,39 +14,13 @@ from dataclasses import dataclass
 from typing import Any
 
 
-QWEN_PARAMETER_TAG_CONTRACT = (
-    "Encode every function argument with the literal Qwen form "
-    "`<parameter=ARGUMENT_NAME>VALUE</parameter>`. Copy each argument name "
-    "exactly from the selected function's schema and close every argument with "
-    "`</parameter>`."
-)
-
 QWEN_SINGLE_TOOL_CALL_CONTRACT = (
     "Every policy response must contain exactly one Qwen XML `<tool_call>` "
     "envelope and nothing else. Start with `<tool_call>` and end with "
     "`</tool_call>`; do not emit reasoning, prose, Markdown fences, `<think>`, "
-    "bare JSON, or bare tool syntax. "
-    + QWEN_PARAMETER_TAG_CONTRACT
+    "bare JSON, or bare tool syntax. Copy one concrete function-call example "
+    "from the prompt and replace only its argument values."
 )
-
-
-def append_qwen_parser_retry_guidance(observation: str, *, reason: str) -> str:
-    """Add one concise, task-neutral syntax correction after a rejected call."""
-
-    if not isinstance(observation, str):
-        raise TypeError("Qwen parser retry observation must be text")
-    if not isinstance(reason, str) or not reason.strip():
-        raise ValueError("Qwen parser retry reason must be non-empty text")
-    return (
-        observation.rstrip()
-        + "\n\nQwen XML correction: the previous response was rejected ("
-        + reason.strip()
-        + "). Copy the complete syntax of one matching valid example from the "
-        "system message. Start with `<tool_call>`, choose one listed "
-        "`<function=FUNCTION_NAME>` block, encode each declared argument as "
-        "`<parameter=ARGUMENT_NAME>VALUE</parameter>`, and end with "
-        "`</function></tool_call>`. Emit no other text."
-    )
 
 # The endpoint-side legacy parsers intentionally remain capable of reading their
 # canonical internal actions. Policy-facing clients replace malformed/non-XML

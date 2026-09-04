@@ -72,7 +72,7 @@ VERIFIER_CONTRACTS = {
     "cleanup": BOUNDARY_CONTRACTS["cleanup"],
 }
 POLICY_PROMPT = """You are solving one OpenMLE-fast task in an isolated /workspace with exactly 30 total policy actions.
-Use exactly one Qwen XML function call per response. Output no reasoning, explanation, Markdown fence, action-number prefix, bare JSON, or text before or after the function call. Encode every function argument with the literal Qwen form `<parameter=ARGUMENT_NAME>VALUE</parameter>`. Copy each argument name exactly from the selected function's schema and close every argument with `</parameter>`. Put reflection that must survive context replacement into a workspace file through a valid action.
+Use exactly one Qwen XML function call per response. Output no reasoning, explanation, Markdown fence, action-number prefix, bare JSON, or text before or after the function call. Copy one concrete function-call example from this prompt and replace only its argument values. Put reflection that must survive context replacement into a workspace file through a valid action.
 
 <tools>
 {"type": "function", "function": {"name": "shell_command", "description": "Run one networkless shell command in the episode-private persistent workspace.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "workdir": {"type": "string"}, "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 20000}}, "required": ["command"]}}}

@@ -30,8 +30,6 @@ from agentenv.envs.swesmith import (
 )
 from agentenv.envs.verl_qwen_tool_parser import (
     QWEN_INVALID_ACTION_SENTINEL,
-    QWEN_PARAMETER_TAG_CONTRACT,
-    append_qwen_parser_retry_guidance,
     describe_inert_qwen_function_record,
 )
 
@@ -85,7 +83,7 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
                 self.assertIn("<parameter=", prompt)
                 self.assertIsNone(re.search(r"<tool_call>\s*\{", prompt))
 
-    def test_every_policy_prompt_uses_positive_only_parameter_guidance(self) -> None:
+    def test_every_policy_prompt_uses_examples_without_abstract_metasyntax(self) -> None:
         webshop_prompt = build_filesystem_conversation_start(
             ActionFormat.REACT,
             surface=PROCEDURAL_FILESYSTEM_WEBSHOP_SURFACE,
@@ -98,27 +96,10 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
         }
         for environment, prompt in prompts.items():
             with self.subTest(environment=environment):
-                self.assertIn(QWEN_PARAMETER_TAG_CONTRACT, prompt)
-                self.assertIn("<parameter=ARGUMENT_NAME>", prompt)
-                for malformed in ("`<command>`", "`<workdir>`", "`<timeout_ms>`", "`<patch>`"):
-                    self.assertNotIn(malformed, prompt)
-
-    def test_parser_retry_guidance_is_positive_only(self) -> None:
-        observation = append_qwen_parser_retry_guidance(
-            "Action rejected by the exact parser.",
-            reason="expected_exactly_one_qwen_xml_tool_call",
-        )
-        self.assertIn("Copy the complete syntax of one matching valid example", observation)
-        self.assertIn("<parameter=ARGUMENT_NAME>VALUE</parameter>", observation)
-        for malformed in (
-            "`<command>`",
-            "`<workdir>`",
-            "`<timeout_ms>`",
-            "`<patch>`",
-            "an unnamed `<parameter>` tag",
-        ):
-            with self.subTest(malformed=malformed):
-                self.assertNotIn(malformed, observation)
+                self.assertNotIn("<parameter=ARGUMENT_NAME>", prompt)
+                self.assertNotIn("<parameter=ARGUMENT_NAME>VALUE</parameter>", prompt)
+                self.assertRegex(prompt, r"<parameter=[a-z][a-z0-9_]*>")
+                self.assertIn("</parameter>", prompt)
 
     def test_webshop_add_file_example_preserves_exact_confirmed_shape(self) -> None:
         prompt = build_filesystem_conversation_start(

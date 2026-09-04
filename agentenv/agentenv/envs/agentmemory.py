@@ -62,7 +62,6 @@ from .webshop_handoff import (
 from .verl_qwen_tool_parser import (
     QWEN_INVALID_ACTION_SENTINEL,
     QWEN_SINGLE_TOOL_CALL_CONTRACT,
-    append_qwen_parser_retry_guidance,
     describe_inert_qwen_function_record,
     parse_single_qwen3_tool_call,
 )
@@ -3190,16 +3189,6 @@ class AgentMemoryEnvClient(BaseEnvClient):
             policy_observation = normalize_filesystem_webshop_policy_observation(
                 str(policy_observation)
             )
-        if (
-            self.is_filesystem
-            and parser_evidence.get("tool_parser_normalized") is False
-            and not bool(response["done"])
-        ):
-            policy_observation = append_qwen_parser_retry_guidance(
-                str(policy_observation),
-                reason=str(parser_evidence["tool_parser_error"]),
-            )
-            native_wrapper_evidence["qwen_parser_retry_guidance"] = True
         if (
             bool(response["done"])
             or session_advanced

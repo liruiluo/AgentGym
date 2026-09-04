@@ -42,8 +42,6 @@ from .filesystem_checkpoint import (
 )
 from .verl_qwen_tool_parser import (
     QWEN_INVALID_ACTION_SENTINEL,
-    QWEN_PARAMETER_TAG_CONTRACT,
-    append_qwen_parser_retry_guidance,
     describe_inert_qwen_function_record,
     parse_single_qwen3_tool_call,
 )
@@ -53,10 +51,9 @@ OPENMLE_FAST_POLICY_SYSTEM_PROMPT = (
     "exactly 30 total policy actions.\n"
     "Use exactly one Qwen XML function call per response. Output no reasoning, "
     "explanation, Markdown fence, action-number prefix, bare JSON, or text before "
-    "or after the function call. "
-    + QWEN_PARAMETER_TAG_CONTRACT
-    + " Put reflection that must survive context replacement into a workspace "
-    "file through a valid action.\n\n"
+    "or after the function call. Copy one concrete function-call example from "
+    "this prompt and replace only its argument values. Put reflection that must "
+    "survive context replacement into a workspace file through a valid action.\n\n"
     """<tools>
 {"type": "function", "function": {"name": "shell_command", "description": "Run one networkless shell command in the episode-private persistent workspace.", "parameters": {"type": "object", "properties": {"command": {"type": "string"}, "workdir": {"type": "string"}, "timeout_ms": {"type": "integer", "minimum": 1, "maximum": 20000}}, "required": ["command"]}}}
 {"type": "function", "function": {"name": "apply_patch", "description": "Apply one patch to files in the episode-private persistent workspace.", "parameters": {"type": "object", "properties": {"patch": {"type": "string"}}, "required": ["patch"]}}}
@@ -896,12 +893,6 @@ class OpenMLEFastEnvClient(BaseEnvClient):
             self._checkpoint_write_retry_framing = None
             self._pending_checkpoint_read = None
             self._pending_checkpoint_read_framing = None
-        if parser_evidence["tool_parser_normalized"] is False and not done:
-            policy_state = append_qwen_parser_retry_guidance(
-                policy_state,
-                reason=str(parser_evidence["tool_parser_error"]),
-            )
-            wrapper_evidence["qwen_parser_retry_guidance"] = True
         return StepOutput(
             state=policy_state,
             reward=reward,
