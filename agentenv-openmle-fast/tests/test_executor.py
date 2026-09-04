@@ -109,6 +109,11 @@ class OpenMLEFastExecutorTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def test_frozen_grader_timeout_headroom(self) -> None:
+        self.assertEqual(self.limits.grader_worker_wall_ms, 8_000)
+        self.assertEqual(self.limits.grader_total_wall_ms, 10_000)
+
+
     def test_shell_receipt_is_bounded_and_honest_about_local_coverage(self) -> None:
         action = parse_policy_action(
             "shell_command "

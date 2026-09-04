@@ -9,10 +9,15 @@ from agentenv.envs.openmle_fast import (
     OPENMLE_FAST_POLICY_SYSTEM_PROMPT,
     OPENMLE_POLICY_CONTINUATION_MARKER,
     OPENMLE_QWEN_XML_CHECKPOINT_GUIDANCE,
+    _FROZEN_RESOURCE_LIMITS,
 )
 
 
 class OpenMLECheckpointPromptAlignmentTest(unittest.TestCase):
+    def test_frozen_grader_timeout_headroom(self) -> None:
+        self.assertEqual(_FROZEN_RESOURCE_LIMITS["grader_worker_wall_ms"], 8_000)
+        self.assertEqual(_FROZEN_RESOURCE_LIMITS["grader_total_wall_ms"], 10_000)
+
     def test_dynamic_request_repeats_qwen_xml_checkpoint_action(self) -> None:
         expected_action = """<tool_call>
 <function=shell_command>

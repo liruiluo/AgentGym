@@ -29,7 +29,7 @@ class OpenMLEFastLaunchTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "episode-capped step"):
             _validate_timeout_margins(
                 limits=self.limits,
-                grader_timeout=7.0,
+                grader_timeout=15.0,
                 grader_margin=1.0,
                 client_timeout=30.0,
                 client_margin=5.0,
@@ -38,7 +38,7 @@ class OpenMLEFastLaunchTest(unittest.TestCase):
     def test_timeout_margins_accept_frozen_safe_values(self) -> None:
         _validate_timeout_margins(
             limits=self.limits,
-            grader_timeout=7.0,
+            grader_timeout=15.0,
             grader_margin=1.0,
             client_timeout=200.0,
             client_margin=5.0,
