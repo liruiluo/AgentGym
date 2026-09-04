@@ -84,6 +84,31 @@ class SwesmithRecord:
     def problem_statement(self) -> str:
         return str(self.instance["problem_statement"])
 
+    @property
+    def base_repository(self) -> str:
+        repo = str(self.instance["repo"]).strip()
+        prefix = "swesmith/"
+        if not repo.startswith(prefix):
+            raise SwesmithDatasetError(
+                f"SWE-smith repo has no {prefix!r} prefix: {repo!r}"
+            )
+        repository, separator, revision = repo[len(prefix) :].rpartition(".")
+        if (
+            not separator
+            or not repository
+            or len(revision) != 8
+            or any(character not in "0123456789abcdef" for character in revision)
+        ):
+            raise SwesmithDatasetError(
+                f"SWE-smith repo has no terminal 8-hex revision: {repo!r}"
+            )
+        expected_prefix = f"{repository}.{revision}."
+        if not self.instance_id.startswith(expected_prefix):
+            raise SwesmithDatasetError(
+                "SWE-smith repo and instance_id repository/revision disagree"
+            )
+        return repository
+
 
 @dataclass(frozen=True)
 class _IndexedLine:

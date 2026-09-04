@@ -446,7 +446,7 @@ class SwesmithEpisodeManager:
                 "data_idx": episode.record.data_idx,
                 "physical_index": episode.record.physical_index,
                 "instance_id": episode.record.instance_id,
-                "base_repository": str(episode.record.instance["repo"]),
+                "base_repository": episode.record.base_repository,
                 "step_count": episode.step_count,
                 "done": episode.done,
                 "reward": episode.reward,
