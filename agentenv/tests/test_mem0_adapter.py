@@ -10,6 +10,7 @@ from agentenv.controller.env import BaseEnvClient
 from agentenv.controller.types import (
     CONTEXT_OPERATION_APPEND,
     CONTEXT_OPERATION_REPLACE,
+    PolicyActionBudget,
     StepOutput,
     build_task_neutral_context_transition,
     build_task_neutral_transition_info,
@@ -161,6 +162,11 @@ class Mem0AdapterTests(unittest.TestCase):
         ]
         self.adapter.bind_policy_context(messages, initial=True)
 
+    def bind_budget(self, *, maximum: int = 30, consumed: int = 0) -> None:
+        self.adapter.bind_policy_action_budget(
+            PolicyActionBudget(maximum_steps=maximum, consumed_steps=consumed)
+        )
+
     def tearDown(self) -> None:
         self.adapter.close()
         self.temp.cleanup()
@@ -189,6 +195,7 @@ class Mem0AdapterTests(unittest.TestCase):
         self.assertTrue(Path(config["history_db_path"]).is_relative_to(self.temp.name))
 
     def test_non_boundary_is_passthrough_with_zero_hidden_cost(self) -> None:
+        self.bind_budget()
         output = self.adapter.step('shell_command {"command":"pwd"}')
         self.assertEqual(output.reward, 0.5)
         evidence = output.info["wrapper_evidence"]["mem0_adapter"]
@@ -197,9 +204,25 @@ class Mem0AdapterTests(unittest.TestCase):
         self.assertEqual(evidence["operation_counts"], {})
         self.assertEqual(evidence["source_revision"], MEM0_SOURCE_REVISION)
         self.assertEqual(self.factory.instances[-1].add_calls, [])
+        self.assertEqual(
+            output.info["action_budget"],
+            {
+                "schema": "agentmemory_task_neutral_action_budget_v1",
+                "maximum_steps": 30,
+                "consumed_steps_before": 0,
+                "policy_action_steps": 1,
+                "auxiliary_steps": 0,
+                "required_auxiliary_steps": 0,
+                "consumed_steps_after": 1,
+                "remaining_steps_after": 29,
+                "atomic_operation_blocked": False,
+                "terminate_after_action": False,
+            },
+        )
 
     def test_replace_boundary_runs_official_add_search_and_injects_results(self) -> None:
         self.native.replace_next = True
+        self.bind_budget()
         output = self.adapter.step('shell_command {"command":"run tests"}')
         memory = self.factory.instances[-1]
         self.assertEqual(len(memory.add_calls), 1)
@@ -219,9 +242,40 @@ class Mem0AdapterTests(unittest.TestCase):
         self.assertEqual(evidence["operation_counts"]["add"], 1)
         self.assertEqual(evidence["operation_counts"]["search"], 1)
         self.assertEqual(evidence["operation_counts"]["retrieved"], 1)
+        self.assertEqual(output.info["action_budget"]["auxiliary_steps"], 2)
+        self.assertEqual(output.info["action_budget"]["consumed_steps_after"], 3)
 
         self.adapter.bind_policy_context(replacement)
         self.assertNotIn(MEM0_PROMPT_MARKER, self.native.bound[-1][0]["content"])
+
+    def test_replace_boundary_never_runs_a_partial_pipeline_at_budget_edge(self) -> None:
+        self.native.replace_next = True
+        self.bind_budget(maximum=30, consumed=28)
+
+        output = self.adapter.step('shell_command {"command":"run tests"}')
+
+        self.assertTrue(output.done)
+        self.assertEqual(self.factory.instances[-1].add_calls, [])
+        self.assertEqual(self.factory.instances[-1].search_calls, [])
+        receipt = output.info["action_budget"]
+        self.assertEqual(receipt["consumed_steps_before"], 28)
+        self.assertEqual(receipt["consumed_steps_after"], 29)
+        self.assertEqual(receipt["required_auxiliary_steps"], 2)
+        self.assertEqual(receipt["auxiliary_steps"], 0)
+        self.assertTrue(receipt["atomic_operation_blocked"])
+        self.assertTrue(receipt["terminate_after_action"])
+        evidence = output.info["wrapper_evidence"]
+        self.assertEqual(evidence["outcome"], "terminal_failure")
+        self.assertEqual(
+            evidence["terminal_reason"], "combined_step_budget_exhausted"
+        )
+        self.assertTrue(evidence["mem0_adapter"]["boundary_requested"])
+        self.assertFalse(evidence["mem0_adapter"]["boundary_pipeline"])
+
+    def test_step_requires_fresh_budget_binding_before_native_side_effect(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "action budget"):
+            self.adapter.step('shell_command {"command":"pwd"}')
+        self.assertEqual(self.factory.instances[-1].add_calls, [])
 
     def test_reset_closes_and_removes_previous_episode_store(self) -> None:
         previous = self.factory.instances[-1]
@@ -249,6 +303,7 @@ class Mem0AdapterTests(unittest.TestCase):
             initial=True,
         )
         self.native.replace_next = True
+        self.bind_budget()
         with self.assertRaisesRegex(RuntimeError, "official add failed"):
             self.adapter.step('shell_command {"command":"work"}')
 

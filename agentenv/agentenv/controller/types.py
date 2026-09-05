@@ -9,6 +9,7 @@ TASK_NEUTRAL_TRANSITION_INFO_SCHEMA = "agentmemory_task_neutral_transition_v1"
 TASK_NEUTRAL_CONTEXT_TRANSITION_SCHEMA = (
     "agentmemory_task_neutral_context_transition_v1"
 )
+TASK_NEUTRAL_ACTION_BUDGET_SCHEMA = "agentmemory_task_neutral_action_budget_v1"
 CONTEXT_OPERATION_APPEND = "append_observation"
 CONTEXT_OPERATION_PRESERVE = "preserve"
 CONTEXT_OPERATION_REPLACE = "replace_messages"
@@ -20,6 +21,92 @@ CONTEXT_OPERATIONS = frozenset(
     }
 )
 POLICY_CONTINUATION_MARKER = "Continue the same task in the unchanged workspace."
+
+
+@dataclass(frozen=True)
+class PolicyActionBudget:
+    """Runner-owned global action budget before one sampled policy action."""
+
+    maximum_steps: int
+    consumed_steps: int
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.maximum_steps, bool)
+            or not isinstance(self.maximum_steps, int)
+            or self.maximum_steps <= 0
+        ):
+            raise ValueError("maximum_steps must be a positive integer")
+        if (
+            isinstance(self.consumed_steps, bool)
+            or not isinstance(self.consumed_steps, int)
+            or self.consumed_steps < 0
+            or self.consumed_steps >= self.maximum_steps
+        ):
+            raise ValueError(
+                "consumed_steps must be a non-negative integer below maximum_steps"
+            )
+
+    @property
+    def remaining_steps(self) -> int:
+        return self.maximum_steps - self.consumed_steps
+
+
+def build_task_neutral_action_budget_receipt(
+    budget: PolicyActionBudget,
+    *,
+    auxiliary_steps: int = 0,
+    required_auxiliary_steps: int | None = None,
+    atomic_operation_blocked: bool = False,
+) -> dict[str, Any]:
+    """Describe the online cost of one policy action and wrapper-owned work.
+
+    A sampled policy action always costs one step.  Wrapper-owned high-level
+    operations may add steps, but an atomic group is either charged in full or
+    not executed.  A blocked group terminates the episode without consuming a
+    partial auxiliary operation.
+    """
+
+    if not isinstance(budget, PolicyActionBudget):
+        raise TypeError("budget must be a PolicyActionBudget")
+    for name, value in (("auxiliary_steps", auxiliary_steps),):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{name} must be a non-negative integer")
+    required = (
+        auxiliary_steps
+        if required_auxiliary_steps is None
+        else required_auxiliary_steps
+    )
+    if isinstance(required, bool) or not isinstance(required, int) or required < 0:
+        raise ValueError("required_auxiliary_steps must be a non-negative integer")
+    if atomic_operation_blocked:
+        if auxiliary_steps != 0 or required <= 0:
+            raise ValueError(
+                "a blocked atomic operation must consume zero of a positive auxiliary requirement"
+            )
+        if budget.remaining_steps - 1 >= required:
+            raise ValueError(
+                "atomic operation was marked blocked despite sufficient budget"
+            )
+    elif required != auxiliary_steps:
+        raise ValueError(
+            "an unblocked atomic operation must consume every required auxiliary step"
+        )
+    consumed_after = budget.consumed_steps + 1 + auxiliary_steps
+    if consumed_after > budget.maximum_steps:
+        raise ValueError("action-budget receipt exceeds maximum_steps")
+    return {
+        "schema": TASK_NEUTRAL_ACTION_BUDGET_SCHEMA,
+        "maximum_steps": budget.maximum_steps,
+        "consumed_steps_before": budget.consumed_steps,
+        "policy_action_steps": 1,
+        "auxiliary_steps": auxiliary_steps,
+        "required_auxiliary_steps": required,
+        "consumed_steps_after": consumed_after,
+        "remaining_steps_after": budget.maximum_steps - consumed_after,
+        "atomic_operation_blocked": bool(atomic_operation_blocked),
+        "terminate_after_action": bool(atomic_operation_blocked),
+    }
 
 
 @dataclass(frozen=True)
@@ -128,6 +215,7 @@ def build_task_neutral_transition_info(
     policy_step_after: int | None = None,
     context_transition: Mapping[str, Any] | None = None,
     wrapper_evidence: Mapping[str, Any] | None = None,
+    action_budget: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the stable envelope shared rollout code may consume.
 
@@ -148,7 +236,7 @@ def build_task_neutral_transition_info(
         str(transition.get("operation")),
         messages=transition.get("messages"),
     )
-    return {
+    result = {
         "schema": TASK_NEUTRAL_TRANSITION_INFO_SCHEMA,
         "env_info": dict(env_info or {}),
         "action_submission": (
@@ -167,6 +255,9 @@ def build_task_neutral_transition_info(
         "context_transition": canonical_transition,
         "wrapper_evidence": dict(wrapper_evidence or {}),
     }
+    if action_budget is not None:
+        result["action_budget"] = dict(action_budget)
+    return result
 
 ConversationMessage = TypedDict(
     "ConversationMessage", {"from": str, "loss": Optional[bool], "value": str}

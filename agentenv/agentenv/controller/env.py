@@ -4,6 +4,7 @@ from typing import Mapping, Sequence
 from .types import (
     ActionFormat,
     ConversationMessage,
+    PolicyActionBudget,
     PolicyContextPressure,
     StepOutput,
 )
@@ -83,6 +84,11 @@ class BaseEnvClient(metaclass=ABCMeta):
 
         del pressure
         return None
+
+    def bind_policy_action_budget(self, budget: PolicyActionBudget) -> None:
+        """Bind runner-owned remaining capacity before one sampled action."""
+
+        del budget
 
     def finalize_policy_horizon(self) -> StepOutput | None:
         """Optionally grade a workspace when the shared policy budget expires.

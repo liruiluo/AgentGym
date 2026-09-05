@@ -28,8 +28,10 @@ from agentenv.controller.env import BaseEnvClient
 from agentenv.controller.types import (
     CONTEXT_OPERATION_REPLACE,
     TASK_NEUTRAL_CONTEXT_TRANSITION_SCHEMA,
+    PolicyActionBudget,
     PolicyContextPressure,
     StepOutput,
+    build_task_neutral_action_budget_receipt,
 )
 
 from .agemem import _copy_messages
@@ -179,6 +181,7 @@ class Mem0EnvClientAdapter(BaseEnvClient):
             "output_tokens": 0,
         }
         self._boundary_count = 0
+        self._pending_action_budget: PolicyActionBudget | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.native_client, name)
@@ -221,11 +224,25 @@ class Mem0EnvClientAdapter(BaseEnvClient):
     def prepare_policy_turn(self, pressure: PolicyContextPressure | None) -> str | None:
         return self.native_client.prepare_policy_turn(pressure)
 
+    def bind_policy_action_budget(self, budget: PolicyActionBudget) -> None:
+        if not isinstance(budget, PolicyActionBudget):
+            raise TypeError("Mem0 adapter action budget must be PolicyActionBudget")
+        if self._pending_action_budget is not None:
+            raise RuntimeError("Mem0 adapter action budget was rebound before use")
+        self._pending_action_budget = budget
+        self.native_client.bind_policy_action_budget(budget)
+
     def step(self, action: str) -> StepOutput:
         if not isinstance(action, str):
             raise TypeError("Mem0-adapted policy action must be text")
+        budget = self._take_action_budget()
         output = self.native_client.step(action)
-        return self._wrap_native(output, action=action, allow_pipeline=True)
+        return self._wrap_native(
+            output,
+            action=action,
+            allow_pipeline=True,
+            budget=budget,
+        )
 
     def reset(self, idx: int = 0) -> Any:
         self._cleanup_memory()
@@ -233,6 +250,7 @@ class Mem0EnvClientAdapter(BaseEnvClient):
         self._episode_source_identity = None
         self._usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0}
         self._boundary_count = 0
+        self._pending_action_budget = None
         response = self.native_client.reset(idx)
         identity = getattr(self.native_client, "episode_source_identity", None)
         if not isinstance(identity, Mapping) or not identity:
@@ -262,7 +280,12 @@ class Mem0EnvClientAdapter(BaseEnvClient):
         return (
             None
             if output is None
-            else self._wrap_native(output, action="", allow_pipeline=False)
+            else self._wrap_native(
+                output,
+                action="",
+                allow_pipeline=False,
+                budget=None,
+            )
         )
 
     def close(self) -> Any:
@@ -331,7 +354,12 @@ class Mem0EnvClientAdapter(BaseEnvClient):
             self._usage[target] += value
 
     def _wrap_native(
-        self, output: StepOutput, *, action: str, allow_pipeline: bool
+        self,
+        output: StepOutput,
+        *,
+        action: str,
+        allow_pipeline: bool,
+        budget: PolicyActionBudget | None,
     ) -> StepOutput:
         if not isinstance(output, StepOutput):
             raise TypeError("native client step must return StepOutput")
@@ -341,7 +369,9 @@ class Mem0EnvClientAdapter(BaseEnvClient):
         retrieved: list[dict[str, Any]] = []
         before = dict(self._usage)
         started = time.monotonic()
-        boundary = False
+        boundary_requested = False
+        boundary_pipeline = False
+        atomic_operation_blocked = False
         if isinstance(transition, Mapping):
             transition = deepcopy(dict(transition))
             if (
@@ -349,24 +379,38 @@ class Mem0EnvClientAdapter(BaseEnvClient):
                 and transition.get("schema") == TASK_NEUTRAL_CONTEXT_TRANSITION_SCHEMA
                 and transition.get("operation") == CONTEXT_OPERATION_REPLACE
             ):
-                boundary = True
+                boundary_requested = True
                 self._boundary_count += 1
-                retrieved, operation_counts = self._add_then_search(
-                    action=action,
-                    observation=str(output.state),
-                    replacement_messages=_copy_messages(transition.get("messages", ())),
-                )
-                transition["messages"] = self._inject_retrieval(
-                    _copy_messages(transition.get("messages", ())), retrieved
-                )
+                if budget is None:
+                    raise RuntimeError("Mem0 boundary lacks a bound action budget")
+                if budget.remaining_steps < 3:
+                    atomic_operation_blocked = True
+                else:
+                    boundary_pipeline = True
+                    retrieved, operation_counts = self._add_then_search(
+                        action=action,
+                        observation=str(output.state),
+                        replacement_messages=_copy_messages(
+                            transition.get("messages", ())
+                        ),
+                    )
+                    transition["messages"] = self._inject_retrieval(
+                        _copy_messages(transition.get("messages", ())), retrieved
+                    )
             info["context_transition"] = transition
-        elapsed_ms = int(round((time.monotonic() - started) * 1000)) if boundary else 0
+        elapsed_ms = (
+            int(round((time.monotonic() - started) * 1000))
+            if boundary_pipeline
+            else 0
+        )
         usage_delta = {
             key: self._usage[key] - before[key]
             for key in ("calls", "input_tokens", "output_tokens")
         }
-        if boundary and usage_delta["calls"] <= 0:
-            raise RuntimeError("Mem0 boundary pipeline completed without an observed LLM call")
+        if boundary_pipeline and usage_delta["calls"] <= 0:
+            raise RuntimeError(
+                "Mem0 boundary pipeline completed without an observed LLM call"
+            )
 
         evidence = deepcopy(dict(info.get("wrapper_evidence") or {}))
         evidence["mem0_adapter"] = {
@@ -376,7 +420,8 @@ class Mem0EnvClientAdapter(BaseEnvClient):
             "official_pipeline": True,
             "source_revision": MEM0_SOURCE_REVISION,
             "version": MEM0_VERSION,
-            "boundary_pipeline": boundary,
+            "boundary_requested": boundary_requested,
+            "boundary_pipeline": boundary_pipeline,
             "boundary_index": self._boundary_count,
             "operation_counts": operation_counts,
             "retrieved_memory_count": len(retrieved),
@@ -397,7 +442,21 @@ class Mem0EnvClientAdapter(BaseEnvClient):
         if observed_identity is not None and observed_identity != identity:
             raise RuntimeError("native client episode source identity drifted")
         env_info["episode_source_identity"] = identity
+        if atomic_operation_blocked:
+            env_info["truncated"] = True
+            env_info["terminal_reason"] = "combined_step_budget_exhausted"
+            evidence["outcome"] = "terminal_failure"
+            evidence["terminal_reason"] = "combined_step_budget_exhausted"
         info["env_info"] = env_info
+        if allow_pipeline:
+            if budget is None:
+                raise RuntimeError("Mem0 policy step lacks a bound action budget")
+            info["action_budget"] = build_task_neutral_action_budget_receipt(
+                budget,
+                auxiliary_steps=2 if boundary_pipeline else 0,
+                required_auxiliary_steps=2 if boundary_requested else 0,
+                atomic_operation_blocked=atomic_operation_blocked,
+            )
         reward = output.reward
         if reward is None:
             if not bool(output.done) or not self.sample_excluded:
@@ -408,8 +467,18 @@ class Mem0EnvClientAdapter(BaseEnvClient):
         else:
             reward = float(reward)
         return StepOutput(
-            state=str(output.state), reward=reward, done=bool(output.done), info=info
+            state=str(output.state),
+            reward=reward,
+            done=bool(output.done) or atomic_operation_blocked,
+            info=info,
         )
+
+    def _take_action_budget(self) -> PolicyActionBudget:
+        budget = self._pending_action_budget
+        self._pending_action_budget = None
+        if budget is None:
+            raise RuntimeError("Mem0 policy step requires a fresh action budget binding")
+        return budget
 
     def _add_then_search(
         self,
@@ -553,6 +622,7 @@ class Mem0EnvClientAdapter(BaseEnvClient):
         self._memory = None
         self._episode_dir = None
         self._run_id = None
+        self._pending_action_budget = None
         if memory is not None:
             clients: list[Any] = []
             for store_name in ("vector_store", "_entity_store"):
