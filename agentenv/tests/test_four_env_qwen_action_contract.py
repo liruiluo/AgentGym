@@ -318,7 +318,7 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
             product_note_written=False,
         )
         self.assertIn("Add File has not yet succeeded", note_pending)
-        self.assertIn("Call `apply_patch` now", note_pending)
+        self.assertIn("call `apply_patch` now", note_pending)
         self.assertIn("do not search", note_pending)
 
         note_written = normalize_filesystem_webshop_policy_observation(
@@ -327,7 +327,8 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
             product_note_written=True,
         )
         self.assertIn("Add File for this session has succeeded", note_written)
-        self.assertIn("Call `click` with `Buy Now` now", note_written)
+        self.assertIn("complete visible title", note_written)
+        self.assertIn("call `click` with `Buy Now` now", note_written)
         self.assertIn("do not search, inspect, or rewrite", note_written)
 
         final_session = normalize_filesystem_webshop_policy_observation(
@@ -335,8 +336,9 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
             session_index=5,
             product_note_written=False,
         )
-        self.assertIn("final session, where no new note is required", final_session)
-        self.assertIn("Call `click` with `Buy Now` now", final_session)
+        self.assertIn("final session, so no new note is required", final_session)
+        self.assertIn("complete visible title", final_session)
+        self.assertIn("call `click` with `Buy Now` now", final_session)
 
         client = AgentMemoryEnvClient.__new__(AgentMemoryEnvClient)
         client.is_filesystem = True
@@ -348,6 +350,77 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
         self.assertIn("Add File for this session has succeeded", client.observe())
         client._reset_policy_transition_state({"current_subtask_index": 2})
         self.assertIsNone(client._successful_product_note_session)
+
+    def test_webshop_product_page_guidance_requires_visible_title_verification(self) -> None:
+        mismatched_product_page = (
+            "Instruction: [SEP] Session 1 of 6: select popcorn\n"
+            "Customer-approved product cards:\n"
+            "- Product: Signature Popcorn - Gourmet Caramel Flavor - 1-Gallon Gold Tin\n"
+            "  Confirmed popcorn flavor: caramel\n"
+            "- Product: Smartfood Popcorn, White Cheddar, 0.625oz Bags (10 pack)\n"
+            "  Confirmed popcorn flavor: cheddar "
+            "[SEP] Back to Search [SEP] < Prev [SEP] "
+            "Signature Popcorn - 1-Gallon Gold Tin - Butter, Caramel and Cheddar "
+            "[SEP] Price: $25.99 [SEP] Buy Now\n"
+            "Native WebShop actions currently available:\n"
+            "- click[Back to Search]\n"
+            "- click[< Prev]\n"
+            "- click[Buy Now]\n"
+        )
+
+        note_pending = normalize_filesystem_webshop_policy_observation(
+            mismatched_product_page,
+            session_index=0,
+            product_note_written=False,
+        )
+        self.assertNotIn("the exact product page is open", note_pending)
+        self.assertIn("complete visible title", note_pending)
+        self.assertIn("selected approved card", note_pending)
+        self.assertIn("Back to Search", note_pending)
+        self.assertIn("Only if", note_pending)
+        self.assertIn("call `apply_patch`", note_pending)
+
+        note_written = normalize_filesystem_webshop_policy_observation(
+            mismatched_product_page,
+            session_index=0,
+            product_note_written=True,
+        )
+        self.assertNotIn("the exact product page is open", note_written)
+        self.assertIn("Back to Search", note_written)
+        self.assertIn("do not buy", note_written)
+        self.assertIn("call `click` with `Buy Now`", note_written)
+
+        final_session = normalize_filesystem_webshop_policy_observation(
+            mismatched_product_page,
+            session_index=5,
+            product_note_written=False,
+        )
+        self.assertNotIn("the exact product page is open", final_session)
+        self.assertIn("Back to Search", final_session)
+        self.assertIn("call `click` with `Buy Now`", final_session)
+
+        matched_product_page = mismatched_product_page.replace(
+            "Signature Popcorn - 1-Gallon Gold Tin - Butter, Caramel and Cheddar",
+            "Signature Popcorn - Gourmet Caramel Flavor - 1-Gallon Gold Tin",
+        )
+        matched_note_pending = normalize_filesystem_webshop_policy_observation(
+            matched_product_page,
+            session_index=0,
+            product_note_written=False,
+        )
+        self.assertIn(
+            "Only if they exactly match, call `apply_patch`",
+            matched_note_pending,
+        )
+        matched_note_written = normalize_filesystem_webshop_policy_observation(
+            matched_product_page,
+            session_index=0,
+            product_note_written=True,
+        )
+        self.assertIn(
+            "Only if they exactly match, call `click` with `Buy Now`",
+            matched_note_written,
+        )
 
     def test_webshop_product_note_state_follows_attested_runtime_actions(self) -> None:
         product_observation = (
@@ -462,7 +535,7 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
             written.info["wrapper_evidence"]["webshop_product_note_recorded"]
         )
         self.assertIn("Add File for this session has succeeded", written.state)
-        self.assertIn("Call `click` with `Buy Now` now", written.state)
+        self.assertIn("call `click` with `Buy Now` now", written.state)
 
         after_shell = client.step(
             qwen_call(

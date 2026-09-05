@@ -440,25 +440,43 @@ def _webshop_current_step_guidance(
     if not click_items:
         return None
     if any(item.casefold() == "buy now" for item in click_items):
+        identity_check = (
+            "Current-step browser state: a product page with `Buy Now` is open, "
+            "but the available-action list alone does not prove that it is the "
+            "selected approved listing. Compare the page's complete visible title "
+            "with the selected approved card. "
+        )
+        has_back_to_search = any(
+            item.casefold() == "back to search" for item in click_items
+        )
+        mismatch_recovery = (
+            "call `click` with `Back to Search`"
+            if has_back_to_search
+            else "use an available browser navigation item to return to the search results"
+        )
         if isinstance(session_index, int) and session_index >= 5:
-            return (
-                "Current-step browser state: the exact product page is open in "
-                "the final session, where no new note is required. Call `click` "
-                "with `Buy Now` now; do not search or inspect the workspace."
+            return identity_check + (
+                f"If they do not exactly match, {mismatch_recovery}; do not "
+                "buy. Only if they exactly match, call `click` with `Buy "
+                "Now` now. This is the final session, so no new note is required; "
+                "do not inspect the workspace."
             )
         if product_note_written is True:
-            return (
-                "Current-step browser state: the required one-time Add File for "
-                "this session has succeeded. Call `click` with `Buy Now` now; do "
-                "not search, inspect, or rewrite the workspace first."
+            return identity_check + (
+                "The required one-time Add File for this session has succeeded. "
+                f"If the titles do not exactly match, {mismatch_recovery}; do "
+                "not buy or rewrite the successful note. Only if they "
+                "exactly match, call `click` with `Buy Now` now; do not search, "
+                "inspect, or rewrite the workspace first."
             )
         if product_note_written is False:
-            return (
-                "Current-step browser state: the exact product page is open and "
-                "the required one-time Add File has not yet succeeded in this "
-                "session. Call `apply_patch` now with one new path and the card's "
-                "exact `Confirmed <field>: <value>` line; do not search or call "
-                "`shell_command` first."
+            return identity_check + (
+                "The required one-time Add File has not yet succeeded in this "
+                "session. If the titles do not exactly match, "
+                f"{mismatch_recovery}; do not write a note or buy. Only if they "
+                "exactly match, call `apply_patch` now with one new path and the "
+                "card's exact `Confirmed <field>: <value>` line; do not search or "
+                "call `shell_command` first."
             )
         return None
     return (
