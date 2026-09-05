@@ -18,6 +18,9 @@ from agentenv.envs.agentmemory import (
     normalize_filesystem_webshop_policy_action,
     normalize_filesystem_webshop_policy_observation,
 )
+from agentenv.envs.filesystem_checkpoint import (
+    filesystem_workspace_action_request_sha256,
+)
 from agentenv.envs.literesearcher import (
     LITERESEARCHER_SYSTEM_PROMPT,
     LiteResearcherEnvClient,
@@ -299,13 +302,180 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
         self.assertIn("must not be repeated", results_page)
         self.assertIn("displayed ASIN", results_page)
 
-        product_page = normalize_filesystem_webshop_policy_observation(
+        product_observation = (
             "Native WebShop actions currently available:\n"
             "- click[< Prev]\n"
             "- click[Buy Now]\n"
         )
-        self.assertNotIn("Current-step browser state", product_page)
-        self.assertIn("available `item` value: \"Buy Now\"", product_page)
+        stateless_product_page = normalize_filesystem_webshop_policy_observation(
+            product_observation
+        )
+        self.assertNotIn("Current-step browser state", stateless_product_page)
+
+        note_pending = normalize_filesystem_webshop_policy_observation(
+            product_observation,
+            session_index=2,
+            product_note_written=False,
+        )
+        self.assertIn("Add File has not yet succeeded", note_pending)
+        self.assertIn("Call `apply_patch` now", note_pending)
+        self.assertIn("do not search", note_pending)
+
+        note_written = normalize_filesystem_webshop_policy_observation(
+            product_observation,
+            session_index=2,
+            product_note_written=True,
+        )
+        self.assertIn("Add File for this session has succeeded", note_written)
+        self.assertIn("Call `click` with `Buy Now` now", note_written)
+        self.assertIn("do not search, inspect, or rewrite", note_written)
+
+        final_session = normalize_filesystem_webshop_policy_observation(
+            product_observation,
+            session_index=5,
+            product_note_written=False,
+        )
+        self.assertIn("final session, where no new note is required", final_session)
+        self.assertIn("Call `click` with `Buy Now` now", final_session)
+
+        client = AgentMemoryEnvClient.__new__(AgentMemoryEnvClient)
+        client.is_filesystem = True
+        client.info = {"observation": product_observation}
+        client._session_epoch = 2
+        client._successful_product_note_session = None
+        self.assertIn("Add File has not yet succeeded", client.observe())
+        client._successful_product_note_session = 2
+        self.assertIn("Add File for this session has succeeded", client.observe())
+        client._reset_policy_transition_state({"current_subtask_index": 2})
+        self.assertIsNone(client._successful_product_note_session)
+
+    def test_webshop_product_note_state_follows_attested_runtime_actions(self) -> None:
+        product_observation = (
+            "Native WebShop actions currently available:\n"
+            "- click[< Prev]\n"
+            "- click[Buy Now]\n"
+        )
+        search_observation = (
+            "Native WebShop actions currently available:\n"
+            "- search[keywords]\n"
+        )
+        client = AgentMemoryEnvClient.__new__(AgentMemoryEnvClient)
+        client.is_filesystem = True
+        client.adapter_cls = FilesystemAgentMemoryAdapter
+        client.metadata = {}
+        client.info = {"observation": product_observation}
+        client._reset_policy_transition_state({"current_subtask_index": 2})
+
+        patch = (
+            "*** Begin Patch\n"
+            "*** Add File: .agent_memory/session_3.md\n"
+            "+Confirmed finish: matte\n"
+            "*** End Patch"
+        )
+        policy_patch = qwen_call("apply_patch", patch=patch)
+        native_patch = "apply_patch\n" + patch
+        patch_digest = filesystem_workspace_action_request_sha256(native_patch)
+        note_entry = {
+            "path": ".agent_memory/session_3.md",
+            "bytes": 23,
+            "sha256": "a" * 64,
+            "kind": "file",
+        }
+        patch_event = {
+            "event_id": 7,
+            "step": 1,
+            "op": "APPLY_PATCH",
+            "tool_name": "apply_patch",
+            "status": "executed",
+            "request_sha256": patch_digest,
+            "workspace_diff": {
+                "added": [note_entry],
+                "modified": [],
+                "deleted": [],
+            },
+        }
+        shell_native = (
+            'shell_command {"command":"pwd","workdir":".","timeout_ms":10000}'
+        )
+        shell_digest = filesystem_workspace_action_request_sha256(shell_native)
+        shell_event = {
+            "event_id": 8,
+            "step": 2,
+            "op": "SHELL_COMMAND",
+            "tool_name": "shell_command",
+            "status": "executed",
+            "request_sha256": shell_digest,
+            "exit_code": 0,
+            "timed_out": False,
+            "stdout": ".\n",
+            "workspace_diff": {"added": [], "modified": [], "deleted": []},
+        }
+        responses = iter(
+            (
+                {
+                    "observation": product_observation,
+                    "reward": 0.0,
+                    "done": False,
+                    "info": {
+                        "current_subtask_index": 2,
+                        "tool_ops": [patch_event],
+                        "workspace_latest_event": patch_event,
+                        "workspace_snapshot": {"files": [note_entry]},
+                    },
+                },
+                {
+                    "observation": product_observation,
+                    "reward": 0.0,
+                    "done": False,
+                    "info": {
+                        "current_subtask_index": 2,
+                        "tool_ops": [shell_event],
+                        "workspace_latest_event": shell_event,
+                        "workspace_snapshot": {"files": [note_entry]},
+                    },
+                },
+                {
+                    "observation": search_observation,
+                    "reward": 1.0,
+                    "done": False,
+                    "info": {
+                        "current_subtask_index": 3,
+                        "session_trace": [],
+                        "tool_ops": [
+                            {
+                                "op": "BUY",
+                                "session_advanced": True,
+                                "committed": True,
+                                "purchase_correct": True,
+                            }
+                        ],
+                        "workspace_snapshot": {"files": [note_entry]},
+                    },
+                },
+            )
+        )
+        client.post = lambda path, data: next(responses)
+
+        written = client.step(policy_patch)
+        self.assertEqual(client._successful_product_note_session, 2)
+        self.assertTrue(
+            written.info["wrapper_evidence"]["webshop_product_note_recorded"]
+        )
+        self.assertIn("Add File for this session has succeeded", written.state)
+        self.assertIn("Call `click` with `Buy Now` now", written.state)
+
+        after_shell = client.step(
+            qwen_call(
+                "shell_command", command="pwd", workdir=".", timeout_ms=10000
+            )
+        )
+        self.assertEqual(client._successful_product_note_session, 2)
+        self.assertIn("Add File for this session has succeeded", after_shell.state)
+
+        after_buy = client.step(qwen_call("click", item="Buy Now"))
+        self.assertEqual(client._session_epoch, 3)
+        self.assertIsNone(client._successful_product_note_session)
+        self.assertIn("Use `search` exactly once", after_buy.state)
 
     def test_webshop_current_page_guidance_uses_first_live_action_block(self) -> None:
         raw = (

@@ -388,7 +388,12 @@ _WEBSHOP_QWEN_WORKSPACE_CONTRACT = "\n".join(
 )
 
 
-def _webshop_current_step_guidance(observation: str) -> str | None:
+def _webshop_current_step_guidance(
+    observation: str,
+    *,
+    session_index: int | None = None,
+    product_note_written: bool | None = None,
+) -> str | None:
     """Describe the next browser transition from the live available-action block.
 
     WebShop repeats the immutable task statement in every native observation.
@@ -435,12 +440,26 @@ def _webshop_current_step_guidance(observation: str) -> str | None:
     if not click_items:
         return None
     if any(item.casefold() == "buy now" for item in click_items):
-        # The immutable task statement already gives the ordered product-page
-        # contract (one Add File, then Buy Now).  Repeating a conditional reminder
-        # on every product-page turn made the model reopen that decision after a
-        # successful write and induced redundant reads/rewrites.  Keep the useful
-        # Search/results navigation hints, but leave product-page progression to
-        # the authoritative task trace and its immediately visible Done! receipt.
+        if isinstance(session_index, int) and session_index >= 5:
+            return (
+                "Current-step browser state: the exact product page is open in "
+                "the final session, where no new note is required. Call `click` "
+                "with `Buy Now` now; do not search or inspect the workspace."
+            )
+        if product_note_written is True:
+            return (
+                "Current-step browser state: the required one-time Add File for "
+                "this session has succeeded. Call `click` with `Buy Now` now; do "
+                "not search, inspect, or rewrite the workspace first."
+            )
+        if product_note_written is False:
+            return (
+                "Current-step browser state: the exact product page is open and "
+                "the required one-time Add File has not yet succeeded in this "
+                "session. Call `apply_patch` now with one new path and the card's "
+                "exact `Confirmed <field>: <value>` line; do not search or call "
+                "`shell_command` first."
+            )
         return None
     return (
         "Current-step browser state: a search-result page is already open, so the "
@@ -580,7 +599,12 @@ def _replace_embedded_webshop_patch_actions(text: str) -> str:
     )
 
 
-def normalize_filesystem_webshop_policy_observation(observation: str) -> str:
+def normalize_filesystem_webshop_policy_observation(
+    observation: str,
+    *,
+    session_index: int | None = None,
+    product_note_written: bool | None = None,
+) -> str:
     """Project endpoint-native records onto one Qwen-XML policy vocabulary.
 
     The endpoint observation and audit ledger remain unchanged.  This returned
@@ -591,7 +615,11 @@ def normalize_filesystem_webshop_policy_observation(observation: str) -> str:
 
     if not isinstance(observation, str):
         raise TypeError("WebShop policy observation must be text")
-    current_step_guidance = _webshop_current_step_guidance(observation)
+    current_step_guidance = _webshop_current_step_guidance(
+        observation,
+        session_index=session_index,
+        product_note_written=product_note_written,
+    )
     # Protect complete patch payloads before replacing endpoint-generated prose:
     # patch contents can legitimately contain any of the legacy instruction text.
     visible = _replace_embedded_webshop_patch_actions(observation)
@@ -2871,6 +2899,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
         self._pending_checkpoint_read_framing: list[dict[str, str]] | None = None
         self._consumed_checkpoint_read: dict[str, Any] | None = None
         self._selected_policy_control: str | None = None
+        self._successful_product_note_session: int | None = None
 
     def bind_policy_context(
         self,
@@ -2997,7 +3026,17 @@ class AgentMemoryEnvClient(BaseEnvClient):
     def observe(self) -> str:
         observation = self.info["observation"]
         if self.is_filesystem:
-            return normalize_filesystem_webshop_policy_observation(observation)
+            session_index = getattr(self, "_session_epoch", None)
+            note_written = bool(
+                isinstance(session_index, int)
+                and getattr(self, "_successful_product_note_session", None)
+                == session_index
+            )
+            return normalize_filesystem_webshop_policy_observation(
+                observation,
+                session_index=session_index,
+                product_note_written=note_written,
+            )
         return observation
 
     def step(self, action: str) -> StepOutput:
@@ -3169,6 +3208,24 @@ class AgentMemoryEnvClient(BaseEnvClient):
                             "document_read_observed": True,
                         }
                     )
+                workspace_diff = latest_event.get("workspace_diff")
+                added_entries = (
+                    workspace_diff.get("added", ())
+                    if isinstance(workspace_diff, Mapping)
+                    else ()
+                )
+                if (
+                    action_kind == "apply_patch"
+                    and action_completed
+                    and any(
+                        isinstance(item, Mapping)
+                        and item.get("kind") == "file"
+                        and item.get("path") != FILESYSTEM_CHECKPOINT_PATH
+                        for item in added_entries
+                    )
+                ):
+                    self._successful_product_note_session = session_before
+                    native_wrapper_evidence["webshop_product_note_recorded"] = True
         checkpoint_read_satisfied = False
         checkpoint_read_already_consumed = False
         read_failure_reason = None
@@ -3263,9 +3320,15 @@ class AgentMemoryEnvClient(BaseEnvClient):
         else:
             policy_observation = response["observation"]
         if self.is_filesystem:
+            if session_advanced:
+                self._successful_product_note_session = None
+            note_written = self._successful_product_note_session == self._session_epoch
             policy_observation = normalize_filesystem_webshop_policy_observation(
-                str(policy_observation)
+                str(policy_observation),
+                session_index=self._session_epoch,
+                product_note_written=note_written,
             )
+            native_wrapper_evidence["webshop_product_note_written"] = note_written
         if (
             bool(response["done"])
             or session_advanced
@@ -3275,7 +3338,9 @@ class AgentMemoryEnvClient(BaseEnvClient):
         if self.is_filesystem and session_advanced:
             self._pending_session_handoff = {
                 "fresh_observation": normalize_filesystem_webshop_policy_observation(
-                    str(response["observation"])
+                    str(response["observation"]),
+                    session_index=self._session_epoch,
+                    product_note_written=False,
                 ),
                 "session_before": session_before,
                 "session_after": session_after,
@@ -3448,7 +3513,11 @@ class AgentMemoryEnvClient(BaseEnvClient):
                     "WebShop server did not attest the exact context checkpoint commit"
                 )
             fresh_observation = normalize_filesystem_webshop_policy_observation(
-                str(server_trace_commit["observation"])
+                str(server_trace_commit["observation"]),
+                session_index=self._session_epoch,
+                product_note_written=(
+                    self._successful_product_note_session == self._session_epoch
+                ),
             )
         retry_pending = bool(
             (
