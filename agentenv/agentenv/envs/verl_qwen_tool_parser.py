@@ -106,11 +106,13 @@ def parse_single_qwen3_tool_call(
     *,
     tool_schemas: Sequence[Mapping[str, Any]],
 ) -> ParsedQwenToolCall | None:
-    """Parse one envelope with veRL's native Qwen3 parser.
+    """Parse exactly one call with veRL's native Qwen3 semantics.
 
-    The outer envelope remains strict so the no-prose, one-action AMG contract
-    is unchanged. Inside that envelope, the pinned upstream parser owns the
-    tolerant Qwen XML semantics used by veRL's ``ToolAgentLoop``.
+    The prompt still asks for a bare XML call, but execution follows the pinned
+    upstream parser: harmless surrounding assistant content and a truncated
+    final parameter closing tag are tolerated. We retain AMG's one-action,
+    complete-envelope, and no-think safety boundaries, plus strict parameter
+    structure and route validation.
     """
 
     if not isinstance(raw_output, str):
@@ -118,12 +120,9 @@ def parse_single_qwen3_tool_call(
     text = raw_output.strip()
     if text.endswith("</s>"):
         text = text[:-4].rstrip()
-    if not text.startswith("<tool_call>") or not text.endswith("</tool_call>"):
-        return None
-    # The upstream serving parser deliberately tolerates surrounding/truncated
-    # markup. AMG's PPO action contract is stricter: a parameter value must not
-    # smuggle a second call envelope that is then treated as command text.
     if text.count("<tool_call>") != 1 or text.count("</tool_call>") != 1:
+        return None
+    if "<think>" in text or "</think>" in text:
         return None
 
     # These imports are intentionally lazy. Standalone environment utilities
@@ -138,13 +137,12 @@ def parse_single_qwen3_tool_call(
     ]
 
     # veRL currently exposes token-based async extraction publicly. The
-    # environment adapter already receives decoded text, so use the same
-    # parser's regexes and conversion helper rather than re-tokenizing or
-    # copying its grammar. veRL intentionally tolerates prose around a call and
-    # truncated tags for general agent serving; AMG's one-action PPO contract is
-    # stricter, so require its upstream-recognized tags to cover the whole body.
+    # environment adapter already receives decoded text, so reuse its complete
+    # envelope regex and conversion helper without re-tokenizing or copying the
+    # XML grammar. Unlike the previous ``fullmatch``, ``search`` preserves the
+    # upstream behavior for harmless assistant content around one complete call.
     try:
-        envelope = parser.tool_call_complete_regex.fullmatch(text)
+        envelope = parser.tool_call_complete_regex.search(text)
         if envelope is None:
             return None
         envelope_body = envelope.group(1).strip()

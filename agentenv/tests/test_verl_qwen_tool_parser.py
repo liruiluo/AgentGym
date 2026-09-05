@@ -41,32 +41,30 @@ cat .agent_memory/CONTINUATION.md
         )
         self.assertIsNone(parsed)
 
-    def test_keeps_outer_one_action_no_prose_contract_strict(self) -> None:
+    def test_uses_upstream_surrounding_content_tolerance_but_keeps_one_call(self) -> None:
+        call = """<tool_call>
+<function=shell_command>
+<parameter=command>pwd</parameter>
+</function>
+</tool_call>"""
+        for text in ("reasoning\n" + call, call + "\nextra"):
+            with self.subTest(text=text):
+                parsed = parse_single_qwen3_tool_call(text, tool_schemas=TOOLS)
+                self.assertIsNotNone(parsed)
+                self.assertEqual(parsed.name, "shell_command")
+                self.assertEqual(dict(parsed.arguments), {"command": "pwd"})
+        self.assertIsNone(
+            parse_single_qwen3_tool_call(call + "\n" + call, tool_schemas=TOOLS)
+        )
+
+    def test_rejects_think_tags_even_around_one_native_call(self) -> None:
         call = """<tool_call>
 <function=shell_command>
 <parameter=command>pwd</parameter>
 </function>
 </tool_call>"""
         self.assertIsNone(
-            parse_single_qwen3_tool_call("reasoning\n" + call, tool_schemas=TOOLS)
-        )
-        self.assertIsNone(
-            parse_single_qwen3_tool_call(call + "\nextra", tool_schemas=TOOLS)
-        )
-        self.assertIsNone(
-            parse_single_qwen3_tool_call(call + "\n" + call, tool_schemas=TOOLS)
-        )
-        self.assertIsNone(
-            parse_single_qwen3_tool_call(
-                call.replace("<function=shell_command>", "prose\n<function=shell_command>"),
-                tool_schemas=TOOLS,
-            )
-        )
-        self.assertIsNone(
-            parse_single_qwen3_tool_call(
-                call.replace("</function>", "</function>\nprose"),
-                tool_schemas=TOOLS,
-            )
+            parse_single_qwen3_tool_call("<think>inspect</think>\n" + call, tool_schemas=TOOLS)
         )
 
     def test_rejects_nested_tool_call_envelope_inside_parameter(self) -> None:

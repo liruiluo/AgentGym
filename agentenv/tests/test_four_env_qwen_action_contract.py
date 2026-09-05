@@ -826,13 +826,23 @@ You have one global budget of 30 ordinary actions. Every `shell_command`, `apply
             with self.subTest(environment=normalizer.__module__, action=action):
                 self.assert_rejected(normalizer, action)
 
-    def test_prose_think_and_multiple_calls_are_rejected_everywhere(self) -> None:
+    def test_plain_prose_around_one_native_call_is_tolerated_everywhere(self) -> None:
         call = qwen_call("shell_command", command="pwd", workdir=".")
-        malformed = (
-            "I will inspect first.\n" + call,
-            "<think>inspect</think>\n" + call,
-            call + "\n" + call,
-        )
+        for normalizer in (
+            normalize_filesystem_webshop_policy_action,
+            normalize_swesmith_policy_action,
+            normalize_literesearcher_policy_action,
+            _normalize_openmle_policy_action,
+        ):
+            for action in ("I will inspect first.\n" + call, call + "\nDone."):
+                with self.subTest(environment=normalizer.__module__, action=action[:24]):
+                    submitted, evidence = normalizer(action)
+                    self.assertTrue(submitted.startswith("shell_command "))
+                    self.assertIs(evidence["tool_parser_normalized"], True)
+
+    def test_think_and_multiple_calls_are_rejected_everywhere(self) -> None:
+        call = qwen_call("shell_command", command="pwd", workdir=".")
+        malformed = ("<think>inspect</think>\n" + call, call + "\n" + call)
         for normalizer in (
             normalize_filesystem_webshop_policy_action,
             normalize_swesmith_policy_action,
@@ -841,6 +851,21 @@ You have one global budget of 30 ordinary actions. Every `shell_command`, `apply
         ):
             for action in malformed:
                 with self.subTest(environment=normalizer.__module__, action=action[:24]):
+                    self.assert_rejected(normalizer, action)
+
+    def test_unknown_tool_and_missing_required_argument_are_rejected_everywhere(self) -> None:
+        malformed = (
+            qwen_call("unknown_tool", command="pwd"),
+            qwen_call("shell_command", workdir="."),
+        )
+        for normalizer in (
+            normalize_filesystem_webshop_policy_action,
+            normalize_swesmith_policy_action,
+            normalize_literesearcher_policy_action,
+            _normalize_openmle_policy_action,
+        ):
+            for action in malformed:
+                with self.subTest(environment=normalizer.__module__, action=action):
                     self.assert_rejected(normalizer, action)
 
     def test_truncated_final_parameter_does_not_bypass_route_validation(self) -> None:
