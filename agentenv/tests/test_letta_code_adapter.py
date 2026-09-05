@@ -21,6 +21,9 @@ from agentenv.envs.letta_code import (
     parse_letta_action,
     parse_memory_filesystem_read,
 )
+from agentenv.envs.literesearcher import LITERESEARCHER_SYSTEM_PROMPT
+from agentenv.envs.openmle_fast import OPENMLE_FAST_POLICY_SYSTEM_PROMPT
+from agentenv.envs.swesmith import SWE_POLICY_SYSTEM_PROMPT
 
 
 def memory_action(name: str, **arguments: object) -> str:
@@ -36,8 +39,15 @@ def memory_action(name: str, **arguments: object) -> str:
 
 
 class FakeEnvClient(BaseEnvClient):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        system_prompt: str = "native system",
+        strict_initial_framing: bool = False,
+    ) -> None:
         super().__init__("react")
+        self.system_prompt = system_prompt
+        self.strict_initial_framing = strict_initial_framing
         self.native_actions: list[str] = []
         self.bound: list[list[dict[str, str]]] = []
         self.episode_source_identity: dict[str, object] | None = None
@@ -51,7 +61,7 @@ class FakeEnvClient(BaseEnvClient):
         return "native observation"
 
     def policy_framing(self) -> list[dict[str, str]]:
-        return [{"role": "system", "content": "native system"}]
+        return [{"role": "system", "content": self.system_prompt}]
 
     def normalize_initial_policy_context(
         self, messages: Sequence[Mapping[str, str]]
@@ -61,8 +71,13 @@ class FakeEnvClient(BaseEnvClient):
     def bind_policy_context(
         self, messages: Sequence[Mapping[str, str]], *, initial: bool = False
     ) -> None:
-        del initial
         normalized = [dict(message) for message in messages]
+        if initial and self.strict_initial_framing:
+            expected = self.policy_framing() + [
+                {"role": "user", "content": self.observe()}
+            ]
+            if normalized != expected:
+                raise ValueError("native initial policy context differs from framing")
         self.bound.append(normalized)
         self.assert_no_letta_prompt(normalized)
 
@@ -158,6 +173,38 @@ class LettaCodeAdapterTests(unittest.TestCase):
         )
         payload = json.loads(output.state.split("\n", 1)[1])
         self.assertEqual(payload["error_code"], "unsupported_command")
+
+    def test_initial_context_round_trip_preserves_native_framing_exactly(self) -> None:
+        cases = {
+            "webshop": "webshop system framing",
+            "swesmith": SWE_POLICY_SYSTEM_PROMPT,
+            "literesearcher": LITERESEARCHER_SYSTEM_PROMPT,
+            "openmle_fast": OPENMLE_FAST_POLICY_SYSTEM_PROMPT,
+        }
+        for route_id, system_prompt in cases.items():
+            with self.subTest(route_id=route_id), tempfile.TemporaryDirectory() as root:
+                native = FakeEnvClient(
+                    system_prompt=system_prompt,
+                    strict_initial_framing=True,
+                )
+                adapter = LettaCodeEnvClientAdapter(
+                    native,
+                    LettaCodeAdapterConfig(runtime_root=root),
+                )
+                try:
+                    adapter.reset(0)
+                    messages = adapter.policy_framing() + [
+                        {"role": "user", "content": adapter.observe()}
+                    ]
+                    normalized = adapter.normalize_initial_policy_context(messages)
+                    adapter.bind_policy_context(normalized, initial=True)
+                    self.assertEqual(
+                        native.bound[-1],
+                        native.policy_framing()
+                        + [{"role": "user", "content": native.observe()}],
+                    )
+                finally:
+                    adapter.close()
 
     def test_create_recompiles_core_and_commits(self) -> None:
         output = self.adapter.step(

@@ -749,7 +749,10 @@ class LettaCodeEnvClientAdapter(BaseEnvClient):
                 continue
             index = message["content"].find(LETTA_PROMPT_MARKER)
             if index >= 0:
-                message["content"] = message["content"][:index].rstrip("\n")
+                native_content = message["content"][:index]
+                if native_content.endswith("\n\n"):
+                    native_content = native_content[:-2]
+                message["content"] = native_content
         return [
             message
             for message in normalized
