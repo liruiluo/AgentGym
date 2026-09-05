@@ -143,11 +143,19 @@ def _normalize_messages(
             raise TypeError(f"policy message {index} must be a mapping")
         role = message.get("role")
         content = message.get("content")
-        if role not in {"system", "user", "assistant"}:
+        if role not in {"system", "user", "assistant", "tool"}:
             raise ValueError(f"policy message {index} has invalid role: {role!r}")
         if not isinstance(content, str):
             raise TypeError(f"policy message {index} content must be text")
-        normalized.append({"role": role, "content": content})
+        normalized_message = {"role": role, "content": content}
+        if role == "tool":
+            name = message.get("name")
+            if not isinstance(name, str) or not name:
+                raise ValueError(
+                    f"policy tool message {index} must carry a nonempty name"
+                )
+            normalized_message["name"] = name
+        normalized.append(normalized_message)
     if not normalized:
         raise ValueError("policy context must not be empty")
     return normalized

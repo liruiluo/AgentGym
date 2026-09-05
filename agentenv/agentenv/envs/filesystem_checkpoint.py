@@ -307,7 +307,7 @@ def _normalize_checkpoint_framing(
             raise TypeError(f"checkpoint context message {index} must be a mapping")
         role = message.get("role")
         content = message.get("content")
-        if role not in {"system", "user", "assistant"}:
+        if role not in {"system", "user", "assistant", "tool"}:
             raise ValueError(
                 f"checkpoint context message {index} has invalid role: {role!r}"
             )
@@ -315,7 +315,16 @@ def _normalize_checkpoint_framing(
             raise TypeError(
                 f"checkpoint context message {index} content must be text"
             )
-        normalized.append({"role": role, "content": content})
+        normalized_message = {"role": role, "content": content}
+        if role == "tool":
+            name = message.get("name")
+            if not isinstance(name, str) or not name:
+                raise ValueError(
+                    f"checkpoint context message {index} tool result must carry "
+                    "a nonempty name"
+                )
+            normalized_message["name"] = name
+        normalized.append(normalized_message)
     if not normalized:
         raise ValueError("post-checkpoint context must preserve task framing")
     if normalized[-1]["role"] == "user":

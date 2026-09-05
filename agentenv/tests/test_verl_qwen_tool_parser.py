@@ -77,20 +77,58 @@ cat .agent_memory/CONTINUATION.md
 </tool_call>"""
         self.assertIsNone(parse_single_qwen3_tool_call(nested, tool_schemas=TOOLS))
 
-    def test_rejects_duplicate_and_unclosed_parameters(self) -> None:
+    def test_rejects_duplicate_parameters(self) -> None:
         duplicate = """<tool_call>
 <function=shell_command>
 <parameter=command>pwd</parameter>
 <parameter=command>ls</parameter>
 </function>
 </tool_call>"""
-        unclosed = """<tool_call>
+        self.assertIsNone(parse_single_qwen3_tool_call(duplicate, tool_schemas=TOOLS))
+
+    def test_accepts_exact_r103_openmle_final_workdir_fixture(self) -> None:
+        parsed = parse_single_qwen3_tool_call(
+            """<tool_call>
+<function=shell_command>
+<parameter=command>
+cat data/sample_submission.csv | head -3
+</parameter>
+<parameter=workdir>
+.
+</function>
+</tool_call>""",
+            tool_schemas=TOOLS,
+        )
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.name, "shell_command")
+        self.assertEqual(
+            dict(parsed.arguments),
+            {"command": "cat data/sample_submission.csv | head -3", "workdir": "."},
+        )
+
+    def test_accepts_upstream_native_truncated_final_integer_parameter(self) -> None:
+        parsed = parse_single_qwen3_tool_call(
+            """<tool_call>
+<function=shell_command>
+<parameter=command>pwd</parameter>
+<parameter=timeout_ms>20000
+</function>
+</tool_call>""",
+            tool_schemas=TOOLS,
+        )
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.name, "shell_command")
+        self.assertEqual(dict(parsed.arguments), {"command": "pwd", "timeout_ms": 20000})
+        self.assertIsInstance(parsed.arguments["timeout_ms"], int)
+
+    def test_rejects_unclosed_nonfinal_parameter(self) -> None:
+        malformed = """<tool_call>
 <function=shell_command>
 <parameter=command>pwd
+<parameter=workdir>.</parameter>
 </function>
 </tool_call>"""
-        self.assertIsNone(parse_single_qwen3_tool_call(duplicate, tool_schemas=TOOLS))
-        self.assertIsNone(parse_single_qwen3_tool_call(unclosed, tool_schemas=TOOLS))
+        self.assertIsNone(parse_single_qwen3_tool_call(malformed, tool_schemas=TOOLS))
 
     def test_accepts_tokenizer_eos_only_after_complete_native_xml(self) -> None:
         parsed = parse_single_qwen3_tool_call(

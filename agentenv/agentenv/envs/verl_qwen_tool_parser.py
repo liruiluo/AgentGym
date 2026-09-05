@@ -161,23 +161,41 @@ def parse_single_qwen3_tool_call(
         )
         cursor = 0
         parameter_names: set[str] = set()
-        for parameter_match in parameter_matches:
+        truncated_parameter_count = 0
+        for parameter_index, parameter_match in enumerate(parameter_matches):
             if parameter_body[cursor : parameter_match.start()].strip():
                 return None
-            # Reject veRL's truncated-parameter fallback. A complete policy
-            # action must close every parameter before the function closes.
             match_text = parameter_match.group(1)
             if match_text is None:
-                return None
+                # Qwen3 and veRL intentionally accept a missing closing tag on
+                # the final parameter. Keep that upstream-native tolerance, but
+                # only at the end of the single function body.
+                match_text = parameter_match.group(2)
+                truncated_parameter_count += 1
+                if (
+                    match_text is None
+                    or parameter_index != len(parameter_matches) - 1
+                    or parameter_body[parameter_match.end() :].strip()
+                ):
+                    return None
             name_separator = match_text.find(">")
             if name_separator < 0:
                 return None
             parameter_name = match_text[:name_separator]
+            parameter_value = match_text[name_separator + 1 :]
+            # An unclosed earlier parameter can make the regex consume a later
+            # parameter as plain text. Do not let nested parameter markup become
+            # command payload.
+            if (
+                "<parameter=" in parameter_value
+                or "</parameter>" in parameter_value
+            ):
+                return None
             if not parameter_name or parameter_name in parameter_names:
                 return None
             parameter_names.add(parameter_name)
             cursor = parameter_match.end()
-        if parameter_body[cursor:].strip():
+        if parameter_body[cursor:].strip() or truncated_parameter_count > 1:
             return None
         function_call = parser._parse_xml_function_call(raw_function_call, schemas)
     except (AttributeError, IndexError, KeyError, TypeError, ValueError):

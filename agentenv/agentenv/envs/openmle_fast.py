@@ -1778,7 +1778,15 @@ def _copy_messages(
             raise TypeError(f"policy message {index} must be a mapping")
         role = message.get("role")
         content = message.get("content")
-        if role not in {"system", "user", "assistant"} or not isinstance(content, str):
+        if role not in {"system", "user", "assistant", "tool"} or not isinstance(content, str):
             raise ValueError(f"policy message {index} is invalid")
-        normalized.append({"role": role, "content": content})
+        normalized_message = {"role": role, "content": content}
+        if role == "tool":
+            name = message.get("name")
+            if not isinstance(name, str) or not name:
+                raise ValueError(
+                    f"policy tool message {index} must carry a nonempty name"
+                )
+            normalized_message["name"] = name
+        normalized.append(normalized_message)
     return normalized

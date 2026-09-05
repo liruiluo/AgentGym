@@ -77,6 +77,21 @@ def qwen_call(name: str, **parameters: object) -> str:
     return "\n".join(body)
 
 
+def qwen_call_with_truncated_final_parameter(
+    name: str, **parameters: object
+) -> str:
+    if not parameters:
+        raise ValueError("a truncated final parameter requires at least one parameter")
+    body = ["<tool_call>", f"<function={name}>"]
+    items = list(parameters.items())
+    for index, (key, value) in enumerate(items):
+        body.extend((f"<parameter={key}>", str(value)))
+        if index != len(items) - 1:
+            body.append("</parameter>")
+    body.extend(("</function>", "</tool_call>"))
+    return "\n".join(body)
+
+
 class FourEnvironmentQwenActionContractTest(unittest.TestCase):
 
     @staticmethod
@@ -681,6 +696,49 @@ You have one global budget of 30 ordinary actions. Every `shell_command`, `apply
             "submit",
         )
 
+    def test_upstream_native_truncated_final_parameter_translates_everywhere(self) -> None:
+        self.assert_valid_translation(
+            normalize_filesystem_webshop_policy_action,
+            qwen_call_with_truncated_final_parameter("search", keywords="red mug"),
+            "search[red mug]",
+        )
+        self.assert_valid_translation(
+            normalize_swesmith_policy_action,
+            qwen_call_with_truncated_final_parameter(
+                "shell_command", command="pwd", workdir="."
+            ),
+            'shell_command {"command":"pwd","workdir":"."}',
+        )
+        self.assert_valid_translation(
+            normalize_literesearcher_policy_action,
+            qwen_call_with_truncated_final_parameter(
+                "visit",
+                url="https://literesearcher.local/page/one",
+                goal="find evidence",
+                page=1,
+            ),
+            "<tool_call>\n"
+            "<function=visit>\n"
+            "<parameter=url>\n"
+            '"https://literesearcher.local/page/one"\n'
+            "</parameter>\n"
+            "<parameter=goal>\n"
+            '"find evidence"\n'
+            "</parameter>\n"
+            "<parameter=page>\n"
+            "1\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>",
+        )
+        self.assert_valid_translation(
+            _normalize_openmle_policy_action,
+            qwen_call_with_truncated_final_parameter(
+                "shell_command", command="pwd", workdir="."
+            ),
+            'shell_command {"command": "pwd", "workdir": "."}',
+        )
+
     def test_webshop_balanced_bracket_title_round_trips_to_native_action(self) -> None:
         title = '[2022] 12" monitor [USB-C]'
         self.assert_valid_translation(
@@ -784,6 +842,19 @@ You have one global budget of 30 ordinary actions. Every `shell_command`, `apply
             for action in malformed:
                 with self.subTest(environment=normalizer.__module__, action=action[:24]):
                     self.assert_rejected(normalizer, action)
+
+    def test_truncated_final_parameter_does_not_bypass_route_validation(self) -> None:
+        for action in (
+            qwen_call_with_truncated_final_parameter(
+                "shell_command", command="pwd", workdir="/workspace"
+            ),
+            qwen_call_with_truncated_final_parameter(
+                "shell_command", command="pwd", timeout_ms=20001
+            ),
+            qwen_call_with_truncated_final_parameter("submit", reason="done"),
+        ):
+            with self.subTest(action=action):
+                self.assert_rejected(_normalize_openmle_policy_action, action)
 
     def test_openmle_rejects_out_of_contract_parameters(self) -> None:
         for action in (

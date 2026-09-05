@@ -96,11 +96,19 @@ def build_task_neutral_context_transition(
             raise TypeError(f"context message {index} must be a mapping")
         role = message.get("role")
         content = message.get("content")
-        if role not in {"system", "user", "assistant"}:
+        if role not in {"system", "user", "assistant", "tool"}:
             raise ValueError(f"context message {index} has invalid role: {role!r}")
         if not isinstance(content, str):
             raise TypeError(f"context message {index} content must be text")
-        normalized_messages.append({"role": role, "content": content})
+        normalized_message = {"role": role, "content": content}
+        if role == "tool":
+            name = message.get("name")
+            if not isinstance(name, str) or not name:
+                raise ValueError(
+                    f"context message {index} tool result must carry a nonempty name"
+                )
+            normalized_message["name"] = name
+        normalized_messages.append(normalized_message)
     if operation == CONTEXT_OPERATION_REPLACE and not normalized_messages:
         raise ValueError("replace_messages requires at least one context message")
     if operation != CONTEXT_OPERATION_REPLACE and normalized_messages:
