@@ -358,8 +358,11 @@ _FROZEN_RESOURCE_LIMITS = {
 _OPENMLE_RELEASE_REVISION = "f56e4b31252a9b81d95fea100098cd49b7290398"
 
 _ALLOWED_MANIFEST_ROLES = frozenset({"gate_only", "train_pool", "heldout"})
-_CLOSE_MAX_ATTEMPTS = 3
-_CLOSE_RETRY_BACKOFF_SECONDS = (0.25, 0.5)
+# Exact-runner teardown can remain retryable for several seconds while a
+# just-frozen sandbox finishes reaping descendants.  Keep retrying long enough
+# for that bounded cleanup to settle; never treat a retryable receipt as closed.
+_CLOSE_MAX_ATTEMPTS = 8
+_CLOSE_RETRY_BACKOFF_SECONDS = (0.25, 0.5, 1.0, 2.0, 4.0, 4.0, 4.0)
 _GRADE_SCHEMA = "openmle_fast_grade_response_v1"
 _GRADE_CONTRACT_VERSION = "openmle_fast_v1"
 _PUBLIC_GRADE_FIELDS = frozenset(

@@ -1195,6 +1195,53 @@ cat .agent_memory/CONTINUATION.md
         self.assertEqual(sum(url.endswith("/close") for url, _ in calls), 2)
         sleep.assert_called_once_with(_CLIENT_MODULE._CLOSE_RETRY_BACKOFF_SECONDS[0])
 
+    def test_close_waits_through_bounded_runner_teardown_settle(self) -> None:
+        calls = []
+        retryable = {
+            "schema": "openmle_fast_cleanup_receipt_v1",
+            "closed": False,
+            "already_closed": False,
+            "workspace_removed": False,
+            "retryable": True,
+            "failure_class": "cleanup_infrastructure_fault",
+            "cleanup_contract": _CLIENT_MODULE._EXPECTED_BOUNDARIES["cleanup"],
+        }
+        closed = {
+            "schema": "openmle_fast_cleanup_receipt_v1",
+            "closed": True,
+            "already_closed": False,
+            "workspace_removed": True,
+            "retryable": False,
+            "failure_class": None,
+            "cleanup_contract": _CLIENT_MODULE._EXPECTED_BOUNDARIES["cleanup"],
+        }
+        close_receipts = [copy.deepcopy(retryable) for _ in range(5)] + [closed]
+
+        def request(_method, url, **kwargs):
+            calls.append((url, kwargs))
+            if url.endswith("/metadata"):
+                return _Response(self.metadata())
+            if url.endswith("/create"):
+                return _Response({"id": 3, "observation": "unbound", "info": {}})
+            if url.endswith("/close"):
+                return _Response(close_receipts.pop(0))
+            raise AssertionError(url)
+
+        with (
+            patch("requests.request", side_effect=request),
+            patch.object(_CLIENT_MODULE.time, "sleep") as sleep,
+        ):
+            client = OpenMLEFastEnvClient(
+                "http://127.0.0.1:9000", **self.client_kwargs()
+            )
+            receipt = client.close()
+        self.assertTrue(receipt["closed"])
+        self.assertEqual(sum(url.endswith("/close") for url, _ in calls), 6)
+        self.assertEqual(
+            [call.args[0] for call in sleep.call_args_list],
+            list(_CLIENT_MODULE._CLOSE_RETRY_BACKOFF_SECONDS[:5]),
+        )
+
     def test_rejects_nonfinite_timeouts_and_retired_manifest_roles(self) -> None:
         for value in (float("nan"), float("inf")):
             with self.subTest(timeout=value), self.assertRaises(ValueError):
