@@ -306,8 +306,12 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
         )
         self.assertIn("a product page is already open", product_page)
         self.assertIn("Verify that the complete visible title matches", product_page)
-        self.assertIn("one-time note requirement", product_page)
-        self.assertIn("currently available `Buy Now`", product_page)
+        self.assertIn("call `apply_patch` now", product_page)
+        self.assertIn("do not call `shell_command` first", product_page)
+        self.assertIn("does not yet show `Result: Done!`", product_page)
+        self.assertIn("successful Add File is already shown", product_page)
+        self.assertIn("call `click` with `Buy Now` immediately", product_page)
+        self.assertIn("do not inspect or rewrite that note", product_page)
 
     def test_webshop_current_page_guidance_uses_first_live_action_block(self) -> None:
         raw = (

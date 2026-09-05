@@ -438,10 +438,14 @@ def _webshop_current_step_guidance(observation: str) -> str | None:
         return (
             "Current-step browser state: a product page is already open, so the "
             "session-start search is complete and must not be repeated. Verify that "
-            "the complete visible title matches the approved card. If it matches, "
-            "follow the task's one-time note requirement if it is not yet satisfied; "
-            "otherwise call `click` with the currently available `Buy Now` item. If "
-            "it does not match, use a currently displayed back-navigation item."
+            "the complete visible title matches the approved card. If it matches "
+            "and the current-session action trace does not yet show `Result: Done!` "
+            "for the required one-time Add File, call `apply_patch` now with one new "
+            "path and the card's exact `Confirmed <field>: <value>` line; do not call "
+            "`shell_command` first. If that successful Add File is already shown in "
+            "the trace, do not inspect or rewrite that note: call `click` with `Buy "
+            "Now` immediately. If the visible title does not match, use a currently "
+            "displayed back-navigation item."
         )
     return (
         "Current-step browser state: a search-result page is already open, so the "
