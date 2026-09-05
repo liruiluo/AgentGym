@@ -326,6 +326,10 @@ _WEBSHOP_LEGACY_AVAILABLE_ACTIONS_RE = re.compile(
     r"(?m)^Native WebShop actions currently available:\n"
     r"(?P<actions>(?:- (?:search|click)\[[^\n]*\]\n?)+)"
 )
+_WEBSHOP_QWEN_AVAILABLE_FUNCTIONS_RE = re.compile(
+    r"(?m)^Native WebShop functions currently available through Qwen XML:\n"
+    r"(?P<actions>(?:- `(?:search|click)` function;[^\n]*\n?)+)"
+)
 _WEBSHOP_LEGACY_INVALID_ACTION = (
     "Invalid action: Expected one native search[...] / click[...] action, or one "
     "canonical workspace action: shell_command {JSON} with the literal prefix "
@@ -382,6 +386,68 @@ _WEBSHOP_QWEN_WORKSPACE_CONTRACT = "\n".join(
         "Both tools have zero task reward. Paths and workdir are workspace-relative.",
     )
 )
+
+
+def _webshop_current_step_guidance(observation: str) -> str | None:
+    """Describe the next browser transition from the live available-action block.
+
+    WebShop repeats the immutable task statement in every native observation.
+    That statement necessarily contains session-start instructions, so a model
+    can otherwise mistake an already-completed one-shot search or checkpoint
+    read for the next action. The endpoint-owned available-action block is the
+    authoritative state signal; this guidance changes neither actions nor reward.
+    """
+
+    legacy_match = _WEBSHOP_LEGACY_AVAILABLE_ACTIONS_RE.search(observation)
+    qwen_match = _WEBSHOP_QWEN_AVAILABLE_FUNCTIONS_RE.search(observation)
+    matches = [match for match in (legacy_match, qwen_match) if match is not None]
+    if not matches:
+        return None
+    match = min(matches, key=lambda item: item.start())
+    block = match.group("actions")
+    if match.re is _WEBSHOP_LEGACY_AVAILABLE_ACTIONS_RE:
+        actions: list[tuple[str, str]] = []
+        for raw_line in block.splitlines():
+            action = raw_line.removeprefix("- ")
+            name, _, argument = action.partition("[")
+            argument = argument[:-1] if argument.endswith("]") else argument
+            actions.append((name, argument))
+        has_search = any(name == "search" for name, _ in actions)
+        click_items = [argument for name, argument in actions if name == "click"]
+    else:
+        has_search = "- `search` function;" in block
+        click_items = []
+        for raw_line in block.splitlines():
+            prefix = "- `click` function; available `item` value: "
+            if not raw_line.startswith(prefix):
+                continue
+            try:
+                item = json.loads(raw_line.removeprefix(prefix))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, str):
+                click_items.append(item)
+    if has_search:
+        return (
+            "Current-step browser state: the current session is on the Search page. "
+            "Use `search` exactly once with the approved product's complete title."
+        )
+    if not click_items:
+        return None
+    if any(item.casefold() == "buy now" for item in click_items):
+        return (
+            "Current-step browser state: a product page is already open, so the "
+            "session-start search is complete and must not be repeated. Verify that "
+            "the complete visible title matches the approved card. If it matches, "
+            "follow the task's one-time note requirement if it is not yet satisfied; "
+            "otherwise call `click` with the currently available `Buy Now` item. If "
+            "it does not match, use a currently displayed back-navigation item."
+        )
+    return (
+        "Current-step browser state: a search-result page is already open, so the "
+        "session-start search is complete and must not be repeated. Call `click` "
+        "with the displayed ASIN whose complete title matches the approved card."
+    )
 
 
 def _render_webshop_available_functions(match: re.Match[str]) -> str:
@@ -526,6 +592,7 @@ def normalize_filesystem_webshop_policy_observation(observation: str) -> str:
 
     if not isinstance(observation, str):
         raise TypeError("WebShop policy observation must be text")
+    current_step_guidance = _webshop_current_step_guidance(observation)
     # Protect complete patch payloads before replacing endpoint-generated prose:
     # patch contents can legitimately contain any of the legacy instruction text.
     visible = _replace_embedded_webshop_patch_actions(observation)
@@ -553,9 +620,12 @@ def normalize_filesystem_webshop_policy_observation(observation: str) -> str:
     visible = _WEBSHOP_INLINE_SHELL_ACTION_RE.sub(
         "the textual `shell_command` record beginning ", visible
     )
-    return _WEBSHOP_INLINE_ASK_ACTION_RE.sub(
+    visible = _WEBSHOP_INLINE_ASK_ACTION_RE.sub(
         "the textual `ask` function record beginning ", visible
     )
+    if current_step_guidance is not None and current_step_guidance not in visible:
+        visible = visible.rstrip() + "\n\n" + current_step_guidance
+    return visible
 
 
 def _optional_transition_int(value: Any) -> int | None:

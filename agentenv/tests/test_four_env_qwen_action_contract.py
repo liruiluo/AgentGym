@@ -281,6 +281,49 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
                     self.assertIn("<function=ask>", prompt)
                     self.assertIn("<parameter=field>", prompt)
 
+    def test_webshop_projection_adds_current_page_guidance(self) -> None:
+        search_page = normalize_filesystem_webshop_policy_observation(
+            "Native WebShop actions currently available:\n- search[keywords]\n"
+        )
+        self.assertIn("current session is on the Search page", search_page)
+        self.assertIn("Use `search` exactly once", search_page)
+
+        results_page = normalize_filesystem_webshop_policy_observation(
+            "Native WebShop actions currently available:\n"
+            "- click[Back to Search]\n"
+            "- click[B0123]\n"
+            "Goal: As the first action, search the approved title.\n"
+        )
+        self.assertIn("search-result page is already open", results_page)
+        self.assertIn("session-start search is complete", results_page)
+        self.assertIn("must not be repeated", results_page)
+        self.assertIn("displayed ASIN", results_page)
+
+        product_page = normalize_filesystem_webshop_policy_observation(
+            "Native WebShop actions currently available:\n"
+            "- click[< Prev]\n"
+            "- click[Buy Now]\n"
+        )
+        self.assertIn("a product page is already open", product_page)
+        self.assertIn("Verify that the complete visible title matches", product_page)
+        self.assertIn("one-time note requirement", product_page)
+        self.assertIn("currently available `Buy Now`", product_page)
+
+    def test_webshop_current_page_guidance_uses_first_live_action_block(self) -> None:
+        raw = (
+            "Native WebShop actions currently available:\n"
+            "- click[B0123]\n"
+            "Current-session action trace:\n"
+            "Result: Native WebShop actions currently available:\n"
+            "- search[keywords]\n"
+        )
+        visible = normalize_filesystem_webshop_policy_observation(raw)
+        self.assertIn("search-result page is already open", visible)
+        self.assertNotIn("current session is on the Search page", visible)
+        self.assertEqual(
+            normalize_filesystem_webshop_policy_observation(visible), visible
+        )
+
     def test_effective_webshop_observation_hides_endpoint_legacy_actions(self) -> None:
         raw = """Instruction: preserve the selected title.
 Copy it verbatim into search[...]. Before click[Buy Now], write the note.
