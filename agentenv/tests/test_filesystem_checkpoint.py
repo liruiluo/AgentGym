@@ -27,6 +27,7 @@ from agentenv.envs.filesystem_checkpoint import (
     build_filesystem_checkpoint_write_retry_context,
     build_post_checkpoint_context,
     build_post_checkpoint_read_retry_context,
+    bind_filesystem_checkpoint_receipt_to_submitted_action,
     checkpoint_retry_ceiling_tokens,
     checkpoint_retry_trigger_tokens,
     filesystem_checkpoint_action_completed,
@@ -363,6 +364,172 @@ class FilesystemCheckpointContractTest(unittest.TestCase):
             "checkpoint_not_changed",
         )
 
+    def test_current_idempotent_heredoc_overwrite_is_accepted(self) -> None:
+        payload = b"objective: repair\nnext_action: run test\n"
+        command = (
+            "mkdir -p .agent_memory && cat > "
+            ".agent_memory/CONTINUATION.md <<'AGENT_MEMORY_EOF'\n"
+            + payload.decode("utf-8")
+            + "AGENT_MEMORY_EOF"
+        )
+        submitted_action = "shell_command " + json.dumps(
+            {"command": command, "workdir": ".", "timeout_ms": 10_000},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        receipt = build_filesystem_checkpoint_receipt(
+            action_kind="shell_command",
+            action_completed=True,
+            submitted_action=submitted_action,
+            workspace_diff={"added": [], "modified": [], "deleted": []},
+            workspace_snapshot={
+                "files": [
+                    {
+                        "path": FILESYSTEM_CHECKPOINT_PATH,
+                        "bytes": len(payload),
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "kind": "file",
+                    }
+                ]
+            },
+        )
+
+        self.assertFalse(receipt["changed"])
+        self.assertTrue(receipt["write_observed"])
+        self.assertTrue(filesystem_checkpoint_write_succeeded(receipt))
+        self.assertIsNone(filesystem_checkpoint_failure_reason(receipt))
+
+    def test_unrelated_shell_cannot_reuse_unchanged_checkpoint(self) -> None:
+        payload = b"objective: repair\nnext_action: run test\n"
+        receipt = build_filesystem_checkpoint_receipt(
+            action_kind="shell_command",
+            action_completed=True,
+            submitted_action='shell_command {"command":"true"}',
+            workspace_diff={"added": [], "modified": [], "deleted": []},
+            workspace_snapshot={
+                "files": [
+                    {
+                        "path": FILESYSTEM_CHECKPOINT_PATH,
+                        "bytes": len(payload),
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "kind": "file",
+                    }
+                ]
+            },
+        )
+
+        self.assertFalse(receipt["write_observed"])
+        self.assertFalse(filesystem_checkpoint_write_succeeded(receipt))
+        self.assertEqual(
+            filesystem_checkpoint_failure_reason(receipt),
+            "checkpoint_not_changed",
+        )
+
+    def test_idempotent_overwrite_requires_completed_matching_payload(self) -> None:
+        payload = b"objective: repair\nnext_action: run test\n"
+        snapshot = {
+            "files": [
+                {
+                    "path": FILESYSTEM_CHECKPOINT_PATH,
+                    "bytes": len(payload),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "kind": "file",
+                }
+            ]
+        }
+        command = (
+            "mkdir -p .agent_memory && cat > "
+            ".agent_memory/CONTINUATION.md <<'EOF'\n"
+            + payload.decode("utf-8")
+            + "EOF"
+        )
+        canonical = "shell_command " + json.dumps(
+            {"command": command, "workdir": ".", "timeout_ms": 10_000},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        mismatched = canonical.replace("next_action: run test", "next_action: stop now")
+        chained = canonical.replace("EOF\"", "EOF\ntrue\"")
+        premature_command = command.replace(
+            "next_action: run test\nEOF",
+            "next_action: run test\nEOF\ntrue\nEOF",
+        )
+        premature_terminator = "shell_command " + json.dumps(
+            {"command": premature_command, "workdir": ".", "timeout_ms": 10_000},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        cases = (
+            ("failed_action", canonical, False),
+            ("missing_action", None, True),
+            ("payload_mismatch", mismatched, True),
+            ("extra_shell_command", chained, True),
+            ("premature_heredoc_terminator", premature_terminator, True),
+        )
+        for name, submitted_action, action_completed in cases:
+            with self.subTest(name=name):
+                receipt = build_filesystem_checkpoint_receipt(
+                    action_kind="shell_command",
+                    action_completed=action_completed,
+                    submitted_action=submitted_action,
+                    workspace_diff={"added": [], "modified": [], "deleted": []},
+                    workspace_snapshot=snapshot,
+                )
+                self.assertFalse(receipt["idempotent_overwrite"])
+                self.assertFalse(receipt["write_observed"])
+                self.assertFalse(filesystem_checkpoint_write_succeeded(receipt))
+
+    def test_legacy_endpoint_receipt_is_bound_to_current_idempotent_action(self) -> None:
+        payload = b"objective: repair\nnext_action: run test\n"
+        command = (
+            "mkdir -p .agent_memory && cat > "
+            ".agent_memory/CONTINUATION.md <<'EOF'\n"
+            + payload.decode("utf-8")
+            + "EOF"
+        )
+        submitted_action = "shell_command " + json.dumps(
+            {"command": command, "workdir": ".", "timeout_ms": 10_000},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        legacy = {
+            "schema": "agentmemory_filesystem_checkpoint_receipt_v1",
+            "path": FILESYSTEM_CHECKPOINT_PATH,
+            "action_kind": "shell_command",
+            "action_completed": True,
+            "changed": False,
+            "exists": True,
+            "regular_file": True,
+            "size_bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+
+        upgraded = bind_filesystem_checkpoint_receipt_to_submitted_action(
+            legacy,
+            submitted_action=submitted_action,
+        )
+        self.assertEqual(
+            upgraded["schema"], "agentmemory_filesystem_checkpoint_receipt_v2"
+        )
+        self.assertFalse(upgraded["changed"])
+        self.assertTrue(upgraded["idempotent_overwrite"])
+        self.assertTrue(upgraded["write_observed"])
+        self.assertTrue(filesystem_checkpoint_write_succeeded(upgraded))
+        self.assertEqual(
+            normalize_filesystem_checkpoint_receipt(
+                normalize_filesystem_checkpoint_receipt(legacy)
+            ),
+            normalize_filesystem_checkpoint_receipt(legacy),
+        )
+
+        rejected = bind_filesystem_checkpoint_receipt_to_submitted_action(
+            legacy,
+            submitted_action='shell_command {"command":"true"}',
+        )
+        self.assertFalse(rejected["idempotent_overwrite"])
+        self.assertFalse(rejected["write_observed"])
+        self.assertFalse(filesystem_checkpoint_write_succeeded(rejected))
+
     def test_empty_and_oversized_checkpoints_are_rejected(self) -> None:
         for size, reason in (
             (0, "checkpoint_empty"),
@@ -514,7 +681,12 @@ class FilesystemCheckpointContractTest(unittest.TestCase):
             action_completed=True,
             stdout=payload,
         )
-        saved_checkpoint = dict(checkpoint, changed=True)
+        saved_checkpoint = dict(
+            checkpoint,
+            changed=True,
+            idempotent_overwrite=False,
+            write_observed=True,
+        )
 
         self.assertTrue(filesystem_checkpoint_read_observed(read))
         self.assertTrue(filesystem_checkpoint_read_matches(read, saved_checkpoint))
@@ -552,7 +724,12 @@ class FilesystemCheckpointContractTest(unittest.TestCase):
                 ]
             },
         )
-        changed = dict(base, changed=True)
+        changed = dict(
+            base,
+            changed=True,
+            idempotent_overwrite=False,
+            write_observed=True,
+        )
         cases = (
             {"checkpoint_receipt": base, "action_completed": False, "stdout": payload},
             {"checkpoint_receipt": base, "action_completed": True, "stdout": payload[:8]},

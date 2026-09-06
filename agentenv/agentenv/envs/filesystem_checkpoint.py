@@ -14,8 +14,11 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 
-FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA = (
+FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA_V1 = (
     "agentmemory_filesystem_checkpoint_receipt_v1"
+)
+FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA = (
+    "agentmemory_filesystem_checkpoint_receipt_v2"
 )
 FILESYSTEM_CHECKPOINT_READ_RECEIPT_SCHEMA = (
     "agentmemory_filesystem_checkpoint_read_receipt_v1"
@@ -32,6 +35,14 @@ _FILESYSTEM_SHELL_ACTION_RE = re.compile(
     r"\Ashell_command\s+(\{.*\})\Z", re.DOTALL
 )
 _FILESYSTEM_APPLY_PATCH_PREFIX = "apply_patch\n"
+_FILESYSTEM_CHECKPOINT_HEREDOC_RE = re.compile(
+    r"\A"
+    r"(?:mkdir\s+-p\s+\.agent_memory\s+&&\s+)?"
+    r"cat\s*>\s*\.agent_memory/CONTINUATION\.md\s+"
+    r"<<'(?P<delimiter>[A-Za-z_][A-Za-z0-9_]*)'\n"
+    r"(?P<body>.*)\n(?P=delimiter)\n?\Z",
+    re.DOTALL,
+)
 
 FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE = (
     f"`{FILESYSTEM_CHECKPOINT_PATH}` is a single-boundary handoff slot, not "
@@ -296,6 +307,48 @@ def filesystem_workspace_action_request_sha256(action: Any) -> str | None:
     return None
 
 
+def filesystem_checkpoint_exact_shell_payload(action: Any) -> bytes | None:
+    """Extract bytes from the exact checkpoint heredoc action shown to the policy.
+
+    A content-only workspace diff cannot distinguish a fresh overwrite from a
+    stale file when both byte streams are identical. This deliberately narrow
+    parser recognizes only the anchored shell shape in the checkpoint prompt.
+    The caller must separately bind execution evidence to this exact action.
+    """
+
+    if not isinstance(action, str):
+        return None
+    shell_match = _FILESYSTEM_SHELL_ACTION_RE.fullmatch(action.strip())
+    if shell_match is None:
+        return None
+    try:
+        arguments = json.loads(shell_match.group(1))
+    except json.JSONDecodeError:
+        return None
+    if (
+        not isinstance(arguments, dict)
+        or "command" not in arguments
+        or not set(arguments) <= {"command", "workdir", "timeout_ms"}
+        or arguments.get("workdir", ".") != "."
+        or not isinstance(arguments.get("command"), str)
+    ):
+        return None
+    match = _FILESYSTEM_CHECKPOINT_HEREDOC_RE.fullmatch(arguments["command"])
+    if match is None:
+        return None
+    body = match.group("body")
+    # A delimiter line inside the captured body would terminate the shell
+    # heredoc early and turn the remaining text into executable commands.
+    # Reject it rather than treating the final matching delimiter as proof
+    # that the action was one canonical checkpoint write.
+    if match.group("delimiter") in body.splitlines():
+        return None
+    try:
+        return (body + "\n").encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+
+
 def _normalize_checkpoint_framing(
     messages: Sequence[Mapping[str, str]],
 ) -> list[dict[str, str]]:
@@ -436,6 +489,7 @@ def build_filesystem_checkpoint_receipt(
     *,
     action_kind: str,
     action_completed: bool,
+    submitted_action: str | None = None,
     workspace_diff: Mapping[str, Any] | None,
     workspace_snapshot: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -496,19 +550,36 @@ def build_filesystem_checkpoint_receipt(
         and any(item.get("path") == path for item in deleted)
     )
     exists = bool(snapshot_entry is not None and not deleted_path)
-    changed = bool(
+    content_changed = bool(
         changed_entry is not None
         and regular_file
         and _entry_size(changed_entry) == size
         and changed_entry.get("sha256") == sha256
     )
+    idempotent_payload = (
+        filesystem_checkpoint_exact_shell_payload(submitted_action)
+        if not content_changed
+        else None
+    )
+    idempotent_overwrite = bool(
+        str(action_kind).lower() == "shell_command"
+        and action_completed
+        and exists
+        and regular_file
+        and idempotent_payload is not None
+        and len(idempotent_payload) == size
+        and hashlib.sha256(idempotent_payload).hexdigest() == sha256
+    )
+    write_observed = bool(content_changed or idempotent_overwrite)
 
     return {
         "schema": FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA,
         "path": path,
         "action_kind": str(action_kind).lower(),
         "action_completed": bool(action_completed),
-        "changed": changed,
+        "changed": content_changed,
+        "idempotent_overwrite": idempotent_overwrite,
+        "write_observed": write_observed,
         "exists": exists,
         "regular_file": regular_file,
         "size_bytes": size,
@@ -542,7 +613,7 @@ def build_filesystem_checkpoint_read_receipt(
         and bool(action_completed)
         and receipt["exists"]
         and receipt["regular_file"]
-        and not receipt["changed"]
+        and not receipt.get("write_observed", receipt["changed"])
         and isinstance(receipt["size_bytes"], int)
         and receipt["size_bytes"] > 0
         and receipt["sha256"] is not None
@@ -632,10 +703,13 @@ def normalize_filesystem_checkpoint_receipt(value: Any) -> dict[str, Any] | None
         "size_bytes",
         "sha256",
     }
+    schema = value.get("schema")
+    if schema == FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA:
+        expected = expected | {"idempotent_overwrite", "write_observed"}
+    elif schema != FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA_V1:
+        raise RuntimeError("filesystem checkpoint receipt version drifted")
     if set(value) != expected:
         raise RuntimeError("filesystem checkpoint receipt schema drifted")
-    if value.get("schema") != FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA:
-        raise RuntimeError("filesystem checkpoint receipt version drifted")
     if value.get("path") != FILESYSTEM_CHECKPOINT_PATH:
         raise RuntimeError("filesystem checkpoint receipt reports the wrong path")
     action_kind = value.get("action_kind")
@@ -644,6 +718,14 @@ def normalize_filesystem_checkpoint_receipt(value: Any) -> dict[str, Any] | None
     for key in ("action_completed", "changed", "exists", "regular_file"):
         if type(value.get(key)) is not bool:
             raise RuntimeError(f"filesystem checkpoint {key} must be boolean")
+    if schema == FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA:
+        for key in ("idempotent_overwrite", "write_observed"):
+            if type(value.get(key)) is not bool:
+                raise RuntimeError(f"filesystem checkpoint {key} must be boolean")
+        if value["write_observed"] != bool(
+            value["changed"] or value["idempotent_overwrite"]
+        ):
+            raise RuntimeError("filesystem checkpoint write evidence is inconsistent")
     size = value.get("size_bytes")
     if size is not None and (isinstance(size, bool) or not isinstance(size, int) or size < 0):
         raise RuntimeError("filesystem checkpoint size_bytes is invalid")
@@ -654,8 +736,8 @@ def normalize_filesystem_checkpoint_receipt(value: Any) -> dict[str, Any] | None
         or any(char not in "0123456789abcdef" for char in sha256)
     ):
         raise RuntimeError("filesystem checkpoint sha256 is invalid")
-    return {
-        "schema": FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA,
+    normalized = {
+        "schema": schema,
         "path": FILESYSTEM_CHECKPOINT_PATH,
         "action_kind": action_kind.lower(),
         "action_completed": value["action_completed"],
@@ -665,6 +747,66 @@ def normalize_filesystem_checkpoint_receipt(value: Any) -> dict[str, Any] | None
         "size_bytes": size,
         "sha256": sha256,
     }
+    if schema == FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA:
+        normalized.update(
+            {
+                "idempotent_overwrite": value["idempotent_overwrite"],
+                "write_observed": value["write_observed"],
+            }
+        )
+    return normalized
+
+
+def bind_filesystem_checkpoint_receipt_to_submitted_action(
+    value: Any,
+    *,
+    submitted_action: str | None,
+) -> dict[str, Any] | None:
+    """Bind a server receipt to the exact current checkpoint write action.
+
+    Legacy endpoints report content diffs only, so a successful overwrite with
+    identical bytes appears unchanged. Upgrade that receipt only when the
+    current canonical heredoc payload exactly matches the attested file
+    identity. A pre-existing file or unrelated action remains insufficient.
+    """
+
+    receipt = normalize_filesystem_checkpoint_receipt(value)
+    if receipt is None:
+        return None
+    if receipt["schema"] == FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA:
+        return receipt
+
+    payload = (
+        filesystem_checkpoint_exact_shell_payload(submitted_action)
+        if not receipt["changed"] and receipt["action_kind"] == "shell_command"
+        else None
+    )
+    size = receipt["size_bytes"]
+    digest = receipt["sha256"]
+    idempotent_overwrite = bool(
+        receipt["action_completed"]
+        and receipt["exists"]
+        and receipt["regular_file"]
+        and payload is not None
+        and isinstance(size, int)
+        and not isinstance(size, bool)
+        and len(payload) == size
+        and isinstance(digest, str)
+        and hashlib.sha256(payload).hexdigest() == digest
+    )
+    return {
+        "schema": FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA,
+        "path": receipt["path"],
+        "action_kind": receipt["action_kind"],
+        "action_completed": receipt["action_completed"],
+        "changed": receipt["changed"],
+        "idempotent_overwrite": idempotent_overwrite,
+        "write_observed": bool(receipt["changed"] or idempotent_overwrite),
+        "exists": receipt["exists"],
+        "regular_file": receipt["regular_file"],
+        "size_bytes": size,
+        "sha256": digest,
+    }
 
 
 def filesystem_checkpoint_write_succeeded(value: Any) -> bool:
@@ -672,10 +814,11 @@ def filesystem_checkpoint_write_succeeded(value: Any) -> bool:
     if receipt is None:
         return False
     size = receipt["size_bytes"]
+    write_observed = bool(receipt.get("write_observed", receipt["changed"]))
     return bool(
         receipt["action_kind"] in FILESYSTEM_CHECKPOINT_ACTION_KINDS
         and receipt["action_completed"]
-        and receipt["changed"]
+        and write_observed
         and receipt["exists"]
         and receipt["regular_file"]
         and isinstance(size, int)
@@ -692,7 +835,7 @@ def filesystem_checkpoint_failure_reason(value: Any) -> str | None:
         return "wrong_action_kind"
     if not receipt["action_completed"]:
         return "action_not_completed"
-    if not receipt["changed"]:
+    if not receipt.get("write_observed", receipt["changed"]):
         return "checkpoint_not_changed"
     if not receipt["exists"]:
         return "checkpoint_missing"

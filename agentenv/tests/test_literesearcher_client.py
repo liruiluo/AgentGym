@@ -359,7 +359,80 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertTrue(
             output.info["wrapper_evidence"]["checkpoint_read_required_after"]
         )
-        self.assertEqual(client._pending_checkpoint_read, receipt)
+        pending = client._pending_checkpoint_read
+        self.assertIsNotNone(pending)
+        self.assertEqual(
+            pending["schema"], "agentmemory_filesystem_checkpoint_receipt_v2"
+        )
+        self.assertTrue(pending["changed"])
+        self.assertFalse(pending["idempotent_overwrite"])
+        self.assertTrue(pending["write_observed"])
+        for key in (
+            "path",
+            "action_kind",
+            "action_completed",
+            "exists",
+            "regular_file",
+            "size_bytes",
+            "sha256",
+        ):
+            self.assertEqual(pending[key], receipt[key])
+
+    def test_same_content_current_checkpoint_write_replaces_context(self) -> None:
+        client = self._client()
+        client._selected_policy_control = "context_compaction"
+        payload = b"objective: answer question\nnext: verify source\n"
+        command = (
+            "mkdir -p .agent_memory && cat > "
+            ".agent_memory/CONTINUATION.md <<'EOF'\n"
+            + payload.decode("utf-8")
+            + "EOF"
+        )
+        action = qwen_call(
+            "shell_command",
+            command=command,
+            workdir=".",
+            timeout_ms=10_000,
+        )
+        submitted = "shell_command " + json.dumps(
+            {"command": command, "workdir": ".", "timeout_ms": 10_000},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        receipt = self._checkpoint_receipt(
+            changed=False,
+            size_bytes=len(payload),
+        )
+        receipt["sha256"] = hashlib.sha256(payload).hexdigest()
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "observation": "workspace write completed with no content diff",
+            "reward": 0.0,
+            "done": False,
+            "info": {
+                "action_submission": {
+                    "raw_policy_output": submitted,
+                    "kind": "workspace",
+                },
+                "wrapper_evidence": {"filesystem_checkpoint": receipt},
+            },
+        }
+        with patch(
+            "agentenv.envs.literesearcher.requests.request",
+            return_value=response,
+        ):
+            output = client.step(action)
+
+        evidence = output.info["wrapper_evidence"]
+        fixed = evidence["checkpoint_receipt"]
+        self.assertTrue(evidence["continuation_persisted"])
+        self.assertTrue(evidence["context_replaced"])
+        self.assertIsNone(evidence["checkpoint_failure_reason"])
+        self.assertFalse(fixed["changed"])
+        self.assertTrue(fixed["idempotent_overwrite"])
+        self.assertTrue(fixed["write_observed"])
+        self.assertEqual(output.info["context_epoch_after"], 1)
+        self.assertNotIn(payload.decode("utf-8"), str(output.info["context_transition"]))
 
     def test_checkpoint_read_is_required_and_bound_to_saved_identity(self) -> None:
         client = self._client()

@@ -33,12 +33,12 @@ from .filesystem_checkpoint import (
     build_filesystem_checkpoint_write_retry_context,
     build_post_checkpoint_context,
     build_post_checkpoint_read_retry_context,
+    bind_filesystem_checkpoint_receipt_to_submitted_action,
     filesystem_checkpoint_failure_reason,
     filesystem_checkpoint_framing_sha256,
     filesystem_checkpoint_read_failure_reason,
     filesystem_checkpoint_read_observed,
     filesystem_checkpoint_write_succeeded,
-    normalize_filesystem_checkpoint_receipt,
 )
 from .verl_qwen_tool_parser import (
     QWEN_INVALID_ACTION_SENTINEL,
@@ -813,8 +813,9 @@ class OpenMLEFastEnvClient(BaseEnvClient):
                 if isinstance(execution, Mapping)
                 else None
             )
-            checkpoint_receipt = normalize_filesystem_checkpoint_receipt(
-                receipt_value
+            checkpoint_receipt = bind_filesystem_checkpoint_receipt_to_submitted_action(
+                receipt_value,
+                submitted_action=action_submission.get("submitted_action"),
             )
             continuation_persisted = filesystem_checkpoint_write_succeeded(
                 checkpoint_receipt

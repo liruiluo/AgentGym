@@ -3392,6 +3392,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 checkpoint_receipt = build_filesystem_checkpoint_receipt(
                     action_kind=action_kind,
                     action_completed=action_completed,
+                    submitted_action=parsed_action,
                     workspace_diff=latest_event.get("workspace_diff"),
                     workspace_snapshot=response_env_info.get("workspace_snapshot"),
                 )
@@ -3668,6 +3669,11 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 action_completed=filesystem_checkpoint_action_completed(
                     action_kind,
                     latest_event,
+                ),
+                submitted_action=(
+                    info.get("action_submission", {}).get("submitted_action")
+                    if isinstance(info.get("action_submission"), Mapping)
+                    else None
                 ),
                 workspace_diff=latest_event.get("workspace_diff"),
                 workspace_snapshot=env_info.get("workspace_snapshot"),
