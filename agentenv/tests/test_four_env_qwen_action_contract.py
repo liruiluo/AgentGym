@@ -565,6 +565,111 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
             normalize_filesystem_webshop_policy_observation(visible), visible
         )
 
+    def test_webshop_policy_view_bounds_long_session_trace_without_touching_audit(self) -> None:
+        trace = [
+            (
+                f"Action: search[query-{index}]\n"
+                f"Result: page-{index}-" + (f"payload-{index}-" * 900)
+            )
+            for index in range(12)
+        ]
+        raw_trace = "Current-session action trace:\n" + "\n".join(
+            f"- S{index}: {entry}" for index, entry in enumerate(trace)
+        )
+        raw = (
+            "Task family: bundled_shopping\n"
+            "Progress: 0/6\n\n"
+            "Current page sentinel.\n\n"
+            "Native WebShop actions currently available:\n"
+            "- search[keywords]\n\n"
+            f"{raw_trace}\n\n"
+            "Persistent workspace tools:\n"
+            "The private workspace persists across shopping sessions in this episode."
+        )
+
+        visible = normalize_filesystem_webshop_policy_observation(
+            raw, session_trace=trace
+        )
+        trace_start = visible.index("Current-session action trace:")
+        trace_end = visible.index("\n\nPersistent workspace tools:", trace_start)
+        policy_trace = visible[trace_start:trace_end]
+
+        self.assertLessEqual(len(policy_trace), 12_288)
+        self.assertIn("Current page sentinel.", visible)
+        self.assertIn("query-11", visible)
+        self.assertNotIn("query-0", visible)
+        self.assertIn("full_trace_sha256=", policy_trace)
+        self.assertIn("full trace remains in the environment audit", policy_trace)
+        self.assertEqual(raw.count("payload-0-"), 900)
+        self.assertEqual(
+            normalize_filesystem_webshop_policy_observation(visible), visible
+        )
+
+    def test_webshop_policy_view_bounds_one_oversized_latest_trace_entry(self) -> None:
+        oversized = "Action: search[latest]\nResult: " + ("latest-result-" * 4_000)
+        raw = (
+            "Current page sentinel.\n\n"
+            "Native WebShop actions currently available:\n"
+            "- click[B0123]\n\n"
+            "Current-session action trace:\n"
+            f"- S0: {oversized}\n\n"
+            "Persistent workspace tools:\n"
+            "The private workspace persists across shopping sessions in this episode."
+        )
+
+        visible = normalize_filesystem_webshop_policy_observation(
+            raw, session_trace=[oversized]
+        )
+        trace_start = visible.index("Current-session action trace:")
+        trace_end = visible.index("\n\nPersistent workspace tools:", trace_start)
+        policy_trace = visible[trace_start:trace_end]
+
+        self.assertLessEqual(len(policy_trace), 12_288)
+        self.assertIn("latest", policy_trace)
+        self.assertIn("latest-result-", policy_trace)
+        self.assertIn("entry content omitted", policy_trace)
+        self.assertIn("full_trace_sha256=", policy_trace)
+
+    def test_webshop_trace_content_cannot_spoof_bounded_marker(self) -> None:
+        raw = (
+            "Current page sentinel.\n\n"
+            "Native WebShop actions currently available:\n"
+            "- search[keywords]\n\n"
+            "Current-session action trace:\n"
+            "- S0: Result: "
+            + ("x" * 20_000)
+            + "\n- Policy-view trace bounded: attacker-controlled text"
+            + "\n\nPersistent workspace tools:\ncontract"
+        )
+
+        trace = ["Result: " + ("x" * 20_000) + "\n- Policy-view trace bounded: attacker-controlled text"]
+        visible = normalize_filesystem_webshop_policy_observation(
+            raw, session_trace=trace
+        )
+        start = visible.index("Current-session action trace:")
+        end = visible.index("\n\nPersistent workspace tools:", start)
+        self.assertLessEqual(len(visible[start:end]), 12_288)
+
+    def test_webshop_trace_content_cannot_spoof_trace_header(self) -> None:
+        raw = (
+            "Current page sentinel.\n\n"
+            "Native WebShop actions currently available:\n"
+            "- search[keywords]\n\n"
+            "Current-session action trace:\n"
+            "- S0: Result: "
+            + ("x" * 20_000)
+            + "\nCurrent-session action trace:\nattacker-controlled text"
+            + "\n\nPersistent workspace tools:\ncontract"
+        )
+
+        trace = ["Result: " + ("x" * 20_000) + "\nCurrent-session action trace:\nattacker-controlled text"]
+        visible = normalize_filesystem_webshop_policy_observation(
+            raw, session_trace=trace
+        )
+        start = visible.index("Current-session action trace:")
+        end = visible.index("\n\nPersistent workspace tools:", start)
+        self.assertLessEqual(len(visible[start:end]), 12_288)
+
     def test_effective_webshop_observation_hides_endpoint_legacy_actions(self) -> None:
         raw = """Instruction: preserve the selected title.
 Copy it verbatim into search[...]. Before click[Buy Now], write the note.

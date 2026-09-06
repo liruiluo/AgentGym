@@ -364,6 +364,12 @@ _WEBSHOP_BARE_PATCH_INSTRUCTION_RE = re.compile(
 _WEBSHOP_EMBEDDED_BROWSER_ACTION_RE = re.compile(
     r"(?<![A-Za-z0-9_])(search|click)\[", flags=re.IGNORECASE
 )
+_WEBSHOP_SESSION_TRACE_HEADER = "Current-session action trace:"
+_WEBSHOP_SESSION_TRACE_FOLLOWING_SECTION = "\n\nPersistent workspace tools:"
+_WEBSHOP_SESSION_TRACE_ENTRY_RE = re.compile(r"(?m)^- S(?P<index>\d+): ")
+_WEBSHOP_POLICY_TRACE_BOUNDED_MARKER = "- Policy-view trace bounded:"
+WEBSHOP_POLICY_SESSION_TRACE_MAX_CHARS = 12_288
+WEBSHOP_POLICY_SESSION_TRACE_ENTRY_MAX_CHARS = 4_096
 _WEBSHOP_LEGACY_WORKSPACE_CONTRACT = "\n".join(
     (
         "Persistent workspace tools:",
@@ -617,11 +623,176 @@ def _replace_embedded_webshop_patch_actions(text: str) -> str:
     )
 
 
+def _render_webshop_session_trace(trace: Sequence[str]) -> str:
+    lines = [_WEBSHOP_SESSION_TRACE_HEADER]
+    lines.extend(f"- S{index}: {item}" for index, item in enumerate(trace))
+    if not trace:
+        lines.append("<empty>")
+    return "\n".join(lines)
+
+
+def _webshop_session_trace_span(
+    text: str,
+    *,
+    session_trace: Sequence[str] | None = None,
+) -> tuple[int, int] | None:
+    """Return the authoritative endpoint-rendered trace span."""
+
+    if session_trace is not None and not isinstance(session_trace, (str, bytes)):
+        expected = _render_webshop_session_trace([str(item) for item in session_trace])
+        needle = expected + _WEBSHOP_SESSION_TRACE_FOLLOWING_SECTION
+        start = text.rfind(needle)
+        if start >= 0:
+            return start, start + len(expected)
+
+    start = text.find(_WEBSHOP_SESSION_TRACE_HEADER)
+    if start < 0:
+        return None
+    end = text.find(
+        _WEBSHOP_SESSION_TRACE_FOLLOWING_SECTION,
+        start + len(_WEBSHOP_SESSION_TRACE_HEADER),
+    )
+    if end < 0:
+        return None
+    return start, end
+
+
+def _truncate_webshop_trace_entry(entry: str, max_chars: int) -> tuple[str, bool]:
+    if len(entry) <= max_chars:
+        return entry, False
+    digest = hashlib.sha256(entry.encode("utf-8")).hexdigest()
+    marker = (
+        "\n<entry content omitted from policy view; "
+        f"entry_sha256={digest}>\n"
+    )
+    remaining = max_chars - len(marker)
+    if remaining <= 0:
+        return marker[:max_chars], True
+    head_chars = (remaining * 2) // 3
+    tail_chars = remaining - head_chars
+    tail = entry[-tail_chars:] if tail_chars else ""
+    return entry[:head_chars] + marker + tail, True
+
+
+def _bound_webshop_policy_session_trace(
+    observation: str,
+    *,
+    audit_trace_section: str | None = None,
+) -> str:
+    """Bound only the policy-visible trace while preserving recent evidence.
+
+    The endpoint's ``info["session_trace"]`` and raw response are not mutated.
+    A digest links this policy projection back to the complete endpoint-rendered
+    trace retained by the rollout ledger.
+    """
+
+    span = _webshop_session_trace_span(observation)
+    if span is None:
+        return observation
+    start, end = span
+    section = observation[start:end]
+    if len(section) <= WEBSHOP_POLICY_SESSION_TRACE_MAX_CHARS:
+        return observation
+
+    matches = list(_WEBSHOP_SESSION_TRACE_ENTRY_RE.finditer(section))
+    indices = [int(match.group("index")) for match in matches]
+    if not matches or indices != list(range(len(matches))):
+        # Unexpected endpoint rendering must still stay inside the declared
+        # policy envelope. Keep both ends and make the loss auditable instead
+        # of guessing entry boundaries.
+        digest_source = audit_trace_section or section
+        digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
+        marker = (
+            f"{_WEBSHOP_POLICY_TRACE_BOUNDED_MARKER} entry_boundaries=unknown; "
+            f"full_trace_sha256={digest}; full trace remains in the environment audit."
+        )
+        available = (
+            WEBSHOP_POLICY_SESSION_TRACE_MAX_CHARS
+            - len(_WEBSHOP_SESSION_TRACE_HEADER)
+            - len(marker)
+            - 2
+        )
+        body = section[len(_WEBSHOP_SESSION_TRACE_HEADER) :].lstrip("\n")
+        head_chars = max(0, available // 3)
+        tail_chars = max(0, available - head_chars)
+        tail = body[-tail_chars:] if tail_chars else ""
+        bounded = "\n".join(
+            (
+                _WEBSHOP_SESSION_TRACE_HEADER,
+                marker,
+                body[:head_chars] + tail,
+            )
+        )
+        return observation[:start] + bounded + observation[end:]
+
+    entries = [
+        section[match.start() : matches[index + 1].start()].rstrip("\n")
+        if index + 1 < len(matches)
+        else section[match.start() :].rstrip("\n")
+        for index, match in enumerate(matches)
+    ]
+    projected = [
+        _truncate_webshop_trace_entry(
+            entry, WEBSHOP_POLICY_SESSION_TRACE_ENTRY_MAX_CHARS
+        )
+        for entry in entries
+    ]
+    digest_source = audit_trace_section or section
+    digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
+    selected: list[tuple[str, bool]] = []
+    for candidate in reversed(projected):
+        proposed = [candidate, *selected]
+        omitted = len(entries) - len(proposed)
+        truncated_retained = sum(was_truncated for _, was_truncated in proposed)
+        marker = (
+            f"{_WEBSHOP_POLICY_TRACE_BOUNDED_MARKER} "
+            f"retained_latest={len(proposed)}/{len(entries)}; "
+            f"earlier_omitted={omitted}; "
+            f"truncated_retained={truncated_retained}; "
+            f"full_trace_sha256={digest}; "
+            "full trace remains in the environment audit."
+        )
+        bounded = "\n".join(
+            (
+                _WEBSHOP_SESSION_TRACE_HEADER,
+                marker,
+                *(entry for entry, _ in proposed),
+            )
+        )
+        if len(bounded) > WEBSHOP_POLICY_SESSION_TRACE_MAX_CHARS:
+            break
+        selected = proposed
+
+    if not selected:
+        raise RuntimeError("WebShop policy trace budget cannot retain its latest entry")
+    omitted = len(entries) - len(selected)
+    truncated_retained = sum(was_truncated for _, was_truncated in selected)
+    marker = (
+        f"{_WEBSHOP_POLICY_TRACE_BOUNDED_MARKER} "
+        f"retained_latest={len(selected)}/{len(entries)}; "
+        f"earlier_omitted={omitted}; "
+        f"truncated_retained={truncated_retained}; "
+        f"full_trace_sha256={digest}; "
+        "full trace remains in the environment audit."
+    )
+    bounded = "\n".join(
+        (
+            _WEBSHOP_SESSION_TRACE_HEADER,
+            marker,
+            *(entry for entry, _ in selected),
+        )
+    )
+    if len(bounded) > WEBSHOP_POLICY_SESSION_TRACE_MAX_CHARS:
+        raise RuntimeError("WebShop policy trace exceeded its bounded envelope")
+    return observation[:start] + bounded + observation[end:]
+
+
 def normalize_filesystem_webshop_policy_observation(
     observation: str,
     *,
     session_index: int | None = None,
     product_note_written: bool | None = None,
+    session_trace: Sequence[str] | None = None,
 ) -> str:
     """Project endpoint-native records onto one Qwen-XML policy vocabulary.
 
@@ -637,6 +808,15 @@ def normalize_filesystem_webshop_policy_observation(
         observation,
         session_index=session_index,
         product_note_written=product_note_written,
+    )
+    raw_trace_span = _webshop_session_trace_span(
+        observation,
+        session_trace=session_trace,
+    )
+    raw_trace_section = (
+        observation[raw_trace_span[0] : raw_trace_span[1]]
+        if raw_trace_span is not None
+        else None
     )
     # Protect complete patch payloads before replacing endpoint-generated prose:
     # patch contents can legitimately contain any of the legacy instruction text.
@@ -667,6 +847,10 @@ def normalize_filesystem_webshop_policy_observation(
     )
     visible = _WEBSHOP_INLINE_ASK_ACTION_RE.sub(
         "the textual `ask` function record beginning ", visible
+    )
+    visible = _bound_webshop_policy_session_trace(
+        visible,
+        audit_trace_section=raw_trace_section,
     )
     if current_step_guidance is not None and current_step_guidance not in visible:
         visible = visible.rstrip() + "\n\n" + current_step_guidance
@@ -3050,10 +3234,17 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 and getattr(self, "_successful_product_note_session", None)
                 == session_index
             )
+            env_info = self.info.get("env_info", {})
+            session_trace = (
+                env_info.get("session_trace")
+                if isinstance(env_info, Mapping)
+                else None
+            )
             return normalize_filesystem_webshop_policy_observation(
                 observation,
                 session_index=session_index,
                 product_note_written=note_written,
+                session_trace=session_trace,
             )
         return observation
 
@@ -3345,6 +3536,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 str(policy_observation),
                 session_index=self._session_epoch,
                 product_note_written=note_written,
+                session_trace=response_env_info.get("session_trace"),
             )
             native_wrapper_evidence["webshop_product_note_written"] = note_written
         if (
@@ -3536,6 +3728,7 @@ class AgentMemoryEnvClient(BaseEnvClient):
                 product_note_written=(
                     self._successful_product_note_session == self._session_epoch
                 ),
+                session_trace=commit_info.get("session_trace"),
             )
         retry_pending = bool(
             (
