@@ -57,6 +57,7 @@ def _lr_client() -> LiteResearcherEnvClient:
     client.invalid_action_reward = -0.01
     client.info = {"observation": "question"}
     client._policy_step_count = 0
+    client.max_policy_steps = 40
     client._native_call_count = 0
     client._context_epoch = 0
     client._immutable_policy_context = [

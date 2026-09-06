@@ -49,6 +49,7 @@ class LiteResearcherClientTests(unittest.TestCase):
         client.env_id = 7
         client.info = {"observation": "Which source answers this question?"}
         client._policy_step_count = 0
+        client.max_policy_steps = 40
         client._native_call_count = 0
         client._context_epoch = 0
         client._immutable_policy_context = [
@@ -63,6 +64,49 @@ class LiteResearcherClientTests(unittest.TestCase):
         client._pending_checkpoint_read = None
         client._pending_checkpoint_read_framing = None
         return client
+
+    def test_client_binds_policy_horizon_from_endpoint_metadata(self) -> None:
+        metadata_response = Mock(status_code=200)
+        metadata_response.json.return_value = {
+            "domain_id": "literesearcher",
+            "compaction_contract": (
+                "policy_filesystem_checkpoint_then_client_replace_v2"
+            ),
+            "max_policy_steps": 40,
+            "max_policy_steps_enforced_by": "shared_policy_runner",
+            "task_count": 10,
+        }
+        create_response = Mock(status_code=200)
+        create_response.json.return_value = {
+            "id": 7,
+            "observation": "Which source answers this question?",
+        }
+        with patch(
+            "agentenv.envs.literesearcher.requests.request",
+            side_effect=[metadata_response, create_response],
+        ):
+            client = LiteResearcherEnvClient("http://literesearcher.example")
+        self.assertEqual(client.max_policy_steps, 40)
+
+    def test_client_rejects_invalid_policy_horizon_metadata(self) -> None:
+        metadata_response = Mock(status_code=200)
+        metadata_response.json.return_value = {
+            "domain_id": "literesearcher",
+            "compaction_contract": (
+                "policy_filesystem_checkpoint_then_client_replace_v2"
+            ),
+            "max_policy_steps": 0,
+            "max_policy_steps_enforced_by": "shared_policy_runner",
+            "task_count": 10,
+        }
+        with (
+            patch(
+                "agentenv.envs.literesearcher.requests.request",
+                return_value=metadata_response,
+            ),
+            self.assertRaisesRegex(RuntimeError, "invalid max_policy_steps"),
+        ):
+            LiteResearcherEnvClient("http://literesearcher.example")
 
     def test_prompt_uses_exact_native_tool_and_workspace_formats(self) -> None:
         self.assertNotIn("<tools>", LITERESEARCHER_SYSTEM_PROMPT)
@@ -222,6 +266,31 @@ class LiteResearcherClientTests(unittest.TestCase):
             LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
         )
         self.assertEqual(client._selected_policy_control, "context_compaction")
+
+    def test_compaction_requires_write_read_answer_horizon(self) -> None:
+        pressure = PolicyContextPressure(
+            action_prompt_tokens=18_000,
+            candidate_prompt_tokens=17_900,
+            max_prompt_tokens=30_720,
+            max_model_tokens=32_768,
+            max_response_tokens=2_048,
+            max_observation_tokens=LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
+            action_observation_envelope_tokens=4,
+        )
+
+        eligible = self._client()
+        eligible._policy_step_count = 37
+        self.assertEqual(
+            eligible.prepare_policy_turn(pressure),
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
+        self.assertEqual(eligible._selected_policy_control, "context_compaction")
+
+        too_late = self._client()
+        too_late._policy_step_count = 38
+        self.assertIsNone(too_late.prepare_policy_turn(pressure))
+        self.assertIsNone(too_late._selected_policy_control)
+        self.assertIsNone(too_late._checkpoint_write_retry_framing)
 
 
     def test_underreported_observation_envelope_fails_before_sampling(self) -> None:
@@ -614,6 +683,132 @@ class LiteResearcherClientTests(unittest.TestCase):
         second_retry = second.info["context_transition"]["messages"]
         self.assertEqual(second_retry, first_retry)
         self.assertNotIn("second bad action", str(second_retry))
+
+    def test_failed_checkpoint_at_last_safe_start_ends_without_dead_retry(self) -> None:
+        client = self._client()
+        client._policy_step_count = 37
+        original = [
+            *client._immutable_policy_context,
+            {"role": "assistant", "content": "useful prior action"},
+            {"role": "user", "content": "useful prior observation"},
+        ]
+        client.bind_policy_context(original, initial=False)
+        pressure = PolicyContextPressure(
+            action_prompt_tokens=18_000,
+            candidate_prompt_tokens=17_900,
+            max_prompt_tokens=30_720,
+            max_model_tokens=32_768,
+            max_response_tokens=2_048,
+            max_observation_tokens=LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
+            action_observation_envelope_tokens=4,
+        )
+        self.assertEqual(
+            client.prepare_policy_turn(pressure),
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "observation": "invalid workspace action",
+            "reward": -0.01,
+            "done": False,
+            "info": {
+                "status": "invalid_action",
+                "episode_success": False,
+                "sample_excluded": False,
+                "action_submission": {"raw_policy_output": "bad"},
+                "wrapper_evidence": {"invalid_action": True},
+            },
+        }
+        with patch(
+            "agentenv.envs.literesearcher.requests.request", return_value=response
+        ):
+            output = client.step("bad")
+
+        self.assertTrue(output.done)
+        self.assertEqual(
+            output.info["env_info"]["status"],
+            "checkpoint_write_retry_budget_exhausted",
+        )
+        self.assertFalse(output.info["wrapper_evidence"]["retry_pending"])
+        self.assertTrue(
+            output.info["wrapper_evidence"][
+                "checkpoint_write_retry_budget_exhausted"
+            ]
+        )
+        self.assertIsNone(client._checkpoint_write_retry_framing)
+
+    def test_failed_checkpoint_read_ends_when_no_read_answer_budget_remains(self) -> None:
+        client = self._client()
+        client._policy_step_count = 37
+        pressure = PolicyContextPressure(
+            action_prompt_tokens=18_000,
+            candidate_prompt_tokens=17_900,
+            max_prompt_tokens=30_720,
+            max_model_tokens=32_768,
+            max_response_tokens=2_048,
+            max_observation_tokens=LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE,
+            action_observation_envelope_tokens=4,
+        )
+        self.assertEqual(
+            client.prepare_policy_turn(pressure),
+            LITERESEARCHER_CONTEXT_COMPACTION_REQUEST,
+        )
+        receipt = self._checkpoint_receipt()
+        write_response = Mock(status_code=200)
+        write_response.json.return_value = {
+            "observation": "workspace write completed",
+            "reward": 0.0,
+            "done": False,
+            "info": {
+                "action_submission": {"raw_policy_output": "write", "kind": "workspace"},
+                "wrapper_evidence": {"filesystem_checkpoint": receipt},
+            },
+        }
+        command = "printf checkpoint > .agent_memory/CONTINUATION.md"
+        with patch(
+            "agentenv.envs.literesearcher.requests.request",
+            return_value=write_response,
+        ):
+            write = client.step(qwen_call("shell_command", command=command))
+        client.bind_policy_context(
+            write.info["context_transition"]["messages"], initial=False
+        )
+        self.assertIsNone(client.prepare_policy_turn(pressure))
+
+        wrong_response = Mock(status_code=200)
+        wrong_response.json.return_value = {
+            "observation": "search result rather than checkpoint body",
+            "reward": 0.0,
+            "done": False,
+            "info": {
+                "status": "ok",
+                "episode_success": False,
+                "sample_excluded": False,
+                "action_submission": {"raw_policy_output": "search", "kind": "search"},
+                "wrapper_evidence": {},
+            },
+        }
+        with patch(
+            "agentenv.envs.literesearcher.requests.request",
+            return_value=wrong_response,
+        ):
+            output = client.step(qwen_call("search", query=["query"]))
+
+        self.assertTrue(output.done)
+        self.assertEqual(
+            output.info["env_info"]["status"],
+            "checkpoint_read_retry_budget_exhausted",
+        )
+        self.assertFalse(
+            output.info["wrapper_evidence"]["checkpoint_read_retry_pending"]
+        )
+        self.assertTrue(
+            output.info["wrapper_evidence"][
+                "checkpoint_read_retry_budget_exhausted"
+            ]
+        )
+        self.assertIsNone(client._pending_checkpoint_read)
+        self.assertIsNone(client._pending_checkpoint_read_framing)
 
     def test_endpoint_attested_workspace_events_are_emitted(self) -> None:
         cases = (

@@ -49,6 +49,8 @@ from .verl_qwen_tool_parser import (
 # margin so compaction is sampled before the
 # next native action can push the prompt past the 30,720-token PPO width.
 LITERESEARCHER_MIN_OBSERVATION_TOKEN_ENVELOPE = 12_288
+# A new boundary needs one sampled write, one verified read, and one final answer.
+LITERESEARCHER_MIN_ACTIONS_FOR_CHECKPOINT_WRITE_READ_ANSWER = 3
 
 
 _LITERESEARCHER_QWEN_TOOL_SCHEMAS = (
@@ -459,6 +461,14 @@ class LiteResearcherEnvClient(BaseEnvClient):
             != "policy_filesystem_checkpoint_then_client_replace_v2"
         ):
             raise RuntimeError("LiteResearcher endpoint reports the wrong compaction contract")
+        max_policy_steps = metadata.get("max_policy_steps")
+        if type(max_policy_steps) is not int or max_policy_steps <= 0:
+            raise RuntimeError("LiteResearcher endpoint reports invalid max_policy_steps")
+        if metadata.get("max_policy_steps_enforced_by") != "shared_policy_runner":
+            raise RuntimeError(
+                "LiteResearcher endpoint reports the wrong policy-step owner"
+            )
+        self.max_policy_steps = max_policy_steps
         task_count = int(metadata["task_count"])
         if data_len is not None and int(data_len) > task_count:
             raise ValueError(
@@ -576,6 +586,15 @@ class LiteResearcherEnvClient(BaseEnvClient):
             )
             < capacity
         ):
+            return None
+        remaining_actions = self.max_policy_steps - self._policy_step_count
+        if (
+            remaining_actions
+            < LITERESEARCHER_MIN_ACTIONS_FOR_CHECKPOINT_WRITE_READ_ANSWER
+        ):
+            # A late write would leave too few sampled actions for the mandatory
+            # read and a terminal answer. Keep the still-valid current context
+            # and let the policy use its remaining actions directly.
             return None
         if not self._checkpoint_retry_pending:
             if self._current_policy_context is None:
@@ -706,18 +725,27 @@ class LiteResearcherEnvClient(BaseEnvClient):
                     )
         read_satisfied = False
         read_failure_reason = None
+        read_retry_budget_exhausted = False
+        remaining_actions = self.max_policy_steps - self._policy_step_count
         if checkpoint_read_pending_before is not None:
             read_failure_reason = filesystem_checkpoint_read_failure_reason(
                 read_receipt,
                 checkpoint_read_pending_before,
             )
             read_satisfied = read_failure_reason is None
+            read_retry_budget_exhausted = bool(
+                not read_satisfied
+                and not bool(response["done"])
+                and remaining_actions < 2
+            )
             wrapper_evidence.update(
                 {
                     "checkpoint_read_required": True,
                     "checkpoint_read_satisfied": read_satisfied,
                     "checkpoint_read_retry_pending": bool(
-                        not read_satisfied and not bool(response["done"])
+                        not read_satisfied
+                        and not bool(response["done"])
+                        and not read_retry_budget_exhausted
                     ),
                     "checkpoint_read_failure_reason": read_failure_reason,
                     "checkpoint_read_expected_size_bytes": (
@@ -726,25 +754,41 @@ class LiteResearcherEnvClient(BaseEnvClient):
                     "checkpoint_read_expected_sha256": (
                         checkpoint_read_pending_before.get("sha256")
                     ),
+                    "checkpoint_read_retry_budget_exhausted": (
+                        read_retry_budget_exhausted
+                    ),
+                    "checkpoint_read_retry_remaining_actions": remaining_actions,
                 }
             )
-            if read_satisfied or bool(response["done"]):
+            if (
+                read_satisfied
+                or bool(response["done"])
+                or read_retry_budget_exhausted
+            ):
                 self._pending_checkpoint_read = None
                 self._pending_checkpoint_read_framing = None
-        policy_state = (
-            build_filesystem_checkpoint_read_retry_observation(
-                read_failure_reason or "checkpoint_read_not_observed"
+        terminal = bool(response["done"]) or read_retry_budget_exhausted
+        if read_retry_budget_exhausted:
+            policy_state = (
+                "Checkpoint read failed with too few policy actions remaining for "
+                "a retry and final answer; the episode ended without an answer."
             )
-            if checkpoint_read_pending_before is not None
+        elif (
+            checkpoint_read_pending_before is not None
             and not read_satisfied
             and not bool(response["done"])
-            else str(response["observation"])
-        )
+        ):
+            policy_state = build_filesystem_checkpoint_read_retry_observation(
+                read_failure_reason or "checkpoint_read_not_observed"
+            )
+        else:
+            policy_state = str(response["observation"])
         context_transition = None
         if (
             checkpoint_read_pending_before is not None
             and not read_satisfied
             and not bool(response["done"])
+            and not read_retry_budget_exhausted
         ):
             if checkpoint_read_framing_before is None:
                 raise RuntimeError(
@@ -759,12 +803,21 @@ class LiteResearcherEnvClient(BaseEnvClient):
                     continuation_marker=LITERESEARCHER_POLICY_CONTINUATION_MARKER,
                 ),
             )
+        returned_env_info = dict(response_info)
+        if read_retry_budget_exhausted:
+            returned_env_info.update(
+                {
+                    "status": "checkpoint_read_retry_budget_exhausted",
+                    "episode_success": False,
+                    "sample_excluded": False,
+                }
+            )
         return StepOutput(
             state=policy_state,
             reward=reward,
-            done=bool(response["done"]),
+            done=terminal,
             info=build_task_neutral_transition_info(
-                env_info=response_info,
+                env_info=returned_env_info,
                 action_submission=action_submission,
                 native_step_before=native_before,
                 native_step_after=self._native_call_count,
@@ -837,18 +890,34 @@ class LiteResearcherEnvClient(BaseEnvClient):
         checkpoint_failure_reason = filesystem_checkpoint_failure_reason(
             checkpoint_receipt
         )
-        self._checkpoint_retry_pending = bool(not persisted and not native_output.done)
-        policy_observation = (
-            build_filesystem_checkpoint_retry_observation(
+        remaining_actions = self.max_policy_steps - self._policy_step_count
+        checkpoint_write_retry_budget_exhausted = bool(
+            not persisted
+            and not native_output.done
+            and remaining_actions
+            < LITERESEARCHER_MIN_ACTIONS_FOR_CHECKPOINT_WRITE_READ_ANSWER
+        )
+        terminal = bool(native_output.done) or checkpoint_write_retry_budget_exhausted
+        self._checkpoint_retry_pending = bool(
+            not persisted
+            and not terminal
+        )
+        if checkpoint_write_retry_budget_exhausted:
+            policy_observation = (
+                "Filesystem checkpoint was not accepted with too few policy actions "
+                "remaining for a retry, required read, and final answer; the episode "
+                "ended without an answer."
+            )
+        elif self._checkpoint_retry_pending:
+            policy_observation = build_filesystem_checkpoint_retry_observation(
                 checkpoint_failure_reason or "unknown_checkpoint_failure"
             )
-            if self._checkpoint_retry_pending
-            else native_output.state
-        )
+        else:
+            policy_observation = native_output.state
 
         context_transition = None
         checkpoint_framing_sha256 = None
-        if persisted and not native_output.done:
+        if persisted and not terminal:
             framing = self._immutable_policy_context
             if framing is None:
                 raise RuntimeError("LiteResearcher compaction lost its task framing")
@@ -868,7 +937,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
                 CONTEXT_OPERATION_REPLACE,
                 messages=replacement,
             )
-        elif native_output.done:
+        elif terminal:
             self._checkpoint_write_retry_framing = None
             self._pending_checkpoint_read = None
             self._pending_checkpoint_read_framing = None
@@ -895,7 +964,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
             "continuation_persisted": persisted,
             "checkpoint_receipt": checkpoint_receipt,
             "checkpoint_failure_reason": checkpoint_failure_reason,
-            "context_replaced": bool(persisted and not native_output.done),
+            "context_replaced": bool(persisted and not terminal),
             "retry_pending": self._checkpoint_retry_pending,
             "checkpoint_retry_observation_bounded": self._checkpoint_retry_pending,
             "checkpoint_retry_context_rebuilt": self._checkpoint_retry_pending,
@@ -905,9 +974,11 @@ class LiteResearcherEnvClient(BaseEnvClient):
             "checkpoint_observation_in_successor_context": False,
             "checkpoint_content_in_successor_context": False,
             "checkpoint_framing_sha256": checkpoint_framing_sha256,
-            "checkpoint_read_required_after": bool(
-                persisted and not native_output.done
+            "checkpoint_read_required_after": bool(persisted and not terminal),
+            "checkpoint_write_retry_budget_exhausted": (
+                checkpoint_write_retry_budget_exhausted
             ),
+            "checkpoint_write_retry_remaining_actions": remaining_actions,
             "server_wrapper_evidence": (
                 dict(server_wrapper) if isinstance(server_wrapper, Mapping) else {}
             ),
@@ -916,7 +987,7 @@ class LiteResearcherEnvClient(BaseEnvClient):
         if not persisted and not native_output.done and existing_overlay is None:
             reward, checkpoint_overlay = self._invalid_action_reward_overlay(
                 native_reward=reward,
-                done=False,
+                done=terminal,
                 sample_excluded=bool(
                     isinstance(env_info, Mapping)
                     and env_info.get("sample_excluded", False)
@@ -929,12 +1000,21 @@ class LiteResearcherEnvClient(BaseEnvClient):
         elif existing_overlay is not None:
             wrapper_evidence["reward_overlay"] = dict(existing_overlay)
 
+        returned_env_info = dict(env_info) if isinstance(env_info, Mapping) else {}
+        if checkpoint_write_retry_budget_exhausted:
+            returned_env_info.update(
+                {
+                    "status": "checkpoint_write_retry_budget_exhausted",
+                    "episode_success": False,
+                    "sample_excluded": False,
+                }
+            )
         return StepOutput(
             state=policy_observation,
             reward=reward,
-            done=native_output.done,
+            done=terminal,
             info=build_task_neutral_transition_info(
-                env_info=env_info if isinstance(env_info, Mapping) else {},
+                env_info=returned_env_info,
                 action_submission=info.get(
                     "action_submission", {"raw_policy_output": action}
                 ),
