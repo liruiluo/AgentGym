@@ -19,18 +19,30 @@ class OpenMLEFastLaunchTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "total grader wall"):
             _validate_timeout_margins(
                 limits=self.limits,
-                grader_timeout=5.5,
-                grader_margin=1.0,
+                grader_timeout=9.5,
+                grader_margin=2.0,
                 client_timeout=200.0,
                 client_margin=5.0,
             )
+
+    def test_frozen_grader_deadlines_preserve_nested_timeout_order(self) -> None:
+        self.assertEqual(self.limits.grader_worker_wall_ms, 7_000)
+        self.assertEqual(self.limits.grader_total_wall_ms, 7_500)
+        self.assertLess(
+            self.limits.grader_worker_wall_ms,
+            self.limits.grader_total_wall_ms,
+        )
+        self.assertLess(
+            self.limits.grader_total_wall_ms / 1000.0 + 2.0,
+            10.0,
+        )
 
     def test_ppo_client_timeout_covers_episode_capped_step(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "episode-capped step"):
             _validate_timeout_margins(
                 limits=self.limits,
-                grader_timeout=7.0,
-                grader_margin=1.0,
+                grader_timeout=10.0,
+                grader_margin=2.0,
                 client_timeout=30.0,
                 client_margin=5.0,
             )
@@ -38,8 +50,8 @@ class OpenMLEFastLaunchTest(unittest.TestCase):
     def test_timeout_margins_accept_frozen_safe_values(self) -> None:
         _validate_timeout_margins(
             limits=self.limits,
-            grader_timeout=7.0,
-            grader_margin=1.0,
+            grader_timeout=10.0,
+            grader_margin=2.0,
             client_timeout=200.0,
             client_margin=5.0,
         )
