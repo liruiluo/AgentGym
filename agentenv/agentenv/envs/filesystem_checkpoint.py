@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -42,6 +43,9 @@ _FILESYSTEM_CHECKPOINT_HEREDOC_RE = re.compile(
     r"<<'(?P<delimiter>[A-Za-z_][A-Za-z0-9_]*)'\n"
     r"(?P<body>.*)\n(?P=delimiter)\n?\Z",
     re.DOTALL,
+)
+_FILESYSTEM_CHECKPOINT_PRINTF_ARGUMENT_RE = re.compile(
+    r"[A-Za-z0-9._:/+=-]+"
 )
 
 FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE = (
@@ -307,13 +311,52 @@ def filesystem_workspace_action_request_sha256(action: Any) -> str | None:
     return None
 
 
+def _filesystem_checkpoint_exact_printf_payload(command: str) -> bytes | None:
+    """Parse the bounded command-only ``printf`` checkpoint shape.
+
+    The OpenMLE boundary prompt uses one safe token per checkpoint field.  Keep
+    this parser task-neutral: accept one or more shell-safe literal tokens, but
+    reject substitutions, extra commands, alternate redirections, and free-form
+    shell syntax.  Both a literal ``\n`` format and a quoted physical newline
+    are equivalent for POSIX ``printf``.
+    """
+
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    mkdir_prefix = ["mkdir", "-p", ".agent_memory", "&&"]
+    if tokens[: len(mkdir_prefix)] == mkdir_prefix:
+        tokens = tokens[len(mkdir_prefix) :]
+    if len(tokens) < 5 or tokens[0] != "printf":
+        return None
+    if tokens[1] not in {"%s\\n", "%s\n"}:
+        return None
+    if tokens[-2:] != [">", FILESYSTEM_CHECKPOINT_PATH]:
+        return None
+    arguments = tokens[2:-2]
+    if not arguments or any(
+        _FILESYSTEM_CHECKPOINT_PRINTF_ARGUMENT_RE.fullmatch(value) is None
+        for value in arguments
+    ):
+        return None
+    try:
+        return ("\n".join(arguments) + "\n").encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+
+
 def filesystem_checkpoint_exact_shell_payload(action: Any) -> bytes | None:
-    """Extract bytes from the exact checkpoint heredoc action shown to the policy.
+    """Extract bytes from an exact checkpoint shell action shown to the policy.
 
     A content-only workspace diff cannot distinguish a fresh overwrite from a
-    stale file when both byte streams are identical. This deliberately narrow
-    parser recognizes only the anchored shell shape in the checkpoint prompt.
-    The caller must separately bind execution evidence to this exact action.
+    stale file when both byte streams are identical.  The recognized commands
+    are deliberately restricted to the two command-only shapes emitted by the
+    shared boundary guidance: an anchored heredoc, or a bounded safe-token
+    ``printf``.  The caller separately binds execution evidence to this action.
     """
 
     if not isinstance(action, str):
@@ -333,20 +376,21 @@ def filesystem_checkpoint_exact_shell_payload(action: Any) -> bytes | None:
         or not isinstance(arguments.get("command"), str)
     ):
         return None
-    match = _FILESYSTEM_CHECKPOINT_HEREDOC_RE.fullmatch(arguments["command"])
-    if match is None:
-        return None
-    body = match.group("body")
-    # A delimiter line inside the captured body would terminate the shell
-    # heredoc early and turn the remaining text into executable commands.
-    # Reject it rather than treating the final matching delimiter as proof
-    # that the action was one canonical checkpoint write.
-    if match.group("delimiter") in body.splitlines():
-        return None
-    try:
-        return (body + "\n").encode("utf-8")
-    except UnicodeEncodeError:
-        return None
+    command = arguments["command"]
+    match = _FILESYSTEM_CHECKPOINT_HEREDOC_RE.fullmatch(command)
+    if match is not None:
+        body = match.group("body")
+        # A delimiter line inside the captured body would terminate the shell
+        # heredoc early and turn the remaining text into executable commands.
+        # Reject it rather than treating the final matching delimiter as proof
+        # that the action was one canonical checkpoint write.
+        if match.group("delimiter") in body.splitlines():
+            return None
+        try:
+            return (body + "\n").encode("utf-8")
+        except UnicodeEncodeError:
+            return None
+    return _filesystem_checkpoint_exact_printf_payload(command)
 
 
 def _normalize_checkpoint_framing(
@@ -722,6 +766,8 @@ def normalize_filesystem_checkpoint_receipt(value: Any) -> dict[str, Any] | None
         for key in ("idempotent_overwrite", "write_observed"):
             if type(value.get(key)) is not bool:
                 raise RuntimeError(f"filesystem checkpoint {key} must be boolean")
+        if value["changed"] and value["idempotent_overwrite"]:
+            raise RuntimeError("filesystem checkpoint write evidence is ambiguous")
         if value["write_observed"] != bool(
             value["changed"] or value["idempotent_overwrite"]
         ):
@@ -773,14 +819,36 @@ def bind_filesystem_checkpoint_receipt_to_submitted_action(
     receipt = normalize_filesystem_checkpoint_receipt(value)
     if receipt is None:
         return None
-    if receipt["schema"] == FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA:
-        return receipt
 
     payload = (
         filesystem_checkpoint_exact_shell_payload(submitted_action)
         if not receipt["changed"] and receipt["action_kind"] == "shell_command"
         else None
     )
+    if receipt["schema"] == FILESYSTEM_CHECKPOINT_RECEIPT_SCHEMA:
+        if not receipt["idempotent_overwrite"]:
+            return receipt
+        size = receipt["size_bytes"]
+        digest = receipt["sha256"]
+        current_action_matches = bool(
+            receipt["action_completed"]
+            and receipt["exists"]
+            and receipt["regular_file"]
+            and payload is not None
+            and isinstance(size, int)
+            and not isinstance(size, bool)
+            and len(payload) == size
+            and isinstance(digest, str)
+            and hashlib.sha256(payload).hexdigest() == digest
+        )
+        if current_action_matches:
+            return receipt
+        return {
+            **receipt,
+            "idempotent_overwrite": False,
+            "write_observed": bool(receipt["changed"]),
+        }
+
     size = receipt["size_bytes"]
     digest = receipt["sha256"]
     idempotent_overwrite = bool(

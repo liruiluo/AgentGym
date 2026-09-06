@@ -530,6 +530,96 @@ class FilesystemCheckpointContractTest(unittest.TestCase):
         self.assertFalse(rejected["write_observed"])
         self.assertFalse(filesystem_checkpoint_write_succeeded(rejected))
 
+    def test_current_idempotent_safe_printf_overwrite_is_accepted(self) -> None:
+        fields = (
+            "objective=fit",
+            "measured_validation_or_failure=rmse0.4",
+            "conclusion=baseline",
+            "code_path=train.py",
+            "next_action=edit",
+        )
+        payload = ("\n".join(fields) + "\n").encode("utf-8")
+        command = (
+            "mkdir -p .agent_memory && printf '%s\\n' "
+            + " ".join(fields)
+            + " > .agent_memory/CONTINUATION.md"
+        )
+        submitted_action = "shell_command " + json.dumps({"command": command})
+        receipt = build_filesystem_checkpoint_receipt(
+            action_kind="shell_command",
+            action_completed=True,
+            submitted_action=submitted_action,
+            workspace_diff={"added": [], "modified": [], "deleted": []},
+            workspace_snapshot={
+                "files": [
+                    {
+                        "path": FILESYSTEM_CHECKPOINT_PATH,
+                        "bytes": len(payload),
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "kind": "file",
+                    }
+                ]
+            },
+        )
+        self.assertTrue(receipt["idempotent_overwrite"])
+        self.assertTrue(receipt["write_observed"])
+        self.assertTrue(filesystem_checkpoint_write_succeeded(receipt))
+
+        unsafe = submitted_action.replace(
+            "objective=fit", "objective=$(touch_/tmp/side_effect)"
+        )
+        rejected = build_filesystem_checkpoint_receipt(
+            action_kind="shell_command",
+            action_completed=True,
+            submitted_action=unsafe,
+            workspace_diff={"added": [], "modified": [], "deleted": []},
+            workspace_snapshot={
+                "files": [
+                    {
+                        "path": FILESYSTEM_CHECKPOINT_PATH,
+                        "bytes": len(payload),
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "kind": "file",
+                    }
+                ]
+            },
+        )
+        self.assertFalse(rejected["idempotent_overwrite"])
+        self.assertFalse(rejected["write_observed"])
+
+    def test_v2_idempotent_receipt_is_rebound_to_current_action(self) -> None:
+        payload = b"objective: repair\nnext_action: run test\n"
+        command = (
+            "cat > .agent_memory/CONTINUATION.md <<'EOF'\n"
+            + payload.decode("utf-8")
+            + "EOF"
+        )
+        submitted_action = "shell_command " + json.dumps({"command": command})
+        receipt = {
+            "schema": "agentmemory_filesystem_checkpoint_receipt_v2",
+            "path": FILESYSTEM_CHECKPOINT_PATH,
+            "action_kind": "shell_command",
+            "action_completed": True,
+            "changed": False,
+            "idempotent_overwrite": True,
+            "write_observed": True,
+            "exists": True,
+            "regular_file": True,
+            "size_bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+        rebound = bind_filesystem_checkpoint_receipt_to_submitted_action(
+            receipt, submitted_action=submitted_action
+        )
+        self.assertTrue(filesystem_checkpoint_write_succeeded(rebound))
+
+        stale = bind_filesystem_checkpoint_receipt_to_submitted_action(
+            receipt, submitted_action='shell_command {"command":"true"}'
+        )
+        self.assertFalse(stale["idempotent_overwrite"])
+        self.assertFalse(stale["write_observed"])
+        self.assertFalse(filesystem_checkpoint_write_succeeded(stale))
+
     def test_empty_and_oversized_checkpoints_are_rejected(self) -> None:
         for size, reason in (
             (0, "checkpoint_empty"),
