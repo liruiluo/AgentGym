@@ -409,9 +409,15 @@ def _webshop_attested_product_title_match(
 
     if session_trace is None or isinstance(session_trace, (str, bytes)):
         return None
+    # Only the current native page is authoritative.  The observation also
+    # carries a policy-controlled session trace whose shell/file output may
+    # contain strings that resemble task cards or product-page delimiters.
+    # Never attest against that replayed text.
+    trace_start = observation.find(_WEBSHOP_SESSION_TRACE_HEADER)
+    current_page = observation[:trace_start] if trace_start >= 0 else observation
     approved_titles = {
         match.group("title").strip()
-        for match in _WEBSHOP_APPROVED_PRODUCT_TITLE_RE.finditer(observation)
+        for match in _WEBSHOP_APPROVED_PRODUCT_TITLE_RE.finditer(current_page)
         if match.group("title").strip()
     }
     selected_title = None
@@ -426,14 +432,23 @@ def _webshop_attested_product_title_match(
     if selected_title is None or selected_title not in approved_titles:
         return None
 
-    marker_index = observation.rfind(_WEBSHOP_PRODUCT_PAGE_TITLE_PREFIX)
+    marker_index = current_page.rfind(_WEBSHOP_PRODUCT_PAGE_TITLE_PREFIX)
     if marker_index < 0:
         return None
-    title_start = marker_index + len(_WEBSHOP_PRODUCT_PAGE_TITLE_PREFIX)
-    title_end = observation.find(_WEBSHOP_PRODUCT_PAGE_TITLE_SUFFIX, title_start)
+    page_body_start = marker_index + len(_WEBSHOP_PRODUCT_PAGE_TITLE_PREFIX)
+    title_end = current_page.find(_WEBSHOP_PRODUCT_PAGE_TITLE_SUFFIX, page_body_start)
     if title_end < 0:
         return None
-    current_title = observation[title_start:title_end]
+    # The native item page renders zero or more option names/values between
+    # ``< Prev`` and the title.  The title is therefore the final SEP field
+    # immediately before ``Price:``, not the whole interval after ``< Prev``.
+    title_separator = current_page.rfind(" [SEP] ", page_body_start, title_end)
+    title_start = (
+        title_separator + len(" [SEP] ")
+        if title_separator >= page_body_start
+        else page_body_start
+    )
+    current_title = current_page[title_start:title_end].strip()
     if not current_title:
         return None
     return current_title == selected_title
