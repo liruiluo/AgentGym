@@ -587,6 +587,71 @@ class FilesystemCheckpointContractTest(unittest.TestCase):
         self.assertFalse(rejected["idempotent_overwrite"])
         self.assertFalse(rejected["write_observed"])
 
+    def test_printf_format_may_contain_one_quoted_physical_newline(self) -> None:
+        fields = ("objective=fit", "next_action=edit")
+        payload = ("\n".join(fields) + "\n").encode("utf-8")
+        command = (
+            "mkdir -p .agent_memory && printf '%s\n' "
+            + " ".join(fields)
+            + " > .agent_memory/CONTINUATION.md"
+        )
+        receipt = build_filesystem_checkpoint_receipt(
+            action_kind="shell_command",
+            action_completed=True,
+            submitted_action="shell_command " + json.dumps({"command": command}),
+            workspace_diff={"added": [], "modified": [], "deleted": []},
+            workspace_snapshot={
+                "files": [
+                    {
+                        "path": FILESYSTEM_CHECKPOINT_PATH,
+                        "bytes": len(payload),
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "kind": "file",
+                    }
+                ]
+            },
+        )
+        self.assertTrue(receipt["idempotent_overwrite"])
+        self.assertTrue(filesystem_checkpoint_write_succeeded(receipt))
+
+    def test_printf_shell_separator_cannot_authorize_idempotent_checkpoint(
+        self,
+    ) -> None:
+        # The legacy shlex parser flattened unquoted LF/CR command separators
+        # into argument whitespace.  A matching stale file could therefore make
+        # an action with extra shell commands look like a pure checkpoint write.
+        predicted_legacy_payload = b"objective=fit\ntouch\nside_effect\ncat\nsource\n"
+        snapshot = {
+            "files": [
+                {
+                    "path": FILESYSTEM_CHECKPOINT_PATH,
+                    "bytes": len(predicted_legacy_payload),
+                    "sha256": hashlib.sha256(predicted_legacy_payload).hexdigest(),
+                    "kind": "file",
+                }
+            ]
+        }
+        for separator in ("\n", "\r", "\r\n"):
+            with self.subTest(separator=repr(separator)):
+                command = (
+                    "mkdir -p .agent_memory && printf '%s\\n' objective=fit"
+                    + separator
+                    + "touch side_effect"
+                    + separator
+                    + "cat source > .agent_memory/CONTINUATION.md"
+                )
+                receipt = build_filesystem_checkpoint_receipt(
+                    action_kind="shell_command",
+                    action_completed=True,
+                    submitted_action="shell_command "
+                    + json.dumps({"command": command}),
+                    workspace_diff={"added": [], "modified": [], "deleted": []},
+                    workspace_snapshot=snapshot,
+                )
+                self.assertFalse(receipt["idempotent_overwrite"])
+                self.assertFalse(receipt["write_observed"])
+                self.assertFalse(filesystem_checkpoint_write_succeeded(receipt))
+
     def test_v2_idempotent_receipt_is_rebound_to_current_action(self) -> None:
         payload = b"objective: repair\nnext_action: run test\n"
         command = (

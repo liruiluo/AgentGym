@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shlex
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -44,8 +43,13 @@ _FILESYSTEM_CHECKPOINT_HEREDOC_RE = re.compile(
     r"(?P<body>.*)\n(?P=delimiter)\n?\Z",
     re.DOTALL,
 )
-_FILESYSTEM_CHECKPOINT_PRINTF_ARGUMENT_RE = re.compile(
-    r"[A-Za-z0-9._:/+=-]+"
+_FILESYSTEM_CHECKPOINT_PRINTF_TOKEN = r"[A-Za-z0-9._:/+=-]+"
+_FILESYSTEM_CHECKPOINT_PRINTF_RE = re.compile(
+    r"\A[ \t]*(?:mkdir[ \t]+-p[ \t]+\.agent_memory[ \t]+&&[ \t]+)?"
+    r"printf[ \t]+'%s(?:\\n|\n)'[ \t]+"
+    rf"(?P<arguments>{_FILESYSTEM_CHECKPOINT_PRINTF_TOKEN}"
+    rf"(?:[ \t]+{_FILESYSTEM_CHECKPOINT_PRINTF_TOKEN})*)"
+    r"[ \t]+>[ \t]+\.agent_memory/CONTINUATION\.md[ \t]*\Z"
 )
 
 FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE = (
@@ -321,28 +325,10 @@ def _filesystem_checkpoint_exact_printf_payload(command: str) -> bytes | None:
     are equivalent for POSIX ``printf``.
     """
 
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        tokens = list(lexer)
-    except ValueError:
+    match = _FILESYSTEM_CHECKPOINT_PRINTF_RE.fullmatch(command)
+    if match is None:
         return None
-    mkdir_prefix = ["mkdir", "-p", ".agent_memory", "&&"]
-    if tokens[: len(mkdir_prefix)] == mkdir_prefix:
-        tokens = tokens[len(mkdir_prefix) :]
-    if len(tokens) < 5 or tokens[0] != "printf":
-        return None
-    if tokens[1] not in {"%s\\n", "%s\n"}:
-        return None
-    if tokens[-2:] != [">", FILESYSTEM_CHECKPOINT_PATH]:
-        return None
-    arguments = tokens[2:-2]
-    if not arguments or any(
-        _FILESYSTEM_CHECKPOINT_PRINTF_ARGUMENT_RE.fullmatch(value) is None
-        for value in arguments
-    ):
-        return None
+    arguments = re.split(r"[ \t]+", match.group("arguments"))
     try:
         return ("\n".join(arguments) + "\n").encode("utf-8")
     except UnicodeEncodeError:
