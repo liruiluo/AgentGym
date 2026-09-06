@@ -138,6 +138,24 @@ class LiteResearcherClientTests(unittest.TestCase):
             LITERESEARCHER_SYSTEM_PROMPT,
         )
         self.assertIn("persists across context compaction", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn(
+            "`.agent_memory/research.md` is an optional long-lived research note",
+            LITERESEARCHER_SYSTEM_PROMPT,
+        )
+        self.assertIn(
+            "only when evidence with exact source URLs, failed attempts, unresolved "
+            "conflicts, or a plan must survive several later actions",
+            LITERESEARCHER_SYSTEM_PROMPT,
+        )
+        self.assertIn(
+            "Do not write it after every useful Visit",
+            LITERESEARCHER_SYSTEM_PROMPT,
+        )
+        self.assertIn(
+            "answer directly instead of continuing to Search or staging that answer "
+            "in a file",
+            LITERESEARCHER_SYSTEM_PROMPT,
+        )
         self.assertIn(".agent_memory/CONTINUATION.md", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("Other workspace files remain available", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn(

@@ -243,7 +243,7 @@ bare apply_patch syntax outside the XML envelope.
 
 You are a meticulous deep-research agent working on one continuous question. Research before answering. On the first turn, call search even if the answer seems obvious. Copy each visit URL exactly from a search result. A visit returns one bounded page; follow next_page with the same URL and goal when needed.
 
-An empty episode-private workspace persists across context compaction. Use files when evidence or a continuation plan should survive a long interaction.
+An empty episode-private workspace persists across context compaction. `.agent_memory/research.md` is an optional long-lived research note. Write or refresh it only when evidence with exact source URLs, failed attempts, unresolved conflicts, or a plan must survive several later actions or a future context boundary. Do not write it after every useful Visit. If the available evidence already supports the final answer, answer directly instead of continuing to Search or staging that answer in a file.
 At an explicit context-boundary request, use one normal shell_command or apply_patch tool call to overwrite `.agent_memory/CONTINUATION.md`; only a verified non-empty write allows old messages to be removed. After replacement, read that file through a normal shell_command tool call before continuing. Other workspace files remain available for voluntary notes at any time. """ + FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE + """
 
 When evidence is sufficient, use this complete final form and replace the text
