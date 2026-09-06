@@ -34,6 +34,7 @@ from agentenv.envs.filesystem_checkpoint import (
     filesystem_checkpoint_read_failure_reason,
     filesystem_checkpoint_read_matches,
     filesystem_checkpoint_read_observed,
+    filesystem_checkpoint_exact_shell_payload,
     filesystem_checkpoint_failure_reason,
     filesystem_checkpoint_write_succeeded,
     normalize_filesystem_checkpoint_receipt,
@@ -586,6 +587,34 @@ class FilesystemCheckpointContractTest(unittest.TestCase):
         )
         self.assertFalse(rejected["idempotent_overwrite"])
         self.assertFalse(rejected["write_observed"])
+
+    def test_printf_checkpoint_rejects_lf_and_cr_command_separators(self) -> None:
+        safe = "objective=fit next_action=test"
+        expected = b"objective=fit\nnext_action=test\n"
+        for format_text in ("%s\\n", "%s\n"):
+            with self.subTest(format_text=repr(format_text)):
+                command = (
+                    "mkdir -p .agent_memory && printf '"
+                    + format_text
+                    + "' "
+                    + safe
+                    + " > .agent_memory/CONTINUATION.md"
+                )
+                action = "shell_command " + json.dumps({"command": command})
+                self.assertEqual(
+                    filesystem_checkpoint_exact_shell_payload(action), expected
+                )
+        for separator in ("\n", "\r", "\r\n"):
+            with self.subTest(separator=repr(separator)):
+                command = (
+                    "mkdir -p .agent_memory && printf '%s\\n' objective=fit"
+                    + separator
+                    + "touch side_effect"
+                    + separator
+                    + "cat source > .agent_memory/CONTINUATION.md"
+                )
+                action = "shell_command " + json.dumps({"command": command})
+                self.assertIsNone(filesystem_checkpoint_exact_shell_payload(action))
 
     def test_v2_idempotent_receipt_is_rebound_to_current_action(self) -> None:
         payload = b"objective: repair\nnext_action: run test\n"

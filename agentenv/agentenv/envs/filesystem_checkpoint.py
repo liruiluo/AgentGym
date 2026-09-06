@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shlex
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -43,9 +42,6 @@ _FILESYSTEM_CHECKPOINT_HEREDOC_RE = re.compile(
     r"<<'(?P<delimiter>[A-Za-z_][A-Za-z0-9_]*)'\n"
     r"(?P<body>.*)\n(?P=delimiter)\n?\Z",
     re.DOTALL,
-)
-_FILESYSTEM_CHECKPOINT_PRINTF_ARGUMENT_RE = re.compile(
-    r"[A-Za-z0-9._:/+=-]+"
 )
 
 FILESYSTEM_CHECKPOINT_LONG_LIVED_MEMORY_NOTICE = (
@@ -312,41 +308,32 @@ def filesystem_workspace_action_request_sha256(action: Any) -> str | None:
 
 
 def _filesystem_checkpoint_exact_printf_payload(command: str) -> bytes | None:
-    """Parse the bounded command-only ``printf`` checkpoint shape.
+    """Parse one exact, command-only ``printf`` checkpoint write.
 
-    The OpenMLE boundary prompt uses one safe token per checkpoint field.  Keep
-    this parser task-neutral: accept one or more shell-safe literal tokens, but
-    reject substitutions, extra commands, alternate redirections, and free-form
-    shell syntax.  Both a literal ``\n`` format and a quoted physical newline
-    are equivalent for POSIX ``printf``.
+    Horizontal whitespace is allowed between shell tokens. LF/CR are rejected
+    everywhere except the single quoted ``%s`` format itself, where the prompt's
+    physical newline and a literal ``\n`` are equivalent. This prevents shell
+    command separators from being flattened into apparent ``printf`` arguments.
     """
 
-    try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        lexer.commenters = ""
-        tokens = list(lexer)
-    except ValueError:
+    token = r"(?:[A-Za-z0-9._:/+=-]+|'[A-Za-z0-9._:/+=-]+'|\"[A-Za-z0-9._:/+=-]+\")"
+    match = re.fullmatch(
+        r"[ \t]*(?:mkdir[ \t]+-p[ \t]+\.agent_memory[ \t]+&&[ \t]+)?"
+        r"printf[ \t]+'%s(?:\\n|\n)'[ \t]+"
+        rf"(?P<arguments>{token}(?:[ \t]+{token})*)"
+        r"[ \t]+>[ \t]+\.agent_memory/CONTINUATION\.md[ \t]*",
+        command,
+    )
+    if match is None:
         return None
-    mkdir_prefix = ["mkdir", "-p", ".agent_memory", "&&"]
-    if tokens[: len(mkdir_prefix)] == mkdir_prefix:
-        tokens = tokens[len(mkdir_prefix) :]
-    if len(tokens) < 5 or tokens[0] != "printf":
-        return None
-    if tokens[1] not in {"%s\\n", "%s\n"}:
-        return None
-    if tokens[-2:] != [">", FILESYSTEM_CHECKPOINT_PATH]:
-        return None
-    arguments = tokens[2:-2]
-    if not arguments or any(
-        _FILESYSTEM_CHECKPOINT_PRINTF_ARGUMENT_RE.fullmatch(value) is None
+    arguments = re.split(r"[ \t]+", match.group("arguments"))
+    values = [
+        value[1:-1]
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}
+        else value
         for value in arguments
-    ):
-        return None
-    try:
-        return ("\n".join(arguments) + "\n").encode("utf-8")
-    except UnicodeEncodeError:
-        return None
+    ]
+    return ("\n".join(values) + "\n").encode("utf-8")
 
 
 def filesystem_checkpoint_exact_shell_payload(action: Any) -> bytes | None:
