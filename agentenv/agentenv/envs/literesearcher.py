@@ -319,7 +319,7 @@ def normalize_literesearcher_policy_action(
         return _literesearcher_invalid_qwen_action(
             "expected_exactly_one_qwen_xml_tool_call"
         )
-    name = parsed.name.strip().lower()
+    name = parsed.name
     arguments = dict(parsed.arguments)
     try:
         if name == "search":

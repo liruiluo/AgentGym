@@ -370,6 +370,13 @@ _WEBSHOP_SESSION_TRACE_ENTRY_RE = re.compile(r"(?m)^- S(?P<index>\d+): ")
 _WEBSHOP_POLICY_TRACE_BOUNDED_MARKER = "- Policy-view trace bounded:"
 WEBSHOP_POLICY_SESSION_TRACE_MAX_CHARS = 12_288
 WEBSHOP_POLICY_SESSION_TRACE_ENTRY_MAX_CHARS = 4_096
+_WEBSHOP_APPROVED_PRODUCT_TITLE_RE = re.compile(
+    r"(?m)^- Product: (?P<title>[^\r\n]+)$"
+)
+_WEBSHOP_PRODUCT_PAGE_TITLE_PREFIX = (
+    " [SEP] Back to Search [SEP] < Prev [SEP] "
+)
+_WEBSHOP_PRODUCT_PAGE_TITLE_SUFFIX = " [SEP] Price: "
 _WEBSHOP_LEGACY_WORKSPACE_CONTRACT = "\n".join(
     (
         "Persistent workspace tools:",
@@ -394,11 +401,50 @@ _WEBSHOP_QWEN_WORKSPACE_CONTRACT = "\n".join(
 )
 
 
+def _webshop_attested_product_title_match(
+    observation: str,
+    session_trace: Sequence[str] | None,
+) -> bool | None:
+    """Compare the visible product page with the selected approved title."""
+
+    if session_trace is None or isinstance(session_trace, (str, bytes)):
+        return None
+    approved_titles = {
+        match.group("title").strip()
+        for match in _WEBSHOP_APPROVED_PRODUCT_TITLE_RE.finditer(observation)
+        if match.group("title").strip()
+    }
+    selected_title = None
+    for entry in reversed(session_trace):
+        action_line, separator, _result = str(entry).partition("\nResult:")
+        if not separator or not action_line.startswith("Action: "):
+            continue
+        parsed = _parse_native_bracket_action(action_line.removeprefix("Action: "))
+        if parsed is not None and parsed[0] == "search":
+            selected_title = parsed[1]
+            break
+    if selected_title is None or selected_title not in approved_titles:
+        return None
+
+    marker_index = observation.rfind(_WEBSHOP_PRODUCT_PAGE_TITLE_PREFIX)
+    if marker_index < 0:
+        return None
+    title_start = marker_index + len(_WEBSHOP_PRODUCT_PAGE_TITLE_PREFIX)
+    title_end = observation.find(_WEBSHOP_PRODUCT_PAGE_TITLE_SUFFIX, title_start)
+    if title_end < 0:
+        return None
+    current_title = observation[title_start:title_end]
+    if not current_title:
+        return None
+    return current_title == selected_title
+
+
 def _webshop_current_step_guidance(
     observation: str,
     *,
     session_index: int | None = None,
     product_note_written: bool | None = None,
+    session_trace: Sequence[str] | None = None,
 ) -> str | None:
     """Describe the next browser transition from the live available-action block.
 
@@ -446,12 +492,6 @@ def _webshop_current_step_guidance(
     if not click_items:
         return None
     if any(item.casefold() == "buy now" for item in click_items):
-        identity_check = (
-            "Current-step browser state: a product page with `Buy Now` is open, "
-            "but the available-action list alone does not prove that it is the "
-            "selected approved listing. Compare the page's complete visible title "
-            "with the selected approved card. "
-        )
         has_back_to_search = any(
             item.casefold() == "back to search" for item in click_items
         )
@@ -460,14 +500,51 @@ def _webshop_current_step_guidance(
             if has_back_to_search
             else "use an available browser navigation item to return to the search results"
         )
+        title_match = _webshop_attested_product_title_match(
+            observation, session_trace
+        )
+        if title_match is False:
+            required_navigation = (
+                "The next function must be `click` with `Back to Search`"
+                if has_back_to_search
+                else "The next action must return to the search results"
+            )
+            return (
+                "Current-step browser state: Wrapper-attested title mismatch; the "
+                "current product page is not the selected approved listing. "
+                f"{required_navigation}; do not call `apply_patch`, "
+                "`shell_command`, or `Buy Now`."
+            )
+        identity_check = (
+            "Current-step browser state: Wrapper-attested exact title match; the "
+            "current product page is the selected approved listing. "
+            if title_match is True
+            else (
+                "Current-step browser state: a product page with `Buy Now` is open, "
+                "but the wrapper could not attest the selected title. Compare the "
+                "page's complete visible title with the selected approved card. "
+            )
+        )
         if isinstance(session_index, int) and session_index >= 5:
+            if title_match is True:
+                return identity_check + (
+                    "The next function must be `click` with `Buy Now`. This is the "
+                    "final session, so no new note is required; do not inspect the "
+                    "workspace."
+                )
             return identity_check + (
-                f"If they do not exactly match, {mismatch_recovery}; do not "
-                "buy. Only if they exactly match, call `click` with `Buy "
-                "Now` now. This is the final session, so no new note is required; "
-                "do not inspect the workspace."
+                f"If the titles do not exactly match, {mismatch_recovery}; do not "
+                "buy. Only if they exactly match, call `click` with `Buy Now` now. "
+                "This is the final session, so no new note is required; do not "
+                "inspect the workspace."
             )
         if product_note_written is True:
+            if title_match is True:
+                return identity_check + (
+                    "The required one-time Add File for this session has succeeded. "
+                    "The next function must be `click` with `Buy Now`; do not "
+                    "search, inspect, or rewrite the workspace first."
+                )
             return identity_check + (
                 "The required one-time Add File for this session has succeeded. "
                 f"If the titles do not exactly match, {mismatch_recovery}; do "
@@ -476,6 +553,13 @@ def _webshop_current_step_guidance(
                 "inspect, or rewrite the workspace first."
             )
         if product_note_written is False:
+            if title_match is True:
+                return identity_check + (
+                    "The required one-time Add File has not yet succeeded in this "
+                    "session. The next function must be `apply_patch` with one new "
+                    "path and the card's exact `Confirmed <field>: <value>` line; "
+                    "do not call any other function first."
+                )
             return identity_check + (
                 "The required one-time Add File has not yet succeeded in this "
                 "session. If the titles do not exactly match, "
@@ -808,6 +892,7 @@ def normalize_filesystem_webshop_policy_observation(
         observation,
         session_index=session_index,
         product_note_written=product_note_written,
+        session_trace=session_trace,
     )
     raw_trace_span = _webshop_session_trace_span(
         observation,
@@ -2530,7 +2615,7 @@ def normalize_filesystem_webshop_policy_action(
         return _invalid_qwen_policy_action(
             "expected_exactly_one_qwen_xml_tool_call"
         )
-    name = parsed.name.strip().lower()
+    name = parsed.name
     arguments = dict(parsed.arguments)
     try:
         if name == "search":

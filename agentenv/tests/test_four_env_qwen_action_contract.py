@@ -422,6 +422,58 @@ class FourEnvironmentQwenActionContractTest(unittest.TestCase):
             matched_note_written,
         )
 
+    def test_webshop_uses_attested_title_match_instead_of_policy_comparison(self) -> None:
+        approved_title = (
+            "Signature Popcorn - Gourmet Caramel Flavor - 1-Gallon Gold Tin"
+        )
+        other_title = (
+            "Signature Popcorn - 1-Gallon Gold Tin - Butter, Caramel and Cheddar"
+        )
+        task = (
+            "Instruction: [SEP] Session 1 of 6: select popcorn\n"
+            "Customer-approved product cards:\n"
+            f"- Product: {approved_title}\n"
+            "  Confirmed popcorn flavor: caramel\n"
+            "- Product: Smartfood Popcorn, White Cheddar, 0.625oz Bags (10 pack)\n"
+            "  Confirmed popcorn flavor: cheddar"
+        )
+
+        def product_page(title: str) -> str:
+            return (
+                f"{task} [SEP] Back to Search [SEP] < Prev [SEP] {title} "
+                "[SEP] Price: $25.99 [SEP] Buy Now\n"
+                "Native WebShop actions currently available:\n"
+                "- click[Back to Search]\n"
+                "- click[< Prev]\n"
+                "- click[Buy Now]\n"
+            )
+
+        def trace(title: str) -> list[str]:
+            return [
+                f"Action: search[{approved_title}]\nResult: search results",
+                f"Action: click[B0123]\nResult: {product_page(title)}",
+            ]
+
+        matched = normalize_filesystem_webshop_policy_observation(
+            product_page(approved_title),
+            session_index=0,
+            product_note_written=False,
+            session_trace=trace(approved_title),
+        )
+        self.assertIn("Wrapper-attested exact title match", matched)
+        self.assertIn("next function must be `apply_patch`", matched)
+        self.assertNotIn("Compare the page's complete visible title", matched)
+
+        mismatched = normalize_filesystem_webshop_policy_observation(
+            product_page(other_title),
+            session_index=0,
+            product_note_written=False,
+            session_trace=trace(other_title),
+        )
+        self.assertIn("Wrapper-attested title mismatch", mismatched)
+        self.assertIn("next function must be `click` with `Back to Search`", mismatched)
+        self.assertNotIn("next function must be `apply_patch`", mismatched)
+
     def test_webshop_product_note_state_follows_attested_runtime_actions(self) -> None:
         product_observation = (
             "Native WebShop actions currently available:\n"
@@ -1269,6 +1321,21 @@ You have one global budget of 30 ordinary actions. Every `shell_command`, `apply
         ):
             with self.subTest(action=action):
                 self.assert_rejected(_normalize_openmle_policy_action, action)
+
+    def test_tool_name_whitespace_is_rejected_at_every_policy_gateway(self) -> None:
+        malformed = qwen_call(
+            " shell_command ",
+            command="pwd",
+            workdir=".",
+        )
+        for normalizer in (
+            normalize_filesystem_webshop_policy_action,
+            normalize_swesmith_policy_action,
+            normalize_literesearcher_policy_action,
+            _normalize_openmle_policy_action,
+        ):
+            with self.subTest(environment=normalizer.__module__):
+                self.assert_rejected(normalizer, malformed)
 
     def test_openmle_rejects_out_of_contract_parameters(self) -> None:
         for action in (

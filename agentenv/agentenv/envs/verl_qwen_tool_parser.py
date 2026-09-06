@@ -200,6 +200,9 @@ def parse_single_qwen3_tool_call(
         return None
     if function_call is None:
         return None
+    allowed_names = {schema.function.name for schema in schemas}
+    if function_call.name not in allowed_names:
+        return None
     try:
         arguments = json.loads(function_call.arguments)
     except (TypeError, json.JSONDecodeError):

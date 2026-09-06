@@ -150,6 +150,17 @@ cat data/sample_submission.csv | head -3
             )
         )
 
+    def test_rejects_known_tool_name_with_surrounding_whitespace(self) -> None:
+        parsed = parse_single_qwen3_tool_call(
+            """<tool_call>
+<function= shell_command >
+<parameter=command>pwd</parameter>
+</function>
+</tool_call>""",
+            tool_schemas=TOOLS,
+        )
+        self.assertIsNone(parsed)
+
     def test_converts_integer_parameter_through_upstream_schema(self) -> None:
         parsed = parse_single_qwen3_tool_call(
             """<tool_call>
