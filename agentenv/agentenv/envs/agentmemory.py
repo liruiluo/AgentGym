@@ -370,6 +370,10 @@ _WEBSHOP_SESSION_TRACE_ENTRY_RE = re.compile(r"(?m)^- S(?P<index>\d+): ")
 _WEBSHOP_POLICY_TRACE_BOUNDED_MARKER = "- Policy-view trace bounded:"
 WEBSHOP_POLICY_SESSION_TRACE_MAX_CHARS = 12_288
 WEBSHOP_POLICY_SESSION_TRACE_ENTRY_MAX_CHARS = 4_096
+_WEBSHOP_RENDERED_STATE_HEADER_RE = re.compile(
+    r"(?m)^Task family: bundled_shopping\nProgress: \d+/6$"
+)
+_WEBSHOP_APPROVED_PRODUCT_CARDS_HEADER = "Customer-approved product cards:\n"
 _WEBSHOP_APPROVED_PRODUCT_TITLE_RE = re.compile(
     r"(?m)^- Product: (?P<title>[^\r\n]+)$"
 )
@@ -401,6 +405,36 @@ _WEBSHOP_QWEN_WORKSPACE_CONTRACT = "\n".join(
 )
 
 
+def _webshop_authoritative_rendered_state(
+    observation: str,
+    session_trace: Sequence[str] | None,
+) -> str:
+    """Return the endpoint-rendered state without policy-controlled prefixes.
+
+    Workspace command output is rendered before the native WebShop state and
+    may contain arbitrary page/action lookalikes.  The actual state starts at
+    the final endpoint-owned task/progress header and ends before the exact
+    rendered session trace.  Callers that receive a legacy fixture without the
+    renderer header retain the old whole-page behavior.
+    """
+
+    trace_span = _webshop_session_trace_span(
+        observation,
+        session_trace=session_trace,
+    )
+    if trace_span is not None:
+        state_and_prefix = observation[: trace_span[0]]
+    else:
+        trace_start = observation.find(_WEBSHOP_SESSION_TRACE_HEADER)
+        state_and_prefix = (
+            observation[:trace_start] if trace_start >= 0 else observation
+        )
+    headers = list(_WEBSHOP_RENDERED_STATE_HEADER_RE.finditer(state_and_prefix))
+    if headers:
+        return state_and_prefix[headers[-1].start() :]
+    return state_and_prefix
+
+
 def _webshop_attested_product_title_match(
     observation: str,
     session_trace: Sequence[str] | None,
@@ -409,17 +443,10 @@ def _webshop_attested_product_title_match(
 
     if session_trace is None or isinstance(session_trace, (str, bytes)):
         return None
-    # Only the current native page is authoritative.  The observation also
-    # carries a policy-controlled session trace whose shell/file output may
-    # contain strings that resemble task cards or product-page delimiters.
-    # Never attest against that replayed text.
-    trace_start = observation.find(_WEBSHOP_SESSION_TRACE_HEADER)
-    current_page = observation[:trace_start] if trace_start >= 0 else observation
-    approved_titles = {
-        match.group("title").strip()
-        for match in _WEBSHOP_APPROVED_PRODUCT_TITLE_RE.finditer(current_page)
-        if match.group("title").strip()
-    }
+    current_page = _webshop_authoritative_rendered_state(
+        observation,
+        session_trace,
+    )
     selected_title = None
     for entry in reversed(session_trace):
         action_line, separator, _result = str(entry).partition("\nResult:")
@@ -429,11 +456,27 @@ def _webshop_attested_product_title_match(
         if parsed is not None and parsed[0] == "search":
             selected_title = parsed[1]
             break
-    if selected_title is None or selected_title not in approved_titles:
+    if selected_title is None:
         return None
 
     marker_index = current_page.rfind(_WEBSHOP_PRODUCT_PAGE_TITLE_PREFIX)
     if marker_index < 0:
+        return None
+    cards_start = current_page.rfind(
+        _WEBSHOP_APPROVED_PRODUCT_CARDS_HEADER,
+        0,
+        marker_index,
+    )
+    if cards_start < 0:
+        return None
+    approved_titles = {
+        match.group("title").strip()
+        for match in _WEBSHOP_APPROVED_PRODUCT_TITLE_RE.finditer(
+            current_page[cards_start:marker_index]
+        )
+        if match.group("title").strip()
+    }
+    if selected_title not in approved_titles:
         return None
     page_body_start = marker_index + len(_WEBSHOP_PRODUCT_PAGE_TITLE_PREFIX)
     title_end = current_page.find(_WEBSHOP_PRODUCT_PAGE_TITLE_SUFFIX, page_body_start)
@@ -470,12 +513,22 @@ def _webshop_current_step_guidance(
     authoritative state signal; this guidance changes neither actions nor reward.
     """
 
-    legacy_match = _WEBSHOP_LEGACY_AVAILABLE_ACTIONS_RE.search(observation)
-    qwen_match = _WEBSHOP_QWEN_AVAILABLE_FUNCTIONS_RE.search(observation)
+    rendered_state = _webshop_authoritative_rendered_state(
+        observation,
+        session_trace,
+    )
+    legacy_matches = list(
+        _WEBSHOP_LEGACY_AVAILABLE_ACTIONS_RE.finditer(rendered_state)
+    )
+    qwen_matches = list(
+        _WEBSHOP_QWEN_AVAILABLE_FUNCTIONS_RE.finditer(rendered_state)
+    )
+    legacy_match = legacy_matches[-1] if legacy_matches else None
+    qwen_match = qwen_matches[-1] if qwen_matches else None
     matches = [match for match in (legacy_match, qwen_match) if match is not None]
     if not matches:
         return None
-    match = min(matches, key=lambda item: item.start())
+    match = max(matches, key=lambda item: item.start())
     block = match.group("actions")
     if match.re is _WEBSHOP_LEGACY_AVAILABLE_ACTIONS_RE:
         actions: list[tuple[str, str]] = []
