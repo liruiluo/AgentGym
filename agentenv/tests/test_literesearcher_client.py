@@ -120,6 +120,15 @@ class LiteResearcherClientTests(unittest.TestCase):
         self.assertIn("<function=search>", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("<function=visit>", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("MUST be a JSON array", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("Build a short evidence chain", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("Prefer a relevant returned URL", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("Answer as soon as the collected evidence", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn("Keep the remaining action budget in mind", LITERESEARCHER_SYSTEM_PROMPT)
+        self.assertIn(
+            "Do not guess when an essential fact is still",
+            LITERESEARCHER_SYSTEM_PROMPT,
+        )
+        self.assertIn("missing or unresolved", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn("<function=answer>", LITERESEARCHER_SYSTEM_PROMPT)
         self.assertIn(
             "<parameter=answer>your evidence-backed answer</parameter>",

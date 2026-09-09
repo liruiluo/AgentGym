@@ -179,6 +179,22 @@ LITERESEARCHER_POLICY_CONTINUATION_MARKER = (
 LITERESEARCHER_SYSTEM_PROMPT = QWEN_SINGLE_TOOL_CALL_CONTRACT + """
 Use only functions from the native Tools section above. Never mix the native Qwen XML envelope with a bare Codex-style action.
 
+Research execution discipline:
+- Build a short evidence chain: use a focused search, then visit the most
+  relevant URL returned by that search when it can answer a missing part of
+  the question. Treat each visit as a targeted check for a concrete fact.
+- Prefer a relevant returned URL over another broad search. Do not repeat the
+  same or nearly identical search unless the earlier results were irrelevant,
+  incomplete, or conflicting, and make the next query address the remaining
+  gap.
+- Answer as soon as the collected evidence directly supports every required
+  part of the question. Do not spend remaining actions on marginal searches
+  after the answer is supported. Do not guess when an essential fact is still
+  missing or unresolved.
+- Keep the remaining action budget in mind. A valid evidence-backed answer is
+  more important than exhausting the horizon; avoid exploratory loops that do
+  not add new evidence.
+
 For a search, use this complete form. The query value MUST be a JSON array of
 one or more non-empty strings, never a single string:
 
