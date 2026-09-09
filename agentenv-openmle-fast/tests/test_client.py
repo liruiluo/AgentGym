@@ -742,7 +742,15 @@ cat .agent_memory/CONTINUATION.md
         self.assertTrue(evidence["continuation_persisted"])
         self.assertTrue(evidence["context_replaced"])
         self.assertFalse(evidence["retry_pending"])
-        self.assertEqual(evidence["checkpoint_receipt"], receipt)
+        self.assertEqual(
+            evidence["checkpoint_receipt"],
+            {
+                **receipt,
+                "schema": "agentmemory_filesystem_checkpoint_receipt_v2",
+                "idempotent_overwrite": False,
+                "write_observed": True,
+            },
+        )
         self.assertFalse(evidence["checkpoint_action_in_successor_context"])
         self.assertFalse(evidence["checkpoint_content_in_successor_context"])
 
