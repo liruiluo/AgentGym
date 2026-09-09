@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from agentenv_openmle_fast.executor import OpenMLEFastResourceLimits
 from agentenv_openmle_fast.launch import (
+    _build_private_grader_client,
     _required_float,
     _validate_timeout_margins,
 )
@@ -14,6 +15,21 @@ from agentenv_openmle_fast.launch import (
 class OpenMLEFastLaunchTest(unittest.TestCase):
     def setUp(self) -> None:
         self.limits = OpenMLEFastResourceLimits.frozen_v1()
+
+    def test_formal_private_grader_wires_one_same_submission_retry(self) -> None:
+        with patch("agentenv_openmle_fast.launch.PrivateGraderClient") as client:
+            _build_private_grader_client(
+                endpoint="/tmp/private-grader.sock",
+                credential_path="/tmp/private-grader.credential",
+                timeout_seconds=10.0,
+            )
+
+        client.assert_called_once_with(
+            endpoint="/tmp/private-grader.sock",
+            credential_path="/tmp/private-grader.credential",
+            timeout_seconds=10.0,
+            max_infrastructure_retries=1,
+        )
 
     def test_grader_client_timeout_covers_total_not_only_worker_wall(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "total grader wall"):

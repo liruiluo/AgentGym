@@ -24,7 +24,10 @@ from agentenv_openmle_fast.executor import (
     OpenMLEFastExecutor,
     OpenMLEFastResourceLimits,
 )
-from agentenv_openmle_fast.grader_client import PrivateGraderClient
+from agentenv_openmle_fast.grader_client import (
+    PrivateGraderClient,
+    PrivateGraderTransportError,
+)
 from agentenv_openmle_fast.grader_protocol import GradeResult
 from agentenv_openmle_fast.materializer import OpenMLEFastWorkspaceMaterializer
 from agentenv_openmle_fast.private_grader import PrivateGraderService
@@ -44,6 +47,15 @@ from tests.support import (
 class _FaultingGrader:
     def grade(self, **_kwargs):
         raise RuntimeError("secret grader path /private/answer.csv")
+
+
+class _ExpiringTransportGrader:
+    def grade(self, *, deadline, **_kwargs):
+        # Model a transport timeout consuming the final grader budget.  The
+        # ownership remains infrastructure-side even though the deadline is now
+        # expired.
+        object.__setattr__(deadline, "expires_at", time.monotonic() - 1.0)
+        raise PrivateGraderTransportError("private grader IPC timed out")
 
 
 class _CountingGrader:
@@ -545,6 +557,20 @@ printf native-xml > native.txt
         self.assertTrue(terminal.done)
         self.assertEqual(terminal.reward, -1.0)
         self.assertEqual(terminal.info["counters"]["grading_count"], 1)
+
+    def test_expired_grader_transport_fault_remains_infrastructure_truncation(self) -> None:
+        manager = self.build_manager(_ExpiringTransportGrader())
+        manager, slot, _ = self.reset(manager)
+
+        terminal = manager.step(slot, "submit")
+
+        self.assertTrue(terminal.done)
+        self.assertIsNone(terminal.reward)
+        self.assertTrue(terminal.info["truncated"])
+        self.assertEqual(terminal.info["action_status"], "infrastructure_fault")
+        self.assertEqual(
+            terminal.info["terminal_reason"], "grader_infrastructure_fault"
+        )
 
     def test_grader_fault_is_sanitized_null_reward_truncation(self) -> None:
         manager = self.build_manager(_FaultingGrader())

@@ -25,6 +25,7 @@ from .executor import (
     OpenMLEFastExecutor,
     OpenMLEFastResourceLimits,
 )
+from .grader_client import PrivateGraderTransportError
 from .grader_protocol import GradeResult
 from .materializer import (
     OpenMLEFastWorkspace,
@@ -767,6 +768,12 @@ class OpenMLEFastEpisodeManager:
                 deadline=deadline,
             )
             deadline.check()
+        except PrivateGraderTransportError:
+            # A grader IPC/deadline failure is an environment failure even if
+            # the shared grader deadline has just expired.  Do not relabel it
+            # as policy-owned episode exhaustion after a bounded retry.
+            self._infrastructure_terminal(episode, "grader_infrastructure_fault")
+            return "infrastructure_fault"
         except DeadlineExceeded:
             self._policy_terminal(episode, "episode_wall_limit")
             episode.observation = "The episode wall expired during private grading."

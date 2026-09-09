@@ -34,6 +34,7 @@ from .private_grader_runner import (
 
 PRIVATE_MANIFEST_SCHEMA = "openmle_fast_fullpool_private_grader_manifest_v1"
 PUBLIC_MANIFEST_BINDING_KEYS = frozenset({"g64", "train", "heldout"})
+_MAX_REQUEST_REPLAY_ENTRIES = 65_536
 
 
 class PrivateGraderError(RuntimeError):
@@ -62,6 +63,14 @@ class _PrivateTask:
     ideal_score: float
     higher_is_better: bool
     validator_success_forms: tuple[str, ...]
+
+
+@dataclass
+class _RequestReplayEntry:
+    request_identity_sha256: str
+    ready: threading.Event
+    in_progress: bool = True
+    result: GradeResult | None = None
 
 
 class PrivateGraderService:
@@ -184,6 +193,13 @@ class PrivateGraderService:
         self._worker_lock = threading.Lock()
         self._workers: set[threading.Thread] = set()
         self._connections: set[socket.socket] = set()
+        # The service is run-scoped.  Retaining the small result record for
+        # every logical grader request makes a transport retry exactly-once at
+        # the native backend boundary.  The cap is far above the 12,800-row
+        # joint formal contract and fails closed rather than evicting a result
+        # that might still need replay.
+        self._request_replay_lock = threading.Lock()
+        self._request_replay: dict[str, _RequestReplayEntry] = {}
 
     def _load_task(self, raw: Any) -> _PrivateTask:
         if not isinstance(raw, dict):
@@ -387,7 +403,7 @@ class PrivateGraderService:
         except (OSError, TimeoutError, GraderProtocolError, DeadlineExceeded):
             return
         try:
-            result = self._grade_or_fault(request, deadline)
+            result = self._grade_or_replay(request, deadline)
             deadline.check()
             response = authenticated_message(
                 result.payload(),
@@ -402,8 +418,92 @@ class PrivateGraderService:
                 deadline=deadline,
             )
             deadline.check()
-        except (OSError, TimeoutError, GraderProtocolError, DeadlineExceeded):
+        except (
+            OSError,
+            TimeoutError,
+            GraderProtocolError,
+            DeadlineExceeded,
+            PrivateGraderError,
+        ):
             return
+
+    def _grade_or_replay(
+        self,
+        request: GradeRequest,
+        deadline: MonotonicDeadline,
+    ) -> GradeResult:
+        """Execute one logical request once, replaying its durable result.
+
+        A client may lose the response after the native grader and audit write
+        have completed.  Concurrent or later replays with the same request ID
+        and request identity wait for or reuse that result.  Reusing an ID for
+        different content is always rejected before native execution.
+        """
+
+        request_identity_sha256 = canonical_sha256(
+            {
+                "request_id": request.request_id,
+                "episode_id": request.episode_id,
+                "task_id": request.task_id,
+                "grader_binding_sha256": request.grader_binding_sha256,
+                "package_identity_sha256": request.package_identity_sha256,
+                "baseline_score": request.baseline_score,
+                "ideal_score": request.ideal_score,
+                "higher_is_better": request.higher_is_better,
+                "submission_sha256": request.submission_sha256,
+            }
+        )
+
+        while True:
+            deadline.check()
+            owner = False
+            with self._request_replay_lock:
+                entry = self._request_replay.get(request.request_id)
+                if entry is None:
+                    if len(self._request_replay) >= _MAX_REQUEST_REPLAY_ENTRIES:
+                        raise PrivateGraderError(
+                            "private grader request replay table is full"
+                        )
+                    entry = _RequestReplayEntry(
+                        request_identity_sha256=request_identity_sha256,
+                        ready=threading.Event(),
+                    )
+                    self._request_replay[request.request_id] = entry
+                    owner = True
+                else:
+                    if entry.request_identity_sha256 != request_identity_sha256:
+                        raise PrivateGraderError(
+                            "private grader request ID was reused with different content"
+                        )
+                    if entry.result is not None:
+                        return entry.result
+                    if not entry.in_progress:
+                        entry.in_progress = True
+                        entry.ready.clear()
+                        owner = True
+                    else:
+                        ready = entry.ready
+
+            if owner:
+                break
+            if not ready.wait(deadline.remaining_seconds()):
+                raise DeadlineExceeded(
+                    "private grader replay wait exceeded the request deadline"
+                )
+
+        try:
+            result = self._grade_or_fault(request, deadline)
+        except BaseException:
+            with self._request_replay_lock:
+                entry.in_progress = False
+                entry.ready.set()
+            raise
+
+        with self._request_replay_lock:
+            entry.result = result
+            entry.in_progress = False
+            entry.ready.set()
+        return result
 
     def _close_active_connections(self) -> None:
         with self._worker_lock:
@@ -526,6 +626,8 @@ class PrivateGraderService:
                 metric=metric,
                 answer=answer,
                 submission=request.submission,
+                request_id=request.request_id,
+                episode_id=request.episode_id,
             ),
             timeout_ms=deadline.remaining_milliseconds(),
         )
@@ -627,7 +729,6 @@ class PrivateGraderService:
                 os.fsync(handle.fileno())
         finally:
             os.close(descriptor)
-        deadline.check()
         return GradeResult(
             request_id=result.request_id,
             episode_id=result.episode_id,

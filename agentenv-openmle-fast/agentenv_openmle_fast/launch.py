@@ -23,6 +23,20 @@ from .private_grader_runner import (
 )
 
 
+_FORMAL_PRIVATE_GRADER_INFRASTRUCTURE_RETRIES = 1
+
+
+def _build_private_grader_client(
+    *, endpoint: Path | str, credential_path: Path | str, timeout_seconds: float
+) -> PrivateGraderClient:
+    return PrivateGraderClient(
+        endpoint=endpoint,
+        credential_path=credential_path,
+        timeout_seconds=timeout_seconds,
+        max_infrastructure_retries=_FORMAL_PRIVATE_GRADER_INFRASTRUCTURE_RETRIES,
+    )
+
+
 def build_manager_from_environment() -> OpenMLEFastEpisodeManager:
     limits = _limits_from_environment()
     manifest = _required_file("OPENMLE_FAST_TASK_MANIFEST")
@@ -73,7 +87,7 @@ def build_manager_from_environment() -> OpenMLEFastEpisodeManager:
         client_timeout=client_timeout,
         client_margin=client_margin,
     )
-    grader = PrivateGraderClient(
+    grader = _build_private_grader_client(
         endpoint=Path(_required_text("OPENMLE_FAST_GRADER_ENDPOINT")),
         credential_path=_required_file("OPENMLE_FAST_GRADER_CREDENTIAL"),
         timeout_seconds=grader_timeout,
@@ -152,6 +166,9 @@ def build_private_grader_from_environment() -> PrivateGraderService:
         wall_ms=limits.grader_worker_wall_ms,
         input_bytes=limits.grader_input_bytes,
     )
+    audit_root = _required_directory(
+        "OPENMLE_FAST_PRIVATE_AUDIT_ROOT", create=True
+    )
     backend = ExternalPrivateGraderRunnerBackend(
         runner_path=_required_file("OPENMLE_FAST_PRIVATE_RUNNER"),
         expected_runner_sha256=_required_sha256("OPENMLE_FAST_PRIVATE_RUNNER_SHA256"),
@@ -160,6 +177,9 @@ def build_private_grader_from_environment() -> PrivateGraderService:
             "OPENMLE_FAST_RUNTIME_ARTIFACT_LOCK_SHA256"
         ),
         limits=private_limits,
+        fault_audit_root=audit_root,
+        process_owner=_required_text("OPENMLE_FAST_PROCESS_OWNER"),
+        run_id=_required_text("OPENMLE_FAST_RUN_ID"),
     )
     return PrivateGraderService(
         private_manifest_path=_required_file("OPENMLE_FAST_PRIVATE_TASK_MANIFEST"),
@@ -172,7 +192,7 @@ def build_private_grader_from_environment() -> PrivateGraderService:
         expected_runtime_digest=runtime_digest,
         socket_path=Path(_required_text("OPENMLE_FAST_GRADER_ENDPOINT")),
         credential_path=_required_file("OPENMLE_FAST_GRADER_CREDENTIAL"),
-        audit_root=_required_directory("OPENMLE_FAST_PRIVATE_AUDIT_ROOT", create=True),
+        audit_root=audit_root,
         total_wall_ms=limits.grader_total_wall_ms,
         max_concurrent_requests=limits.grader_max_concurrent_requests,
         backend=backend,

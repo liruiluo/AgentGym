@@ -5,6 +5,7 @@ import json
 import math
 import os
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -64,6 +65,8 @@ class PrivateGradeExecutionRequest:
     metric: bytes
     answer: bytes
     submission: bytes
+    request_id: str | None = None
+    episode_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -227,6 +230,9 @@ class ExternalPrivateGraderRunnerBackend:
         expected_runtime_digest: str,
         expected_artifact_lock_sha256: str,
         limits: PrivateGraderLimits,
+        fault_audit_root: Path | str | None = None,
+        process_owner: str | None = None,
+        run_id: str | None = None,
     ) -> None:
         self.runner_path = Path(runner_path).expanduser().absolute()
         if self.runner_path.is_symlink() or not self.runner_path.is_file():
@@ -238,6 +244,36 @@ class ExternalPrivateGraderRunnerBackend:
         self.expected_runtime_digest = expected_runtime_digest
         self.expected_artifact_lock_sha256 = expected_artifact_lock_sha256
         self.limits = limits
+        context = (fault_audit_root, process_owner, run_id)
+        if any(value is not None for value in context) and not all(
+            value is not None for value in context
+        ):
+            raise PrivateGraderRunnerError(
+                "private fault diagnostics require root, owner, and run id"
+            )
+        self.fault_audit_root: Path | None = None
+        self.process_owner: str | None = None
+        self.run_id: str | None = None
+        if fault_audit_root is not None:
+            root = Path(fault_audit_root).expanduser().absolute()
+            try:
+                info = os.stat(root, follow_symlinks=False)
+            except OSError as exc:
+                raise PrivateGraderRunnerError(
+                    "private fault audit root is unavailable"
+                ) from exc
+            if (
+                root.is_symlink()
+                or not root.is_dir()
+                or info.st_uid != os.geteuid()
+                or stat.S_IMODE(info.st_mode) & 0o077
+            ):
+                raise PrivateGraderRunnerError(
+                    "private fault audit root must be owner-only"
+                )
+            self.fault_audit_root = root
+            self.process_owner = _diagnostic_identity(process_owner, "process owner")
+            self.run_id = _diagnostic_identity(run_id, "run id")
         self._metadata = self._load_metadata()
 
     @property
@@ -368,6 +404,27 @@ class ExternalPrivateGraderRunnerBackend:
                 "submission_fd": descriptors[2],
                 "timeout_ms": runner_timeout_ms,
             }
+            runner_environment = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
+            if self.fault_audit_root is not None:
+                if request.request_id is None or request.episode_id is None:
+                    raise PrivateGraderRunnerError(
+                        "formal private fault context requires request identities"
+                    )
+                runner_environment.update(
+                    {
+                        "OPENMLE_FAST_PRIVATE_FAULT_AUDIT_ROOT": str(
+                            self.fault_audit_root
+                        ),
+                        "OPENMLE_FAST_PROCESS_OWNER": str(self.process_owner),
+                        "OPENMLE_FAST_RUN_ID": str(self.run_id),
+                        "OPENMLE_FAST_PRIVATE_REQUEST_ID_SHA256": hashlib.sha256(
+                            request.request_id.encode("utf-8")
+                        ).hexdigest(),
+                        "OPENMLE_FAST_PRIVATE_EPISODE_ID_SHA256": hashlib.sha256(
+                            request.episode_id.encode("utf-8")
+                        ).hexdigest(),
+                    }
+                )
             try:
                 result = subprocess.run(
                     [str(self.runner_path), "grade"],
@@ -382,7 +439,7 @@ class ExternalPrivateGraderRunnerBackend:
                         / 1000.0,
                     ),
                     check=False,
-                    env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+                    env=runner_environment,
                     pass_fds=descriptors,
                 )
                 if result.returncode != 0 or len(result.stdout) > 64 * 1024:
@@ -476,6 +533,17 @@ def _kill_process_group(pid: int) -> None:
         os.killpg(pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+
+
+def _diagnostic_identity(value: object, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 256
+        or any(ord(character) < 32 or ord(character) > 126 for character in value)
+    ):
+        raise PrivateGraderRunnerError(f"private fault {label} is invalid")
+    return value
 
 
 def _file_sha256(path: Path) -> str:
