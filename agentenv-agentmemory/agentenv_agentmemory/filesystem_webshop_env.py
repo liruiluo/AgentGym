@@ -421,6 +421,11 @@ class PersistentWorkspaceWebShopEnv(MemoryArenaWebShopEnv):
                 "reward_contract": self.reward_contract(),
             }
         )
+        from .copd_teacher import episode_receipt
+        if self.workspace.enabled:
+            receipt = episode_receipt(self.workspace.host_root)
+            if receipt is not None:
+                info["copd"] = receipt
         return info
 
     def reward_contract(self) -> dict[str, Any]:

@@ -36,7 +36,7 @@ EXTERNAL_RUNNER_COMPLETION_GRACE_MS = 3_000
 EXTERNAL_RUNNER_PROCESS_GRACE_MS = 34_000
 
 
-def _external_runner_environment() -> dict[str, str]:
+def _external_runner_environment(teacher_mount: str = "") -> dict[str, str]:
     # Policy-authored shell text may contain arbitrary Unicode.  The exact
     # runner is a Python 3.6 executable, so its filesystem encoding is fixed at
     # interpreter startup from LC_ALL; the plain C locale makes argv encoding
@@ -45,6 +45,7 @@ def _external_runner_environment() -> dict[str, str]:
         "PATH": "/usr/bin:/bin",
         "LC_ALL": "C.UTF-8",
         "PYTHONDONTWRITEBYTECODE": "1",
+        **({"COPD_TEACHER_MOUNT": teacher_mount} if teacher_mount else {}),
     }
 
 
@@ -612,18 +613,21 @@ class ExternalSandboxRunnerBackend:
             "managed_runtime_budget_ms": managed_runtime_budget_ms,
         }
         started = time.monotonic()
+        from agentenv_agentmemory.copd_teacher import command_mount
         try:
-            result = subprocess.run(
-                [str(self.runner_path), "execute"],
-                input=json.dumps(
-                    request, sort_keys=True, separators=(",", ":")
-                ).encode(),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                timeout=(timeout_ms + EXTERNAL_RUNNER_PROCESS_GRACE_MS) / 1000.0,
-                check=False,
-                env=_external_runner_environment(),
-            )
+            with command_mount(workspace, model_uid=65534, command=command,
+                               timeout_ms=timeout_ms) as teacher_mount:
+                result = subprocess.run(
+                    [str(self.runner_path), "execute"],
+                    input=json.dumps(
+                        request, sort_keys=True, separators=(",", ":")
+                    ).encode(),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=(timeout_ms + EXTERNAL_RUNNER_PROCESS_GRACE_MS) / 1000.0,
+                    check=False,
+                    env=_external_runner_environment(teacher_mount),
+                )
             value = _strict_json_loads(result.stdout)
             return _decode_runner_execution(value, result.returncode)
         except subprocess.TimeoutExpired:

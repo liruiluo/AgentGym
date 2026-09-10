@@ -785,6 +785,10 @@ class SwesmithEpisodeManager:
                 and episode.grade.resolved
             ),
         }
+        from agentenv_agentmemory.copd_teacher import episode_receipt
+        receipt = episode_receipt(episode.workspace.policy_root)
+        if receipt is not None:
+            info["copd"] = receipt
         if actor_credit is not None:
             info["actor_credit"] = dict(actor_credit)
         if action_progress is not None:

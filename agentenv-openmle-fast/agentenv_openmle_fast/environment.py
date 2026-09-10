@@ -360,6 +360,8 @@ class OpenMLEFastEpisodeManager:
             slot.episode = episode
             try:
                 episode.workspace = self.materializer.materialize(record)
+                from agentenv_agentmemory.copd_teacher import record_episode
+                record_episode(episode.workspace.policy_root)
                 observation = _bound_text(
                     record.task_markdown,
                     self.limits,
@@ -926,6 +928,11 @@ class OpenMLEFastEpisodeManager:
             "audit_digest": None,
             "unaudited_evidence_sha256": None,
         }
+        from agentenv_agentmemory.copd_teacher import episode_receipt
+        if episode.workspace is not None:
+            receipt = episode_receipt(episode.workspace.policy_root)
+            if receipt is not None:
+                info["copd"] = receipt
         step = EpisodeStep(
             observation=_bound_text(
                 episode.observation,

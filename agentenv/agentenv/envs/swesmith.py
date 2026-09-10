@@ -309,6 +309,10 @@ SWE_POLICY_SYSTEM_PROMPT = (
 )
 
 
+from agentenv.copd_protocol import policy_notice as _copd_policy_notice
+SWE_POLICY_SYSTEM_PROMPT += _copd_policy_notice()
+
+
 def _swe_invalid_qwen_action(reason: str) -> tuple[str, dict[str, Any]]:
     return QWEN_INVALID_ACTION_SENTINEL, {
         "tool_contract": "qwen3_xml_single_call_v1",

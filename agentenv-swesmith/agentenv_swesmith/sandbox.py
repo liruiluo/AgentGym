@@ -31,6 +31,7 @@ from agentenv_agentmemory.workspace_sandbox import (
     executable_fingerprint,
     executable_sha256,
 )
+from agentenv_agentmemory.copd_teacher import command_mount, record_episode
 
 
 SWE_SHELL_SANDBOX_CONTRACT = "swesmith_linux_namespace_oci_rootfs_v1"
@@ -416,6 +417,7 @@ class LinuxNamespaceEpisodeSandbox:
         snapshot = snapshot_workspace_tree(root, self.limits)
         self._workspace_root = root
         self._snapshot = snapshot
+        record_episode(root)
         return snapshot
 
     def refresh_after_host_mutation(self) -> WorkspaceDiff:
@@ -519,6 +521,7 @@ class LinuxNamespaceEpisodeSandbox:
                     timeout_ms=timeout_ms,
                     stdout_limit_bytes=stdout_limit,
                     stderr_limit_bytes=stderr_limit,
+                    teacher_permitted=max_timeout_ms is not None,
                 )
             except ShellSandboxError as exc:
                 if str(exc) != (
@@ -580,6 +583,7 @@ class LinuxNamespaceEpisodeSandbox:
         timeout_ms: int,
         stdout_limit_bytes: int | None = None,
         stderr_limit_bytes: int | None = None,
+        teacher_permitted: bool = False,
     ) -> ShellExecutionResult:
         assert_executable_fingerprint(self.rg_binary, self.rg_fingerprint, "ripgrep")
         identity = self._oci_rootfs_identity
@@ -593,7 +597,10 @@ class LinuxNamespaceEpisodeSandbox:
             prefix=".swesmith-sandbox-root-"
         ) as rootfs, _temporary_sandbox_directory(
             prefix=".swesmith-sandbox-output-"
-        ) as output:
+        ) as output, command_mount(
+            workspace_root, model_uid=self.model_uid, command=command,
+            timeout_ms=timeout_ms, permitted=teacher_permitted,
+        ) as teacher_mount:
             self._prepare_rootfs(rootfs, output)
             started = time.monotonic()
             process = subprocess.Popen(
@@ -629,6 +636,7 @@ class LinuxNamespaceEpisodeSandbox:
                     str(self._binaries["hostname"]),
                     str(self._binaries["mknod"]),
                     str(self._binaries["ip"]),
+                    teacher_mount,
                 ],
                 cwd=parent,
                 env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"},
@@ -1305,6 +1313,7 @@ chroot_binary=${17}
 hostname_binary=${18}
 mknod_binary=${19}
 ip_binary=${20}
+teacher_mount=${21}
 
 # The isolated network namespace has no routes or external interfaces.  Bring
 # up only loopback because several official repository tests use local sockets.
@@ -1342,6 +1351,11 @@ mkdir -p "$mount_root/dev/shm"
 "$mknod_binary" -m 444 "$mount_root/dev/urandom" c 1 9
 "$mount_binary" -t proc -o nosuid,nodev,noexec,hidepid=2 proc "$mount_root/proc"
 "$mount_binary" -t tmpfs -o mode=0755,nosuid,nodev tmpfs "$mount_root/run"
+if [ -n "$teacher_mount" ]; then
+    mkdir -p "$mount_root/run/copd"
+    "$mount_binary" --bind "$teacher_mount" "$mount_root/run/copd"
+    "$mount_binary" -o remount,bind,ro,nosuid,nodev "$mount_root/run/copd"
+fi
 mkdir -p "$mount_root/run/out" "$mount_root/run/tools"
 chmod 0700 "$mount_root/run/out"
 chmod 0755 "$mount_root/run/tools"

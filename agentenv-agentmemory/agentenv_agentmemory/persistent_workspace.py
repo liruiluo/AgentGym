@@ -250,6 +250,8 @@ class PersistentWorkspace:
         )
         os.chmod(root, 0o700)
         self._root = root.resolve()
+        from .copd_teacher import record_episode
+        record_episode(self._root)
 
     def close(self) -> None:
         root = self._root
@@ -548,6 +550,7 @@ class PersistentWorkspace:
         return self._snapshot_root(self.host_root)
 
     def render_contract(self) -> str:
+        from .copd_teacher import policy_notice
         if not self.enabled:
             return "Persistent workspace: unavailable in this intervention."
         return "\n".join(
@@ -561,7 +564,7 @@ class PersistentWorkspace:
                 "apply_patch supports Add File, Update File, Delete File, and Move to.",
                 "Both tools have zero task reward. Paths and workdir are workspace-relative.",
             ]
-        )
+        ) + policy_notice()
 
     def _run_shell(
         self,
