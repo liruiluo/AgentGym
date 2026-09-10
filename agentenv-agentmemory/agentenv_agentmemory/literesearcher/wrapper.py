@@ -920,6 +920,12 @@ class LiteResearcherWrapper:
             "workspace_tools": ["shell_command", "apply_patch"],
             "reward_contract": self.reward_contract,
         }
+        from ..copd_teacher import episode_receipt
+        workspace = episode.get("workspace")
+        if workspace is not None:
+            receipt = episode_receipt(workspace.host_root)
+            if receipt is not None:
+                info["copd"] = receipt
         payload = {
             "observation": task.question if observation is None else str(observation),
             "reward": float(episode.get("reward", 0.0)),

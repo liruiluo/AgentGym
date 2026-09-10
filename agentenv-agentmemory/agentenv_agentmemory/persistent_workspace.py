@@ -268,6 +268,8 @@ class PersistentWorkspace:
         )
         os.chmod(root, 0o700)
         self._root = root.resolve()
+        from .copd_teacher import record_episode
+        record_episode(self._root)
         for relative in self.initial_directories:
             target = self._root / relative
             target.mkdir(parents=True, exist_ok=True, mode=0o700)

@@ -17,7 +17,7 @@ NORMALIZED_EXACT_JUDGE_CONTRACT = "normalized_exact_v1"
 # same-pod Qwen judge.  Keep this list frozen so a typo or arbitrary endpoint
 # cannot silently change the scoring contract.
 LITERESEARCHER_FORMAL_JUDGE_MODELS = frozenset(
-    {"kimi-k2.6", "qwen3-8b-judge"}
+    {"kimi-k2.6", "Kimi-K2.6", "qwen3-8b-judge"}
 )
 LITERESEARCHER_FORMAL_JUDGE_MODEL = "kimi-k2.6"
 LITERESEARCHER_FORMAL_JUDGE_MAX_TOKENS = 8192

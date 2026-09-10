@@ -18,6 +18,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterator, Mapping, Protocol
 
 
+from .copd_teacher import command_mount
+
 SHELL_SANDBOX_CONTRACT = "linux_namespace_chroot_tmpfs_v1"
 _UID_LEASE_ROOT = Path("/run/agentmemorygym-workspace-sandbox-uids")
 _UID_LEASE_BASE = 1_500_000_000
@@ -304,7 +306,9 @@ class LinuxNamespaceShellSandbox:
         ) as rootfs_raw, tempfile.TemporaryDirectory(
             prefix=".agentmemory-sandbox-output-",
             dir=workspace_parent,
-        ) as output_raw:
+        ) as output_raw, command_mount(
+            workspace_root, model_uid=model_uid, command=command, timeout_ms=timeout_ms
+        ) as teacher_mount:
             rootfs = Path(rootfs_raw)
             output = Path(output_raw)
             self._prepare_rootfs(rootfs, output, model_uid=model_uid)
@@ -351,6 +355,7 @@ class LinuxNamespaceShellSandbox:
                     str(self.mkdir_binary),
                     str(self.sleep_binary),
                     str(self.capsh_binary),
+                    teacher_mount,
                 ],
                 cwd=self.rootfs_parent,
                 env={
@@ -440,6 +445,7 @@ class LinuxNamespaceShellSandbox:
             "workspace",
             "run",
             "run/out",
+            "run/copd",
             "tools",
         ):
             (rootfs / relative).mkdir(parents=True, exist_ok=True)
@@ -448,7 +454,8 @@ class LinuxNamespaceShellSandbox:
         # leased unprivileged UID.
         os.chmod(rootfs / "etc", 0o755)
         os.chmod(rootfs / "tools", 0o755)
-        os.chmod(rootfs / "run", 0o700)
+        os.chmod(rootfs / "run", 0o755)
+        os.chmod(rootfs / "run/out", 0o700)
         os.chmod(output, 0o700)
         (rootfs / "tools/rg").touch(mode=0o755)
         os.chmod(rootfs / "tools/rg", 0o755)
@@ -502,6 +509,7 @@ bash_binary=${26}
 mkdir_binary=${27}
 sleep_binary=${28}
 capsh_binary=${29}
+teacher_mount=${30}
 
 "$mount_binary" --make-rprivate /
 for name in usr bin sbin lib lib64; do
@@ -532,6 +540,10 @@ fi
 "$mount_binary" -t proc -o nosuid,nodev,noexec,hidepid=2 proc "$rootfs/proc"
 "$mount_binary" --bind "$output" "$rootfs/run/out"
 "$mount_binary" -o remount,bind,rw,nosuid,nodev,noexec "$rootfs/run/out"
+if [ -n "$teacher_mount" ]; then
+    "$mount_binary" --bind "$teacher_mount" "$rootfs/run/copd"
+    "$mount_binary" -o remount,bind,ro,nosuid,nodev "$rootfs/run/copd"
+fi
 "$hostname_binary" agentmemory-sandbox
 
 exec "$chroot_binary" "$rootfs" "$bash_binary" -c '
