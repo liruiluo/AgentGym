@@ -7,4 +7,4 @@ def policy_notice():
     value = os.environ.get("COPD_ENABLED", "0")
     if value not in {"0", "1"}:
         raise ValueError("COPD_ENABLED must be 0 or 1")
-    return "\n\n" + POLICY_NOTICE if value == "1" else ""
+    return "\n\n" + POLICY_NOTICE.strip() if value == "1" else ""

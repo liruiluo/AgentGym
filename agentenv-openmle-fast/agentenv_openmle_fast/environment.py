@@ -142,7 +142,7 @@ If an observation reports a parser error, respond next with only one corrected c
 
 Initial-action contract: when only the task description is visible and no public file has been inspected, the next function must be shell_command to inspect the supplied public files. Do not call apply_patch before at least one successful inspection action."""
 from agentenv_agentmemory.copd_teacher import policy_notice as _copd_policy_notice
-POLICY_PROMPT = POLICY_PROMPT.rstrip() + _copd_policy_notice()
+POLICY_PROMPT += _copd_policy_notice()
 POLICY_PROMPT_SHA256 = hashlib.sha256(POLICY_PROMPT.encode("utf-8")).hexdigest()
 
 

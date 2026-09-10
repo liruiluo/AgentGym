@@ -122,7 +122,7 @@ Initial-action contract: when only the task description is visible and no public
 )
 
 from agentenv.copd_protocol import policy_notice as _copd_policy_notice
-OPENMLE_FAST_POLICY_SYSTEM_PROMPT = OPENMLE_FAST_POLICY_SYSTEM_PROMPT.rstrip() + _copd_policy_notice()
+OPENMLE_FAST_POLICY_SYSTEM_PROMPT += _copd_policy_notice()
 
 OPENMLE_FAST_POLICY_PROMPT_SHA256 = hashlib.sha256(
     OPENMLE_FAST_POLICY_SYSTEM_PROMPT.encode("utf-8")
