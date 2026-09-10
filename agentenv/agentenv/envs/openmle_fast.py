@@ -1503,8 +1503,13 @@ def _validate_step_response(
         "audit_digest",
         "unaudited_evidence_sha256",
     }
-    if not isinstance(info, Mapping) or set(info) != required_info:
+    if not isinstance(info, Mapping) or set(info) not in (
+        required_info,
+        required_info | {"copd"},
+    ):
         raise RuntimeError("OpenMLE-fast environment receipt schema drifted")
+    if "copd" in info:
+        _validate_copd_receipt(info["copd"])
     if (
         info["schema"] != "openmle_fast_episode_v1"
         or not isinstance(info["episode_id"], str)
@@ -1614,6 +1619,43 @@ def _validate_step_response(
         if not info["truncated"]:
             raise RuntimeError("unaudited evidence requires truncation")
     return observation, reward, done, info
+
+
+_COPD_RECEIPT_FIELDS = {
+    "schema",
+    "run_id",
+    "episode_key",
+    "teacher_available",
+    "teacher_on_probability",
+    "availability_seed",
+    "availability_fixed_for_episode",
+}
+
+
+def _validate_copd_receipt(value: Any) -> None:
+    """Validate the optional COPD availability receipt without owning its logic."""
+    if not isinstance(value, Mapping) or set(value) != _COPD_RECEIPT_FIELDS:
+        raise RuntimeError("OpenMLE-fast COPD receipt schema drifted")
+    if value["schema"] != "copd_episode_availability_v1":
+        raise RuntimeError("OpenMLE-fast COPD receipt schema drifted")
+    for key in ("run_id", "episode_key", "availability_seed"):
+        if not isinstance(value[key], str) or not value[key]:
+            raise RuntimeError(f"OpenMLE-fast COPD {key} is invalid")
+    if len(value["episode_key"]) != 64 or any(
+        character not in "0123456789abcdef" for character in value["episode_key"]
+    ):
+        raise RuntimeError("OpenMLE-fast COPD episode_key is not lowercase SHA256")
+    probability = value["teacher_on_probability"]
+    if type(probability) not in (int, float) or not math.isfinite(
+        float(probability)
+    ):
+        raise RuntimeError("OpenMLE-fast COPD probability is invalid")
+    if not 0.0 <= float(probability) <= 1.0:
+        raise RuntimeError("OpenMLE-fast COPD probability is outside [0, 1]")
+    if type(value["teacher_available"]) is not bool:
+        raise RuntimeError("OpenMLE-fast COPD availability is invalid")
+    if value["availability_fixed_for_episode"] is not True:
+        raise RuntimeError("OpenMLE-fast COPD availability is not episode-fixed")
 
 
 def _validate_public_grade_receipt(

@@ -1082,6 +1082,69 @@ cat .agent_memory/CONTINUATION.md
                 )
             self.assertEqual(request.call_count, 1)
 
+    def test_optional_copd_receipt_preserves_native_step_contract(self) -> None:
+        metadata = self.metadata()
+        response = self.step_response(action_count=1, action_kind="shell")
+        receipt = {
+            "schema": "copd_episode_availability_v1",
+            "run_id": "copd-fixture-run",
+            "episode_key": "a" * 64,
+            "teacher_available": True,
+            "teacher_on_probability": 0.5,
+            "availability_seed": "fixture-seed",
+            "availability_fixed_for_episode": True,
+        }
+        response["info"]["copd"] = receipt
+        observation, reward, done, info = _CLIENT_MODULE._validate_step_response(
+            response,
+            metadata=metadata,
+            expected_action_count=1,
+            expected_action_delta=1,
+        )
+        self.assertEqual(observation, response["observation"])
+        self.assertEqual(reward, response["reward"])
+        self.assertEqual(done, response["done"])
+        self.assertEqual(info["copd"], receipt)
+
+    def test_optional_copd_receipt_rejects_shape_or_type_drift(self) -> None:
+        metadata = self.metadata()
+        valid = {
+            "schema": "copd_episode_availability_v1",
+            "run_id": "copd-fixture-run",
+            "episode_key": "a" * 64,
+            "teacher_available": True,
+            "teacher_on_probability": 0.5,
+            "availability_seed": "fixture-seed",
+            "availability_fixed_for_episode": True,
+        }
+        mutations = (
+            ("missing", lambda value: value.pop("run_id")),
+            ("extra", lambda value: value.__setitem__("unexpected", 1)),
+            ("key", lambda value: value.__setitem__("episode_key", "bad")),
+            (
+                "availability",
+                lambda value: value.__setitem__("teacher_available", 1),
+            ),
+            (
+                "fixed",
+                lambda value: value.__setitem__(
+                    "availability_fixed_for_episode", False
+                ),
+            ),
+        )
+        for label, mutate in mutations:
+            response = self.step_response(action_count=1, action_kind="shell")
+            receipt = copy.deepcopy(valid)
+            mutate(receipt)
+            response["info"]["copd"] = receipt
+            with self.subTest(label=label), self.assertRaises(RuntimeError):
+                _CLIENT_MODULE._validate_step_response(
+                    response,
+                    metadata=metadata,
+                    expected_action_count=1,
+                    expected_action_delta=1,
+                )
+
     def test_terminal_step_binds_public_grade_identity_into_action_submission(
         self,
     ) -> None:
