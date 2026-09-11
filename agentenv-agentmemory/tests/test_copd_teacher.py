@@ -1,10 +1,13 @@
 import importlib.util
+import errno
 import io
 import json
 import os
 from pathlib import Path
 import socket
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -107,6 +110,113 @@ class TeacherTests(unittest.TestCase):
             reply, detail = teacher._ask("question", config=teacher._config(), timeout=1)
         self.assertEqual(reply, "[teacher_error:timeout]")
         self.assertEqual(detail["status"], "timeout")
+
+    def _call_events(self):
+        events = []
+        for path in (self.root / "ledger").glob("*.jsonl"):
+            for line in path.read_text().splitlines():
+                event = json.loads(line)
+                if event.get("schema") == "copd_teacher_call_v1":
+                    events.append(event)
+        return events
+
+    def test_client_exit_is_bounded_and_recorded(self):
+        def fast(_question, **_kwargs):
+            return "reply", {"status": "ok", "usage": {"total_tokens": 1}}
+
+        with patch.object(teacher, "_ask_bounded", side_effect=fast):
+            started = time.monotonic()
+            with teacher.command_mount(self.root / "early", model_uid=os.getuid(),
+                                       command="ordinary", timeout_ms=5000) as mount:
+                fd = os.open(Path(mount) / "request", os.O_WRONLY)
+                os.write(fd, b"question\0")
+                os.close(fd)
+                # Deliberately do not open reply: the client has exited.
+                time.sleep(0.05)
+        self.assertLess(time.monotonic() - started, 1.5)
+        event = self._call_events()[-1]
+        self.assertFalse(event["delivered"])
+        self.assertIn(event["delivery_status"], {
+            "client_gone", "client_gone_or_reply_not_open", "reply_write_timeout",
+        })
+
+    def test_broker_stop_cancels_pending_provider(self):
+        entered = threading.Event()
+
+        def pending(_question, *, cancel_event, **_kwargs):
+            entered.set()
+            cancel_event.wait(5)
+            return "[teacher_error:cancelled]", {"status": "cancelled", "upstream_attempts": 1}
+
+        with patch.dict(os.environ, {"COPD_TEACHER_ON_PROB": "1"}), patch.object(
+                teacher, "_ask_bounded", side_effect=pending):
+            started = time.monotonic()
+            with teacher.command_mount(self.root / "pending", model_uid=os.getuid(),
+                                       command="ordinary", timeout_ms=5000) as mount:
+                fd = os.open(Path(mount) / "request", os.O_WRONLY)
+                os.write(fd, b"question\0")
+                os.close(fd)
+                self.assertTrue(entered.wait(1))
+        self.assertLess(time.monotonic() - started, 1.5)
+        cleanup = list((self.root / "ledger" / "cleanup").glob("*.jsonl"))
+        self.assertTrue(cleanup)
+        receipt = json.loads(cleanup[-1].read_text().splitlines()[-1])
+        self.assertEqual(receipt["schema"], "copd_teacher_cleanup_v1")
+        self.assertEqual(receipt["cleanup_status"], "clean")
+
+    def test_ledger_lock_timeout_uses_fallback_record(self):
+        target = self.root / "ledger" / "locked.jsonl"
+        blocked = BlockingIOError(errno.EAGAIN, "busy")
+        with patch.object(teacher.fcntl, "flock", side_effect=blocked):
+            result = teacher._append(target, {"schema": "fixture"}, lock_timeout=0.02)
+        self.assertEqual(result["status"], "lock_timeout_fallback")
+        fallback = Path(result["path"])
+        self.assertTrue(fallback.exists())
+        record = json.loads(fallback.read_text().splitlines()[0])
+        self.assertEqual(record["ledger_append_status"], "lock_timeout_fallback")
+        self.assertEqual(record["ledger_lock_error"], "BlockingIOError")
+
+    def test_provider_process_timeout_is_reaped(self):
+        class _Pipe:
+            def write(self, payload):
+                return len(payload)
+
+            def close(self):
+                return None
+
+        class _HungProvider:
+            next_pid = 900000
+
+            def __init__(self, *args, **kwargs):
+                _HungProvider.next_pid += 1
+                self.pid = _HungProvider.next_pid
+                self.returncode = None
+                self.stdin = _Pipe()
+                self._terminated = False
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                if self.returncode is None:
+                    raise teacher.subprocess.TimeoutExpired("provider", timeout)
+                return self.returncode
+
+            def terminate(self):
+                self._terminated = True
+                self.returncode = -15
+
+            def kill(self):
+                self._terminated = True
+                self.returncode = -9
+
+        with patch.object(teacher.subprocess, "Popen", _HungProvider):
+            reply, detail = teacher._ask_bounded(
+                "question", config=teacher._config(), timeout=0.05,
+            )
+        self.assertEqual(reply, "[teacher_error:timeout]")
+        self.assertEqual(detail["status"], "timeout")
+        self.assertIsNotNone(detail.get("provider_returncode"))
 
 
 if __name__ == "__main__":
